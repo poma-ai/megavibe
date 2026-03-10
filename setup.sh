@@ -1,0 +1,360 @@
+#!/bin/bash
+set -euo pipefail
+
+# Megavibe v3 — Machine setup
+# Usage: bash megavibe/setup.sh
+# Idempotent: skips tools/MCP already installed, always updates protocol + statusline.
+# Requires: macOS, Homebrew, Node.js (npm/npx).
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+BOLD='\033[1m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+RESET='\033[0m'
+
+info()  { echo -e "${BOLD}$1${RESET}"; }
+ok()    { echo -e "  ${GREEN}✓${RESET} $1"; }
+skip()  { echo -e "  ${YELLOW}skip${RESET} $1 (already installed)"; }
+warn()  { echo -e "  ${YELLOW}!${RESET} $1"; }
+fail()  { echo -e "  ${RED}✗${RESET} $1"; }
+
+NEEDS_LOGIN=()
+
+# ─── 1. Install tools ───────────────────────────────────────────────
+
+info "1) Installing tools"
+
+# Claude Code
+if command -v claude &>/dev/null; then
+  skip "Claude Code ($(claude --version 2>/dev/null || echo 'installed'))"
+else
+  echo "  Installing Claude Code..."
+  curl -fsSL https://claude.ai/install.sh | bash
+  ok "Claude Code"
+  NEEDS_LOGIN+=("claude")
+fi
+
+# Codex CLI
+if command -v codex &>/dev/null; then
+  skip "Codex CLI"
+else
+  echo "  Installing Codex CLI..."
+  npm i -g @openai/codex
+  ok "Codex CLI"
+  NEEDS_LOGIN+=("codex")
+fi
+
+# Gemini CLI
+if command -v gemini &>/dev/null; then
+  skip "Gemini CLI"
+else
+  echo "  Installing Gemini CLI..."
+  if command -v brew &>/dev/null; then
+    brew install gemini-cli
+  else
+    npm i -g @google/gemini-cli
+  fi
+  ok "Gemini CLI"
+  NEEDS_LOGIN+=("gemini")
+fi
+
+# jq (required by hooks)
+if command -v jq &>/dev/null; then
+  skip "jq"
+else
+  echo "  Installing jq..."
+  if command -v brew &>/dev/null; then
+    brew install jq
+  else
+    fail "jq not found. Install it manually: https://jqlang.github.io/jq/download/"
+    exit 1
+  fi
+  ok "jq"
+fi
+
+# ─── 2. First-time logins ───────────────────────────────────────────
+
+if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
+  echo ""
+  info "2) First-time logins"
+  echo ""
+  echo "  These tools were just installed. To activate them, open a NEW"
+  echo "  terminal window and run each command — it will open your browser"
+  echo "  to sign in:"
+  echo ""
+  for tool in "${NEEDS_LOGIN[@]}"; do
+    case "$tool" in
+      claude) echo "    claude          (requires Claude subscription)" ;;
+      codex)  echo "    codex           (optional — uses your ChatGPT account)" ;;
+      gemini) echo "    gemini          (optional — uses your Google account)" ;;
+      *)      echo "    $tool" ;;
+    esac
+  done
+  echo ""
+  echo "  You can do this now or later — megavibe works with just Claude."
+  echo ""
+  read -p "  Press Enter to continue... "
+else
+  echo ""
+  info "2) Logins — all tools already installed, skipping"
+fi
+
+# ─── 3. Deploy megavibe to ~/.megavibe/ + install CLI ─────────────
+
+echo ""
+info "3) Deploying megavibe"
+
+MEGAVIBE_HOME="$HOME/.megavibe"
+mkdir -p "$MEGAVIBE_HOME"
+
+# Copy core files to ~/.megavibe/ (always overwrite — infrastructure)
+cp "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh"
+cp "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
+if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
+  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
+
+  # Install poma-memory Python dependencies (required for search + MCP server)
+  # model2vec provides semantic search (30MB model) — the core value of poma
+  if python3 -c "import numpy, model2vec" &>/dev/null; then
+    skip "poma-memory Python deps (numpy, model2vec)"
+  else
+    echo "  Installing poma-memory Python deps..."
+    python3 -m pip install --quiet numpy model2vec 2>/dev/null \
+      || pip3 install --quiet numpy model2vec 2>/dev/null \
+      || warn "Could not install poma-memory deps — search will be unavailable"
+    if python3 -c "import numpy, model2vec" &>/dev/null; then
+      ok "poma-memory Python deps (numpy, model2vec)"
+    fi
+  fi
+fi
+rm -rf "$MEGAVIBE_HOME/template"
+cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
+ok "~/.megavibe/ synced"
+
+# Remember source repo so the deployed CLI can sync from it later
+echo "$SCRIPT_DIR" > "$MEGAVIBE_HOME/source-repo"
+
+# Install CLI wrapper to ~/.local/bin/ (symlink to ~/.megavibe/ copy)
+CLI_DIR="$HOME/.local/bin"
+mkdir -p "$CLI_DIR"
+# Copy to ~/.megavibe/ first (already done above via setup.sh copy)
+cp "$SCRIPT_DIR/megavibe" "$MEGAVIBE_HOME/megavibe"
+chmod +x "$MEGAVIBE_HOME/megavibe"
+# Symlink from ~/.local/bin/ → ~/.megavibe/ so updates propagate automatically
+ln -sf "$MEGAVIBE_HOME/megavibe" "$CLI_DIR/megavibe"
+ok "megavibe CLI installed to $CLI_DIR/megavibe → ~/.megavibe/megavibe"
+
+# Warn if ~/.local/bin is not in PATH
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "$CLI_DIR"; then
+  warn "$CLI_DIR is not in your PATH"
+  echo "    Add this to your shell profile (~/.zshrc or ~/.bashrc):"
+  echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""
+  echo ""
+fi
+
+# ─── 4. Install/update Megavibe protocol in user-level CLAUDE.md ────
+
+echo ""
+info "4) Installing Megavibe protocol"
+
+CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+MARKER="<!-- megavibe-v3 -->"
+END_MARKER="<!-- /megavibe-v3 -->"
+V2_HEADING="Operating rules (Megavibe v2)"
+
+mkdir -p "$HOME/.claude"
+
+if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
+  # ── v3 already installed — surgical replace ──
+  if grep -q "$END_MARKER" "$CLAUDE_MD"; then
+    sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
+    if [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
+      cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
+    else
+      echo "" >> "${CLAUDE_MD}.tmp"
+      cat "$SCRIPT_DIR/template/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
+      mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+    fi
+    ok "~/.claude/CLAUDE.md updated (v3 refreshed)"
+  else
+    warn "~/.claude/CLAUDE.md has start marker but no end marker (legacy install)."
+    echo "    Add '<!-- /megavibe-v3 -->' at the end of the megavibe block, then re-run."
+  fi
+
+elif [ -f "$CLAUDE_MD" ] && grep -q "$V2_HEADING" "$CLAUDE_MD"; then
+  # ── v2 detected — strip and replace ──
+  warn "Megavibe v2 protocol detected in ~/.claude/CLAUDE.md"
+
+  # Back up before modifying
+  cp "$CLAUDE_MD" "${CLAUDE_MD}.pre-v3-backup"
+  ok "backup saved to ${CLAUDE_MD}.pre-v3-backup"
+
+  # v2 was always appended at the end — strip from v2 heading to EOF
+  sed "/$V2_HEADING/,\$d" "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
+
+  # Remove trailing blank lines from remaining content
+  if [ -s "${CLAUDE_MD}.tmp" ] && grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
+    # User had content before v2 block — preserve it, append v3
+    sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "${CLAUDE_MD}.tmp" > "${CLAUDE_MD}.tmp2"
+    mv "${CLAUDE_MD}.tmp2" "${CLAUDE_MD}.tmp"
+    echo "" >> "${CLAUDE_MD}.tmp"
+    cat "$SCRIPT_DIR/template/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
+    mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+    ok "v2 replaced with v3 (user content preserved)"
+  else
+    # File was entirely v2 content
+    cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
+    ok "v2 replaced with v3"
+  fi
+
+elif [ -f "$CLAUDE_MD" ]; then
+  # ── User has a CLAUDE.md but no megavibe — append ──
+  echo "" >> "$CLAUDE_MD"
+  cat "$SCRIPT_DIR/template/CLAUDE.md" >> "$CLAUDE_MD"
+  ok "Megavibe protocol appended to existing ~/.claude/CLAUDE.md"
+else
+  # ── No CLAUDE.md at all — create ──
+  cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
+  ok "~/.claude/CLAUDE.md created"
+fi
+
+# Warn about v2 in parent-directory CLAUDE.md files (Claude Code walks up)
+for check_file in "$HOME/CLAUDE.md" "$HOME/Documents/CLAUDE.md"; do
+  if [ -f "$check_file" ] && grep -q "$V2_HEADING" "$check_file"; then
+    warn "Megavibe v2 content found in $check_file"
+    echo "    Claude Code walks up directories for CLAUDE.md files."
+    echo "    v2 rules there may conflict with v3. Consider removing them."
+  fi
+done
+
+# Clean up stale tmp files
+rm -f "${CLAUDE_MD}.tmp" "${CLAUDE_MD}.tmp2"
+
+# Record installed version (for future upgrade detection)
+echo "3" > "$MEGAVIBE_HOME/version"
+
+# ─── 5. Install/update statusline ───────────────────────────────────
+
+echo ""
+info "5) Installing statusline"
+
+STATUSLINE_SCRIPT="$HOME/.claude/statusline.sh"
+
+cp "$SCRIPT_DIR/template/statusline.sh" "$STATUSLINE_SCRIPT"
+chmod +x "$STATUSLINE_SCRIPT"
+ok "~/.claude/statusline.sh"
+
+# Add statusLine + attribution config to user-level settings.json
+USER_SETTINGS="$HOME/.claude/settings.json"
+MEGAVIBE_SETTINGS='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","padding":2},"attribution":{"commit":"","pr":""}}'
+
+if [ -f "$USER_SETTINGS" ]; then
+  if command -v jq &>/dev/null; then
+    # Merge megavibe defaults (statusLine + attribution) into existing settings
+    # jq * does recursive merge — user overrides are preserved if set after setup
+    jq --argjson mv "$MEGAVIBE_SETTINGS" '. * $mv' \
+      "$USER_SETTINGS" > "${USER_SETTINGS}.tmp"
+    mv "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
+    ok "settings.json updated (statusLine + attribution)"
+  else
+    warn "Could not merge settings (jq not available)"
+  fi
+else
+  echo "$MEGAVIBE_SETTINGS" | jq . > "$USER_SETTINGS"
+  ok "~/.claude/settings.json created (statusLine + attribution)"
+fi
+
+# ─── 6. Register MCP servers ────────────────────────────────────────
+
+echo ""
+info "6) Registering MCP servers"
+
+# Check which MCP servers are already registered
+EXISTING_MCP=$(claude mcp list 2>/dev/null || echo "")
+
+# Codex MCP
+if echo "$EXISTING_MCP" | grep -qi "codex"; then
+  skip "Codex MCP server"
+else
+  claude mcp add --transport stdio --scope user codex -- codex mcp-server
+  ok "Codex MCP server"
+fi
+
+# Gemini MCP
+if echo "$EXISTING_MCP" | grep -qi "gemini"; then
+  skip "Gemini MCP server"
+else
+  claude mcp add --transport stdio --scope user gemini-cli -- npx -y gemini-mcp-tool
+  ok "Gemini MCP server"
+fi
+
+# Gemini CLI auth: use API key when GEMINI_API_KEY is set
+# (OAuth hits Cloud AI Companion API which requires GCP IAM permissions;
+#  API key mode hits the public generativelanguage.googleapis.com endpoint)
+GEMINI_SETTINGS="$HOME/.gemini/settings.json"
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  mkdir -p "$HOME/.gemini"
+  if [ -f "$GEMINI_SETTINGS" ]; then
+    if command -v jq &>/dev/null && jq -e '.security.auth.selectedType' "$GEMINI_SETTINGS" &>/dev/null; then
+      CURRENT_AUTH=$(jq -r '.security.auth.selectedType' "$GEMINI_SETTINGS")
+      if [ "$CURRENT_AUTH" != "gemini-api-key" ]; then
+        jq '.security.auth.selectedType = "gemini-api-key"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
+        mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
+        ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
+      fi
+    fi
+  else
+    echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' | jq . > "$GEMINI_SETTINGS"
+    ok "Gemini CLI configured for API key auth"
+  fi
+fi
+
+# Playwright MCP
+if echo "$EXISTING_MCP" | grep -qi "playwright"; then
+  skip "Playwright MCP server"
+else
+  claude mcp add --transport stdio --scope user playwright -- npx -y @playwright/mcp@latest
+  ok "Playwright MCP server"
+fi
+
+# Ensure Playwright browsers are installed (required for @playwright/mcp to work)
+if npx -y @playwright/mcp@latest --help &>/dev/null 2>&1; then
+  if npx playwright install chromium &>/dev/null 2>&1; then
+    ok "Playwright chromium browser"
+  else
+    warn "Could not install Playwright browsers — run: npx playwright install chromium"
+  fi
+else
+  warn "Playwright MCP not available — browser install skipped"
+fi
+
+# poma-memory MCP (bundled poma_memory.py or pip-installed)
+if echo "$EXISTING_MCP" | grep -qi "poma-memory"; then
+  skip "poma-memory MCP server"
+elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ]; then
+  claude mcp add --transport stdio --scope user poma-memory -- python3 "$MEGAVIBE_HOME/poma_memory.py" mcp
+  ok "poma-memory MCP server (bundled)"
+elif command -v poma-memory-mcp &>/dev/null; then
+  claude mcp add --transport stdio --scope user poma-memory -- poma-memory-mcp
+  ok "poma-memory MCP server (pip)"
+else
+  skip "poma-memory MCP server (poma_memory.py not found in ~/.megavibe/)"
+fi
+
+# ─── 7. Verify ──────────────────────────────────────────────────────
+
+echo ""
+info "7) Verification"
+
+claude mcp list 2>/dev/null && ok "MCP servers listed" || warn "Could not list MCP servers (claude may need login first)"
+
+# ─── Done ────────────────────────────────────────────────────────────
+
+echo ""
+info "Machine setup complete."
+echo ""
+echo "  Next: cd into any project and run:"
+echo "    megavibe"
+echo ""

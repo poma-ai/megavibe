@@ -1,0 +1,21 @@
+# Megavibe — .agent/.gitignore
+# Keep structured context files, ignore high-volume logs
+
+# Ignore raw logs (high volume, always regenerable)
+LOGS/
+
+# Ignore session-scoped state (per-session WORKING_CONTEXT, ephemeral)
+sessions/
+
+# Ignore binary assets (screenshots, PDFs) — track via LFS or skip
+ASSETS/*.png
+ASSETS/*.jpg
+ASSETS/*.pdf
+ASSETS/*.html
+
+# Ignore poma-memory database (regenerable from indexed files)
+.poma-memory.db
+.poma-memory.db-shm
+.poma-memory.db-wal
+
+# Keep everything else (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md, RESEARCH/)
