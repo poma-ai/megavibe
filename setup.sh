@@ -129,9 +129,71 @@ if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
     fi
   fi
 fi
+
+# Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
+if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then
+  cp "$SCRIPT_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
+  ok "telegram-bot.py deployed"
+
+  # Install python-telegram-bot if not already present (+ httpx for voice I/O)
+  if python3 -c "import telegram" &>/dev/null; then
+    skip "python-telegram-bot"
+  else
+    echo "  Installing python-telegram-bot (for Megavibe Remote)..."
+    python3 -m pip install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+      || pip3 install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+      || warn "Could not install python-telegram-bot — remote will be unavailable"
+    if python3 -c "import telegram" &>/dev/null; then
+      ok "python-telegram-bot + httpx"
+    fi
+  fi
+fi
 rm -rf "$MEGAVIBE_HOME/template"
 cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
 ok "~/.megavibe/ synced"
+
+# Initialize personal assistant project (standard megavibe dir)
+PERSONAL_DIR="$MEGAVIBE_HOME/personal"
+if [ ! -d "$PERSONAL_DIR/.agent" ]; then
+  mkdir -p "$PERSONAL_DIR/.agent"
+  cat > "$PERSONAL_DIR/CLAUDE.md" << 'PERSONAL_EOF'
+# Personal Assistant
+
+You are the user's personal assistant, responding via Telegram (often from Apple Watch).
+
+## Rules
+- Answer the question directly. No preamble, no status reports, no tool availability announcements.
+- NEVER say things like "Gemini is available" or report which tools/MCP servers are connected. Just answer.
+- Keep responses concise but complete. The user reads on a small screen (Watch/phone).
+- Plain text preferred. No code blocks, no markdown tables unless specifically asked.
+- Use the user's language (German if they write in German, English if English).
+
+## What you do
+- Answer general questions (weather, facts, calculations, advice)
+- Remember personal preferences, goals, and context from .agent/ files
+- Help with life admin (scheduling, reminders, planning)
+- When asked about a specific coding project, mention that the user should ask about it by name to route to that project
+
+## Context files
+- .agent/FULL_CONTEXT.md — ongoing personal context log
+- .agent/LESSONS.md — personal preferences and patterns
+- .agent/DECISIONS.md — life decisions and rationale
+PERSONAL_EOF
+  echo "# Personal Context Log" > "$PERSONAL_DIR/.agent/FULL_CONTEXT.md"
+  echo "# Personal Decisions" > "$PERSONAL_DIR/.agent/DECISIONS.md"
+  echo "# Personal Preferences" > "$PERSONAL_DIR/.agent/LESSONS.md"
+  ok "~/.megavibe/personal/ (personal assistant project)"
+else
+  skip "~/.megavibe/personal/ (already exists)"
+fi
+
+# Initialize projects registry
+if [ ! -f "$MEGAVIBE_HOME/projects.json" ]; then
+  echo '{}' > "$MEGAVIBE_HOME/projects.json"
+  ok "~/.megavibe/projects.json (project registry)"
+else
+  skip "~/.megavibe/projects.json (already exists)"
+fi
 
 # Remember source repo so the deployed CLI can sync from it later
 echo "$SCRIPT_DIR" > "$MEGAVIBE_HOME/source-repo"
