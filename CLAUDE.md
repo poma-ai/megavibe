@@ -17,6 +17,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `setup.sh` | One-time machine bootstrapper (tools, MCP, CLI, protocol) | High — affects all users |
 | `init.sh` | Per-project bootstrapper (.agent/, hooks, skills, settings) | High — affects all projects |
 | `poma_memory.py` | Bundled poma-memory: markdown chunker + hybrid search + MCP server | Medium — search behavior |
+| `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
 | `template/CLAUDE.md` | Core protocol (90 lines) — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/spinouts.md` | Subtask spinout protocol | Medium — review recommended |
 | `template/.claude/rules/delegation.md` | Tool routing + delegation protocols + selective compaction | Medium — review recommended |
@@ -24,8 +25,10 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (6 hooks incl. augment-search.sh) | Medium |
+| `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
+| `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
 
