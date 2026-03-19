@@ -66,6 +66,25 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
   elif command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
+
+  # --- Event emission for remote bot (replaces ntfy) ---
+  # Append structured events to events.jsonl. Bot watches this file.
+  # No network calls from hooks — fast, safe, no token exposure.
+  if [[ "$FILE_PATH" == *"TASKS.md" ]]; then
+    DONE_COUNT=$(grep -cE "\| done" "$FILE_PATH" 2>/dev/null || echo "0")
+    TOTAL=$(grep -cE "^\| [0-9R]" "$FILE_PATH" 2>/dev/null || echo "0")
+    OPEN=$(grep -cE "\| pending|\| in.progress|\| planned" "$FILE_PATH" 2>/dev/null || echo "0")
+    if [ "$DONE_COUNT" -gt 0 ] 2>/dev/null; then
+      EVENTS_FILE="$(dirname "$(dirname "$FILE_PATH")")/events.jsonl"
+      EVENT_TYPE="task_progress"
+      [ "$OPEN" -eq 0 ] 2>/dev/null && EVENT_TYPE="task_complete"
+      jq -n --arg type "$EVENT_TYPE" \
+        --arg done "$DONE_COUNT" --arg total "$TOTAL" --arg open "$OPEN" \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{type: $type, done: ($done|tonumber), total: ($total|tonumber), open: ($open|tonumber), ts: $ts}' \
+        >> "$EVENTS_FILE" 2>/dev/null || true
+    fi
+  fi
   exit 0
 fi
 

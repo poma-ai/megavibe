@@ -104,6 +104,16 @@ if [ -d "$TEMPLATE_DIR/.claude/skills" ]; then
   done
 fi
 
+# --- Agents (infrastructure — always overwrite) ---
+if [ -d "$TEMPLATE_DIR/.claude/agents" ]; then
+  mkdir -p "$PROJECT/.claude/agents"
+  for agent in "$TEMPLATE_DIR/.claude/agents/"*.md; do
+    [ -f "$agent" ] || continue
+    cp "$agent" "$PROJECT/.claude/agents/$(basename "$agent")"
+    echo "  synced: .claude/agents/$(basename "$agent")"
+  done
+fi
+
 # --- .agent starter files (user data — never overwrite) ---
 copy_if_missing "$TEMPLATE_DIR/.agent/.gitignore" "$PROJECT/.agent/.gitignore"
 copy_if_missing "$TEMPLATE_DIR/.agent/FULL_CONTEXT.md" "$PROJECT/.agent/FULL_CONTEXT.md"

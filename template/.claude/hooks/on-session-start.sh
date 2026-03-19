@@ -42,6 +42,32 @@ else
   TASK_HINT="All previous tasks are complete. Project knowledge is loaded below — ready for a new task."
 fi
 
+# --- poma-memory: search for context related to open tasks ---
+POMA_CONTEXT=""
+if [ "$OPEN_TASKS" -gt 0 ] 2>/dev/null && [ -f ".agent/.poma-memory.db" ]; then
+  # Find poma-memory command
+  POMA_CMD=""
+  if [ -f "$HOME/.megavibe/poma_memory.py" ]; then
+    POMA_CMD="python3 $HOME/.megavibe/poma_memory.py"
+  elif command -v poma-memory &>/dev/null; then
+    POMA_CMD="poma-memory"
+  fi
+
+  if [ -n "$POMA_CMD" ]; then
+    # Extract open task names as search terms
+    TASK_TERMS=$(grep -E "\| pending|\| in.progress" ".agent/TASKS.md" 2>/dev/null \
+      | sed 's/|/\n/g' | sed -n '3p' | tr -d '[:space:]' | head -c 200)
+    if [ -n "$TASK_TERMS" ]; then
+      POMA_RESULTS=$($POMA_CMD search "$TASK_TERMS" --path .agent/ --top-k 5 2>/dev/null || echo "")
+      if [ -n "$POMA_RESULTS" ] && [ "$POMA_RESULTS" != "No results found." ]; then
+        POMA_CONTEXT="
+--- poma-memory: context related to open tasks ---
+${POMA_RESULTS}"
+      fi
+    fi
+  fi
+fi
+
 CONTEXT="## Megavibe — project knowledge
 
 Your session ID is: ${SID}
@@ -53,7 +79,7 @@ ${TASK_HINT}
 $(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')
 
 --- DECISIONS.md (last 20 lines) ---
-$(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')"
+$(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')${POMA_CONTEXT}"
 
 # Emit additionalContext
 jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

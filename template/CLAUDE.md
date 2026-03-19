@@ -2,7 +2,7 @@
 
 # Megavibe v3 Operating Rules
 
-Claude Code is the executor and orchestrator. Gemini and Codex are subcontractors via MCP. Playwright handles UI automation.
+Claude Code is the executor and orchestrator. Gemini and Codex are subcontractors via MCP. Playwright handles UI automation. **Megavibe works with only a Claude Code subscription** — external backends improve quality but are never required.
 
 **Context management rules (items 2–3 below) apply only when an `.agent/` directory exists in the project root.** The workflow, tool routing, and verification rules apply everywhere. Personal overrides go in `CLAUDE.local.md` (auto-gitignored).
 
@@ -32,8 +32,8 @@ The on-compact hook tells you your session ID and WORKING_CONTEXT path. Use the 
 
 When Claude Code compacts the context, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, and your session-scoped `WORKING_CONTEXT.md` as context, plus an instruction to call Gemini (or Codex) for full re-hydration. The hook triggers automatically; you execute the call.
 
-**When you see the re-hydration instruction, follow it immediately:**
-1. Use whichever backend is available (Gemini preferred, Codex as fallback).
+**When you see the re-hydration instruction, follow it immediately** using the standard fallback chain:
+1. Try Gemini MCP → `$GEMINI_API_KEY` curl → Codex MCP → Claude subagent (last resort, always works).
 2. Ask it to read `.agent/FULL_CONTEXT.md` + `.agent/DECISIONS.md` + `.agent/TASKS.md` + `git status` output.
 3. Ask it to write a fresh `WORKING_CONTEXT.md` at the session-scoped path provided by the hook (max ~400 lines).
 4. Read the regenerated file and continue working.
@@ -51,6 +51,7 @@ This is auto-triggered — no human intervention needed, but you must follow thr
 - Files to change, step sequence, verification commands, acceptance criteria.
 - When the plan has 3+ tasks, use structured task format (see `.claude/rules/spinouts.md`).
 - Check `.agent/LESSONS.md` before planning — don't repeat past mistakes.
+- **Search project memory before planning:** if poma-memory MCP is available, call `poma_search` with key terms from the task to surface relevant decisions, context, and patterns. The Grep hook does this automatically during code search, but planning benefits from a deliberate memory check.
 - **Think critically.** Question the user's assumptions, identify overlooked risks, and flag when the approach seems wrong — even if the user sounds certain. Substance over agreement.
 
 **Implement**
@@ -76,7 +77,7 @@ This is auto-triggered — no human intervention needed, but you must follow thr
 Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/rehydrate` — regenerate WORKING_CONTEXT.md from .agent/ files via Gemini/Codex
 - `/catchup` — orient yourself in a project at session start (reads .agent/ + git state)
-- `/compact-context` — selectively compact FULL_CONTEXT.md using Gemini (rare, for very large logs)
+- `/compact-context` — selectively compact FULL_CONTEXT.md via standard fallback chain (rare, for very large logs)
 
 **Never use `/compact`.** That is Claude Code's built-in lossy compaction — it destroys context detail that megavibe exists to preserve. If the user asks to compact, use `/compact-context` instead (Gemini-driven selective removal). If context is stale, use `/rehydrate`.
 
@@ -86,7 +87,7 @@ On every fresh session start, call `mcp__gemini-cli__ping` to test Gemini connec
 
 Do the same for Codex: attempt a simple Codex tool call. If it fails, mark Codex as unavailable.
 
-If both are unavailable, proceed with Claude's built-in capabilities only. Never retry a failed MCP call more than once — switch to the fallback immediately.
+If both are unavailable, use the Claude subagent (`.claude/agents/summarizer.md`) as last resort — it always works on the same subscription. Never retry a failed MCP call more than once — switch to the next fallback immediately.
 
 ## Output discipline
 

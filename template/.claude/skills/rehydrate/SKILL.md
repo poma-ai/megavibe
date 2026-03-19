@@ -16,10 +16,11 @@ This is the heavy-duty recovery tool — it calls an AI backend and writes a fre
    - Otherwise: your session ID is in the hook stdin JSON (`session_id` field). Your WORKING_CONTEXT lives at `.agent/sessions/{session_id}/WORKING_CONTEXT.md`.
    - Create the session directory if it doesn't exist: `mkdir -p .agent/sessions/{session_id}/`
 
-2. **Check backend availability.**
+2. **Check backend availability** (standard fallback chain):
    - Call `mcp__gemini-cli__ping`. If it responds, use Gemini.
-   - If Gemini fails and `$GEMINI_API_KEY` is set, use it via curl.
-   - If both fail, try Codex. If all fail, proceed with Claude's built-in capabilities.
+   - If Gemini MCP fails and `$GEMINI_API_KEY` is set, use it via curl.
+   - If both Gemini paths fail, try Codex MCP.
+   - If ALL external backends fail, use the Claude subagent as last resort: launch an Agent (model: sonnet) with the summarization prompt. This always works — same subscription.
 
 3. **Gather inputs.** Read these files:
    - `.agent/FULL_CONTEXT.md`

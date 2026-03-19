@@ -17,10 +17,77 @@ set -euo pipefail
 MEGAVIBE_HOME="$HOME/.megavibe"
 BOLD='\033[1m'
 YELLOW='\033[0;33m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
 RESET='\033[0m'
 
 # Resolve the directory this script lives in (works from repo clone or ~/.local/bin/)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ─── Remote subcommand ───────────────────────────────────────────────
+
+if [ "${1:-}" = "remote" ]; then
+  shift
+  BOT_SCRIPT="$MEGAVIBE_HOME/telegram-bot.py"
+  PID_FILE="$MEGAVIBE_HOME/remote.pid"
+
+  if [ ! -f "$BOT_SCRIPT" ]; then
+    echo "Error: telegram-bot.py not found in $MEGAVIBE_HOME/"
+    echo "  Re-run: bash setup.sh"
+    exit 1
+  fi
+
+  case "${1:-}" in
+    --stop)
+      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        kill "$(cat "$PID_FILE")"
+        rm -f "$PID_FILE"
+        echo -e "${GREEN}Remote bot stopped.${RESET}"
+      else
+        rm -f "$PID_FILE"
+        echo "Not running."
+      fi
+      ;;
+    --status)
+      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo -e "${GREEN}Running${RESET} (PID $(cat "$PID_FILE"))"
+      else
+        rm -f "$PID_FILE"
+        echo "Not running."
+      fi
+      ;;
+    --bg)
+      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "Already running (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
+        exit 1
+      fi
+      nohup python3 "$BOT_SCRIPT" > "$MEGAVIBE_HOME/remote.log" 2>&1 &
+      echo "$!" > "$PID_FILE"
+      echo -e "${GREEN}Remote bot started in background${RESET} (PID $!)"
+      echo "  Log: $MEGAVIBE_HOME/remote.log"
+      echo "  Stop: megavibe remote --stop"
+      ;;
+    ""|--fg)
+      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo "Already running in background (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
+        exit 1
+      fi
+      echo -e "${BOLD}Megavibe Remote v3${RESET} — Telegram bot (Ctrl+C to stop)"
+      echo "  Use /register in TG to link projects"
+      python3 "$BOT_SCRIPT"
+      ;;
+    *)
+      echo "Usage: megavibe remote [--bg|--stop|--status]"
+      echo ""
+      echo "  (default)  Start in foreground (Ctrl+C to stop)"
+      echo "  --bg       Start in background"
+      echo "  --stop     Stop background bot"
+      echo "  --status   Check if running"
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
 
 # ─── Pre-flight: check setup ────────────────────────────────────────
 
@@ -103,6 +170,23 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
   fi
 fi
 
+# ─── Auto-update tools (background, non-blocking) ───────────────────
+
+# Check at most once per day (stamp file tracks last check)
+UPDATE_STAMP="$MEGAVIBE_HOME/.last-update-check"
+NOW=$(date +%s)
+LAST_CHECK=$(cat "$UPDATE_STAMP" 2>/dev/null || echo "0")
+AGE=$(( NOW - LAST_CHECK ))
+
+if [ "$AGE" -gt 86400 ]; then
+  echo "$NOW" > "$UPDATE_STAMP"
+  # Background: update npm-installed tools silently
+  (
+    npm i -g @openai/codex &>/dev/null || true
+    npm i -g @google/gemini-cli &>/dev/null || true
+  ) &
+fi
+
 # ─── Init/update current directory ──────────────────────────────────
 
 # Prefer deployed copy; fall back to repo-local for first run
@@ -111,6 +195,269 @@ if [ ! -f "$INIT_SCRIPT" ] && [ -f "$SCRIPT_DIR/init.sh" ]; then
   INIT_SCRIPT="$SCRIPT_DIR/init.sh"
 fi
 bash "$INIT_SCRIPT" .
+
+# ─── Session lock (prevents accidental concurrent source edits) ──────
+#
+# Lock protects source files only. .agent/ is safe (append-only + flock).
+# Claude sessions are path-bound — never change directory for --resume.
+# Telegram bot is a sidecar — no lock needed.
+#
+# Design: mkdir-based atomic lock with JSON metadata.
+# Staleness: PID dead AND not a claude/node process.
+
+LOCK_DIR=".agent/.session-lock.d"
+LOCK_META="$LOCK_DIR/metadata.json"
+IS_RESUME=false
+WORKTREE_DIR=""
+
+# Detect --resume (can appear anywhere in args)
+for arg in "$@"; do
+  if [ "$arg" = "--resume" ]; then
+    IS_RESUME=true
+    break
+  fi
+done
+
+# Helper: check if a lock is stale (PID dead or not a megavibe/claude process)
+is_lock_stale() {
+  local lock_pid
+  lock_pid=$(jq -r '.pid // 0' "$LOCK_META" 2>/dev/null || echo "0")
+  if ! kill -0 "$lock_pid" 2>/dev/null; then
+    return 0  # PID dead → stale
+  fi
+  # PID alive — verify it's claude, node, or bash (our wait wrapper)
+  local proc_name
+  proc_name=$(ps -p "$lock_pid" -o comm= 2>/dev/null || echo "")
+  # Direct match: claude or node (lock PID IS the claude process)
+  if [[ "$proc_name" == *"claude"* ]] || [[ "$proc_name" == *"node"* ]]; then
+    return 1  # Lock is live
+  fi
+  # Indirect match: bash wrapper — check if it has a claude child
+  if [[ "$proc_name" == *"bash"* ]] || [[ "$proc_name" == *"zsh"* ]]; then
+    if pgrep -P "$lock_pid" -f "claude" &>/dev/null; then
+      return 1  # Lock is live (bash wrapper with claude child)
+    fi
+  fi
+  return 0  # PID recycled or unrelated process
+}
+
+# Helper: show lock info
+show_lock_info() {
+  local lock_pid lock_sid lock_branch lock_started lock_tty
+  lock_pid=$(jq -r '.pid // "?"' "$LOCK_META" 2>/dev/null)
+  lock_sid=$(jq -r '.session_id // "?"' "$LOCK_META" 2>/dev/null)
+  lock_branch=$(jq -r '.branch // "?"' "$LOCK_META" 2>/dev/null)
+  lock_started=$(jq -r '.started // "?"' "$LOCK_META" 2>/dev/null)
+  lock_tty=$(jq -r '.tty // "?"' "$LOCK_META" 2>/dev/null)
+  echo -e "  ${YELLOW}Another megavibe session is active here${RESET}"
+  echo "  PID: $lock_pid | Branch: $lock_branch | TTY: $lock_tty"
+  echo "  Started: $lock_started"
+  if [ "$lock_sid" != "?" ]; then
+    echo "  Resume it: megavibe --resume $lock_sid"
+  fi
+}
+
+# Helper: acquire lock (atomic mkdir + write metadata)
+# NOTE: initially writes $$ (bash PID). update_lock_pid() patches it with
+# the real claude PID after claude starts.
+acquire_lock() {
+  mkdir -p .agent 2>/dev/null || true
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    return 1  # Lock exists
+  fi
+  local branch
+  branch=$(git branch --show-current 2>/dev/null || echo "n/a")
+  jq -n \
+    --arg pid "$$" \
+    --arg sid "${RESUME_SID:-pending}" \
+    --arg branch "$branch" \
+    --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg tty "$(tty 2>/dev/null || echo "n/a")" \
+    '{pid: ($pid|tonumber), session_id: $sid, branch: $branch, started: $started, tty: $tty}' \
+    > "$LOCK_META" 2>/dev/null
+  return 0
+}
+
+# Helper: update lock PID to the actual claude process (not the bash wrapper)
+update_lock_pid() {
+  local claude_pid="$1"
+  if [ -f "$LOCK_META" ]; then
+    jq --arg pid "$claude_pid" '.pid = ($pid|tonumber)' "$LOCK_META" > "${LOCK_META}.tmp" 2>/dev/null \
+      && mv "${LOCK_META}.tmp" "$LOCK_META" 2>/dev/null || true
+  fi
+}
+
+# Helper: persist session_id from lock to session-history before cleanup
+persist_session_id() {
+  if [ -f "$LOCK_META" ] && [ -d ".agent" ]; then
+    local sid
+    sid=$(jq -r '.session_id // "pending"' "$LOCK_META" 2>/dev/null)
+    if [ -n "$sid" ] && [ "$sid" != "pending" ]; then
+      # Update the LAST line of session-history.jsonl (our entry) with the real SID
+      local history=".agent/session-history.jsonl"
+      if [ -f "$history" ]; then
+        # Append a corrected entry (consumers scan in reverse, first non-pending wins)
+        jq -n --arg sid "$sid" --arg dir "$PWD" \
+          --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{session_id: $sid, ended: $ts, dir: $dir}' \
+          >> "$history" 2>/dev/null || true
+      fi
+    fi
+  fi
+}
+
+# Helper: release lock (with session_id persistence)
+release_lock() {
+  persist_session_id
+  rm -rf "${WORKTREE_DIR:+$WORKTREE_DIR/}.agent/.session-lock.d" 2>/dev/null
+  rm -rf ".agent/.session-lock.d" 2>/dev/null
+  # Clean up legacy flat lock file if present
+  rm -f ".agent/.session-lock" 2>/dev/null
+}
+
+# ─── Resume path: minimal, never mutates directory ───────────────────
+
+if $IS_RESUME; then
+  # Extract session ID (follows --resume flag)
+  RESUME_SID=""
+  NEXT_IS_SID=false
+  for arg in "$@"; do
+    if $NEXT_IS_SID; then
+      RESUME_SID="$arg"
+      break
+    fi
+    if [ "$arg" = "--resume" ]; then
+      NEXT_IS_SID=true
+    fi
+  done
+
+  # Clean stale lock if present, then acquire for this resume
+  if [ -d "$LOCK_DIR" ] && is_lock_stale; then
+    rm -rf "$LOCK_DIR"
+  fi
+  # Try to acquire; if live lock exists, warn but don't block
+  if [ -d "$LOCK_DIR" ] && ! is_lock_stale; then
+    echo ""
+    show_lock_info
+    echo ""
+    echo -e "  ${YELLOW}Resuming anyway${RESET} — Claude will reject if session is in use."
+    echo ""
+  else
+    acquire_lock || true
+  fi
+
+  # Skip init.sh (LESSONS.md: never overwrite hooks mid-session)
+  # Go straight to claude
+  trap release_lock EXIT HUP INT TERM
+  claude --dangerously-skip-permissions --remote-control "$@" &
+  CLAUDE_PID=$!
+  update_lock_pid "$CLAUDE_PID"
+  wait $CLAUDE_PID 2>/dev/null || true
+  exit 0
+fi
+
+# ─── Fresh start: check for existing lock ────────────────────────────
+
+if [ -d "$LOCK_DIR" ]; then
+  if is_lock_stale; then
+    rm -rf "$LOCK_DIR"
+  else
+    # Live lock — another session is running
+    echo ""
+    show_lock_info
+
+    if git rev-parse --is-inside-work-tree &>/dev/null 2>&1; then
+      # Git repo — offer worktree on new branch
+      echo ""
+      echo "  This is a git repo. You can start a parallel session on a new branch."
+      echo ""
+
+      # Check for uncommitted changes
+      if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+        echo -e "  ${YELLOW}Uncommitted changes detected.${RESET}"
+        read -p "  Stash them first? [Y/n] " STASH_ANSWER
+        if [[ "${STASH_ANSWER:-Y}" =~ ^[Yy]?$ ]]; then
+          git stash push -m "megavibe: auto-stash before worktree"
+          echo -e "  ${GREEN}Stashed.${RESET} Restore later with: git stash pop"
+        fi
+      fi
+
+      read -p "  Branch name (or Ctrl+C to cancel): " BRANCH_NAME
+      if [ -z "$BRANCH_NAME" ]; then
+        echo "  No branch name given. Exiting."
+        exit 1
+      fi
+
+      # Sanitize branch name
+      BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_.-/')
+      PROJECT_NAME=$(basename "$PWD")
+      WORKTREE_DIR="$MEGAVIBE_HOME/worktrees/${PROJECT_NAME}-${BRANCH_NAME}"
+
+      # Create or reuse worktree
+      if [ -d "$WORKTREE_DIR" ]; then
+        echo -e "  ${YELLOW}Worktree exists:${RESET} $WORKTREE_DIR"
+        echo "  Reusing it."
+      else
+        if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME" 2>/dev/null; then
+          git worktree add "$WORKTREE_DIR" "$BRANCH_NAME"
+        else
+          git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR"
+        fi
+        echo -e "  ${GREEN}Worktree created:${RESET} $WORKTREE_DIR"
+      fi
+
+      # Init megavibe in the worktree and launch there
+      echo ""
+      bash "$INIT_SCRIPT" "$WORKTREE_DIR"
+      cd "$WORKTREE_DIR"
+      echo -e "  ${BOLD}Working in:${RESET} $WORKTREE_DIR"
+      echo -e "  ${BOLD}Branch:${RESET} $BRANCH_NAME"
+      echo -e "  When done, merge with: ${BOLD}git merge $BRANCH_NAME${RESET}"
+      # Fall through to startup tips + launch below
+    else
+      # Not a git dir — hard block
+      echo ""
+      echo "  Only one session per directory is allowed (not a git repo)."
+      echo "  Stop the other session first, or use a different directory."
+      exit 1
+    fi
+  fi
+fi
+
+# Acquire lock for this session
+acquire_lock || true  # OK if lock already exists (worktree case has its own dir)
+
+# Clean up lock on exit
+cleanup_session() {
+  release_lock
+}
+trap cleanup_session EXIT HUP INT TERM
+
+# ─── Session history (for remote resume) ─────────────────────────────
+
+# Append to session-history.jsonl so the TG bot can find sessions to resume.
+# Session ID is "pending" until claude starts — hooks capture the real SID.
+if [ -d ".agent" ]; then
+  jq -n \
+    --arg sid "pending" \
+    --arg started "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg branch "$(git branch --show-current 2>/dev/null || echo 'n/a')" \
+    --arg pid "$$" \
+    --arg dir "$PWD" \
+    '{session_id: $sid, started: $started, branch: $branch, pid: ($pid|tonumber), dir: $dir}' \
+    >> .agent/session-history.jsonl 2>/dev/null || true
+fi
+
+# ─── Pending remote messages ─────────────────────────────────────────
+
+if [ -d ".agent" ] && [ -f ".agent/pending-remote.jsonl" ]; then
+  PENDING_COUNT=$(wc -l < .agent/pending-remote.jsonl 2>/dev/null | tr -d ' ')
+  if [ "${PENDING_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+    echo -e "  ${YELLOW}${PENDING_COUNT} pending Telegram message(s).${RESET}"
+    echo -e "  Read them: ${BOLD}cat .agent/pending-remote.jsonl | jq .text${RESET}"
+    echo ""
+  fi
+fi
 
 # ─── Startup tips ────────────────────────────────────────────────────
 
@@ -132,4 +479,10 @@ if [ -d ".agent" ] && [ -f ".agent/TASKS.md" ]; then
 elif [ -d ".agent" ]; then
   echo ""
 fi
-exec claude --dangerously-skip-permissions "$@"
+# Launch claude (foreground via wait, not exec — enables trap cleanup)
+# --remote-control: every session is accessible from phone via Claude app
+claude --dangerously-skip-permissions --remote-control "$@" &
+CLAUDE_PID=$!
+# Patch the lock with claude's actual PID (not the bash wrapper's $$)
+update_lock_pid "$CLAUDE_PID"
+wait $CLAUDE_PID 2>/dev/null || true

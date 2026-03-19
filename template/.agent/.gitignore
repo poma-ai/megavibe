@@ -13,6 +13,14 @@ ASSETS/*.jpg
 ASSETS/*.pdf
 ASSETS/*.html
 
+# Ignore session lock (ephemeral, PID-based)
+.session-lock.d/
+
+# Ignore remote control state (ephemeral)
+session-history.jsonl
+pending-remote.jsonl
+events.jsonl
+
 # Ignore poma-memory database (regenerable from indexed files)
 .poma-memory.db
 .poma-memory.db-shm

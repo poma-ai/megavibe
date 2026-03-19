@@ -11,7 +11,7 @@ set -uo pipefail
 # - Always inject: DECISIONS.md + TASKS.md + LESSONS.md (structured, small)
 # - FULL_CONTEXT.md < 10KB: also inject raw (no AI needed)
 # - FULL_CONTEXT.md >= 10KB: inject rehydration instructions for Claude to
-#   call Gemini MCP → GEMINI_API_KEY curl → Codex MCP (fallback chain)
+#   call Gemini MCP → GEMINI_API_KEY curl → Codex MCP → Claude subagent (fallback chain)
 #
 # Improvements over v1:
 # - LESSONS.md injected (was missing)
@@ -157,7 +157,9 @@ Full instructions also saved at: ${INSTRUCTIONS_FILE}
 
 3. **If both Gemini paths fail**, fall back to Codex MCP with the same prompt and file content.
 
-4. **Write** the result to ${WC_PATH} and **read it back**.
+4. **If ALL external backends fail**, use the Claude subagent as last resort: launch an Agent with the summarization prompt above, pointing it at .agent/FULL_CONTEXT.md. This always works (same subscription). The subagent has a 200K token window — sufficient for most projects.
+
+5. **Write** the result to ${WC_PATH} and **read it back**.
 
 IMPORTANT: Do NOT use \$GEMINI_API_KEY for Claude or OpenAI — those always use subscription logins.
 

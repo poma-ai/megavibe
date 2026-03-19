@@ -11,9 +11,9 @@ Use Gemini to surgically remove redundant lines from FULL_CONTEXT.md while prese
 
 ## Prerequisites
 
-- Gemini MCP must be available (call `mcp__gemini-cli__ping` first)
+- At least one backend must be available. Try in order: Gemini MCP → `$GEMINI_API_KEY` curl → Codex MCP → Claude subagent (last resort)
 - FULL_CONTEXT.md should be large enough to warrant compaction (500+ lines)
-- If Gemini is unavailable, inform the user and stop — do NOT compact manually
+- The Claude subagent has a 200K token window — for very large logs, it may need to process in chunks
 
 ## Steps
 
@@ -24,7 +24,7 @@ Use Gemini to surgically remove redundant lines from FULL_CONTEXT.md while prese
    cp .agent/FULL_CONTEXT.md .agent/LOGS/FULL_CONTEXT.pre-compact.md
    ```
 
-3. **Send to Gemini** with this prompt:
+3. **Send to the backend** (using the standard fallback chain) with this prompt:
 
    > Read this entire context log. Identify lines that are redundant, superseded by later entries, or no longer relevant.
    >
@@ -33,7 +33,7 @@ Use Gemini to surgically remove redundant lines from FULL_CONTEXT.md while prese
    > **Preserve:** all decisions, all open task references, all lessons learned, all architectural context.
    > **Remove:** duplicate status updates, resolved issue descriptions, stale progress notes.
 
-4. **Remove only the identified lines.** Use the Edit tool to remove each group of lines Gemini identified. Work in reverse order (highest line numbers first) to avoid offset drift.
+4. **Remove only the identified lines.** Use the Edit tool to remove each group of lines the backend identified. Work in reverse order (highest line numbers first) to avoid offset drift.
 
 5. **Append a compaction note** at the end of FULL_CONTEXT.md:
    ```
@@ -45,6 +45,6 @@ Use Gemini to surgically remove redundant lines from FULL_CONTEXT.md while prese
 ## Rules
 
 - This is a **rare operation**. Most projects will never need it.
-- NEVER compact without Gemini — human or Claude judgment is too lossy.
+- NEVER compact without an AI backend — human judgment is too lossy. Use the standard fallback chain.
 - NEVER delete the archive until the user confirms the compaction looks good.
 - If in doubt about whether to remove a line, keep it.
