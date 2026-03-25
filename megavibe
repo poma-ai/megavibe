@@ -19,6 +19,7 @@ BOLD='\033[1m'
 YELLOW='\033[0;33m'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+DIM='\033[2m'
 RESET='\033[0m'
 
 # Resolve the directory this script lives in (works from repo clone or ~/.local/bin/)
@@ -72,7 +73,7 @@ if [ "${1:-}" = "remote" ]; then
         echo "Already running in background (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
         exit 1
       fi
-      echo -e "${BOLD}Megavibe Remote v3${RESET} — Telegram bot (Ctrl+C to stop)"
+      echo -e "${BOLD}Megavibe Remote v4${RESET} — Telegram bot (Ctrl+C to stop)"
       echo "  Use /register in TG to link projects"
       python3 "$BOT_SCRIPT"
       ;;
@@ -195,6 +196,39 @@ if [ ! -f "$INIT_SCRIPT" ] && [ -f "$SCRIPT_DIR/init.sh" ]; then
   INIT_SCRIPT="$SCRIPT_DIR/init.sh"
 fi
 bash "$INIT_SCRIPT" .
+
+# ─── Auth check: subscription required, API key causes rate limits ──
+#
+# Megavibe always uses subscription auth. If ANTHROPIC_API_KEY is in the
+# environment (from other work), silently mask it so claude uses the
+# subscription. This only affects the claude process we launch — the
+# user's shell and other tools keep their API key.
+
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo -e "  ${DIM}(ANTHROPIC_API_KEY detected — masked for this session to use subscription)${RESET}"
+  unset ANTHROPIC_API_KEY
+fi
+
+# Check subscription login (catches expired sessions too, e.g. after travel)
+AUTH_JSON=$(claude auth status 2>/dev/null || echo '{}')
+AUTH_LOGGED_IN=$(echo "$AUTH_JSON" | jq -r '.loggedIn // false' 2>/dev/null || echo "false")
+
+if [ "$AUTH_LOGGED_IN" != "true" ]; then
+  echo ""
+  echo -e "  ${YELLOW}Claude Code subscription login required.${RESET}"
+  echo "  Opening login now..."
+  echo ""
+  claude auth login 2>&1 || true
+  # Re-check after login attempt
+  AUTH_JSON=$(claude auth status 2>/dev/null || echo '{}')
+  AUTH_LOGGED_IN=$(echo "$AUTH_JSON" | jq -r '.loggedIn // false' 2>/dev/null || echo "false")
+  if [ "$AUTH_LOGGED_IN" != "true" ]; then
+    echo ""
+    echo -e "  ${RED}Login failed or cancelled.${RESET} Megavibe requires a Claude subscription."
+    exit 1
+  fi
+  echo ""
+fi
 
 # ─── Session lock (prevents accidental concurrent source edits) ──────
 #
@@ -372,7 +406,7 @@ if [ -d "$LOCK_DIR" ]; then
       echo "  This is a git repo. You can start a parallel session on a new branch."
       echo ""
 
-      # Check for uncommitted changes
+      # Check for uncommitted changes (tracked files only — untracked don't block worktrees)
       if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
         echo -e "  ${YELLOW}Uncommitted changes detected.${RESET}"
         read -p "  Stash them first? [Y/n] " STASH_ANSWER
