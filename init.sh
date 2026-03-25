@@ -67,7 +67,11 @@ if [ -f "$SETTINGS" ]; then
   if command -v jq &>/dev/null; then
     # Always sync hooks from template (infrastructure — matches hook script overwrite policy)
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
-    jq -s '.[0] * {hooks: .[1].hooks}' "$SETTINGS" "$TEMPLATE_SETTINGS" > "${SETTINGS}.tmp"
+    # Rewrite relative hook paths to absolute (prevents breakage when session cd's to subdirectory)
+    ABS_PROJECT=$(cd "$PROJECT" && pwd)
+    jq -s '.[0] * {hooks: .[1].hooks}' "$SETTINGS" "$TEMPLATE_SETTINGS" \
+      | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = $root + .command else . end)' \
+      > "${SETTINGS}.tmp"
     mv "${SETTINGS}.tmp" "$SETTINGS"
     echo "  synced: .claude/settings.json (hooks)"
   else
@@ -76,7 +80,9 @@ if [ -f "$SETTINGS" ]; then
     cp "$TEMPLATE_SETTINGS" "$PROJECT/.claude/settings.megavibe.json"
   fi
 else
-  cp "$TEMPLATE_SETTINGS" "$SETTINGS"
+  ABS_PROJECT=$(cd "$PROJECT" && pwd)
+  jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = $root + .command else . end)' \
+    "$TEMPLATE_SETTINGS" > "$SETTINGS"
   echo "  created: $SETTINGS"
 fi
 
