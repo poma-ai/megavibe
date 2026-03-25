@@ -98,4 +98,6 @@ Standard schemas:
 - `{assumptions, facts[], decisions[], risks[], next_steps[]}`
 - `claim | evidence | confidence | action`
 
+**Clipboard-ready output.** When you produce a key deliverable — analysis, verdict, table, recommendation, spec, config snippet — pipe the clean version to `pbcopy` via Bash and tell the user it's on their clipboard. Format it as clean markdown (no hard wraps, no gutter artifacts). This is a CLI terminal — there are no copy buttons or clickable links.
+
 <!-- /megavibe-v3 -->
