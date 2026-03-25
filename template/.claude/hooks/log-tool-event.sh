@@ -140,5 +140,6 @@ fi
 
 # Emit nudge as additionalContext if there's a message
 if [ -n "$NUDGE_MSG" ]; then
-  jq -n --arg ctx "$NUDGE_MSG" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}' 2>/dev/null || true
+  EVENT_NAME=$(echo "$INPUT" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null || echo "PostToolUse")
+  jq -n --arg ctx "$NUDGE_MSG" --arg evt "$EVENT_NAME" '{hookSpecificOutput: {hookEventName: $evt, additionalContext: $ctx}}' 2>/dev/null || true
 fi

@@ -1,29 +1,35 @@
 # Megavibe — .agent/.gitignore
-# Keep structured context files, ignore high-volume logs
+# Track: FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md, RESEARCH/
+# Ignore: everything ephemeral, binary, or regenerable
 
-# Ignore raw logs (high volume, always regenerable)
-LOGS/
-
-# Ignore session-scoped state (per-session WORKING_CONTEXT, ephemeral)
+# Session-scoped state (per-session WORKING_CONTEXT, counters, flags)
 sessions/
 
-# Ignore binary assets (screenshots, PDFs) — track via LFS or skip
+# Legacy root-level WORKING_CONTEXT (replaced by sessions/{sid}/)
+WORKING_CONTEXT.md
+
+# Raw logs (high volume, always regenerable from FULL_CONTEXT)
+LOGS/
+
+# Binary assets (screenshots, PDFs) — use LFS or skip
 ASSETS/*.png
 ASSETS/*.jpg
 ASSETS/*.pdf
 ASSETS/*.html
 
-# Ignore session lock (ephemeral, PID-based)
+# Session lock (ephemeral, PID-based)
 .session-lock.d/
+.session-lock
 
-# Ignore remote control state (ephemeral)
+# Remote control state (ephemeral)
 session-history.jsonl
 pending-remote.jsonl
 events.jsonl
 
-# Ignore poma-memory database (regenerable from indexed files)
+# poma-memory database (regenerable from indexed files)
 .poma-memory.db
 .poma-memory.db-shm
 .poma-memory.db-wal
 
-# Keep everything else (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md, RESEARCH/)
+# .gitkeep files (scaffolding only)
+.gitkeep

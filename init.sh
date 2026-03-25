@@ -115,7 +115,9 @@ if [ -d "$TEMPLATE_DIR/.claude/agents" ]; then
 fi
 
 # --- .agent starter files (user data — never overwrite) ---
-copy_if_missing "$TEMPLATE_DIR/.agent/.gitignore" "$PROJECT/.agent/.gitignore"
+# .gitignore is infrastructure (like hooks) — always sync from template
+cp "$TEMPLATE_DIR/.agent/.gitignore" "$PROJECT/.agent/.gitignore"
+echo "  synced: .agent/.gitignore"
 copy_if_missing "$TEMPLATE_DIR/.agent/FULL_CONTEXT.md" "$PROJECT/.agent/FULL_CONTEXT.md"
 copy_if_missing "$TEMPLATE_DIR/.agent/DECISIONS.md" "$PROJECT/.agent/DECISIONS.md"
 copy_if_missing "$TEMPLATE_DIR/.agent/TASKS.md" "$PROJECT/.agent/TASKS.md"
@@ -130,15 +132,16 @@ else
   echo "  skip: CLAUDE.local.md (already exists)"
 fi
 
-# Add CLAUDE.local.md to .gitignore if not already there
-if [ -f "$PROJECT/.gitignore" ]; then
-  if ! grep -q "CLAUDE.local.md" "$PROJECT/.gitignore"; then
-    echo "CLAUDE.local.md" >> "$PROJECT/.gitignore"
-    echo "  added CLAUDE.local.md to .gitignore"
-  fi
-elif [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
-  echo "CLAUDE.local.md" > "$PROJECT/.gitignore"
-  echo "  created .gitignore with CLAUDE.local.md"
+# Add megavibe entries to .gitignore (idempotent)
+GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl")
+if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
+  [ -f "$PROJECT/.gitignore" ] || touch "$PROJECT/.gitignore"
+  for entry in "${GITIGNORE_ENTRIES[@]}"; do
+    if ! grep -qF "$entry" "$PROJECT/.gitignore"; then
+      echo "$entry" >> "$PROJECT/.gitignore"
+      echo "  added $entry to .gitignore"
+    fi
+  done
 fi
 
 # .gitkeep files for empty dirs
