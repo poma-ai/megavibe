@@ -98,6 +98,8 @@ Standard schemas:
 - `{assumptions, facts[], decisions[], risks[], next_steps[]}`
 - `claim | evidence | confidence | action`
 
-**Clipboard-ready output.** When you produce a key deliverable — analysis, verdict, table, recommendation, spec, config snippet — pipe the clean version to `pbcopy` via Bash and tell the user it's on their clipboard. Format it as clean markdown (no hard wraps, no gutter artifacts). This is a CLI terminal — there are no copy buttons or clickable links.
+**Clipboard on request only.** Never auto-copy to clipboard — it overwrites whatever the user has there. Only copy when the user explicitly asks ("clip", "copy that", "clipboard"). Use the platform's clipboard tool: `pbcopy` (macOS), `xclip -selection clipboard` or `xsel --clipboard` (Linux), `clip.exe` (Windows/WSL). When they do: clean markdown, no hard wraps, no gutter artifacts.
+
+**Respect execution mode.** When the user says "do NOT switch to plan mode" or asks you to execute autonomously/unattended, do NOT use TaskCreate, TaskUpdate, or EnterPlanMode. These tools trigger interactive permission prompts that break autonomous execution — even re-entering bypass mode doesn't suppress them. Just execute directly, reporting progress via text output.
 
 <!-- /megavibe-v3 -->
