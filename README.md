@@ -4,15 +4,17 @@
 
 Megavibe makes Claude Code remember everything — decisions, mistakes, progress, and context — across sessions, compactions, and crashes. One command to install, one command to use. Optionally, control it from your phone or Apple Watch.
 
-**macOS only** (for now). Requires a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) subscription. Everything else is optional.
+**macOS, Linux, and Windows** (Git Bash or WSL). Requires a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) subscription. Everything else is optional.
 
 ---
 
 ## Get Started
 
-### 1. Open Terminal
+### 1. Open a terminal
 
-Press **Cmd + Space**, type **Terminal**, press **Enter**.
+- **macOS**: Press **Cmd + Space**, type **Terminal**, press **Enter**
+- **Linux**: Open your terminal emulator
+- **Windows**: Open **Git Bash** (from [git-scm.com](https://git-scm.com)) or **WSL**
 
 ### 2. Install Megavibe
 
@@ -22,14 +24,14 @@ Copy-paste this into Terminal and press Enter:
 curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | bash
 ```
 
-The installer handles everything — Homebrew, Node.js, Python, AI tools — and walks you through each step. Takes about 5 minutes.
+The installer detects your OS and package manager (Homebrew, apt, dnf, pacman, winget, choco) and installs everything needed — Node.js, Python, jq, AI tools — then walks you through each step. Takes about 5 minutes.
 
 ### 3. Use it
 
 Navigate to any project and run:
 
 ```bash
-cd ~/Desktop/my-project
+cd ~/my-project
 megavibe
 ```
 
@@ -192,13 +194,16 @@ The personal assistant runs as a **full Claude session** (not a limited headless
 
 ```bash
 # 1. Install tmux (needed for persistent personal session)
-brew install tmux
+#    macOS:  brew install tmux
+#    Ubuntu: sudo apt install tmux
+#    Fedora: sudo dnf install tmux
+#    Arch:   sudo pacman -S tmux
 
 # 2. Create a Telegram bot
 #    Message @BotFather on Telegram → /newbot → copy the token
 #    Message @userinfobot → copy your numeric user ID
 
-# 3. Add to ~/.zshrc (or ~/.bashrc):
+# 3. Add to your shell profile (~/.zshrc, ~/.bashrc, etc.):
 export MEGAVIBE_TELEGRAM_TOKEN="your-bot-token"
 export MEGAVIBE_TELEGRAM_USER_ID="your-user-id"
 
@@ -262,7 +267,7 @@ Megavibe works without any API keys. Adding them unlocks extra capabilities:
 | `OPENAI_API_KEY` | Better poma-memory search + voice transcription for Remote | ~$0.01/month search; ~$0.006/voice note | [platform.openai.com](https://platform.openai.com/api-keys) |
 
 ```bash
-# Add to ~/.zshrc for persistence
+# Add to your shell profile (~/.zshrc, ~/.bashrc, etc.) for persistence
 export GEMINI_API_KEY="your-key-here"
 export OPENAI_API_KEY="your-key-here"
 ```
@@ -333,10 +338,11 @@ Or if you have a local clone: `bash megavibe/setup.sh`
 
 **`megavibe: command not found`**
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+# Add ~/.local/bin to your PATH (add to ~/.zshrc, ~/.bashrc, or ~/.profile)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-**Hooks aren't firing** — Install jq: `brew install jq`
+**Hooks aren't firing** — Install jq: `brew install jq` (macOS), `sudo apt install jq` (Ubuntu), `sudo dnf install jq` (Fedora)
 
 **Gemini/Codex not connecting** — Run the CLI directly (`gemini` or `codex`) to re-authenticate. Megavibe works without them.
 

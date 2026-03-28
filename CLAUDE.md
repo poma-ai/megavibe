@@ -13,7 +13,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | File | Purpose | Change risk |
 |------|---------|-------------|
 | `megavibe` | CLI wrapper — setup + init + launch Claude | High — primary entry point |
-| `install.sh` | One-command install (`curl \| bash`) | Medium — bootstrap only |
+| `install.sh` | One-command cross-platform install (`curl \| bash`) | Medium — bootstrap only |
 | `setup.sh` | One-time machine bootstrapper (tools, MCP, CLI, protocol) | High — affects all users |
 | `init.sh` | Per-project bootstrapper (.agent/, hooks, skills, settings) | High — affects all projects |
 | `poma_memory.py` | Bundled poma-memory: markdown chunker + hybrid search + MCP server | Medium — search behavior |

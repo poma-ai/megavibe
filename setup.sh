@@ -4,7 +4,7 @@ set -euo pipefail
 # Megavibe v3 — Machine setup
 # Usage: bash megavibe/setup.sh
 # Idempotent: skips tools/MCP already installed, always updates protocol + statusline.
-# Requires: macOS, Homebrew, Node.js (npm/npx).
+# Supports: macOS, Linux, Windows (Git Bash / WSL). Requires Node.js (npm/npx).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -51,11 +51,7 @@ if command -v gemini &>/dev/null; then
   skip "Gemini CLI"
 else
   echo "  Installing Gemini CLI..."
-  if command -v brew &>/dev/null; then
-    brew install gemini-cli
-  else
-    npm i -g @google/gemini-cli
-  fi
+  npm i -g @google/gemini-cli
   ok "Gemini CLI"
   NEEDS_LOGIN+=("gemini")
 fi
@@ -67,6 +63,18 @@ else
   echo "  Installing jq..."
   if command -v brew &>/dev/null; then
     brew install jq
+  elif command -v apt-get &>/dev/null; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq jq
+  elif command -v dnf &>/dev/null; then
+    sudo dnf install -y -q jq
+  elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm jq
+  elif command -v apk &>/dev/null; then
+    sudo apk add jq
+  elif command -v winget &>/dev/null; then
+    winget install --accept-source-agreements jqlang.jq 2>/dev/null || true
+  elif command -v choco &>/dev/null; then
+    choco install -y jq
   else
     fail "jq not found. Install it manually: https://jqlang.github.io/jq/download/"
     exit 1
@@ -211,7 +219,14 @@ ok "megavibe CLI installed to $CLI_DIR/megavibe → ~/.megavibe/megavibe"
 # Warn if ~/.local/bin is not in PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$CLI_DIR"; then
   warn "$CLI_DIR is not in your PATH"
-  echo "    Add this to your shell profile (~/.zshrc or ~/.bashrc):"
+  SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
+  case "$SHELL_NAME" in
+    zsh)  PROFILE_FILE="~/.zshrc" ;;
+    bash) PROFILE_FILE="~/.bashrc" ;;
+    fish) PROFILE_FILE="~/.config/fish/config.fish" ;;
+    *)    PROFILE_FILE="~/.bashrc or ~/.profile" ;;
+  esac
+  echo "    Add this to your shell profile ($PROFILE_FILE):"
   echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""
   echo ""
 fi

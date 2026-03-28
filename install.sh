@@ -1,13 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# Megavibe — one-command install for macOS
+# Megavibe — one-command install
 # Usage: curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | bash
 #
-# Designed for first-time terminal users:
-# - Auto-installs Homebrew, Node.js, git, jq if missing
-# - Guides through each login step interactively
-# - Friendly output with clear next steps
+# Supports macOS, Linux, and Windows (Git Bash / WSL).
+# Auto-installs prerequisites using the platform's package manager.
+# Guides through each login step interactively.
 
 BOLD='\033[1m'
 GREEN='\033[0;32m'
@@ -25,35 +24,98 @@ echo -e "${BOLD}Welcome to Megavibe${RESET}"
 echo -e "${DIM}Give Claude Code a memory that never dies.${RESET}"
 echo ""
 
-# ─── macOS check ──────────────────────────────────────────────────────
+# ─── OS detection ─────────────────────────────────────────────────────
 
-if [[ "$(uname)" != "Darwin" ]]; then
-  echo -e "${RED}Megavibe currently only works on macOS.${RESET}"
-  echo "  Linux support is planned. Follow https://github.com/poma-ai/megavibe for updates."
+detect_os() {
+  case "$(uname -s)" in
+    Darwin)  echo "macos" ;;
+    Linux)
+      # WSL detection
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        echo "wsl"
+      else
+        echo "linux"
+      fi
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      echo "windows"
+      ;;
+    *)
+      echo "unknown"
+      ;;
+  esac
+}
+
+OS=$(detect_os)
+
+if [ "$OS" = "unknown" ]; then
+  echo -e "${RED}Unsupported platform: $(uname -s)${RESET}"
+  echo "  Megavibe supports macOS, Linux, and Windows (Git Bash or WSL)."
   exit 1
 fi
+
+echo -e "  ${DIM}Detected platform: ${OS}${RESET}"
+
+# ─── Package manager detection ────────────────────────────────────────
+
+# Returns the best available package manager for install commands
+detect_pkg_manager() {
+  if command -v brew &>/dev/null; then echo "brew"
+  elif command -v apt-get &>/dev/null; then echo "apt"
+  elif command -v dnf &>/dev/null; then echo "dnf"
+  elif command -v pacman &>/dev/null; then echo "pacman"
+  elif command -v apk &>/dev/null; then echo "apk"
+  elif command -v winget &>/dev/null; then echo "winget"
+  elif command -v choco &>/dev/null; then echo "choco"
+  else echo "none"
+  fi
+}
+
+# Install a package using the detected package manager
+# Usage: pkg_install <brew-name> <apt-name> [dnf-name] [pacman-name]
+pkg_install() {
+  local brew_name="${1:-}" apt_name="${2:-}" dnf_name="${3:-$2}" pacman_name="${4:-$2}"
+  local mgr
+  mgr=$(detect_pkg_manager)
+
+  case "$mgr" in
+    brew)   brew install "$brew_name" ;;
+    apt)    sudo apt-get update -qq && sudo apt-get install -y -qq "$apt_name" ;;
+    dnf)    sudo dnf install -y -q "$dnf_name" ;;
+    pacman) sudo pacman -S --noconfirm "$pacman_name" ;;
+    apk)    sudo apk add "$apt_name" ;;
+    winget) winget install --accept-source-agreements --accept-package-agreements "$brew_name" 2>/dev/null || true ;;
+    choco)  choco install -y "$brew_name" ;;
+    none)
+      echo -e "  ${RED}No package manager found.${RESET}"
+      echo "    Install '$apt_name' manually and re-run this script."
+      return 1
+      ;;
+  esac
+}
 
 # ─── Prerequisites (auto-install everything) ─────────────────────────
 
 info "Step 1 of 4: Checking prerequisites"
 echo ""
 
-# Xcode Command Line Tools (provides git)
-if ! xcode-select -p &>/dev/null; then
-  echo "  Installing Xcode Command Line Tools (this may take a few minutes)..."
-  echo -e "  ${DIM}A popup may appear — click 'Install' if it does.${RESET}"
-  xcode-select --install 2>/dev/null || true
-  # Wait for installation to complete
-  until xcode-select -p &>/dev/null; do
-    sleep 5
-  done
-  ok "Xcode Command Line Tools"
-else
-  ok "Xcode Command Line Tools (already installed)"
+# macOS: Xcode Command Line Tools (provides git)
+if [ "$OS" = "macos" ]; then
+  if ! xcode-select -p &>/dev/null; then
+    echo "  Installing Xcode Command Line Tools (this may take a few minutes)..."
+    echo -e "  ${DIM}A popup may appear — click 'Install' if it does.${RESET}"
+    xcode-select --install 2>/dev/null || true
+    until xcode-select -p &>/dev/null; do
+      sleep 5
+    done
+    ok "Xcode Command Line Tools"
+  else
+    ok "Xcode Command Line Tools (already installed)"
+  fi
 fi
 
-# Homebrew
-if ! command -v brew &>/dev/null; then
+# macOS: Homebrew (offer to install if missing — it's the best macOS package manager)
+if [ "$OS" = "macos" ] && ! command -v brew &>/dev/null; then
   echo "  Installing Homebrew (the macOS package manager)..."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   # Add brew to PATH for this session (Apple Silicon vs Intel)
@@ -63,23 +125,37 @@ if ! command -v brew &>/dev/null; then
     eval "$(/usr/local/bin/brew shellenv)"
   fi
   ok "Homebrew"
+fi
+
+# Git
+if ! command -v git &>/dev/null; then
+  echo "  Installing git..."
+  pkg_install git git
+  ok "git"
 else
-  ok "Homebrew (already installed)"
+  ok "git (already installed)"
 fi
 
 # Node.js (for npm/npx, needed by MCP servers)
 if ! command -v node &>/dev/null; then
   echo "  Installing Node.js..."
-  brew install node
-  ok "Node.js $(node --version)"
+  pkg_install node nodejs nodejs nodejs
+  ok "Node.js $(node --version 2>/dev/null || echo '')"
 else
   ok "Node.js $(node --version) (already installed)"
+fi
+
+# npm (sometimes separate on Linux)
+if ! command -v npm &>/dev/null; then
+  echo "  Installing npm..."
+  pkg_install npm npm npm npm
+  ok "npm"
 fi
 
 # jq (needed by hooks)
 if ! command -v jq &>/dev/null; then
   echo "  Installing jq..."
-  brew install jq
+  pkg_install jq jq jq jq
   ok "jq"
 else
   ok "jq (already installed)"
@@ -88,10 +164,17 @@ fi
 # Python 3 (for poma-memory)
 if ! command -v python3 &>/dev/null; then
   echo "  Installing Python 3..."
-  brew install python3
+  pkg_install python3 python3 python3 python
   ok "Python $(python3 --version 2>&1 | cut -d' ' -f2)"
 else
   ok "Python $(python3 --version 2>&1 | cut -d' ' -f2) (already installed)"
+fi
+
+# curl (usually pre-installed, but not always on minimal Linux)
+if ! command -v curl &>/dev/null; then
+  echo "  Installing curl..."
+  pkg_install curl curl curl curl
+  ok "curl"
 fi
 
 echo ""
@@ -131,7 +214,7 @@ echo ""
 echo -e "  ${DIM}Each command opens your browser to sign in. Free tiers work.${RESET}"
 echo -e "  ${DIM}You can add these later — megavibe works without them.${RESET}"
 echo ""
-read -p "  Press Enter when ready to continue... "
+read -p "  Press Enter when ready to continue... " || true
 echo ""
 
 # ─── Done ────────────────────────────────────────────────────────────
@@ -142,7 +225,7 @@ echo -e "  ${GREEN}${BOLD}Megavibe is installed.${RESET}"
 echo ""
 echo "  To start using it, open your project folder and run megavibe:"
 echo ""
-echo -e "    ${BOLD}cd ~/Desktop/my-project${RESET}    ${DIM}(or wherever your code is)${RESET}"
+echo -e "    ${BOLD}cd ~/my-project${RESET}    ${DIM}(or wherever your code is)${RESET}"
 echo -e "    ${BOLD}megavibe${RESET}"
 echo ""
 echo "  That's it. Claude will remember everything from now on."

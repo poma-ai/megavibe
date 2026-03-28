@@ -260,16 +260,25 @@ is_lock_stale() {
     return 0  # PID dead → stale
   fi
   # PID alive — verify it's claude, node, or bash (our wait wrapper)
+  # ps -p -o comm= works on macOS and Linux; falls back to assuming live on Windows/Git Bash
   local proc_name
-  proc_name=$(ps -p "$lock_pid" -o comm= 2>/dev/null || echo "")
+  proc_name=$(ps -p "$lock_pid" -o comm= 2>/dev/null || echo "unknown")
+  # If ps doesn't work (e.g. Windows Git Bash), assume lock is live (safe default)
+  if [ "$proc_name" = "unknown" ]; then
+    return 1
+  fi
   # Direct match: claude or node (lock PID IS the claude process)
   if [[ "$proc_name" == *"claude"* ]] || [[ "$proc_name" == *"node"* ]]; then
     return 1  # Lock is live
   fi
   # Indirect match: bash wrapper — check if it has a claude child
   if [[ "$proc_name" == *"bash"* ]] || [[ "$proc_name" == *"zsh"* ]]; then
-    if pgrep -P "$lock_pid" -f "claude" &>/dev/null; then
+    if command -v pgrep &>/dev/null && pgrep -P "$lock_pid" -f "claude" &>/dev/null; then
       return 1  # Lock is live (bash wrapper with claude child)
+    fi
+    # pgrep unavailable — assume live if it's a shell process (safe default)
+    if ! command -v pgrep &>/dev/null; then
+      return 1
     fi
   fi
   return 0  # PID recycled or unrelated process
