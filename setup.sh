@@ -149,23 +149,33 @@ mkdir -p "$MEGAVIBE_HOME"
 # Copy core files to ~/.megavibe/ (always overwrite — infrastructure)
 cp "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh"
 cp "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
-if [ -f "$SCRIPT_DIR/poma_memory.py" ] && [ -n "$PYTHON" ]; then
-  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
-
-  # Save detected Python command so hooks and MCP can use it
+# Save detected Python command so hooks and MCP can use it
+if [ -n "$PYTHON" ]; then
   echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
+fi
 
-  # Install poma-memory Python dependencies (required for search + MCP server)
-  # model2vec provides semantic search (30MB model) — the core value of poma
-  if $PYTHON -c "import numpy, model2vec" &>/dev/null; then
-    skip "poma-memory Python deps (numpy, model2vec)"
+# Install poma-memory from PyPI (preferred) or fall back to bundled poma_memory.py
+if [ -n "$PYTHON" ]; then
+  if $PYTHON -c "import poma_memory" &>/dev/null; then
+    skip "poma-memory (pip, already installed)"
   else
-    echo "  Installing poma-memory Python deps..."
-    $PYTHON -m pip install --user --quiet numpy model2vec 2>/dev/null \
-      || $PYTHON -m pip install --quiet numpy model2vec 2>/dev/null \
-      || warn "Could not install poma-memory deps — search will be unavailable"
-    if $PYTHON -c "import numpy, model2vec" &>/dev/null; then
-      ok "poma-memory Python deps (numpy, model2vec)"
+    echo "  Installing poma-memory from PyPI..."
+    $PYTHON -m pip install --user --quiet "poma-memory[semantic]" 2>/dev/null \
+      || $PYTHON -m pip install --quiet "poma-memory[semantic]" 2>/dev/null
+    if $PYTHON -c "import poma_memory" &>/dev/null; then
+      ok "poma-memory (pip)"
+    else
+      # Fallback: bundled single-file poma_memory.py (works without pip)
+      if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
+        cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
+        # Install minimal deps for bundled version
+        $PYTHON -m pip install --user --quiet numpy model2vec 2>/dev/null \
+          || $PYTHON -m pip install --quiet numpy model2vec 2>/dev/null \
+          || warn "Could not install poma-memory deps — search will be unavailable"
+        ok "poma-memory (bundled fallback)"
+      else
+        warn "poma-memory unavailable — search will be disabled"
+      fi
     fi
   fi
 elif [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
