@@ -79,7 +79,7 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/catchup` — orient yourself in a project at session start (reads .agent/ + git state)
 - `/compact-context` — selectively compact FULL_CONTEXT.md via standard fallback chain (rare, for very large logs)
 
-**Never use `/compact`.** That is Claude Code's built-in lossy compaction — it destroys context detail that megavibe exists to preserve. If the user asks to compact, use `/compact-context` instead (Gemini-driven selective removal). If context is stale, use `/rehydrate`.
+**Proactive compaction.** A hook measures exact token usage from the conversation transcript. When context exceeds ~120K tokens, it nudges you to run `/compact`. **Follow the nudge** — your `.agent/` files and poma-memory already have everything; compaction just clears the conversation buffer so you get a fresh, focused working context via the on-compact recovery hook. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
 
 ## Backend availability check
 
