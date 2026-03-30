@@ -20,6 +20,8 @@ Claude Code is the executor and orchestrator. Gemini and Codex are subcontractor
 
 4. **Second opinions for risky changes.** If ambiguous, risky, or repeatedly corrected: request a second opinion from Codex and/or Gemini before shipping. When requesting second opinions, ask the reviewer to consider the neutral case, the devil's advocate case, and the optimistic case — then synthesize.
 
+5. **Never drop uncommitted changes.** Before any git operation that could lose work (checkout, reset, pull, rebase, clean, restore, switch branches): run `git status`. If there are uncommitted changes, `git stash push -m "megavibe-auto: <reason>"` first, inform the user what was stashed, and ask before popping or discarding. Never silently overwrite dirty state.
+
 ## Session isolation
 
 Multiple Claude Code sessions can run in the same project simultaneously. To prevent races:
