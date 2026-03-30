@@ -202,6 +202,15 @@ echo ""
 # Run setup (installs CLIs, MCP servers, protocol, statusline)
 bash "$TMPDIR/megavibe/setup.sh"
 
+# Store version hash so megavibe can check for updates later
+MEGAVIBE_HOME="$HOME/.megavibe"
+VERSION_HASH=$(git -C "$TMPDIR/megavibe" rev-parse HEAD 2>/dev/null || \
+  curl -sfL -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/poma-ai/megavibe/commits/main" 2>/dev/null || \
+  echo "")
+if [ -n "$VERSION_HASH" ]; then
+  echo "$VERSION_HASH" > "$MEGAVIBE_HOME/version"
+fi
+
 # Ensure ~/.local/bin is on PATH permanently (Linux/WSL — npm globals go here)
 if [[ "$OS" != "macos" ]] && [[ "$(id -u)" != "0" ]]; then
   LOCAL_BIN="$HOME/.local/bin"

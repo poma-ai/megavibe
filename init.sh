@@ -139,7 +139,7 @@ else
 fi
 
 # Add megavibe entries to .gitignore (idempotent)
-GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl")
+GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl" ".claude/hooks/" ".claude/rules/" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
 if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
   [ -f "$PROJECT/.gitignore" ] || touch "$PROJECT/.gitignore"
   for entry in "${GITIGNORE_ENTRIES[@]}"; do

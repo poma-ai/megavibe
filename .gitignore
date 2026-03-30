@@ -16,6 +16,7 @@ build/
 /.claude/hooks/
 /.claude/rules/
 /.claude/skills/
+/.claude/agents/
 /.claude/settings.json
 
 # Personal overrides (not shared)
