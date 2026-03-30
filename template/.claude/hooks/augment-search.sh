@@ -21,8 +21,9 @@ set -uo pipefail
 # Find poma-memory (bundled preferred, pip fallback)
 POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
 POMA_CMD=""
+PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
 if [ -f "$POMA_SCRIPT" ]; then
-  POMA_CMD="python3 $POMA_SCRIPT"
+  POMA_CMD="$PYCMD $POMA_SCRIPT"
 elif command -v poma-memory &>/dev/null; then
   POMA_CMD="poma-memory"
 else

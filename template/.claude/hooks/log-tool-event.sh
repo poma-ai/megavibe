@@ -61,8 +61,9 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
 
   # Background-index the file via poma-memory (bundled or pip-installed)
   POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
+  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
   if [ -f "$POMA_SCRIPT" ]; then
-    python3 "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
+    "$PYCMD" "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
   elif command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
@@ -91,8 +92,9 @@ fi
 # Also index .agent/ files on Read (keeps search index warm for augment-search hook)
 if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]]; then
   POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
+  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
   if [ -f "$POMA_SCRIPT" ]; then
-    python3 "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
+    "$PYCMD" "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
   elif command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi

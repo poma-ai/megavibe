@@ -31,6 +31,7 @@ if [ "${1:-}" = "remote" ]; then
   shift
   BOT_SCRIPT="$MEGAVIBE_HOME/telegram-bot.py"
   PID_FILE="$MEGAVIBE_HOME/remote.pid"
+  PYCMD=$(cat "$MEGAVIBE_HOME/python-cmd" 2>/dev/null || echo "python3")
 
   if [ ! -f "$BOT_SCRIPT" ]; then
     echo "Error: telegram-bot.py not found in $MEGAVIBE_HOME/"
@@ -62,7 +63,7 @@ if [ "${1:-}" = "remote" ]; then
         echo "Already running (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
         exit 1
       fi
-      nohup python3 "$BOT_SCRIPT" > "$MEGAVIBE_HOME/remote.log" 2>&1 &
+      nohup "$PYCMD" "$BOT_SCRIPT" > "$MEGAVIBE_HOME/remote.log" 2>&1 &
       echo "$!" > "$PID_FILE"
       echo -e "${GREEN}Remote bot started in background${RESET} (PID $!)"
       echo "  Log: $MEGAVIBE_HOME/remote.log"
@@ -75,7 +76,7 @@ if [ "${1:-}" = "remote" ]; then
       fi
       echo -e "${BOLD}Megavibe Remote v4${RESET} — Telegram bot (Ctrl+C to stop)"
       echo "  Use /register in TG to link projects"
-      python3 "$BOT_SCRIPT"
+      "$PYCMD" "$BOT_SCRIPT"
       ;;
     *)
       echo "Usage: megavibe remote [--bg|--stop|--status]"
@@ -182,7 +183,13 @@ AGE=$(( NOW - LAST_CHECK ))
 if [ "$AGE" -gt 86400 ]; then
   echo "$NOW" > "$UPDATE_STAMP"
   # Background: update npm-installed tools silently
+  # On Linux/WSL non-root, npm prefix may need to be ~/.local to avoid EACCES
   (
+    if [[ "$(uname -s)" != "Darwin" ]] && [[ "$(id -u 2>/dev/null || echo 1000)" != "0" ]]; then
+      if [[ "$(npm config get prefix 2>/dev/null)" == /usr* ]]; then
+        npm config set prefix "$HOME/.local" 2>/dev/null || true
+      fi
+    fi
     npm i -g @openai/codex &>/dev/null || true
     npm i -g @google/gemini-cli &>/dev/null || true
   ) &

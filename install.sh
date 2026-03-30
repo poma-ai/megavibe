@@ -161,13 +161,21 @@ else
   ok "jq (already installed)"
 fi
 
-# Python 3 (for poma-memory)
-if ! command -v python3 &>/dev/null; then
+# Python 3 (for poma-memory) — Windows Git Bash may have 'python' not 'python3'
+PYTHON_FOUND=""
+for pycmd in python3 python; do
+  if command -v "$pycmd" &>/dev/null && "$pycmd" -c "import sys; assert sys.version_info >= (3, 8)" &>/dev/null; then
+    PYTHON_FOUND="$pycmd"
+    break
+  fi
+done
+
+if [ -z "$PYTHON_FOUND" ]; then
   echo "  Installing Python 3..."
   pkg_install python3 python3 python3 python
   ok "Python $(python3 --version 2>&1 | cut -d' ' -f2)"
 else
-  ok "Python $(python3 --version 2>&1 | cut -d' ' -f2) (already installed)"
+  ok "Python $($PYTHON_FOUND --version 2>&1 | cut -d' ' -f2) (already installed)"
 fi
 
 # curl (usually pre-installed, but not always on minimal Linux)
@@ -193,6 +201,25 @@ echo ""
 
 # Run setup (installs CLIs, MCP servers, protocol, statusline)
 bash "$TMPDIR/megavibe/setup.sh"
+
+# Ensure ~/.local/bin is on PATH permanently (Linux/WSL — npm globals go here)
+if [[ "$OS" != "macos" ]] && [[ "$(id -u)" != "0" ]]; then
+  LOCAL_BIN="$HOME/.local/bin"
+  case ":$PATH:" in
+    *":$LOCAL_BIN:"*) ;;
+    *)
+      export PATH="$LOCAL_BIN:$PATH"
+      # Persist to shell profile
+      SHELL_RC="$HOME/.bashrc"
+      [[ -n "${ZSH_VERSION:-}" ]] && SHELL_RC="$HOME/.zshrc"
+      [[ "$(basename "${SHELL:-bash}")" == "zsh" ]] && SHELL_RC="$HOME/.zshrc"
+      if ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+        warn "Added ~/.local/bin to PATH in $(basename "$SHELL_RC")"
+      fi
+      ;;
+  esac
+fi
 
 echo ""
 
