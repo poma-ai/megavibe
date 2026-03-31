@@ -189,22 +189,56 @@ echo ""
 
 # ─── Clone and run setup ─────────────────────────────────────────────
 
+# Reuse an existing clone of github.com/poma-ai/megavibe when cwd (or this script's dir) is inside it.
+find_megavibe_repo() {
+  local dir="${1:-}"
+  [ -n "$dir" ] || return 1
+  git -C "$dir" rev-parse --is-inside-work-tree &>/dev/null || return 1
+  local root url
+  root=$(git -C "$dir" rev-parse --show-toplevel)
+  url=$(git -C "$root" config --get remote.origin.url 2>/dev/null || true)
+  case "$url" in
+    *poma-ai/megavibe*) printf '%s' "$root"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 info "Step 2 of 4: Installing Megavibe"
 echo ""
 
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+MEGAVIBE_SRC=""
+_root=$(find_megavibe_repo "$PWD") && MEGAVIBE_SRC="$_root"
+if [ -z "$MEGAVIBE_SRC" ] && [ -f "${BASH_SOURCE[0]:-}" ]; then
+  _dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd) || _dir=""
+  if [ -n "$_dir" ]; then
+    _root=$(find_megavibe_repo "$_dir") && MEGAVIBE_SRC="$_root"
+  fi
+fi
 
-echo "  Downloading..."
-git clone --depth 1 https://github.com/poma-ai/megavibe.git "$TMPDIR/megavibe" 2>/dev/null
-echo ""
+if [ -n "$MEGAVIBE_SRC" ]; then
+  echo "  Using existing Megavibe repository at $MEGAVIBE_SRC"
+  echo ""
+else
+  TMPDIR=$(mktemp -d)
+  trap 'rm -rf "$TMPDIR"' EXIT
+  echo "  Downloading..."
+  git clone --depth 1 https://github.com/poma-ai/megavibe.git "$TMPDIR/megavibe" 2>/dev/null
+  MEGAVIBE_SRC="$TMPDIR/megavibe"
+  echo ""
+fi
+
+if [ ! -f "$MEGAVIBE_SRC/setup.sh" ]; then
+  echo -e "  ${RED}✗${RESET} Megavibe setup script missing: $MEGAVIBE_SRC/setup.sh"
+  echo "    (incomplete clone, damaged checkout, or wrong directory). Clone or fix the repo, then re-run."
+  exit 1
+fi
 
 # Run setup (installs CLIs, MCP servers, protocol, statusline)
-bash "$TMPDIR/megavibe/setup.sh"
+bash "$MEGAVIBE_SRC/setup.sh"
 
 # Store version hash so megavibe can check for updates later
 MEGAVIBE_HOME="$HOME/.megavibe"
-VERSION_HASH=$(git -C "$TMPDIR/megavibe" rev-parse HEAD 2>/dev/null || \
+VERSION_HASH=$(git -C "$MEGAVIBE_SRC" rev-parse HEAD 2>/dev/null || \
   curl -sfL -H "Accept: application/vnd.github.sha" "https://api.github.com/repos/poma-ai/megavibe/commits/main" 2>/dev/null || \
   echo "")
 if [ -n "$VERSION_HASH" ]; then
