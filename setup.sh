@@ -67,7 +67,7 @@ fi
 if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
   echo "  How do you want to install Megavibe?"
   echo "  1. Automatic (default) - all supported tools will be installed"
-  echo "  2. Manual"
+  echo "  2. Custom"
   read -p "  Enter your choice: " NONINTERACTIVE_AUTO
   case "$NONINTERACTIVE_AUTO" in
     1) NONINTERACTIVE_AUTO=1 ;;
