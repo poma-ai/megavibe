@@ -31,7 +31,7 @@
 | Quick fact check / web search | Codex | Gemini | — | Claude subagent | Claims with sources |
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | — | Screenshots/HTML → `.agent/ASSETS/` |
 | Interpret screenshots or UI captures | Gemini | Codex | — | Claude subagent | Structured description |
-| Automatic .agent/ context augmentation | poma-memory (via Grep hook) | poma-memory MCP | — | — | Injected as additionalContext on every Grep |
+| Automatic .agent/ context augmentation | poma-memory (via Grep/Glob hook) | poma-memory MCP | — | — | Injected as systemMessage on every Grep/Glob |
 | Selective context compaction | Gemini | Codex | — | Claude subagent | See below |
 
 ## Gemini / Codex / Claude subagent delegation protocols

@@ -2,15 +2,15 @@
 # DO NOT use set -e — this hook must be resilient to transient failures.
 set -uo pipefail
 
-# Megavibe — augment Grep with poma-memory vector search
-# Triggered by: PreToolUse (Grep)
+# Megavibe — augment Grep/Glob with poma-memory vector search
+# Triggered by: PreToolUse (Grep, Glob)
 #
 # When Claude searches for something, this hook silently runs a poma-memory
-# search with the same query and injects any relevant .agent/ context as
-# additionalContext. Claude sees both native Grep results + semantic matches.
+# search with the same query and injects any relevant .agent/ context as a
+# systemMessage. Claude sees both native results + semantic matches.
 #
-# This makes project context automatically available during exploration
-# without Claude needing to explicitly call poma-memory.
+# systemMessage is more authoritative than additionalContext — Claude treats
+# it as system-level instruction rather than advisory annotation.
 #
 # Performance: model2vec semantic search on <10K vectors takes <10ms.
 # No timeout needed (macOS lacks `timeout` command — was silently breaking this hook).
@@ -18,14 +18,13 @@ set -uo pipefail
 # Only run if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0
 
-# Find poma-memory (bundled preferred, pip fallback)
-POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
+# Find poma-memory (pip preferred, bundled fallback)
 POMA_CMD=""
-PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-if [ -f "$POMA_SCRIPT" ]; then
-  POMA_CMD="$PYCMD $POMA_SCRIPT"
-elif command -v poma-memory &>/dev/null; then
+if command -v poma-memory &>/dev/null; then
   POMA_CMD="poma-memory"
+elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
+  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
+  POMA_CMD="$PYCMD $HOME/.megavibe/poma_memory.py"
 else
   exit 0
 fi
@@ -37,7 +36,18 @@ fi
 command -v jq &>/dev/null || exit 0
 
 INPUT=$(cat)
-PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null || echo "")
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+
+# Extract search term based on tool type
+PATTERN=""
+if [[ "$TOOL_NAME" == "Grep" ]]; then
+  PATTERN=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null || echo "")
+elif [[ "$TOOL_NAME" == "Glob" ]]; then
+  # Extract meaningful terms from glob pattern (e.g., "**/*.test.ts" → "test")
+  RAW=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null || echo "")
+  # Strip glob syntax to get searchable keywords
+  PATTERN=$(echo "$RAW" | sed 's/\*\*\///g; s/\*//g; s/\.//g; s/\///g' | tr '-_' ' ')
+fi
 
 # Skip trivial patterns (too short to be meaningful)
 [ "${#PATTERN}" -gt 3 ] || exit 0
@@ -56,11 +66,8 @@ if [ -z "$RESULTS" ] || [[ "$RESULTS" == *"No results found"* ]]; then
   exit 0
 fi
 
-# Inject as additionalContext — Claude sees this alongside Grep results
-jq -n --arg ctx "📎 Related project context (from .agent/ memory):
+# Inject as systemMessage — Claude treats this as authoritative system-level context
+jq -n --arg msg "Related project context from poma-memory (semantic search on .agent/):
 $RESULTS" '{
-  hookSpecificOutput: {
-    hookEventName: "PreToolUse",
-    additionalContext: $ctx
-  }
+  systemMessage: $msg
 }'

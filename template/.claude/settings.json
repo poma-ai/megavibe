@@ -79,6 +79,15 @@
             "command": ".claude/hooks/augment-search.sh"
           }
         ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/augment-search.sh"
+          }
+        ]
       }
     ]
   }

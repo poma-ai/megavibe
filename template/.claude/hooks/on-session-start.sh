@@ -45,13 +45,13 @@ fi
 # --- poma-memory: search for context related to open tasks ---
 POMA_CONTEXT=""
 if [ "$OPEN_TASKS" -gt 0 ] 2>/dev/null && [ -f ".agent/.poma-memory.db" ]; then
-  # Find poma-memory command
+  # Find poma-memory command (pip preferred, bundled fallback)
   POMA_CMD=""
-  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-  if [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-    POMA_CMD="$PYCMD $HOME/.megavibe/poma_memory.py"
-  elif command -v poma-memory &>/dev/null; then
+  if command -v poma-memory &>/dev/null; then
     POMA_CMD="poma-memory"
+  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
+    PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
+    POMA_CMD="$PYCMD $HOME/.megavibe/poma_memory.py"
   fi
 
   if [ -n "$POMA_CMD" ]; then
@@ -82,5 +82,5 @@ $(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')
 --- DECISIONS.md (last 20 lines) ---
 $(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')${POMA_CONTEXT}"
 
-# Emit additionalContext
-jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+# Emit as systemMessage (authoritative — Claude treats it as system-level instruction)
+jq -n --arg msg "$CONTEXT" '{systemMessage: $msg}'

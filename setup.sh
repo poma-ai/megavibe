@@ -246,8 +246,8 @@ if [ -n "$PYTHON" ]; then
     skip "poma-memory (pip, already installed)"
   else
     echo "  Installing poma-memory from PyPI..."
-    $PYTHON -m pip install --user --quiet "poma-memory[semantic]" 2>/dev/null \
-      || $PYTHON -m pip install --quiet "poma-memory[semantic]" 2>/dev/null
+    $PYTHON -m pip install --user --quiet "poma-memory[semantic,mcp]" 2>/dev/null \
+      || $PYTHON -m pip install --quiet "poma-memory[semantic,mcp]" 2>/dev/null
     if $PYTHON -c "import poma_memory" &>/dev/null; then
       ok "poma-memory (pip)"
     else
@@ -606,17 +606,17 @@ else
   skip "Playwright MCP server (user skipped)"
 fi
 
-# poma-memory MCP (bundled poma_memory.py or pip-installed)
+# poma-memory MCP (pip-installed preferred, bundled fallback)
 if echo "$EXISTING_MCP" | grep -qi "poma-memory"; then
   skip "poma-memory MCP server"
+elif command -v poma-memory &>/dev/null && poma-memory mcp --help &>/dev/null; then
+  claude mcp add --transport stdio --scope user poma-memory -- poma-memory mcp
+  ok "poma-memory MCP server (pip)"
 elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ] && [ -n "$PYTHON" ]; then
   claude mcp add --transport stdio --scope user poma-memory -- "$PYTHON" "$MEGAVIBE_HOME/poma_memory.py" mcp
   ok "poma-memory MCP server (bundled)"
-elif command -v poma-memory-mcp &>/dev/null; then
-  claude mcp add --transport stdio --scope user poma-memory -- poma-memory-mcp
-  ok "poma-memory MCP server (pip)"
 else
-  skip "poma-memory MCP server (poma_memory.py not found in ~/.megavibe/)"
+  skip "poma-memory MCP server (not installed — run: pip install poma-memory[mcp])"
 fi
 
 # ─── 7. Verify ──────────────────────────────────────────────────────

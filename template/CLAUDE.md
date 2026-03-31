@@ -46,7 +46,7 @@ This is auto-triggered — no human intervention needed, but you must follow thr
 
 **Explore** (read-only)
 - Read tools, grep/glob, targeted reads.
-- When you Grep, a hook automatically searches `.agent/` context and injects relevant matches. No action needed — just use Grep normally and you'll see project context alongside code results.
+- When you Grep or Glob, a hook automatically searches `.agent/` context via poma-memory and injects relevant matches as a system message. No action needed — just search normally and you'll see project context alongside results.
 - Large explorations: delegate to Explore subagent or Gemini.
 
 **Plan**
