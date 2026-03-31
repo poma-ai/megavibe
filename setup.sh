@@ -229,6 +229,12 @@ mkdir -p "$MEGAVIBE_HOME"
 # Copy core files to ~/.megavibe/ (always overwrite — infrastructure)
 cp "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh"
 cp "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
+# Deploy session-status.sh (used by personal assistant for cross-project visibility)
+if [ -f "$SCRIPT_DIR/session-status.sh" ]; then
+  cp "$SCRIPT_DIR/session-status.sh" "$MEGAVIBE_HOME/session-status.sh"
+  chmod +x "$MEGAVIBE_HOME/session-status.sh"
+fi
+
 # Save detected Python command so hooks and MCP can use it
 if [ -n "$PYTHON" ]; then
   echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
@@ -333,7 +339,13 @@ You are the user's personal assistant, responding via Telegram (often from Apple
 - Answer general questions (weather, facts, calculations, advice)
 - Remember personal preferences, goals, and context from .agent/ files
 - Help with life admin (scheduling, reminders, planning)
-- When asked about a specific coding project, mention that the user should ask about it by name to route to that project
+- When asked about a specific coding project, mention that the user should ask about it by name (e.g. "megavibe", "officeqa") to route to that project
+
+## Session & project visibility
+When asked about running sessions, active projects, or "what's going on":
+- Run: `bash ~/.megavibe/session-status.sh` — shows all active/idle megavibe sessions
+- The project registry is at `~/.megavibe/projects.json` (name → path mapping)
+- Each project's `.agent/TASKS.md` has its task status; `.agent/FULL_CONTEXT.md` has recent activity
 
 ## Context files
 - .agent/FULL_CONTEXT.md — ongoing personal context log
@@ -514,7 +526,7 @@ register_codex_mcp() {
   fi
 }
 
-if [ "$CODEX_INSTALLED" -eq 1 ]; then
+if command -v codex &>/dev/null; then
   register_codex_mcp
 fi
 
