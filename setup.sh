@@ -57,7 +57,6 @@ NONINTERACTIVE_AUTO=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
     --auto-install)
-      INSTALL_MODE="auto"
       NONINTERACTIVE_AUTO=1
       ;;
   esac
@@ -287,7 +286,7 @@ telegram_bot_install() {
   fi
 }
 
-should_install_playwright() {
+should_install_telegram() {
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -314,11 +313,11 @@ rm -rf "$MEGAVIBE_HOME/template"
 cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
 ok "~/.megavibe/ synced"
 
-personal_telegram_assistent() {
+
 # Initialize personal assistant project (standard megavibe dir)
-  PERSONAL_DIR="$MEGAVIBE_HOME/personal"
-  if [ ! -d "$PERSONAL_DIR/.agent" ]; then
-    mkdir -p "$PERSONAL_DIR/.agent"
+PERSONAL_DIR="$MEGAVIBE_HOME/personal"
+if [ ! -d "$PERSONAL_DIR/.agent" ]; then
+  mkdir -p "$PERSONAL_DIR/.agent"
     cat > "$PERSONAL_DIR/CLAUDE.md" << 'PERSONAL_EOF'
 # Personal Assistant
 
@@ -342,17 +341,12 @@ You are the user's personal assistant, responding via Telegram (often from Apple
 - .agent/LESSONS.md — personal preferences and patterns
 - .agent/DECISIONS.md — life decisions and rationale
 PERSONAL_EOF
-    echo "# Personal Context Log" > "$PERSONAL_DIR/.agent/FULL_CONTEXT.md"
-    echo "# Personal Decisions" > "$PERSONAL_DIR/.agent/DECISIONS.md"
-    echo "# Personal Preferences" > "$PERSONAL_DIR/.agent/LESSONS.md"
-    ok "~/.megavibe/personal/ (personal assistant project)"
-  else
-    skip "~/.megavibe/personal/ (already exists)"
-  fi
-}
-
-if [ "$TELEGRAM_INSTALLED" -eq 1 ]; then
-  personal_telegram_assistent
+  echo "# Personal Context Log" > "$PERSONAL_DIR/.agent/FULL_CONTEXT.md"
+  echo "# Personal Decisions" > "$PERSONAL_DIR/.agent/DECISIONS.md"
+  echo "# Personal Preferences" > "$PERSONAL_DIR/.agent/LESSONS.md"
+  ok "~/.megavibe/personal/ (personal assistant project)"
+else
+  skip "~/.megavibe/personal/ (already exists)"
 fi
 
 # Initialize projects registry
