@@ -67,7 +67,7 @@ if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
   echo "  1. Automatic (default) - all supported tools will be installed"
   echo "  2. Custom"
   read -p "  Enter your choice: " NONINTERACTIVE_AUTO
-  case "$NONINTERACTIVE_AUTO" in
+  case "${NONINTERACTIVE_AUTO:-1}" in
     1) NONINTERACTIVE_AUTO=1 ;;
     2) NONINTERACTIVE_AUTO=0 ;;
     *) echo "  Invalid choice. Please enter 1 or 2." && exit 1 ;;
