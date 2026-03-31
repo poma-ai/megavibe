@@ -22,6 +22,28 @@ fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 
 NEEDS_LOGIN=()
 
+# ─── 0. Define installation mode ────────────────────────────────────
+
+INSTALL_MODE="default"
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    --auto-install) INSTALL_MODE="auto" ;;
+  esac
+fi
+
+
+if [ "$INSTALL_MODE" = "default" ]; then
+  echo "  How do you want to install Megavibe?"
+  echo "  1. Automatic (default) - all supported tools will be installed"
+  echo "  2. Manual"
+  read -p "  Enter your choice: " INSTALL_MODE
+  case "$INSTALL_MODE" in
+    1) INSTALL_MODE="auto" ;;
+    2) INSTALL_MODE="manual" ;;
+    *) echo "  Invalid choice. Please enter 1 or 2." && exit 1 ;;
+  esac
+fi
+
 # ─── 1. Install tools ───────────────────────────────────────────────
 
 info "1) Installing tools"
