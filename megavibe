@@ -238,6 +238,20 @@ if [ "${1:-}" = "remote" ]; then
   exit 0
 fi
 
+# ─── Assistant subcommand ────────────────────────────────────────────
+
+if [ "${1:-}" = "assistant" ]; then
+  PERSONAL_DIR="$MEGAVIBE_HOME/personal"
+  if [ ! -d "$PERSONAL_DIR" ]; then
+    echo "Personal assistant not set up yet."
+    echo "  Run: bash setup.sh"
+    exit 1
+  fi
+  shift
+  cd "$PERSONAL_DIR"
+  exec "$MEGAVIBE_HOME/megavibe" "$@"
+fi
+
 # ─── Pre-flight: check setup ────────────────────────────────────────
 
 if [ ! -f "$MEGAVIBE_HOME/init.sh" ] || ! grep -q "megavibe-v3" "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
