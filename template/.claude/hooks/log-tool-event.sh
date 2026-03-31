@@ -63,13 +63,12 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 
-  # Background-index the file via poma-memory (bundled or pip-installed)
-  POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
-  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-  if [ -f "$POMA_SCRIPT" ]; then
-    "$PYCMD" "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
-  elif command -v poma-memory &>/dev/null; then
+  # Background-index the file via poma-memory (pip preferred, bundled fallback)
+  if command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
+  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
+    PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
+    "$PYCMD" "$HOME/.megavibe/poma_memory.py" index --file "$FILE_PATH" &>/dev/null &
   fi
 
   # --- Event emission for remote bot (replaces ntfy) ---
@@ -95,12 +94,11 @@ fi
 
 # Also index .agent/ files on Read (keeps search index warm for augment-search hook)
 if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]]; then
-  POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
-  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-  if [ -f "$POMA_SCRIPT" ]; then
-    "$PYCMD" "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
-  elif command -v poma-memory &>/dev/null; then
+  if command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
+  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
+    PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
+    "$PYCMD" "$HOME/.megavibe/poma_memory.py" index --file "$FILE_PATH" &>/dev/null &
   fi
   # Don't exit — still need to count this tool call
 fi
@@ -183,8 +181,7 @@ ${COMPACT_NUDGE}"
   fi
 fi
 
-# Emit nudge as additionalContext if there's a message
+# Emit nudge as systemMessage (authoritative — Claude treats it as system-level instruction)
 if [ -n "$NUDGE_MSG" ]; then
-  EVENT_NAME=$(echo "$INPUT" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null || echo "PostToolUse")
-  jq -n --arg ctx "$NUDGE_MSG" --arg evt "$EVENT_NAME" '{hookSpecificOutput: {hookEventName: $evt, additionalContext: $ctx}}' 2>/dev/null || true
+  jq -n --arg msg "$NUDGE_MSG" '{systemMessage: $msg}' 2>/dev/null || true
 fi

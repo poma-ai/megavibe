@@ -179,13 +179,13 @@ fi
 # log-tool-event.sh checks this timestamp to suppress nudges post-compaction
 date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true
 
-# --- Write durable backup (in case additionalContext injection fails) ---
+# --- Write durable backup (in case systemMessage injection fails) ---
 cat > "$INSTRUCTIONS_FILE" << INSTREOF
 $CONTEXT
 INSTREOF
 echo "Wrote rehydration instructions to ${INSTRUCTIONS_FILE}" >&2
 
-echo "Emitting additionalContext (${#CONTEXT} chars)" >&2
+echo "Emitting systemMessage (${#CONTEXT} chars)" >&2
 
-# Return additionalContext in the correct SessionStart structured output format
-jq -n --arg ctx "$CONTEXT" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+# Return as systemMessage (authoritative — Claude treats it as system-level instruction)
+jq -n --arg msg "$CONTEXT" '{systemMessage: $msg}'
