@@ -62,7 +62,6 @@ if [ "$#" -gt 0 ]; then
   esac
 fi
 
-
 if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
   echo "  How do you want to install Megavibe?"
   echo "  1. Automatic (default) - all supported tools will be installed"
@@ -94,6 +93,7 @@ claude_install() {
 # Codex CLI
 CODEX_INSTALLED=0
 codex_install() {
+  CODEX_INSTALLED=1
   if command -v codex &>/dev/null; then
     skip "Codex CLI"
   else
@@ -101,13 +101,13 @@ codex_install() {
     npm i -g @openai/codex
     ok "Codex CLI"
     NEEDS_LOGIN+=("codex")
-    CODEX_INSTALLED=1
   fi
 }
 
 # Gemini CLI
 GEMINI_INSTALLED=0
 gemini_install() {
+  GEMINI_INSTALLED=1
   if command -v gemini &>/dev/null; then
     skip "Gemini CLI"
   else
@@ -115,7 +115,6 @@ gemini_install() {
     npm i -g @google/gemini-cli
     ok "Gemini CLI"
     NEEDS_LOGIN+=("gemini")
-    GEMINI_INSTALLED=1
   fi
 }
 
