@@ -5,7 +5,8 @@ set -uo pipefail
 
 # Megavibe — log every tool event to .agent/LOGS/tool-events.jsonl
 # Also: nudge Claude if .agent/ context files haven't been updated recently,
-# and nag if post-compaction re-hydration hasn't happened yet.
+# nag if post-compaction re-hydration hasn't happened yet,
+# and trigger proactive compaction when context exceeds token threshold.
 #
 # Triggered by: PostToolUse (all tools), PostToolUseFailure (Bash)
 # Input: hook stdin JSON (tool_name, tool_input, tool_response, etc.)
@@ -25,6 +26,9 @@ command -v jq &>/dev/null || exit 0
 LOGDIR=".agent/LOGS"
 NUDGE_THRESHOLD=8
 NUDGE_REPEAT=20
+TOKEN_COMPACT_THRESHOLD=120000
+TOKEN_CHECK_INTERVAL=20
+TOKEN_COOLDOWN_SECS=300
 
 mkdir -p "$LOGDIR" 2>/dev/null || true
 
@@ -61,8 +65,9 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
 
   # Background-index the file via poma-memory (bundled or pip-installed)
   POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
+  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
   if [ -f "$POMA_SCRIPT" ]; then
-    python3 "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
+    "$PYCMD" "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
   elif command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
@@ -91,8 +96,9 @@ fi
 # Also index .agent/ files on Read (keeps search index warm for augment-search hook)
 if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]]; then
   POMA_SCRIPT="$HOME/.megavibe/poma_memory.py"
+  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
   if [ -f "$POMA_SCRIPT" ]; then
-    python3 "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
+    "$PYCMD" "$POMA_SCRIPT" index --file "$FILE_PATH" &>/dev/null &
   elif command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
@@ -110,6 +116,35 @@ COUNT=0
 
 # Re-read counter after flock (the subshell variable doesn't propagate)
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+
+# --- Proactive compaction: measure exact token usage from transcript ---
+# Only check every TOKEN_CHECK_INTERVAL calls (amortize cost) and respect cooldown
+COMPACT_NUDGE=""
+COOLDOWN_TS_FILE="${LOGDIR}/.compact-ts.${SID}"
+IN_COOLDOWN=0
+if [ -f "$COOLDOWN_TS_FILE" ]; then
+  LAST_COMPACT_TS=$(cat "$COOLDOWN_TS_FILE" 2>/dev/null || echo "0")
+  NOW_TS=$(date +%s)
+  ELAPSED=$((NOW_TS - LAST_COMPACT_TS))
+  [ "$ELAPSED" -lt "$TOKEN_COOLDOWN_SECS" ] 2>/dev/null && IN_COOLDOWN=1
+fi
+
+if [ $((COUNT % TOKEN_CHECK_INTERVAL)) -eq 0 ] 2>/dev/null && [ "$IN_COOLDOWN" -eq 0 ]; then
+  TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
+  if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+    # Extract last usage entry: total context = input + cache_creation + cache_read
+    TOTAL_TOKENS=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
+      | grep 'input_tokens' \
+      | tail -1 \
+      | jq '(.message.usage.input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0)' 2>/dev/null \
+      || echo "0")
+    TOTAL_TOKENS="${TOTAL_TOKENS:-0}"
+
+    if [ "$TOTAL_TOKENS" -gt "$TOKEN_COMPACT_THRESHOLD" ] 2>/dev/null; then
+      COMPACT_NUDGE="🔄 Context at ~${TOTAL_TOKENS} tokens (threshold: ${TOKEN_COMPACT_THRESHOLD}). At your next natural stopping point, run /compact — your .agent/ files and poma-memory have everything needed for clean recovery."
+    fi
+  fi
+fi
 
 # --- Build nudge message if needed ---
 NUDGE_MSG=""
@@ -135,6 +170,16 @@ if [ -f "$REHYDRATE_FLAG" ]; then
 ${REHYDRATE_MSG}"
   else
     NUDGE_MSG="$REHYDRATE_MSG"
+  fi
+fi
+
+# Append compact nudge if triggered
+if [ -n "$COMPACT_NUDGE" ]; then
+  if [ -n "$NUDGE_MSG" ]; then
+    NUDGE_MSG="${NUDGE_MSG}
+${COMPACT_NUDGE}"
+  else
+    NUDGE_MSG="$COMPACT_NUDGE"
   fi
 fi
 

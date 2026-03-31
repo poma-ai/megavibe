@@ -25,12 +25,160 @@ RESET='\033[0m'
 # Resolve the directory this script lives in (works from repo clone or ~/.local/bin/)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+GITHUB_REPO="poma-ai/megavibe"
+GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/commits/main"
+VERSION_FILE="$MEGAVIBE_HOME/version"
+UPDATE_STAMP="$MEGAVIBE_HOME/.last-update-check"
+UPDATE_AVAILABLE_FILE="$MEGAVIBE_HOME/.update-available"
+
+# ─── Update helpers ──────────────────────────────────────────────────
+
+# Detect if source-repo is a git clone (author mode) or not (curl-installed)
+is_git_source() {
+  local repo_dir="${1:-}"
+  [ -n "$repo_dir" ] && [ -d "$repo_dir/.git" ] && command -v git &>/dev/null
+}
+
+# Get the source repo directory (if available)
+get_source_repo() {
+  if [ -f "$SCRIPT_DIR/setup.sh" ] && [ -d "$SCRIPT_DIR/template" ]; then
+    echo "$SCRIPT_DIR"
+  elif [ -f "$MEGAVIBE_HOME/source-repo" ]; then
+    local saved
+    saved="$(cat "$MEGAVIBE_HOME/source-repo")"
+    if [ -f "$saved/setup.sh" ] && [ -d "$saved/template" ]; then
+      echo "$saved"
+    fi
+  fi
+}
+
+# Check for updates (non-blocking, writes result to .update-available)
+check_for_update() {
+  local src
+  src=$(get_source_repo)
+
+  if is_git_source "$src"; then
+    # Git route: fetch and compare HEAD vs origin/main
+    local local_hash remote_hash
+    local_hash=$(git -C "$src" rev-parse HEAD 2>/dev/null || echo "unknown")
+    git -C "$src" fetch --quiet origin main 2>/dev/null || return 0
+    remote_hash=$(git -C "$src" rev-parse origin/main 2>/dev/null || echo "unknown")
+    if [ "$local_hash" != "$remote_hash" ] && [ "$remote_hash" != "unknown" ]; then
+      local behind
+      behind=$(git -C "$src" rev-list --count HEAD..origin/main 2>/dev/null || echo "?")
+      echo "git:$behind" > "$UPDATE_AVAILABLE_FILE"
+    else
+      rm -f "$UPDATE_AVAILABLE_FILE"
+    fi
+  else
+    # Non-git route: compare stored version hash against GitHub API
+    local local_hash remote_hash
+    local_hash=$(cat "$VERSION_FILE" 2>/dev/null || echo "none")
+    remote_hash=$(curl -sfL -H "Accept: application/vnd.github.sha" "$GITHUB_API" 2>/dev/null || echo "")
+    if [ -n "$remote_hash" ] && [ "$local_hash" != "$remote_hash" ]; then
+      echo "curl:$remote_hash" > "$UPDATE_AVAILABLE_FILE"
+    elif [ -n "$remote_hash" ]; then
+      rm -f "$UPDATE_AVAILABLE_FILE"
+    fi
+    # If curl failed (no internet), silently skip — don't touch the flag
+  fi
+}
+
+# Perform the actual update
+do_update() {
+  local src
+  src=$(get_source_repo)
+
+  if is_git_source "$src"; then
+    echo -e "${BOLD}Updating from git...${RESET}"
+    echo ""
+    git -C "$src" pull --ff-only origin main 2>&1 || {
+      echo -e "  ${RED}Fast-forward failed.${RESET} You may have local changes."
+      echo "  cd $src && git pull manually."
+      return 1
+    }
+    echo ""
+    echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
+  else
+    echo -e "${BOLD}Updating from GitHub...${RESET}"
+    echo ""
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    # Clean up temp dir on any exit from this function
+    trap 'rm -rf "$tmpdir"' RETURN
+    echo "  Downloading latest version..."
+    if ! git clone --depth 1 "https://github.com/$GITHUB_REPO.git" "$tmpdir/megavibe" 2>/dev/null; then
+      # git clone failed — try curl tarball as fallback
+      echo "  git clone failed, trying tarball..."
+      if ! curl -sfL "https://github.com/$GITHUB_REPO/archive/refs/heads/main.tar.gz" | tar xz -C "$tmpdir" 2>/dev/null; then
+        echo -e "  ${RED}Download failed.${RESET} Check your internet connection."
+        return 1
+      fi
+      mv "$tmpdir/megavibe-main" "$tmpdir/megavibe"
+    fi
+    echo "  Running setup..."
+    bash "$tmpdir/megavibe/setup.sh"
+    # Store the new version hash
+    local new_hash
+    new_hash=$(curl -sfL -H "Accept: application/vnd.github.sha" "$GITHUB_API" 2>/dev/null || echo "")
+    if [ -n "$new_hash" ]; then
+      echo "$new_hash" > "$VERSION_FILE"
+    fi
+    echo ""
+    echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
+  fi
+  rm -f "$UPDATE_AVAILABLE_FILE"
+}
+
+# Show update notification if available
+show_update_notice() {
+  if [ -f "$UPDATE_AVAILABLE_FILE" ]; then
+    local info
+    info=$(cat "$UPDATE_AVAILABLE_FILE")
+    if [[ "$info" == git:* ]]; then
+      local behind="${info#git:}"
+      echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
+    else
+      echo -e "  ${YELLOW}Update available.${RESET} Run: ${BOLD}megavibe update${RESET}"
+    fi
+  fi
+}
+
+# ─── Update subcommand ──────────────────────────────────────────────
+
+if [ "${1:-}" = "update" ]; then
+  shift
+  case "${1:-}" in
+    --check)
+      echo -e "${BOLD}Checking for updates...${RESET}"
+      check_for_update
+      if [ -f "$UPDATE_AVAILABLE_FILE" ]; then
+        show_update_notice
+      else
+        echo -e "  ${GREEN}Already up to date.${RESET}"
+      fi
+      ;;
+    "")
+      do_update
+      ;;
+    *)
+      echo "Usage: megavibe update [--check]"
+      echo ""
+      echo "  (default)  Download and install the latest version"
+      echo "  --check    Check for updates without installing"
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
 # ─── Remote subcommand ───────────────────────────────────────────────
 
 if [ "${1:-}" = "remote" ]; then
   shift
   BOT_SCRIPT="$MEGAVIBE_HOME/telegram-bot.py"
   PID_FILE="$MEGAVIBE_HOME/remote.pid"
+  PYCMD=$(cat "$MEGAVIBE_HOME/python-cmd" 2>/dev/null || echo "python3")
 
   if [ ! -f "$BOT_SCRIPT" ]; then
     echo "Error: telegram-bot.py not found in $MEGAVIBE_HOME/"
@@ -62,7 +210,7 @@ if [ "${1:-}" = "remote" ]; then
         echo "Already running (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
         exit 1
       fi
-      nohup python3 "$BOT_SCRIPT" > "$MEGAVIBE_HOME/remote.log" 2>&1 &
+      nohup "$PYCMD" "$BOT_SCRIPT" > "$MEGAVIBE_HOME/remote.log" 2>&1 &
       echo "$!" > "$PID_FILE"
       echo -e "${GREEN}Remote bot started in background${RESET} (PID $!)"
       echo "  Log: $MEGAVIBE_HOME/remote.log"
@@ -75,7 +223,7 @@ if [ "${1:-}" = "remote" ]; then
       fi
       echo -e "${BOLD}Megavibe Remote v4${RESET} — Telegram bot (Ctrl+C to stop)"
       echo "  Use /register in TG to link projects"
-      python3 "$BOT_SCRIPT"
+      "$PYCMD" "$BOT_SCRIPT"
       ;;
     *)
       echo "Usage: megavibe remote [--bg|--stop|--status]"
@@ -171,22 +319,31 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
   fi
 fi
 
-# ─── Auto-update tools (background, non-blocking) ───────────────────
+# ─── Auto-update check + tools (background, non-blocking) ───────────
 
 # Check at most once per day (stamp file tracks last check)
-UPDATE_STAMP="$MEGAVIBE_HOME/.last-update-check"
 NOW=$(date +%s)
 LAST_CHECK=$(cat "$UPDATE_STAMP" 2>/dev/null || echo "0")
 AGE=$(( NOW - LAST_CHECK ))
 
 if [ "$AGE" -gt 86400 ]; then
   echo "$NOW" > "$UPDATE_STAMP"
-  # Background: update npm-installed tools silently
+  # Background: check for megavibe updates + update npm tools
+  # On Linux/WSL non-root, npm prefix may need to be ~/.local to avoid EACCES
   (
+    check_for_update
+    if [[ "$(uname -s)" != "Darwin" ]] && [[ "$(id -u 2>/dev/null || echo 1000)" != "0" ]]; then
+      if [[ "$(npm config get prefix 2>/dev/null)" == /usr* ]]; then
+        npm config set prefix "$HOME/.local" 2>/dev/null || true
+      fi
+    fi
     npm i -g @openai/codex &>/dev/null || true
     npm i -g @google/gemini-cli &>/dev/null || true
   ) &
 fi
+
+# Show update notification (from previous check — non-blocking)
+show_update_notice
 
 # ─── Init/update current directory ──────────────────────────────────
 

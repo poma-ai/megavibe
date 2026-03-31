@@ -47,8 +47,9 @@ POMA_CONTEXT=""
 if [ "$OPEN_TASKS" -gt 0 ] 2>/dev/null && [ -f ".agent/.poma-memory.db" ]; then
   # Find poma-memory command
   POMA_CMD=""
+  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
   if [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-    POMA_CMD="python3 $HOME/.megavibe/poma_memory.py"
+    POMA_CMD="$PYCMD $HOME/.megavibe/poma_memory.py"
   elif command -v poma-memory &>/dev/null; then
     POMA_CMD="poma-memory"
   fi

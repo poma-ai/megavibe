@@ -22,6 +22,35 @@ fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 
 NEEDS_LOGIN=()
 
+# ─── npm global prefix (Linux/WSL: avoid EACCES on /usr/local) ─────
+
+if [[ "$(uname -s)" != "Darwin" ]] && [[ "$(id -u 2>/dev/null || echo 1000)" != "0" ]]; then
+  NPM_PREFIX="${HOME}/.local"
+  if [[ "$(npm config get prefix 2>/dev/null)" == /usr* ]]; then
+    npm config set prefix "$NPM_PREFIX"
+    mkdir -p "$NPM_PREFIX/bin"
+    # Ensure ~/.local/bin is on PATH for this session
+    case ":$PATH:" in
+      *":$NPM_PREFIX/bin:"*) ;;
+      *) export PATH="$NPM_PREFIX/bin:$PATH" ;;
+    esac
+  fi
+fi
+
+# ─── Python detection (Windows Git Bash has 'python' not 'python3') ──
+
+PYTHON=""
+for cmd in python3 python; do
+  if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 8)" &>/dev/null; then
+    PYTHON="$cmd"
+    break
+  fi
+done
+
+if [ -z "$PYTHON" ]; then
+  warn "Python 3.8+ not found — poma-memory and Telegram bot will be unavailable"
+fi
+
 # ─── 0. Define installation mode ────────────────────────────────────
 
 INSTALL_MODE="default"
@@ -142,22 +171,37 @@ mkdir -p "$MEGAVIBE_HOME"
 # Copy core files to ~/.megavibe/ (always overwrite — infrastructure)
 cp "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh"
 cp "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
-if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
-  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
+# Save detected Python command so hooks and MCP can use it
+if [ -n "$PYTHON" ]; then
+  echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
+fi
 
-  # Install poma-memory Python dependencies (required for search + MCP server)
-  # model2vec provides semantic search (30MB model) — the core value of poma
-  if python3 -c "import numpy, model2vec" &>/dev/null; then
-    skip "poma-memory Python deps (numpy, model2vec)"
+# Install poma-memory from PyPI (preferred) or fall back to bundled poma_memory.py
+if [ -n "$PYTHON" ]; then
+  if $PYTHON -c "import poma_memory" &>/dev/null; then
+    skip "poma-memory (pip, already installed)"
   else
-    echo "  Installing poma-memory Python deps..."
-    python3 -m pip install --quiet numpy model2vec 2>/dev/null \
-      || pip3 install --quiet numpy model2vec 2>/dev/null \
-      || warn "Could not install poma-memory deps — search will be unavailable"
-    if python3 -c "import numpy, model2vec" &>/dev/null; then
-      ok "poma-memory Python deps (numpy, model2vec)"
+    echo "  Installing poma-memory from PyPI..."
+    $PYTHON -m pip install --user --quiet "poma-memory[semantic]" 2>/dev/null \
+      || $PYTHON -m pip install --quiet "poma-memory[semantic]" 2>/dev/null
+    if $PYTHON -c "import poma_memory" &>/dev/null; then
+      ok "poma-memory (pip)"
+    else
+      # Fallback: bundled single-file poma_memory.py (works without pip)
+      if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
+        cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
+        # Install minimal deps for bundled version
+        $PYTHON -m pip install --user --quiet numpy model2vec 2>/dev/null \
+          || $PYTHON -m pip install --quiet numpy model2vec 2>/dev/null \
+          || warn "Could not install poma-memory deps — search will be unavailable"
+        ok "poma-memory (bundled fallback)"
+      else
+        warn "poma-memory unavailable — search will be disabled"
+      fi
     fi
   fi
+elif [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
+  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
 fi
 
 # Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
@@ -166,15 +210,17 @@ if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then
   ok "telegram-bot.py deployed"
 
   # Install python-telegram-bot if not already present (+ httpx for voice I/O)
-  if python3 -c "import telegram" &>/dev/null; then
-    skip "python-telegram-bot"
-  else
-    echo "  Installing python-telegram-bot (for Megavibe Remote)..."
-    python3 -m pip install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
-      || pip3 install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
-      || warn "Could not install python-telegram-bot — remote will be unavailable"
-    if python3 -c "import telegram" &>/dev/null; then
-      ok "python-telegram-bot + httpx"
+  if [ -n "$PYTHON" ]; then
+    if $PYTHON -c "import telegram" &>/dev/null; then
+      skip "python-telegram-bot"
+    else
+      echo "  Installing python-telegram-bot (for Megavibe Remote)..."
+      $PYTHON -m pip install --user --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+        || $PYTHON -m pip install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+        || warn "Could not install python-telegram-bot — remote will be unavailable"
+      if $PYTHON -c "import telegram" &>/dev/null; then
+        ok "python-telegram-bot + httpx"
+      fi
     fi
   fi
 fi
@@ -432,8 +478,8 @@ fi
 # poma-memory MCP (bundled poma_memory.py or pip-installed)
 if echo "$EXISTING_MCP" | grep -qi "poma-memory"; then
   skip "poma-memory MCP server"
-elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ]; then
-  claude mcp add --transport stdio --scope user poma-memory -- python3 "$MEGAVIBE_HOME/poma_memory.py" mcp
+elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ] && [ -n "$PYTHON" ]; then
+  claude mcp add --transport stdio --scope user poma-memory -- "$PYTHON" "$MEGAVIBE_HOME/poma_memory.py" mcp
   ok "poma-memory MCP server (bundled)"
 elif command -v poma-memory-mcp &>/dev/null; then
   claude mcp add --transport stdio --scope user poma-memory -- poma-memory-mcp
