@@ -317,7 +317,7 @@ ok "~/.megavibe/ synced"
 PERSONAL_DIR="$MEGAVIBE_HOME/personal"
 if [ ! -d "$PERSONAL_DIR/.agent" ]; then
   mkdir -p "$PERSONAL_DIR/.agent"
-    cat > "$PERSONAL_DIR/CLAUDE.md" << 'PERSONAL_EOF'
+  cat > "$PERSONAL_DIR/CLAUDE.md" << 'PERSONAL_EOF'
 # Personal Assistant
 
 You are the user's personal assistant, responding via Telegram (often from Apple Watch).
@@ -556,7 +556,7 @@ fi
 # Playwright MCP
 register_playwright_mcp() {
   if echo "$EXISTING_MCP" | grep -qi "playwright"; then
-  skip "Playwright MCP server"
+    skip "Playwright MCP server"
   else
     claude mcp add --transport stdio --scope user playwright -- npx -y @playwright/mcp@latest
     ok "Playwright MCP server"
