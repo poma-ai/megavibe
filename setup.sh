@@ -51,65 +51,145 @@ if [ -z "$PYTHON" ]; then
   warn "Python 3.8+ not found — poma-memory and Telegram bot will be unavailable"
 fi
 
+# ─── 0. Define installation mode ────────────────────────────────────
+
+NONINTERACTIVE_AUTO=0
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    --auto-install)
+      NONINTERACTIVE_AUTO=1
+      ;;
+  esac
+fi
+
+if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
+  echo "  How do you want to install Megavibe?"
+  echo "  1. Automatic (default) - all supported tools will be installed"
+  echo "  2. Custom"
+  read -p "  Enter your choice: " NONINTERACTIVE_AUTO
+  case "$NONINTERACTIVE_AUTO" in
+    1) NONINTERACTIVE_AUTO=1 ;;
+    2) NONINTERACTIVE_AUTO=0 ;;
+    *) echo "  Invalid choice. Please enter 1 or 2." && exit 1 ;;
+  esac
+fi
+
 # ─── 1. Install tools ───────────────────────────────────────────────
 
 info "1) Installing tools"
 
 # Claude Code
-if command -v claude &>/dev/null; then
-  skip "Claude Code ($(claude --version 2>/dev/null || echo 'installed'))"
-else
-  echo "  Installing Claude Code..."
-  curl -fsSL https://claude.ai/install.sh | bash
-  ok "Claude Code"
-  NEEDS_LOGIN+=("claude")
-fi
+claude_install() {
+  if command -v claude &>/dev/null; then
+    skip "Claude Code ($(claude --version 2>/dev/null || echo 'installed'))"
+  else
+    echo "  Installing Claude Code..."
+    curl -fsSL https://claude.ai/install.sh | bash
+    ok "Claude Code"
+    NEEDS_LOGIN+=("claude")
+  fi
+}
 
 # Codex CLI
-if command -v codex &>/dev/null; then
-  skip "Codex CLI"
-else
-  echo "  Installing Codex CLI..."
-  npm i -g @openai/codex
-  ok "Codex CLI"
-  NEEDS_LOGIN+=("codex")
-fi
+CODEX_INSTALLED=0
+codex_install() {
+  CODEX_INSTALLED=1
+  if command -v codex &>/dev/null; then
+    skip "Codex CLI"
+  else
+    echo "  Installing Codex CLI..."
+    npm i -g @openai/codex
+    ok "Codex CLI"
+    NEEDS_LOGIN+=("codex")
+  fi
+}
 
 # Gemini CLI
-if command -v gemini &>/dev/null; then
-  skip "Gemini CLI"
-else
-  echo "  Installing Gemini CLI..."
-  npm i -g @google/gemini-cli
-  ok "Gemini CLI"
-  NEEDS_LOGIN+=("gemini")
-fi
+GEMINI_INSTALLED=0
+gemini_install() {
+  GEMINI_INSTALLED=1
+  if command -v gemini &>/dev/null; then
+    skip "Gemini CLI"
+  else
+    echo "  Installing Gemini CLI..."
+    npm i -g @google/gemini-cli
+    ok "Gemini CLI"
+    NEEDS_LOGIN+=("gemini")
+  fi
+}
 
 # jq (required by hooks)
-if command -v jq &>/dev/null; then
-  skip "jq"
-else
-  echo "  Installing jq..."
-  if command -v brew &>/dev/null; then
-    brew install jq
-  elif command -v apt-get &>/dev/null; then
-    sudo apt-get update -qq && sudo apt-get install -y -qq jq
-  elif command -v dnf &>/dev/null; then
-    sudo dnf install -y -q jq
-  elif command -v pacman &>/dev/null; then
-    sudo pacman -S --noconfirm jq
-  elif command -v apk &>/dev/null; then
-    sudo apk add jq
-  elif command -v winget &>/dev/null; then
-    winget install --accept-source-agreements jqlang.jq 2>/dev/null || true
-  elif command -v choco &>/dev/null; then
-    choco install -y jq
+jq_install() {
+  if command -v jq &>/dev/null; then
+    skip "jq"
   else
-    fail "jq not found. Install it manually: https://jqlang.github.io/jq/download/"
-    exit 1
+    echo "  Installing jq..."
+    if command -v brew &>/dev/null; then
+      brew install jq
+    elif command -v apt-get &>/dev/null; then
+      sudo apt-get update -qq && sudo apt-get install -y -qq jq
+    elif command -v dnf &>/dev/null; then
+      sudo dnf install -y -q jq
+    elif command -v pacman &>/dev/null; then
+      sudo pacman -S --noconfirm jq
+    elif command -v apk &>/dev/null; then
+      sudo apk add jq
+    elif command -v winget &>/dev/null; then
+      winget install --accept-source-agreements jqlang.jq 2>/dev/null || true
+    elif command -v choco &>/dev/null; then
+      choco install -y jq
+    else
+      fail "jq not found. Install it manually: https://jqlang.github.io/jq/download/"
+      exit 1
+    fi
+    ok "jq"
   fi
-  ok "jq"
+}
+
+# Ask before installing CLIs when missing (unless non-interactive --auto-install or no TTY)
+should_install_codex() {
+  if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    return 0
+  fi
+  read -r -p "  Install Codex CLI? [Y/n] " _codex_ans
+  case "${_codex_ans:-y}" in
+    [nN]|[nN][oO]) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+should_install_gemini() {
+  if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    return 0
+  fi
+  read -r -p "  Install Gemini CLI? [Y/n] " _gemini_ans
+  case "${_gemini_ans:-y}" in
+    [nN]|[nN][oO]) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+claude_install
+jq_install
+
+# Install Codex CLI when it is missing (unless non-interactive --auto-install or no TTY)
+if command -v codex &>/dev/null || should_install_codex; then
+  codex_install
+else
+  skip "Codex CLI (user skipped)"
 fi
+if command -v gemini &>/dev/null || should_install_gemini; then
+  gemini_install
+else
+  skip "Gemini CLI (user skipped)"
+fi
+
 
 # ─── 2. First-time logins ───────────────────────────────────────────
 
@@ -149,6 +229,12 @@ mkdir -p "$MEGAVIBE_HOME"
 # Copy core files to ~/.megavibe/ (always overwrite — infrastructure)
 cp "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh"
 cp "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
+# Deploy session-status.sh (used by personal assistant for cross-project visibility)
+if [ -f "$SCRIPT_DIR/session-status.sh" ]; then
+  cp "$SCRIPT_DIR/session-status.sh" "$MEGAVIBE_HOME/session-status.sh"
+  chmod +x "$MEGAVIBE_HOME/session-status.sh"
+fi
+
 # Save detected Python command so hooks and MCP can use it
 if [ -n "$PYTHON" ]; then
   echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
@@ -183,28 +269,55 @@ elif [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
 fi
 
 # Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
-if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then
-  cp "$SCRIPT_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
-  ok "telegram-bot.py deployed"
+telegram_bot_install() {
+  if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then
+    cp "$SCRIPT_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
+    ok "telegram-bot.py deployed"
 
-  # Install python-telegram-bot if not already present (+ httpx for voice I/O)
-  if [ -n "$PYTHON" ]; then
-    if $PYTHON -c "import telegram" &>/dev/null; then
-      skip "python-telegram-bot"
-    else
-      echo "  Installing python-telegram-bot (for Megavibe Remote)..."
-      $PYTHON -m pip install --user --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
-        || $PYTHON -m pip install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
-        || warn "Could not install python-telegram-bot — remote will be unavailable"
+    # Install python-telegram-bot if not already present (+ httpx for voice I/O)
+    if [ -n "$PYTHON" ]; then
       if $PYTHON -c "import telegram" &>/dev/null; then
-        ok "python-telegram-bot + httpx"
+        skip "python-telegram-bot"
+      else
+        echo "  Installing python-telegram-bot (for Megavibe Remote)..."
+        $PYTHON -m pip install --user --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+          || $PYTHON -m pip install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+          || warn "Could not install python-telegram-bot — remote will be unavailable"
+        if $PYTHON -c "import telegram" &>/dev/null; then
+          ok "python-telegram-bot + httpx"
+        fi
       fi
     fi
   fi
+}
+
+should_install_telegram() {
+  if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    return 0
+  fi
+  read -r -p "  Install Telegram bot? [Y/n] " _telegram_ans
+  case "${_telegram_ans:-y}" in
+    [nN]|[nN][oO]) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+TELEGRAM_INSTALLED=0
+if should_install_telegram; then
+  telegram_bot_install
+  TELEGRAM_INSTALLED=1
+else
+  skip "Telegram bot (user skipped)"
 fi
+
+# 
 rm -rf "$MEGAVIBE_HOME/template"
 cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
 ok "~/.megavibe/ synced"
+
 
 # Initialize personal assistant project (standard megavibe dir)
 PERSONAL_DIR="$MEGAVIBE_HOME/personal"
@@ -226,7 +339,13 @@ You are the user's personal assistant, responding via Telegram (often from Apple
 - Answer general questions (weather, facts, calculations, advice)
 - Remember personal preferences, goals, and context from .agent/ files
 - Help with life admin (scheduling, reminders, planning)
-- When asked about a specific coding project, mention that the user should ask about it by name to route to that project
+- When asked about a specific coding project, mention that the user should ask about it by name (e.g. "megavibe", "officeqa") to route to that project
+
+## Session & project visibility
+When asked about running sessions, active projects, or "what's going on":
+- Run: `bash ~/.megavibe/session-status.sh` — shows all active/idle megavibe sessions
+- The project registry is at `~/.megavibe/projects.json` (name → path mapping)
+- Each project's `.agent/TASKS.md` has its task status; `.agent/FULL_CONTEXT.md` has recent activity
 
 ## Context files
 - .agent/FULL_CONTEXT.md — ongoing personal context log
@@ -398,59 +517,93 @@ info "6) Registering MCP servers"
 EXISTING_MCP=$(claude mcp list 2>/dev/null || echo "")
 
 # Codex MCP
-if echo "$EXISTING_MCP" | grep -qi "codex"; then
-  skip "Codex MCP server"
-else
-  claude mcp add --transport stdio --scope user codex -- codex mcp-server
-  ok "Codex MCP server"
+register_codex_mcp() {
+  if echo "$EXISTING_MCP" | grep -qi "codex"; then
+    skip "Codex MCP server"
+  else
+    claude mcp add --transport stdio --scope user codex -- codex mcp-server
+    ok "Codex MCP server"
+  fi
+}
+
+if command -v codex &>/dev/null; then
+  register_codex_mcp
 fi
 
 # Gemini MCP
-if echo "$EXISTING_MCP" | grep -qi "gemini"; then
-  skip "Gemini MCP server"
-else
-  claude mcp add --transport stdio --scope user gemini-cli -- npx -y gemini-mcp-tool
-  ok "Gemini MCP server"
-fi
-
-# Gemini CLI auth: use API key when GEMINI_API_KEY is set
-# (OAuth hits Cloud AI Companion API which requires GCP IAM permissions;
-#  API key mode hits the public generativelanguage.googleapis.com endpoint)
-GEMINI_SETTINGS="$HOME/.gemini/settings.json"
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-  mkdir -p "$HOME/.gemini"
-  if [ -f "$GEMINI_SETTINGS" ]; then
-    if command -v jq &>/dev/null && jq -e '.security.auth.selectedType' "$GEMINI_SETTINGS" &>/dev/null; then
-      CURRENT_AUTH=$(jq -r '.security.auth.selectedType' "$GEMINI_SETTINGS")
-      if [ "$CURRENT_AUTH" != "gemini-api-key" ]; then
-        jq '.security.auth.selectedType = "gemini-api-key"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
-        mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-        ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
-      fi
-    fi
+register_gemini_mcp() {
+  if echo "$EXISTING_MCP" | grep -qi "gemini"; then
+    skip "Gemini MCP server"
   else
-    echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' | jq . > "$GEMINI_SETTINGS"
-    ok "Gemini CLI configured for API key auth"
+    claude mcp add --transport stdio --scope user gemini-cli -- npx -y gemini-mcp-tool
+    ok "Gemini MCP server"
   fi
+
+  # Gemini CLI auth: use API key when GEMINI_API_KEY is set
+  # (OAuth hits Cloud AI Companion API which requires GCP IAM permissions;
+  #  API key mode hits the public generativelanguage.googleapis.com endpoint)
+  GEMINI_SETTINGS="$HOME/.gemini/settings.json"
+  if [ -n "${GEMINI_API_KEY:-}" ]; then
+    mkdir -p "$HOME/.gemini"
+    if [ -f "$GEMINI_SETTINGS" ]; then
+      if command -v jq &>/dev/null && jq -e '.security.auth.selectedType' "$GEMINI_SETTINGS" &>/dev/null; then
+        CURRENT_AUTH=$(jq -r '.security.auth.selectedType' "$GEMINI_SETTINGS")
+        if [ "$CURRENT_AUTH" != "gemini-api-key" ]; then
+          jq '.security.auth.selectedType = "gemini-api-key"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
+          mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
+          ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
+        fi
+      fi
+    else
+      echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' | jq . > "$GEMINI_SETTINGS"
+      ok "Gemini CLI configured for API key auth"
+    fi
+  fi
+}
+
+if [ "$GEMINI_INSTALLED" -eq 1 ]; then
+  register_gemini_mcp
 fi
 
 # Playwright MCP
-if echo "$EXISTING_MCP" | grep -qi "playwright"; then
-  skip "Playwright MCP server"
-else
-  claude mcp add --transport stdio --scope user playwright -- npx -y @playwright/mcp@latest
-  ok "Playwright MCP server"
-fi
-
-# Ensure Playwright browsers are installed (required for @playwright/mcp to work)
-if npx -y @playwright/mcp@latest --help &>/dev/null 2>&1; then
-  if npx playwright install chromium &>/dev/null 2>&1; then
-    ok "Playwright chromium browser"
+register_playwright_mcp() {
+  if echo "$EXISTING_MCP" | grep -qi "playwright"; then
+    skip "Playwright MCP server"
   else
-    warn "Could not install Playwright browsers — run: npx playwright install chromium"
+    claude mcp add --transport stdio --scope user playwright -- npx -y @playwright/mcp@latest
+    ok "Playwright MCP server"
   fi
+
+  # Ensure Playwright browsers are installed (required for @playwright/mcp to work)
+  if npx -y @playwright/mcp@latest --help &>/dev/null 2>&1; then
+    if npx playwright install chromium &>/dev/null 2>&1; then
+      ok "Playwright chromium browser"
+    else
+      warn "Could not install Playwright browsers — run: npx playwright install chromium"
+    fi
+  else
+    warn "Playwright MCP not available — browser install skipped"
+  fi
+}
+
+should_install_playwright() {
+  if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    return 0
+  fi
+  read -r -p "  Install Playwright MCP server? [Y/n] " _playwright_ans
+  case "${_playwright_ans:-y}" in
+    [nN]|[nN][oO]) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+if should_install_playwright; then
+  register_playwright_mcp
 else
-  warn "Playwright MCP not available — browser install skipped"
+  skip "Playwright MCP server (user skipped)"
 fi
 
 # poma-memory MCP (bundled poma_memory.py or pip-installed)
