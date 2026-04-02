@@ -249,7 +249,8 @@ if [ ! -f "$MEGAVIBE_SRC/setup.sh" ]; then
 fi
 
 # Run setup (installs CLIs, MCP servers, protocol, statusline)
-bash "$MEGAVIBE_SRC/setup.sh"
+# Pass --auto-install: when piped via curl|bash there's no TTY for interactive prompts
+bash "$MEGAVIBE_SRC/setup.sh" --auto-install
 
 # Store version hash so megavibe can check for updates later
 MEGAVIBE_HOME="$HOME/.megavibe"
@@ -299,7 +300,10 @@ echo ""
 echo -e "  ${DIM}Each command opens your browser to sign in. Free tiers work.${RESET}"
 echo -e "  ${DIM}You can add these later — megavibe works without them.${RESET}"
 echo ""
-read -p "  Press Enter when ready to continue... " || true
+# Skip pause when there's no TTY (curl | bash)
+if [ -t 0 ]; then
+  read -p "  Press Enter when ready to continue... " || true
+fi
 echo ""
 
 # ─── Done ────────────────────────────────────────────────────────────
