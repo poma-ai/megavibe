@@ -1,6 +1,11 @@
 #!/bin/bash
-# Safety net: non-blocking hooks must NEVER exit non-zero (causes "hook error" noise).
-trap 'exit 0' EXIT
+_hook_error() {
+  local msg="after-edit.sh failed at line $1: $2"
+  echo "$msg" >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+  jq -n --arg msg "$msg" '{systemMessage: $msg}' 2>/dev/null
+  exit 0
+}
+trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
 set -u
 
 # Megavibe — run project-defined verification after file edits

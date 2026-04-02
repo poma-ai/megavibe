@@ -1,8 +1,14 @@
 #!/bin/bash
 # DO NOT use set -e — this hook must be resilient to transient failures,
 # especially during parallel tool calls where multiple instances race.
-# Safety net: non-blocking hooks must NEVER exit non-zero (causes "hook error" noise).
-trap 'exit 0' EXIT
+# Capture and report errors instead of crashing with unhelpful "hook error".
+_hook_error() {
+  local msg="log-tool-event.sh failed at line $1: $2"
+  echo "$msg" >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+  jq -n --arg msg "$msg" '{systemMessage: $msg}' 2>/dev/null
+  exit 0
+}
+trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
 set -u
 
 # Megavibe — log every tool event to .agent/LOGS/tool-events.jsonl
