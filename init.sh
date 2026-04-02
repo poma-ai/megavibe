@@ -139,9 +139,15 @@ else
 fi
 
 # Add megavibe entries to .gitignore (idempotent)
-GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl" ".claude/hooks/" ".claude/rules/" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
+GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl")
+# Only add .claude/ subpaths if .claude/ isn't already gitignored as a whole
+CLAUDE_SUBPATH_ENTRIES=(".claude/hooks/" ".claude/rules/" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
 if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
   [ -f "$PROJECT/.gitignore" ] || touch "$PROJECT/.gitignore"
+  # If .claude/ is already ignored, skip all subpath entries
+  if ! grep -qxF '.claude/' "$PROJECT/.gitignore" && ! grep -qxF '.claude' "$PROJECT/.gitignore"; then
+    GITIGNORE_ENTRIES+=("${CLAUDE_SUBPATH_ENTRIES[@]}")
+  fi
   for entry in "${GITIGNORE_ENTRIES[@]}"; do
     if ! grep -qF "$entry" "$PROJECT/.gitignore"; then
       echo "$entry" >> "$PROJECT/.gitignore"
