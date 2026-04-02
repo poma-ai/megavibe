@@ -69,8 +69,10 @@ if [ -f "$SETTINGS" ]; then
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
     # Rewrite relative hook paths to absolute (prevents breakage when session cd's to subdirectory)
     ABS_PROJECT=$(cd "$PROJECT" && pwd)
+    # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
+    # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
     jq -s '.[0] * {hooks: .[1].hooks}' "$SETTINGS" "$TEMPLATE_SETTINGS" \
-      | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = $root + .command else . end)' \
+      | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
       > "${SETTINGS}.tmp"
     mv "${SETTINGS}.tmp" "$SETTINGS"
     echo "  synced: .claude/settings.json (hooks)"
@@ -81,7 +83,7 @@ if [ -f "$SETTINGS" ]; then
   fi
 else
   ABS_PROJECT=$(cd "$PROJECT" && pwd)
-  jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = $root + .command else . end)' \
+  jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
     "$TEMPLATE_SETTINGS" > "$SETTINGS"
   echo "  created: $SETTINGS"
 fi
