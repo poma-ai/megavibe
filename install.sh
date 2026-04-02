@@ -161,19 +161,31 @@ else
   ok "jq (already installed)"
 fi
 
-# Python 3 (for poma-memory) — Windows Git Bash may have 'python' not 'python3'
+# Python 3.10+ (required by poma-memory) — Windows Git Bash may have 'python' not 'python3'
 PYTHON_FOUND=""
-for pycmd in python3 python; do
-  if command -v "$pycmd" &>/dev/null && "$pycmd" -c "import sys; assert sys.version_info >= (3, 8)" &>/dev/null; then
+for pycmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python; do
+  if command -v "$pycmd" &>/dev/null && "$pycmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
     PYTHON_FOUND="$pycmd"
     break
   fi
 done
 
 if [ -z "$PYTHON_FOUND" ]; then
-  echo "  Installing Python 3..."
+  echo "  Installing Python 3 (3.10+ required for poma-memory)..."
   pkg_install python3 python3 python3 python
-  ok "Python $(python3 --version 2>&1 | cut -d' ' -f2)"
+  # Check if the newly installed version is 3.10+
+  for pycmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python; do
+    if command -v "$pycmd" &>/dev/null && "$pycmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
+      PYTHON_FOUND="$pycmd"
+      break
+    fi
+  done
+  if [ -n "$PYTHON_FOUND" ]; then
+    ok "Python $($PYTHON_FOUND --version 2>&1 | cut -d' ' -f2)"
+  else
+    warn "Installed Python is older than 3.10 — poma-memory may not install"
+    ok "Python $(python3 --version 2>&1 | cut -d' ' -f2)"
+  fi
 else
   ok "Python $($PYTHON_FOUND --version 2>&1 | cut -d' ' -f2) (already installed)"
 fi

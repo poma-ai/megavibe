@@ -40,15 +40,45 @@ fi
 # ─── Python detection (Windows Git Bash has 'python' not 'python3') ──
 
 PYTHON=""
-for cmd in python3 python; do
-  if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 8)" &>/dev/null; then
+# poma-memory requires Python >=3.10. Prefer Homebrew python (3.12+) over Xcode CLT python (often 3.9).
+for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python; do
+  if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
     PYTHON="$cmd"
     break
   fi
 done
 
+# If no 3.10+ found, try to install via brew (macOS) or accept older Python with limited functionality
 if [ -z "$PYTHON" ]; then
-  warn "Python 3.8+ not found — poma-memory and Telegram bot will be unavailable"
+  if command -v brew &>/dev/null; then
+    echo "  Python 3.10+ not found — installing via Homebrew..."
+    brew install python@3.12
+    for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
+      if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
+        PYTHON="$cmd"
+        break
+      fi
+    done
+    if [ -n "$PYTHON" ]; then
+      ok "Python $($PYTHON --version 2>&1 | cut -d' ' -f2) (Homebrew)"
+    fi
+  fi
+fi
+
+if [ -z "$PYTHON" ]; then
+  # Fall back to any Python 3.8+ (telegram-bot works, but poma-memory won't)
+  for cmd in python3 python; do
+    if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 8)" &>/dev/null; then
+      PYTHON="$cmd"
+      break
+    fi
+  done
+  if [ -n "$PYTHON" ]; then
+    warn "Python $($PYTHON --version 2>&1 | cut -d' ' -f2) found but poma-memory requires 3.10+"
+    warn "Install Python 3.10+ for full functionality (brew install python@3.12)"
+  else
+    warn "Python 3.8+ not found — poma-memory and Telegram bot will be unavailable"
+  fi
 fi
 
 # ─── pip detection + bootstrap ───────────────────────────────────────
