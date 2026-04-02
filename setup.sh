@@ -109,6 +109,19 @@ if [ -n "$PYTHON" ]; then
 
   if [ -z "$PIP" ]; then
     warn "pip not available — Python packages (poma-memory, telegram-bot) will be unavailable"
+  else
+    # Upgrade pip if older than 22 (Xcode CLT ships 21.x which can't resolve modern packages)
+    PIP_MAJOR=$($PIP --version 2>/dev/null | sed 's/pip \([0-9]*\).*/\1/')
+    if [ -n "$PIP_MAJOR" ] && [ "$PIP_MAJOR" -lt 22 ] 2>/dev/null; then
+      echo "  Upgrading pip ($PIP_MAJOR.x → latest)..."
+      $PIP install --user --upgrade pip 2>/dev/null \
+        || $PIP install --upgrade pip 2>/dev/null \
+        || warn "Could not upgrade pip — installs may fail"
+      # Re-detect after upgrade (path may have changed)
+      if $PYTHON -m pip --version &>/dev/null; then
+        PIP="$PYTHON -m pip"
+      fi
+    fi
   fi
 fi
 
