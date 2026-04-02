@@ -1,7 +1,9 @@
 #!/bin/bash
 # DO NOT use set -e — this hook must be resilient to transient failures.
 # jq or file operations can fail on edge cases; the hook must still emit output.
-set -uo pipefail
+# Safety net: non-blocking hooks must NEVER exit non-zero (causes "hook error" noise).
+trap 'exit 0' EXIT
+set -u
 
 # Megavibe — auto re-hydrate context after compaction
 # Triggered by: SessionStart (matcher: "compact")
