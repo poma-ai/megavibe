@@ -1,6 +1,8 @@
 #!/bin/bash
 # DO NOT use set -e — this hook must be resilient to transient failures.
-set -uo pipefail
+# Safety net: non-blocking hooks must NEVER exit non-zero (causes "hook error" noise).
+trap 'exit 0' EXIT
+set -u
 
 # Megavibe — auto-orient on fresh session start
 # Triggered by: SessionStart (matcher: "startup")

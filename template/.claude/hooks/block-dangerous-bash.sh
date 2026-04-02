@@ -1,7 +1,8 @@
 #!/bin/bash
 # DO NOT use set -e — transient jq/grep failures must not produce "hook error" noise.
 # Exit 2 = block the command; Exit 0 = allow; Exit 1 = "hook error" (bad).
-set -uo pipefail
+# NOTE: no 'trap exit 0' here — this hook INTENTIONALLY exits 2 to block dangerous commands.
+set -u
 
 # Megavibe — block destructive Bash commands before execution
 # Triggered by: PreToolUse (Bash)

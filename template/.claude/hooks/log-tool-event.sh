@@ -1,7 +1,9 @@
 #!/bin/bash
 # DO NOT use set -e — this hook must be resilient to transient failures,
 # especially during parallel tool calls where multiple instances race.
-set -uo pipefail
+# Safety net: non-blocking hooks must NEVER exit non-zero (causes "hook error" noise).
+trap 'exit 0' EXIT
+set -u
 
 # Megavibe — log every tool event to .agent/LOGS/tool-events.jsonl
 # Also: nudge Claude if .agent/ context files haven't been updated recently,

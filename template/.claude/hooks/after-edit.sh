@@ -1,5 +1,7 @@
 #!/bin/bash
-set -euo pipefail
+# Safety net: non-blocking hooks must NEVER exit non-zero (causes "hook error" noise).
+trap 'exit 0' EXIT
+set -u
 
 # Megavibe — run project-defined verification after file edits
 # Triggered by: PostToolUse (Edit|Write)

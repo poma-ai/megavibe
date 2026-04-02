@@ -162,8 +162,10 @@ touch "$PROJECT/.agent/ASSETS/.gitkeep"
 touch "$PROJECT/.agent/LOGS/.gitkeep"
 touch "$PROJECT/.agent/sessions/.gitkeep"
 
-# --- Make hooks executable (always, handles git clone scenarios) ---
+# --- Make hooks executable + clear macOS quarantine (handles git clone / curl|bash) ---
 chmod +x "$PROJECT/.claude/hooks/"*.sh 2>/dev/null || true
+# macOS quarantine xattr blocks execution of downloaded scripts
+xattr -rd com.apple.quarantine "$PROJECT/.claude/hooks/" 2>/dev/null || true
 
 echo ""
 echo "Done. Megavibe is ready in: $PROJECT"
