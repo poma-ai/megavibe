@@ -1,8 +1,11 @@
 #!/bin/bash
-set -euo pipefail
-
 # Megavibe — one-command install
 # Usage: curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | bash
+#
+# The { ... } block forces bash to read the entire script before executing,
+# preventing brew/other commands from consuming stdin when piped via curl | bash.
+{
+set -euo pipefail
 #
 # Supports macOS, Linux, and Windows (Git Bash / WSL).
 # Auto-installs prerequisites using the platform's package manager.
@@ -314,3 +317,4 @@ echo "  That's it. Claude will remember everything from now on."
 echo ""
 echo -e "  ${DIM}Tip: Run 'megavibe' every time you start working. It's always safe to re-run.${RESET}"
 echo ""
+}
