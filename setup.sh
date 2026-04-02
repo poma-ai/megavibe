@@ -51,6 +51,67 @@ if [ -z "$PYTHON" ]; then
   warn "Python 3.8+ not found — poma-memory and Telegram bot will be unavailable"
 fi
 
+# ─── pip detection + bootstrap ───────────────────────────────────────
+# $PYTHON -m pip may not work if pip wasn't installed with Python (common on
+# Debian/Ubuntu where python3-pip is a separate package, or on minimal installs).
+# Detect the best pip invocation and bootstrap via ensurepip if needed.
+
+PIP=""
+if [ -n "$PYTHON" ]; then
+  # 1. Try $PYTHON -m pip (most reliable when it works)
+  if $PYTHON -m pip --version &>/dev/null; then
+    PIP="$PYTHON -m pip"
+  else
+    # 2. Try standalone pip3/pip commands that match our Python
+    PY_VERSION=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+    for pipcmd in pip3 pip "pip${PY_VERSION}"; do
+      if command -v "$pipcmd" &>/dev/null && "$pipcmd" --version &>/dev/null; then
+        PIP="$pipcmd"
+        break
+      fi
+    done
+  fi
+
+  # 3. Still no pip — try to bootstrap it
+  if [ -z "$PIP" ]; then
+    echo "  pip not found — attempting to bootstrap..."
+    if $PYTHON -m ensurepip --default-pip &>/dev/null 2>&1 \
+       || $PYTHON -m ensurepip --user &>/dev/null 2>&1; then
+      if $PYTHON -m pip --version &>/dev/null; then
+        PIP="$PYTHON -m pip"
+        ok "pip bootstrapped via ensurepip"
+      fi
+    fi
+  fi
+
+  # 4. Last resort: try the OS package manager
+  if [ -z "$PIP" ]; then
+    if command -v apt-get &>/dev/null; then
+      echo "  Installing python3-pip via apt..."
+      sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip
+    elif command -v dnf &>/dev/null; then
+      echo "  Installing python3-pip via dnf..."
+      sudo dnf install -y -q python3-pip
+    elif command -v pacman &>/dev/null; then
+      echo "  Installing python-pip via pacman..."
+      sudo pacman -S --noconfirm python-pip
+    elif command -v brew &>/dev/null; then
+      # macOS: pip comes with Homebrew python, but just in case
+      echo "  Reinstalling python3 via brew (to get pip)..."
+      brew reinstall python3
+    fi
+    # Check again after OS install
+    if $PYTHON -m pip --version &>/dev/null; then
+      PIP="$PYTHON -m pip"
+      ok "pip installed via package manager"
+    fi
+  fi
+
+  if [ -z "$PIP" ]; then
+    warn "pip not available — Python packages (poma-memory, telegram-bot) will be unavailable"
+  fi
+fi
+
 # ─── 0. Define installation mode ────────────────────────────────────
 
 NONINTERACTIVE_AUTO=0
@@ -241,13 +302,14 @@ if [ -n "$PYTHON" ]; then
 fi
 
 # Install poma-memory from PyPI (preferred) or fall back to bundled poma_memory.py
-if [ -n "$PYTHON" ]; then
+if [ -n "$PYTHON" ] && [ -n "$PIP" ]; then
   if $PYTHON -c "import poma_memory" &>/dev/null; then
     skip "poma-memory (pip, already installed)"
   else
-    echo "  Installing poma-memory from PyPI..."
-    $PYTHON -m pip install --user --quiet "poma-memory[semantic,mcp]" 2>/dev/null \
-      || $PYTHON -m pip install --quiet "poma-memory[semantic,mcp]" 2>/dev/null
+    echo "  Installing poma-memory from PyPI (this may take a minute)..."
+    $PIP install --user "poma-memory[semantic,mcp]" \
+      || $PIP install "poma-memory[semantic,mcp]" \
+      || true
     if $PYTHON -c "import poma_memory" &>/dev/null; then
       ok "poma-memory (pip)"
     else
@@ -255,8 +317,8 @@ if [ -n "$PYTHON" ]; then
       if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
         cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
         # Install minimal deps for bundled version
-        $PYTHON -m pip install --user --quiet numpy model2vec 2>/dev/null \
-          || $PYTHON -m pip install --quiet numpy model2vec 2>/dev/null \
+        $PIP install --user numpy model2vec \
+          || $PIP install numpy model2vec \
           || warn "Could not install poma-memory deps — search will be unavailable"
         ok "poma-memory (bundled fallback)"
       else
@@ -264,6 +326,10 @@ if [ -n "$PYTHON" ]; then
       fi
     fi
   fi
+elif [ -n "$PYTHON" ] && [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
+  # Python available but no pip — deploy bundled version (deps missing, but file is there)
+  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
+  warn "poma-memory deployed without deps (pip unavailable)"
 elif [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
   cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
 fi
@@ -275,13 +341,13 @@ telegram_bot_install() {
     ok "telegram-bot.py deployed"
 
     # Install python-telegram-bot if not already present (+ httpx for voice I/O)
-    if [ -n "$PYTHON" ]; then
+    if [ -n "$PYTHON" ] && [ -n "$PIP" ]; then
       if $PYTHON -c "import telegram" &>/dev/null; then
         skip "python-telegram-bot"
       else
         echo "  Installing python-telegram-bot (for Megavibe Remote)..."
-        $PYTHON -m pip install --user --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
-          || $PYTHON -m pip install --quiet "python-telegram-bot>=21" httpx 2>/dev/null \
+        $PIP install --user "python-telegram-bot>=21" httpx \
+          || $PIP install "python-telegram-bot>=21" httpx \
           || warn "Could not install python-telegram-bot — remote will be unavailable"
         if $PYTHON -c "import telegram" &>/dev/null; then
           ok "python-telegram-bot + httpx"
