@@ -584,7 +584,9 @@ done
 rm -f "${CLAUDE_MD}.tmp" "${CLAUDE_MD}.tmp2"
 
 # Record installed version (for future upgrade detection)
-echo "3" > "$MEGAVIBE_HOME/version"
+# Only write if no version file exists yet (install.sh stores the git SHA;
+# we must not clobber it with a bare "3" or update-check breaks for non-git installs)
+[ -f "$MEGAVIBE_HOME/version" ] || echo "3" > "$MEGAVIBE_HOME/version"
 
 # ─── 5. Install/update statusline ───────────────────────────────────
 
@@ -599,7 +601,7 @@ ok "~/.claude/statusline.sh"
 
 # Add statusLine + attribution config to user-level settings.json
 USER_SETTINGS="$HOME/.claude/settings.json"
-MEGAVIBE_SETTINGS='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","padding":2},"attribution":{"commit":"","pr":""}}'
+MEGAVIBE_SETTINGS='{"statusLine":{"type":"command","command":"~/.claude/statusline.sh","padding":2},"attribution":{"commit":"Co-authored-by: megavibe <megavibe@poma-ai.com>","pr":""}}'
 
 if [ -f "$USER_SETTINGS" ]; then
   if command -v jq &>/dev/null; then

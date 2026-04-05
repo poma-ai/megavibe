@@ -184,7 +184,7 @@ fi
 
 # --- Record cooldown for proactive compaction ---
 # log-tool-event.sh checks this timestamp to suppress nudges post-compaction
-date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true
+date +%s > ".agent/LOGS/.compact-ts.${SID}" 2>/dev/null || true
 
 # --- Write durable backup (in case systemMessage injection fails) ---
 cat > "$INSTRUCTIONS_FILE" << INSTREOF
