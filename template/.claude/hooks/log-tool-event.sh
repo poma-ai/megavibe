@@ -198,6 +198,28 @@ ${COMPACT_NUDGE}"
   fi
 fi
 
+# --- Update notification: alert running sessions when megavibe was updated ---
+UPDATE_APPLIED_FILE="$HOME/.megavibe/.update-applied"
+if [ -f "$UPDATE_APPLIED_FILE" ] && [ -n "${MEGAVIBE_LAUNCH_VERSION:-}" ] && [ "$MEGAVIBE_LAUNCH_VERSION" != "unknown" ]; then
+  NEW_VER=$(cat "$UPDATE_APPLIED_FILE" 2>/dev/null || echo "")
+  if [ -n "$NEW_VER" ] && [ "$NEW_VER" != "$MEGAVIBE_LAUNCH_VERSION" ]; then
+    # Show once per session (flag in session-scoped dir)
+    SESSION_DIR=".agent/sessions/${SID}"
+    SEEN_FLAG="${SESSION_DIR}/.update-nudge-seen"
+    if [ ! -f "$SEEN_FLAG" ]; then
+      mkdir -p "$SESSION_DIR" 2>/dev/null || true
+      touch "$SEEN_FLAG" 2>/dev/null || true
+      UPDATE_MSG="⚡ Megavibe was updated (new version available). Run /megavibe-restart to apply (updates hooks, rules, skills, then resumes this conversation). Or finish your current task first — no rush."
+      if [ -n "$NUDGE_MSG" ]; then
+        NUDGE_MSG="${NUDGE_MSG}
+${UPDATE_MSG}"
+      else
+        NUDGE_MSG="$UPDATE_MSG"
+      fi
+    fi
+  fi
+fi
+
 # Emit nudge as systemMessage (authoritative — Claude treats it as system-level instruction)
 if [ -n "$NUDGE_MSG" ]; then
   jq -n --arg msg "$NUDGE_MSG" '{systemMessage: $msg}' 2>/dev/null || true
