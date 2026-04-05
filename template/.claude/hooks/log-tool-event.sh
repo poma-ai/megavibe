@@ -111,14 +111,23 @@ if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]]; then
   # Don't exit — still need to count this tool call
 fi
 
-# Increment counter atomically using flock
+# Only count implementation calls toward the nudge threshold.
+# Read-heavy exploration (Grep, Glob, Read) shouldn't trigger "stale context" nudges.
+IMPL_TOOL=0
+case "$TOOL_NAME" in
+  Edit|MultiEdit|Write|Bash|NotebookEdit) IMPL_TOOL=1 ;;
+esac
+
+# Increment counter atomically using flock (only for implementation tools)
 COUNT=0
-(
-  flock -x 200 2>/dev/null
-  COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
-  COUNT=$((COUNT + 1))
-  echo "$COUNT" > "$COUNTER_FILE"
-) 200>"${COUNTER_FILE}.lock" 2>/dev/null || true
+if [ "$IMPL_TOOL" -eq 1 ]; then
+  (
+    flock -x 200 2>/dev/null
+    COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+    COUNT=$((COUNT + 1))
+    echo "$COUNT" > "$COUNTER_FILE"
+  ) 200>"${COUNTER_FILE}.lock" 2>/dev/null || true
+fi
 
 # Re-read counter after flock (the subshell variable doesn't propagate)
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
