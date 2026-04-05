@@ -716,7 +716,7 @@ RESTART_MARKER="$MEGAVIBE_HOME/.restart-session"
 CLAUDE_EXTRA_ARGS=("$@")
 
 while true; do
-  claude --dangerously-skip-permissions --remote-control "${CLAUDE_EXTRA_ARGS[@]}" &
+  claude --dangerously-skip-permissions --remote-control ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
