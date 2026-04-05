@@ -136,7 +136,7 @@ Don't use subagents for: single-file edits, README tweaks, reading one script.
 
 These are NOT currently implemented but are worth considering as megavibe evolves:
 
-- ~~**Skills (`.claude/skills/`)**~~: **Done.** Three skills: `/rehydrate`, `/catchup`, `/compact-context`. Deployed by init.sh.
+- ~~**Skills (`.claude/skills/`)**~~: **Done.** Four skills: `/rehydrate`, `/catchup`, `/compact-context`, `/megavibe-restart`. Deployed by init.sh.
 - ~~**Scoped rules (`.claude/rules/*.md`)**~~: **Done.** Protocol split into core (90 lines in CLAUDE.md) + rules (spinouts.md, delegation.md). Deployed by init.sh.
 - ~~**`CLAUDE.local.md`**~~: **Done.** Auto-gitignored personal overrides. Created by init.sh, added to .gitignore.
 - **PreToolUse input modification** (v2.0.10+): Hooks can now modify tool inputs, not just block. Could enable transparent sandboxing or convention enforcement.

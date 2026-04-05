@@ -99,6 +99,8 @@ do_update() {
     }
     echo ""
     echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
+    # Signal running sessions that an update landed
+    git -C "$src" rev-parse HEAD > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
   else
     echo -e "${BOLD}Updating from GitHub...${RESET}"
     echo ""
@@ -126,6 +128,8 @@ do_update() {
     fi
     echo ""
     echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
+    # Signal running sessions that an update landed
+    echo "$new_hash" > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
   fi
   rm -f "$UPDATE_AVAILABLE_FILE"
 }
@@ -673,6 +677,16 @@ if [ -d ".agent" ] && [ -f ".agent/pending-remote.jsonl" ]; then
   fi
 fi
 
+# ─── Capture launch version (for update detection by hooks) ──────────
+
+LAUNCH_VER=""
+if [ -n "$REPO_DIR" ] && is_git_source "$REPO_DIR"; then
+  LAUNCH_VER=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
+elif [ -f "$VERSION_FILE" ]; then
+  LAUNCH_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
+fi
+export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
+
 # ─── Startup tips ────────────────────────────────────────────────────
 
 echo ""
@@ -695,8 +709,45 @@ elif [ -d ".agent" ]; then
 fi
 # Launch claude (foreground via wait, not exec — enables trap cleanup)
 # --remote-control: every session is accessible from phone via Claude app
-claude --dangerously-skip-permissions --remote-control "$@" &
-CLAUDE_PID=$!
-# Patch the lock with claude's actual PID (not the bash wrapper's $$)
-update_lock_pid "$CLAUDE_PID"
-wait $CLAUDE_PID 2>/dev/null || true
+#
+# Restart loop: if a /megavibe-restart skill writes the restart marker,
+# we update megavibe, sync hooks, and relaunch with --continue.
+RESTART_MARKER="$MEGAVIBE_HOME/.restart-session"
+CLAUDE_EXTRA_ARGS=("$@")
+
+while true; do
+  claude --dangerously-skip-permissions --remote-control "${CLAUDE_EXTRA_ARGS[@]}" &
+  CLAUDE_PID=$!
+  # Patch the lock with claude's actual PID (not the bash wrapper's $$)
+  update_lock_pid "$CLAUDE_PID"
+  wait $CLAUDE_PID 2>/dev/null || true
+
+  # Check for restart-after-update marker
+  if [ -f "$RESTART_MARKER" ]; then
+    rm -f "$RESTART_MARKER"
+    echo ""
+    echo -e "  ${BOLD}Updating megavibe...${RESET}"
+    do_update 2>&1 || echo -e "  ${YELLOW}Update failed — restarting with current version.${RESET}"
+    echo ""
+    echo -e "  ${BOLD}Syncing hooks and rules...${RESET}"
+    bash "$INIT_SCRIPT" . 2>&1
+    echo ""
+    echo -e "  ${GREEN}Resuming conversation...${RESET}"
+    echo ""
+    # Re-capture launch version after update
+    if [ -n "$REPO_DIR" ] && is_git_source "$REPO_DIR"; then
+      LAUNCH_VER=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
+    elif [ -f "$VERSION_FILE" ]; then
+      LAUNCH_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
+    fi
+    export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
+    # Clear the update-applied signal (this session is now current)
+    rm -f "$MEGAVIBE_HOME/.update-applied"
+    # Next iteration resumes the conversation
+    CLAUDE_EXTRA_ARGS=(--continue)
+    continue
+  fi
+
+  # Normal exit — break out of the loop
+  break
+done
