@@ -51,6 +51,17 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/on-pre-compact.sh"
+          }
+        ]
+      }
+    ],
     "SessionEnd": [],
     "PreToolUse": [
       {

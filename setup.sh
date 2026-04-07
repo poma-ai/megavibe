@@ -627,14 +627,42 @@ info "6) Registering MCP servers"
 # Check which MCP servers are already registered
 EXISTING_MCP=$(claude mcp list 2>/dev/null || echo "")
 
+# Helper: check MCP server health. Returns:
+#   0 = connected and healthy (skip)
+#   1 = not registered (needs add)
+#   2 = registered but not connected (needs remove + re-add)
+mcp_health() {
+  local name="$1"
+  if echo "$EXISTING_MCP" | grep -qi "${name}.*Connected"; then
+    return 0
+  elif echo "$EXISTING_MCP" | grep -qi "$name"; then
+    return 2
+  else
+    return 1
+  fi
+}
+
+# Helper: ensure MCP server is registered and healthy
+ensure_mcp() {
+  local name="$1"
+  shift
+  # remaining args are the claude mcp add command args
+  local status=0
+  mcp_health "$name" || status=$?
+  if [ "$status" -eq 0 ]; then
+    skip "$name MCP server"
+    return 0
+  elif [ "$status" -eq 2 ]; then
+    warn "$name MCP registered but not connected — re-registering"
+    claude mcp remove "$name" 2>/dev/null || true
+  fi
+  claude mcp add --transport stdio --scope user "$name" -- "$@"
+  ok "$name MCP server"
+}
+
 # Codex MCP
 register_codex_mcp() {
-  if echo "$EXISTING_MCP" | grep -qi "codex"; then
-    skip "Codex MCP server"
-  else
-    claude mcp add --transport stdio --scope user codex -- codex mcp-server
-    ok "Codex MCP server"
-  fi
+  ensure_mcp codex codex mcp-server
 }
 
 if command -v codex &>/dev/null; then
@@ -643,12 +671,7 @@ fi
 
 # Gemini MCP
 register_gemini_mcp() {
-  if echo "$EXISTING_MCP" | grep -qi "gemini"; then
-    skip "Gemini MCP server"
-  else
-    claude mcp add --transport stdio --scope user gemini-cli -- npx -y gemini-mcp-tool
-    ok "Gemini MCP server"
-  fi
+  ensure_mcp gemini-cli npx -y gemini-mcp-tool
 
   # Gemini CLI auth: use API key when GEMINI_API_KEY is set
   # (OAuth hits Cloud AI Companion API which requires GCP IAM permissions;
@@ -678,12 +701,7 @@ fi
 
 # Playwright MCP
 register_playwright_mcp() {
-  if echo "$EXISTING_MCP" | grep -qi "playwright"; then
-    skip "Playwright MCP server"
-  else
-    claude mcp add --transport stdio --scope user playwright -- npx -y @playwright/mcp@latest
-    ok "Playwright MCP server"
-  fi
+  ensure_mcp playwright npx -y @playwright/mcp@latest
 
   # Ensure Playwright browsers are installed (required for @playwright/mcp to work)
   if npx -y @playwright/mcp@latest --help &>/dev/null 2>&1; then
@@ -718,16 +736,25 @@ else
 fi
 
 # poma-memory MCP (pip-installed preferred, bundled fallback)
-if echo "$EXISTING_MCP" | grep -qi "poma-memory"; then
+# Can't use ensure_mcp directly — has pip vs bundled fallback logic
+POMA_MCP_STATUS=0
+mcp_health "poma-memory" || POMA_MCP_STATUS=$?
+if [ "$POMA_MCP_STATUS" -eq 0 ]; then
   skip "poma-memory MCP server"
-elif command -v poma-memory &>/dev/null && poma-memory mcp --help &>/dev/null; then
-  claude mcp add --transport stdio --scope user poma-memory -- poma-memory mcp
-  ok "poma-memory MCP server (pip)"
-elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ] && [ -n "$PYTHON" ]; then
-  claude mcp add --transport stdio --scope user poma-memory -- "$PYTHON" "$MEGAVIBE_HOME/poma_memory.py" mcp
-  ok "poma-memory MCP server (bundled)"
 else
-  skip "poma-memory MCP server (not installed — run: pip install poma-memory[mcp])"
+  [ "$POMA_MCP_STATUS" -eq 2 ] && {
+    warn "poma-memory MCP registered but not connected — re-registering"
+    claude mcp remove poma-memory 2>/dev/null || true
+  }
+  if command -v poma-memory &>/dev/null && poma-memory mcp --help &>/dev/null; then
+    claude mcp add --transport stdio --scope user poma-memory -- poma-memory mcp
+    ok "poma-memory MCP server (pip)"
+  elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ] && [ -n "$PYTHON" ]; then
+    claude mcp add --transport stdio --scope user poma-memory -- "$PYTHON" "$MEGAVIBE_HOME/poma_memory.py" mcp
+    ok "poma-memory MCP server (bundled)"
+  else
+    skip "poma-memory MCP server (not installed — run: pip install poma-memory[mcp])"
+  fi
 fi
 
 # ─── 7. Verify ──────────────────────────────────────────────────────
