@@ -92,44 +92,58 @@ do_update() {
   if is_git_source "$src"; then
     echo -e "${BOLD}Updating from git...${RESET}"
     echo ""
+    local old_head new_head
+    old_head=$(git -C "$src" rev-parse HEAD 2>/dev/null)
     git -C "$src" pull --ff-only origin main 2>&1 || {
       echo -e "  ${RED}Fast-forward failed.${RESET} You may have local changes."
       echo "  cd $src && git pull manually."
       return 1
     }
+    new_head=$(git -C "$src" rev-parse HEAD 2>/dev/null)
     echo ""
-    echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
-    # Signal running sessions that an update landed
-    git -C "$src" rev-parse HEAD > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
+    if [ "$old_head" = "$new_head" ]; then
+      echo -e "  ${GREEN}Already up to date.${RESET}"
+    else
+      echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
+      # Signal running sessions that an update landed
+      echo "$new_head" > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
+    fi
   else
     echo -e "${BOLD}Updating from GitHub...${RESET}"
     echo ""
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    # Clean up temp dir on any exit from this function
-    trap 'rm -rf "$tmpdir"' RETURN
-    echo "  Downloading latest version..."
-    if ! git clone --depth 1 "https://github.com/$GITHUB_REPO.git" "$tmpdir/megavibe" 2>/dev/null; then
-      # git clone failed — try curl tarball as fallback
-      echo "  git clone failed, trying tarball..."
-      if ! curl -sfL "https://github.com/$GITHUB_REPO/archive/refs/heads/main.tar.gz" | tar xz -C "$tmpdir" 2>/dev/null; then
-        echo -e "  ${RED}Download failed.${RESET} Check your internet connection."
-        return 1
-      fi
-      mv "$tmpdir/megavibe-main" "$tmpdir/megavibe"
-    fi
-    echo "  Running setup..."
-    bash "$tmpdir/megavibe/setup.sh"
-    # Store the new version hash
-    local new_hash
+    # Check if already at latest version before downloading
+    local old_hash new_hash
+    old_hash=""
+    [ -f "$VERSION_FILE" ] && old_hash=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
     new_hash=$(curl -sfL -H "Accept: application/vnd.github.sha" "$GITHUB_API" 2>/dev/null || echo "")
-    if [ -n "$new_hash" ]; then
-      echo "$new_hash" > "$VERSION_FILE"
+    if [ -n "$old_hash" ] && [ -n "$new_hash" ] && [ "$old_hash" = "$new_hash" ]; then
+      echo -e "  ${GREEN}Already up to date.${RESET}"
+    else
+      local tmpdir
+      tmpdir=$(mktemp -d)
+      # Clean up temp dir on any exit from this function
+      trap 'rm -rf "$tmpdir"' RETURN
+      echo "  Downloading latest version..."
+      if ! git clone --depth 1 "https://github.com/$GITHUB_REPO.git" "$tmpdir/megavibe" 2>/dev/null; then
+        # git clone failed — try curl tarball as fallback
+        echo "  git clone failed, trying tarball..."
+        if ! curl -sfL "https://github.com/$GITHUB_REPO/archive/refs/heads/main.tar.gz" | tar xz -C "$tmpdir" 2>/dev/null; then
+          echo -e "  ${RED}Download failed.${RESET} Check your internet connection."
+          return 1
+        fi
+        mv "$tmpdir/megavibe-main" "$tmpdir/megavibe"
+      fi
+      echo "  Running setup..."
+      bash "$tmpdir/megavibe/setup.sh"
+      # Store the new version hash
+      if [ -n "$new_hash" ]; then
+        echo "$new_hash" > "$VERSION_FILE"
+      fi
+      echo ""
+      echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
+      # Signal running sessions that an update landed
+      echo "$new_hash" > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
     fi
-    echo ""
-    echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
-    # Signal running sessions that an update landed
-    echo "$new_hash" > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
   fi
   rm -f "$UPDATE_AVAILABLE_FILE"
 }

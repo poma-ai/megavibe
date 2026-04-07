@@ -72,16 +72,6 @@ FULL_CONTEXT_LINES=$(echo "$FULL_CONTEXT_LINES" | tr -d ' ')
 
 echo "FULL_CONTEXT: ${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines" >&2
 
-# --- The Gemini prompt (reused in both MCP and curl instructions) ---
-GEMINI_PROMPT="Read this full context log (${FULL_CONTEXT_LINES} lines) and produce a focused WORKING CONTEXT summary.
-
-Rules:
-- Output MUST be at least as long as the input or 400 lines, whichever is SMALLER. Do not over-compress small inputs.
-- PRESERVE: all open/in-progress tasks, recent decisions, architectural context, lessons learned, current goal, risks, unknowns.
-- REMOVE: resolved issues, old debugging notes, completed task details, duplicate status updates, superseded decisions.
-- Structure with sections: Goal, Constraints, Key Decisions (table), What's Done (brief), Open Tasks (with acceptance criteria), Risks/Unknowns, Next Actions (3 steps).
-- CRITICAL: you are reading the RAW append-only FULL_CONTEXT.md. Never regenerate from a previous WORKING_CONTEXT."
-
 # --- Build additionalContext based on size ---
 
 if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
@@ -100,7 +90,8 @@ The compaction summary above is your ONLY source of context. Before continuing:
 1. IMMEDIATELY write a summary of the compaction above to .agent/FULL_CONTEXT.md (append after the header). Include: goal, key decisions, files changed, current state, what was being worked on.
 2. Update .agent/DECISIONS.md with any decisions from the summary.
 3. Update .agent/TASKS.md with pending tasks from the summary.
-4. Then follow the re-hydration steps below to regenerate ${WC_PATH}.
+4. Run /catchup to orient on project state (reads .agent/ + git — fast, no AI).
+5. Run /rehydrate to regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery).
 
 DO NOT skip these steps. The compaction summary will be lost if you don't externalize it now.
 
@@ -123,6 +114,13 @@ elif [ "$FULL_CONTEXT_SIZE" -lt 10240 ]; then
 Your session ID is: ${SID}
 Your session-scoped WORKING_CONTEXT is at: ${WC_PATH}
 For 100% recall: .agent/FULL_CONTEXT.md on disk (${FULL_CONTEXT_LINES} lines, ${FULL_CONTEXT_SIZE} bytes)
+
+## Post-compaction recovery steps
+
+1. Run /catchup to orient yourself on project state (reads .agent/ + git — fast, no AI)
+2. Then run /rehydrate to regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery)
+
+Do these NOW before resuming any other work.
 
 --- DECISIONS.md ---
 ${DECISIONS}
@@ -148,27 +146,12 @@ Your session-scoped WORKING_CONTEXT is at: ${WC_PATH}
 Full context on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FULL_CONTEXT_SIZE} bytes — the append-only source of truth)
 Full instructions also saved at: ${INSTRUCTIONS_FILE}
 
-## Re-hydration steps
+## Post-compaction recovery steps
 
-0. **poma-memory augmentation** (if available): call poma_search with key terms from TASKS.md to get targeted context. Include results when calling the backend in step 1.
+1. Run /catchup to orient yourself on project state (reads .agent/ + git — fast, no AI calls)
+2. Then run /rehydrate to regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery with automatic fallback chain)
 
-1. **Try Gemini MCP first:** call mcp__gemini-cli__ask-gemini with this prompt:
-
-   @.agent/FULL_CONTEXT.md
-   ${GEMINI_PROMPT}
-
-2. **If Gemini MCP fails** and \$GEMINI_API_KEY is set, use it via Bash:
-   curl -s \"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\$GEMINI_API_KEY\" \\
-     -H 'Content-Type: application/json' \\
-     -d '{\"contents\":[{\"parts\":[{\"text\":\"<paste FULL_CONTEXT.md content + prompt above>\"}]}]}'
-
-3. **If both Gemini paths fail**, fall back to Codex MCP with the same prompt and file content.
-
-4. **If ALL external backends fail**, use the Claude subagent as last resort: launch an Agent with the summarization prompt above, pointing it at .agent/FULL_CONTEXT.md. This always works (same subscription). The subagent has a 200K token window — sufficient for most projects.
-
-5. **Write** the result to ${WC_PATH} and **read it back**.
-
-IMPORTANT: Do NOT use \$GEMINI_API_KEY for Claude or OpenAI — those always use subscription logins.
+Do these NOW before resuming any other work.
 
 Here are the structured files to orient you immediately:
 

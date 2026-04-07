@@ -76,12 +76,67 @@ ${POMA_RESULTS}"
   fi
 fi
 
+# --- Subagent health check (single `claude mcp list` call, cached) ---
+SUBAGENT_STATUS=""
+MCP_LIST=$(claude mcp list 2>/dev/null || echo "")
+
+mcp_status() {
+  local name="$1"
+  if echo "$MCP_LIST" | grep -qi "${name}.*Connected"; then
+    echo "MCP connected"
+  elif echo "$MCP_LIST" | grep -qi "$name"; then
+    echo "MCP registered (not connected)"
+  else
+    echo ""
+  fi
+}
+
+# Gemini
+GEMINI_STATUS=$(mcp_status "gemini")
+[ -z "$GEMINI_STATUS" ] && { command -v gemini &>/dev/null && GEMINI_STATUS="CLI only (no MCP)" || GEMINI_STATUS="not installed"; }
+
+# Codex
+CODEX_STATUS=$(mcp_status "codex")
+if [ -z "$CODEX_STATUS" ]; then
+  command -v codex &>/dev/null && CODEX_STATUS="CLI only, no MCP" || CODEX_STATUS="not installed"
+fi
+if command -v codex &>/dev/null; then
+  CODEX_VER=$(codex --version 2>/dev/null || echo "")
+  [ -n "$CODEX_VER" ] && CODEX_STATUS="${CODEX_STATUS} (${CODEX_VER})"
+fi
+
+# Playwright
+PLAYWRIGHT_STATUS=$(mcp_status "playwright")
+[ -z "$PLAYWRIGHT_STATUS" ] && PLAYWRIGHT_STATUS="not installed"
+
+# poma-memory
+POMA_STATUS=$(mcp_status "poma-memory")
+if [ -z "$POMA_STATUS" ]; then
+  if command -v poma-memory &>/dev/null; then
+    POMA_STATUS="CLI only (no MCP)"
+  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
+    POMA_STATUS="bundled script (no MCP)"
+  else
+    POMA_STATUS="not installed"
+  fi
+fi
+
+SUBAGENT_STATUS="
+--- Subagent status ---
+| Backend | Status |
+|---------|--------|
+| Gemini | ${GEMINI_STATUS} |
+| Codex | ${CODEX_STATUS} |
+| Playwright | ${PLAYWRIGHT_STATUS} |
+| poma-memory | ${POMA_STATUS} |"
+
 CONTEXT="## Megavibe — project knowledge
 
 Your session ID is: ${SID}
 WORKING_CONTEXT path: .agent/sessions/${SID}/WORKING_CONTEXT.md
 
 ${TASK_HINT}
+${SUBAGENT_STATUS}
 
 --- LESSONS.md ---
 $(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')

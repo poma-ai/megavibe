@@ -30,17 +30,19 @@ Multiple Claude Code sessions can run in the same project simultaneously. To pre
 
 The on-compact hook tells you your session ID and WORKING_CONTEXT path. Use the path it gives you.
 
-## Auto-triggered re-hydration
+## Compaction lifecycle (automatic)
 
-When Claude Code compacts the context, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, and your session-scoped `WORKING_CONTEXT.md` as context, plus an instruction to call Gemini (or Codex) for full re-hydration. The hook triggers automatically; you execute the call.
+Compaction has three phases, all hook-driven:
 
-**When you see the re-hydration instruction, follow it immediately** using the standard fallback chain:
-1. Try Gemini MCP → `$GEMINI_API_KEY` curl → Codex MCP → Claude subagent (last resort, always works).
-2. Ask it to read `.agent/FULL_CONTEXT.md` + `.agent/DECISIONS.md` + `.agent/TASKS.md` + `git status` output.
-3. Ask it to write a fresh `WORKING_CONTEXT.md` at the session-scoped path provided by the hook (max ~400 lines).
-4. Read the regenerated file and continue working.
+**Pre-compact** (PreCompact hook): A hook stamps the compaction summary with the current `.agent/` file status and staleness (tool calls since last write). This tells post-compaction Claude whether files might be stale.
 
-This is auto-triggered — no human intervention needed, but you must follow through. A hook nags via stderr on every tool call until `WORKING_CONTEXT.md` is updated.
+**Proactive nudge** (before compaction triggers): When context exceeds ~120K tokens, a hook nudges you to **flush all pending context to `.agent/` files first**, then run `/compact`. Follow the nudge — post-compaction recovery only has what's on disk.
+
+**Post-compact** (on-compact hook): After compaction, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, `.agent/LESSONS.md`, and recovery instructions. **Follow them immediately:**
+1. Run `/catchup` — quick orientation from `.agent/` files + git state (no AI, fast)
+2. Run `/rehydrate` — full AI-powered context recovery via Gemini/Codex fallback chain
+
+This is auto-triggered — no human intervention needed, but you must follow through. A hook nags on every tool call until `WORKING_CONTEXT.md` is updated.
 
 ## Workflow: Explore → Plan → Implement → Verify → Commit → Learn → Reflect
 
@@ -82,7 +84,7 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/compact-context` — selectively compact FULL_CONTEXT.md via standard fallback chain (rare, for very large logs)
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 
-**Proactive compaction.** A hook measures exact token usage from the conversation transcript. When context exceeds ~120K tokens, it nudges you to run `/compact`. **Follow the nudge** — your `.agent/` files and poma-memory already have everything; compaction just clears the conversation buffer so you get a fresh, focused working context via the on-compact recovery hook. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
+**Proactive compaction.** A hook measures exact token usage from the conversation transcript. When context exceeds ~120K tokens, it nudges you to **flush all pending context to `.agent/` files first, then run `/compact`**. Follow the nudge — post-compaction recovery (`/catchup` + `/rehydrate`) only has what's on disk. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
 
 ## Backend availability check
 

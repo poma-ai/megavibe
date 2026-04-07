@@ -89,7 +89,7 @@ else
 fi
 
 # --- Hook scripts (infrastructure — always overwrite) ---
-for hook in log-tool-event.sh block-dangerous-bash.sh after-edit.sh on-compact.sh on-session-start.sh augment-search.sh resize-image.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh after-edit.sh on-compact.sh on-pre-compact.sh on-session-start.sh augment-search.sh resize-image.sh; do
   cp "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook"
   echo "  synced: .claude/hooks/$hook"
 done

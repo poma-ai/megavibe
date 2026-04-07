@@ -156,7 +156,7 @@ if [ $((COUNT % TOKEN_CHECK_INTERVAL)) -eq 0 ] 2>/dev/null && [ "$IN_COOLDOWN" -
     TOTAL_TOKENS="${TOTAL_TOKENS:-0}"
 
     if [ "$TOTAL_TOKENS" -gt "$TOKEN_COMPACT_THRESHOLD" ] 2>/dev/null; then
-      COMPACT_NUDGE="🔄 Context at ~${TOTAL_TOKENS} tokens (threshold: ${TOKEN_COMPACT_THRESHOLD}). At your next natural stopping point, run /compact — your .agent/ files and poma-memory have everything needed for clean recovery."
+      COMPACT_NUDGE="🔄 Context at ~${TOTAL_TOKENS} tokens (threshold: ${TOKEN_COMPACT_THRESHOLD}). BEFORE running /compact: ensure ALL pending context, decisions, lessons, and task updates are written to their respective .agent/ files (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md). Then run /compact — post-compaction recovery (/catchup + /rehydrate) will only have what's on disk."
     fi
   fi
 fi
