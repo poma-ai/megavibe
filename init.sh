@@ -89,10 +89,21 @@ else
 fi
 
 # --- Hook scripts (infrastructure — always overwrite) ---
+HOOKS_MISSING=0
 for hook in log-tool-event.sh block-dangerous-bash.sh block-plan-mode.sh after-edit.sh on-compact.sh on-pre-compact.sh on-session-start.sh augment-search.sh resize-image.sh; do
-  cp "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook"
-  echo "  synced: .claude/hooks/$hook"
+  if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
+    cp "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook"
+    echo "  synced: .claude/hooks/$hook"
+  else
+    echo "  skip: .claude/hooks/$hook (missing from template)"
+    HOOKS_MISSING=$((HOOKS_MISSING + 1))
+  fi
 done
+if [ "$HOOKS_MISSING" -gt 0 ]; then
+  echo ""
+  echo "  ⚠  $HOOKS_MISSING hook(s) missing from template. Run: megavibe update"
+  echo ""
+fi
 
 # --- Rule files (infrastructure — always overwrite) ---
 for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
