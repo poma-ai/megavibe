@@ -74,6 +74,15 @@
         ]
       },
       {
+        "matcher": "TaskCreate|TaskUpdate|EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-plan-mode.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
