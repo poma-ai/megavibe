@@ -70,6 +70,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/block-dangerous-bash.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/nudge-native-tools.sh"
           }
         ]
       },
