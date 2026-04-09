@@ -326,27 +326,38 @@ if [ -n "$REPO_DIR" ] && [ -d "$REPO_DIR/template" ]; then
 fi
 
 if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
-  # Check if template has changed (compare protocol text)
-  if ! diff -q "$SOURCE_TEMPLATE/CLAUDE.md" "$MEGAVIBE_HOME/template/CLAUDE.md" &>/dev/null; then
+  # Check if any template file has changed — not just CLAUDE.md.
+  # Earlier versions compared only CLAUDE.md and silently skipped syncs
+  # when only hooks or settings.json changed. diff -rq walks the whole tree.
+  if ! diff -rq "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template" &>/dev/null; then
+    # Track whether CLAUDE.md specifically changed before we clobber it —
+    # only the protocol block in ~/.claude/CLAUDE.md needs surgical replace.
+    CLAUDE_MD_CHANGED=0
+    if ! diff -q "$SOURCE_TEMPLATE/CLAUDE.md" "$MEGAVIBE_HOME/template/CLAUDE.md" &>/dev/null; then
+      CLAUDE_MD_CHANGED=1
+    fi
     # Sync template to ~/.megavibe/
     rm -rf "$MEGAVIBE_HOME/template"
     cp -R "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template"
 
-    # Surgical-replace the protocol block in ~/.claude/CLAUDE.md
-    CLAUDE_MD="$HOME/.claude/CLAUDE.md"
-    MARKER="<!-- megavibe-v3 -->"
-    END_MARKER="<!-- /megavibe-v3 -->"
-    if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD" && grep -q "$END_MARKER" "$CLAUDE_MD"; then
-      sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
-      if [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
-        cp "$SOURCE_TEMPLATE/CLAUDE.md" "$CLAUDE_MD"
-      else
-        echo "" >> "${CLAUDE_MD}.tmp"
-        cat "$SOURCE_TEMPLATE/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
-        mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+    # Surgical-replace the protocol block in ~/.claude/CLAUDE.md only when
+    # CLAUDE.md itself changed (preserves user edits outside the markers).
+    if [ "$CLAUDE_MD_CHANGED" = "1" ]; then
+      CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+      MARKER="<!-- megavibe-v3 -->"
+      END_MARKER="<!-- /megavibe-v3 -->"
+      if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD" && grep -q "$END_MARKER" "$CLAUDE_MD"; then
+        sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
+        if [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
+          cp "$SOURCE_TEMPLATE/CLAUDE.md" "$CLAUDE_MD"
+        else
+          echo "" >> "${CLAUDE_MD}.tmp"
+          cat "$SOURCE_TEMPLATE/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
+          mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+        fi
+        rm -f "${CLAUDE_MD}.tmp"
+        echo "  Protocol updated."
       fi
-      rm -f "${CLAUDE_MD}.tmp"
-      echo "  Protocol updated."
     fi
   fi
 fi

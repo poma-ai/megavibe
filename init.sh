@@ -100,9 +100,14 @@ for hook in log-tool-event.sh block-dangerous-bash.sh block-plan-mode.sh nudge-n
   fi
 done
 if [ "$HOOKS_MISSING" -gt 0 ]; then
-  echo ""
-  echo "  ⚠  $HOOKS_MISSING hook(s) missing from template. Run: megavibe update"
-  echo ""
+  echo "" >&2
+  echo "  ⚠  WARNING: $HOOKS_MISSING hook(s) missing from $TEMPLATE_DIR/.claude/hooks/" >&2
+  echo "     Your ~/.megavibe/template/ is likely stale — the wrapper's template" >&2
+  echo "     sync only runs when CLAUDE.md changes, not hooks/settings.json." >&2
+  echo "     Immediate fix: rm -rf ~/.megavibe/template && \\" >&2
+  echo "                    cp -R <megavibe-repo>/template ~/.megavibe/template" >&2
+  echo "     Durable fix: update megavibe wrapper (post-Apr-9 uses diff -rq)." >&2
+  echo "" >&2
 fi
 
 # --- Rule files (infrastructure — always overwrite) ---
