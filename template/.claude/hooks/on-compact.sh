@@ -64,6 +64,34 @@ DECISIONS=$(cat .agent/DECISIONS.md 2>/dev/null || echo "(empty)")
 TASKS=$(cat .agent/TASKS.md 2>/dev/null || echo "(empty)")
 LESSONS=$(cat .agent/LESSONS.md 2>/dev/null || echo "(empty)")
 
+# --- Inline /catchup: git state + pre-compact WORKING_CONTEXT (if any) ---
+# Folding catchup into the hook means post-compact Claude only has to run
+# one slash command (/rehydrate). The catchup skill is still available for
+# session-start orientation.
+GIT_BRANCH=$(git branch --show-current 2>/dev/null || echo "(unknown)")
+GIT_LOG=$(git log --oneline -10 2>/dev/null || echo "(no commits)")
+GIT_DIFF_STAT=$(git diff --stat 2>/dev/null || echo "")
+[ -z "$GIT_DIFF_STAT" ] && GIT_DIFF_STAT="(clean — no uncommitted changes)"
+
+GIT_STATE="--- Git state ---
+Branch: ${GIT_BRANCH}
+Recent commits:
+${GIT_LOG}
+Uncommitted changes:
+${GIT_DIFF_STAT}"
+
+# Pre-compact WORKING_CONTEXT may still exist from before /compact fired.
+# It's stale (compaction summary is now the source of truth) but useful as
+# a what-was-I-doing hint. Truncate to 80 lines to avoid bloating the inject.
+OLD_WC=""
+if [ -f "$WC_PATH" ]; then
+  OLD_WC_BODY=$(head -80 "$WC_PATH" 2>/dev/null || echo "")
+  if [ -n "$OLD_WC_BODY" ]; then
+    OLD_WC="--- Pre-compact WORKING_CONTEXT.md (first 80 lines, stale hint only) ---
+${OLD_WC_BODY}"
+  fi
+fi
+
 # --- Check FULL_CONTEXT.md size ---
 FULL_CONTEXT_SIZE=$(wc -c < .agent/FULL_CONTEXT.md 2>/dev/null || echo "0")
 FULL_CONTEXT_SIZE=$(echo "$FULL_CONTEXT_SIZE" | tr -d ' ')
@@ -81,19 +109,25 @@ if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
 
   CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED — .agent/ FILES ARE EMPTY
 
-Your session ID is: ${SID}
-Your session-scoped WORKING_CONTEXT is at: ${WC_PATH}
+Session: ${SID}
+WORKING_CONTEXT path: ${WC_PATH}
 
-The .agent/ context files were never populated during this session.
-The compaction summary above is your ONLY source of context. Before continuing:
+The .agent/ context files were never populated during this session. The
+compaction summary above is your ONLY source of context. Before continuing:
 
-1. IMMEDIATELY write a summary of the compaction above to .agent/FULL_CONTEXT.md (append after the header). Include: goal, key decisions, files changed, current state, what was being worked on.
+1. IMMEDIATELY write a summary of the compaction above to .agent/FULL_CONTEXT.md
+   (append after the header). Include: goal, key decisions, files changed,
+   current state, what was being worked on.
 2. Update .agent/DECISIONS.md with any decisions from the summary.
 3. Update .agent/TASKS.md with pending tasks from the summary.
-4. Run /catchup to orient on project state (reads .agent/ + git — fast, no AI).
-5. Run /rehydrate to regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery).
+4. Then run /rehydrate — this is your only required slash command. It will
+   regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery).
 
-DO NOT skip these steps. The compaction summary will be lost if you don't externalize it now.
+DO NOT skip steps 1–3. The compaction summary will be lost if you don't
+externalize it now. Orientation (git state + /catchup equivalent) is inlined
+below so you do NOT need to run /catchup separately.
+
+${GIT_STATE}
 
 --- DECISIONS.md ---
 ${DECISIONS}
@@ -109,18 +143,23 @@ elif [ "$FULL_CONTEXT_SIZE" -lt 10240 ]; then
   echo "Strategy: raw injection (${FULL_CONTEXT_SIZE} bytes < 10KB)" >&2
   FULL_CONTEXT=$(cat .agent/FULL_CONTEXT.md 2>/dev/null || echo "")
 
-  CONTEXT="✅ CONTEXT RECOVERED — FULL_CONTEXT.md injected raw (${FULL_CONTEXT_LINES} lines, small enough to include directly).
+  CONTEXT="✅ CONTEXT WAS COMPACTED — orientation below. Your only required action is /rehydrate.
 
-Your session ID is: ${SID}
-Your session-scoped WORKING_CONTEXT is at: ${WC_PATH}
-For 100% recall: .agent/FULL_CONTEXT.md on disk (${FULL_CONTEXT_LINES} lines, ${FULL_CONTEXT_SIZE} bytes)
+Session: ${SID}
+WORKING_CONTEXT path: ${WC_PATH}
+FULL_CONTEXT on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FULL_CONTEXT_SIZE} bytes — small enough to inline below)
 
-## Post-compaction recovery steps
+## Post-compact recovery
 
-1. Run /catchup to orient yourself on project state (reads .agent/ + git — fast, no AI)
-2. Then run /rehydrate to regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery)
+Run /rehydrate — it regenerates ${WC_PATH} via the Gemini/Codex fallback
+chain (full AI-powered recovery). That is the ONLY slash command you need
+to type; the catchup-equivalent (git state + .agent/ files) is inlined
+below so you already have the information /catchup would have produced.
 
-Do these NOW before resuming any other work.
+Do /rehydrate BEFORE resuming any other work. Until it completes,
+stale-context nags are suppressed for ~5 minutes so you get a clean window.
+
+${GIT_STATE}
 
 --- DECISIONS.md ---
 ${DECISIONS}
@@ -130,6 +169,8 @@ ${TASKS}
 
 --- LESSONS.md ---
 ${LESSONS}
+
+${OLD_WC}
 
 --- FULL_CONTEXT.md (raw) ---
 ${FULL_CONTEXT}"
@@ -141,19 +182,22 @@ else
 
   CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED — RE-HYDRATION REQUIRED
 
-Your session ID is: ${SID}
-Your session-scoped WORKING_CONTEXT is at: ${WC_PATH}
-Full context on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FULL_CONTEXT_SIZE} bytes — the append-only source of truth)
-Full instructions also saved at: ${INSTRUCTIONS_FILE}
+Session: ${SID}
+WORKING_CONTEXT path: ${WC_PATH}
+FULL_CONTEXT on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FULL_CONTEXT_SIZE} bytes — the append-only source of truth, too large to inline)
+Durable backup of these instructions: ${INSTRUCTIONS_FILE}
 
-## Post-compaction recovery steps
+## Post-compact recovery
 
-1. Run /catchup to orient yourself on project state (reads .agent/ + git — fast, no AI calls)
-2. Then run /rehydrate to regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery with automatic fallback chain)
+Run /rehydrate — it regenerates ${WC_PATH} via the Gemini/Codex fallback
+chain (full AI-powered recovery). That is the ONLY slash command you need
+to type; orientation (git state + structured .agent/ files) is inlined
+below so /catchup is not needed separately.
 
-Do these NOW before resuming any other work.
+Do /rehydrate BEFORE resuming any other work. Until it completes,
+stale-context nags are suppressed for ~5 minutes so you get a clean window.
 
-Here are the structured files to orient you immediately:
+${GIT_STATE}
 
 --- DECISIONS.md ---
 ${DECISIONS}
@@ -162,7 +206,9 @@ ${DECISIONS}
 ${TASKS}
 
 --- LESSONS.md ---
-${LESSONS}"
+${LESSONS}
+
+${OLD_WC}"
 fi
 
 # --- Record cooldown for proactive compaction ---

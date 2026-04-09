@@ -7,7 +7,7 @@ description: Full AI-powered context recovery via Gemini/Codex. Use after compac
 
 Regenerate your session-scoped WORKING_CONTEXT.md from the durable `.agent/` files using Gemini or Codex.
 
-This is the heavy-duty recovery tool — it calls an AI backend and writes a fresh working context. For quick orientation without AI calls, use `/catchup` instead.
+This is the heavy-duty recovery tool — it calls an AI backend and writes a fresh working context. For quick orientation without AI calls at **session start**, use `/catchup` instead. After compaction you do NOT need `/catchup` — the `on-compact` hook already inlined that orientation into its systemMessage, so `/rehydrate` is the only slash command to run.
 
 ## Steps
 

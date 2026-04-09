@@ -38,11 +38,10 @@ Compaction has three phases, all hook-driven:
 
 **Proactive nudge** (before compaction triggers): When context exceeds ~120K tokens, a hook nudges you to **flush all pending context to `.agent/` files first**, then run `/compact`. Follow the nudge — post-compaction recovery only has what's on disk.
 
-**Post-compact** (on-compact hook): After compaction, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, `.agent/LESSONS.md`, and recovery instructions. **Follow them immediately:**
-1. Run `/catchup` — quick orientation from `.agent/` files + git state (no AI, fast)
-2. Run `/rehydrate` — full AI-powered context recovery via Gemini/Codex fallback chain
+**Post-compact** (on-compact hook): After compaction, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, `.agent/LESSONS.md`, the current git state, and the pre-compact `WORKING_CONTEXT.md` (as a stale hint) — i.e. everything `/catchup` would produce, inlined directly into the systemMessage. **Your only required action is:**
+1. Run `/rehydrate` — full AI-powered recovery via Gemini/Codex fallback chain, writes a fresh `WORKING_CONTEXT.md`
 
-This is auto-triggered — no human intervention needed, but you must follow through. A hook nags on every tool call until `WORKING_CONTEXT.md` is updated.
+You do NOT need to run `/catchup` separately after compaction — the orientation is already in the hook's injected message. `/catchup` remains useful for session-start orientation (fresh launch, no compaction event). A 5-minute post-compact grace period suppresses stale-context nags while `/rehydrate` runs, so you won't get double-yelled-at during recovery.
 
 ## Workflow: Explore → Plan → Implement → Verify → Commit → Learn → Reflect
 
@@ -84,7 +83,7 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/compact-context` — selectively compact FULL_CONTEXT.md via standard fallback chain (rare, for very large logs)
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 
-**Proactive compaction.** A hook measures exact token usage from the conversation transcript. When context exceeds ~120K tokens, it nudges you to **flush all pending context to `.agent/` files first, then run `/compact`**. Follow the nudge — post-compaction recovery (`/catchup` + `/rehydrate`) only has what's on disk. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
+**Proactive compaction.** A hook measures exact token usage from the conversation transcript. When context exceeds ~120K tokens, it nudges you to **flush all pending context to `.agent/` files first, then run `/compact`**. Follow the nudge — post-compact recovery (`/rehydrate`) only has what's on disk. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
 
 ## Backend availability check
 

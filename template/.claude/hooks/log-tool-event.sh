@@ -171,16 +171,29 @@ fi
 # --- Build nudge message if needed ---
 NUDGE_MSG=""
 
-# Threshold nudge (first hit)
-if [ "$COUNT" -eq "$NUDGE_THRESHOLD" ] 2>/dev/null; then
-  NUDGE_MSG="⚠️ $COUNT tool calls since last .agent/ update. Write current state to FULL_CONTEXT.md, DECISIONS.md, and TASKS.md now."
-# Repeat nudge
-elif [ "$COUNT" -gt "$NUDGE_THRESHOLD" ] 2>/dev/null && [ $((COUNT % NUDGE_REPEAT)) -eq 0 ] 2>/dev/null; then
-  NUDGE_MSG="⚠️ $COUNT tool calls without .agent/ update. Context files are going stale — write to them NOW or rehydration will have nothing to work with."
+# Post-compact grace period: on-compact.sh stamps .compact-ts.$SID. For the
+# first TOKEN_COOLDOWN_SECS (default 300s / 5 min) after that, suppress both
+# the threshold nudge AND the rehydrate nag. Rationale: right after compact,
+# Claude is running /rehydrate, which touches many files before it writes
+# WORKING_CONTEXT.md. Without the grace period, every tool call inside
+# /rehydrate would get double-yelled-at (stale context + rehydration pending).
+POST_COMPACT_GRACE=0
+if [ "$IN_COOLDOWN" -eq 1 ]; then
+  POST_COMPACT_GRACE=1
 fi
 
-# Re-hydration nag (appended to nudge if both apply)
-if [ -f "$REHYDRATE_FLAG" ]; then
+# Threshold nudge (first hit) — suppressed during post-compact grace
+if [ "$POST_COMPACT_GRACE" -eq 0 ]; then
+  if [ "$COUNT" -eq "$NUDGE_THRESHOLD" ] 2>/dev/null; then
+    NUDGE_MSG="⚠️ $COUNT tool calls since last .agent/ update. Write current state to FULL_CONTEXT.md, DECISIONS.md, and TASKS.md now."
+  # Repeat nudge
+  elif [ "$COUNT" -gt "$NUDGE_THRESHOLD" ] 2>/dev/null && [ $((COUNT % NUDGE_REPEAT)) -eq 0 ] 2>/dev/null; then
+    NUDGE_MSG="⚠️ $COUNT tool calls without .agent/ update. Context files are going stale — write to them NOW or rehydration will have nothing to work with."
+  fi
+fi
+
+# Re-hydration nag (appended to nudge if both apply) — suppressed during grace
+if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ]; then
   INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
   if [ -f "$INSTRUCTIONS_FILE" ]; then
     REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed. Read ${INSTRUCTIONS_FILE} for full instructions (Gemini MCP → GEMINI_API_KEY fallback → Codex)."
