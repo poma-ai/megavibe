@@ -65,8 +65,10 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
     echo "0" > "$COUNTER_FILE"
   ) 200>"${COUNTER_FILE}.lock" 2>/dev/null || echo "0" > "$COUNTER_FILE" 2>/dev/null || true
 
-  # Clear rehydration flag if WORKING_CONTEXT was written
-  if [[ "$FILE_PATH" == *"WORKING_CONTEXT.md" ]] && [ -f "$REHYDRATE_FLAG" ]; then
+  # Clear rehydration flag ONLY if the canonical session-scoped WORKING_CONTEXT was written.
+  # A stray .agent/WORKING_CONTEXT.md or project-root WORKING_CONTEXT.md must NOT clear the flag —
+  # block-stray-working-context.sh blocks those at PreToolUse, but defend in depth.
+  if [[ "$FILE_PATH" =~ /\.agent/sessions/[^/]+/WORKING_CONTEXT\.md$ ]] && [ -f "$REHYDRATE_FLAG" ]; then
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 

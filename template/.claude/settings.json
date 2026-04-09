@@ -87,6 +87,15 @@
         ]
       },
       {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-stray-working-context.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Read",
         "hooks": [
           {
