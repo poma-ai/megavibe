@@ -49,5 +49,5 @@ Fast, read-only orientation. No Gemini/Codex calls — this should finish in sec
 
 ## When NOT to use
 
-- Right after compaction — use `/rehydrate` instead (needs Gemini/Codex)
+- **Right after compaction — the `on-compact` hook already inlined `/catchup`'s output (git state + DECISIONS + TASKS + LESSONS + pre-compact WORKING_CONTEXT) into its systemMessage. Just run `/rehydrate` — that's the only slash command needed post-compact.**
 - If you just need to continue exactly where you left off — use `megavibe --resume`
