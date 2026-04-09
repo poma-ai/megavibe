@@ -294,15 +294,26 @@ fi
 
 # ─── Sync everything from repo source (always) ───────────────────────
 
-# Find the source repo: either we're running from it, or it's saved in source-repo
+# Find the source repo. Priority:
+#   1. $MEGAVIBE_HOME/source-repo pointer if valid — this is the user's
+#      actual working copy, which is where fresh edits live. MUST be checked
+#      first, because after install $MEGAVIBE_HOME itself also contains
+#      setup.sh + template/ (copied there by setup.sh) and would otherwise
+#      match the SCRIPT_DIR check below, causing a self-sync no-op that
+#      silently reverts any template updates made in the working copy.
+#   2. SCRIPT_DIR if it has setup.sh + template/ AND is not $MEGAVIBE_HOME
+#      itself — this catches the first-install case where the user runs
+#      `bash megavibe/megavibe` directly from a fresh clone before any
+#      source-repo pointer has been written.
 REPO_DIR=""
-if [ -f "$SCRIPT_DIR/setup.sh" ] && [ -d "$SCRIPT_DIR/template" ]; then
-  REPO_DIR="$SCRIPT_DIR"
-elif [ -f "$MEGAVIBE_HOME/source-repo" ]; then
+if [ -f "$MEGAVIBE_HOME/source-repo" ]; then
   SAVED_REPO="$(cat "$MEGAVIBE_HOME/source-repo")"
   if [ -f "$SAVED_REPO/setup.sh" ] && [ -d "$SAVED_REPO/template" ]; then
     REPO_DIR="$SAVED_REPO"
   fi
+fi
+if [ -z "$REPO_DIR" ] && [ "$SCRIPT_DIR" != "$MEGAVIBE_HOME" ] && [ -f "$SCRIPT_DIR/setup.sh" ] && [ -d "$SCRIPT_DIR/template" ]; then
+  REPO_DIR="$SCRIPT_DIR"
 fi
 
 if [ -n "$REPO_DIR" ]; then
