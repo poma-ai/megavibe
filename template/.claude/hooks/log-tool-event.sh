@@ -34,8 +34,7 @@ command -v jq &>/dev/null || exit 0
 LOGDIR=".agent/LOGS"
 NUDGE_THRESHOLD=8
 NUDGE_REPEAT=20
-TOKEN_COMPACT_THRESHOLD=120000
-TOKEN_CHECK_INTERVAL=20
+TOKEN_COMPACT_THRESHOLD=100000
 TOKEN_COOLDOWN_SECS=300
 
 mkdir -p "$LOGDIR" 2>/dev/null || true
@@ -133,7 +132,11 @@ fi
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
 
 # --- Proactive compaction: measure exact token usage from transcript ---
-# Only check every TOKEN_CHECK_INTERVAL calls (amortize cost) and respect cooldown
+# Runs on EVERY PostToolUse, gated only by cooldown timestamp.
+# Previously this was gated behind the .agent/-freshness counter reaching
+# a multiple of 20, which conflicted with the 8-call nudge: every diligent
+# .agent/ write reset the counter to 0, so the token check almost never
+# ran. Cost of the check is sub-millisecond (tail 100 + grep + jq).
 COMPACT_NUDGE=""
 COOLDOWN_TS_FILE="${LOGDIR}/.compact-ts.${SID}"
 IN_COOLDOWN=0
@@ -144,7 +147,7 @@ if [ -f "$COOLDOWN_TS_FILE" ]; then
   [ "$ELAPSED" -lt "$TOKEN_COOLDOWN_SECS" ] 2>/dev/null && IN_COOLDOWN=1
 fi
 
-if [ $((COUNT % TOKEN_CHECK_INTERVAL)) -eq 0 ] 2>/dev/null && [ "$IN_COOLDOWN" -eq 0 ]; then
+if [ "$IN_COOLDOWN" -eq 0 ]; then
   TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     # Extract last usage entry: total context = input + cache_creation + cache_read
@@ -157,6 +160,8 @@ if [ $((COUNT % TOKEN_CHECK_INTERVAL)) -eq 0 ] 2>/dev/null && [ "$IN_COOLDOWN" -
 
     if [ "$TOTAL_TOKENS" -gt "$TOKEN_COMPACT_THRESHOLD" ] 2>/dev/null; then
       COMPACT_NUDGE="🔄 Context at ~${TOTAL_TOKENS} tokens (threshold: ${TOKEN_COMPACT_THRESHOLD}). BEFORE running /compact: ensure ALL pending context, decisions, lessons, and task updates are written to their respective .agent/ files (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md). Then run /compact — post-compaction recovery (/catchup + /rehydrate) will only have what's on disk."
+      # Arm the cooldown so the nudge doesn't fire on every subsequent tool call
+      date +%s > "$COOLDOWN_TS_FILE" 2>/dev/null || true
     fi
   fi
 fi
