@@ -701,7 +701,19 @@ fi
 
 # Playwright MCP
 register_playwright_mcp() {
-  ensure_mcp playwright npx -y @playwright/mcp@latest
+  # Re-register if args drift (legacy --no-sandbox, or missing --headless).
+  if command -v claude &>/dev/null; then
+    local current_args
+    current_args=$(claude mcp get playwright 2>/dev/null | awk -F': ' '/^  Args:/{sub(/^  Args: /,""); print; exit}')
+    if [ -n "$current_args" ]; then
+      if echo "$current_args" | grep -q -- "--no-sandbox" || ! echo "$current_args" | grep -q -- "--headless"; then
+        warn "Playwright MCP args stale — re-registering (was: $current_args)"
+        claude mcp remove playwright 2>/dev/null || true
+      fi
+    fi
+  fi
+
+  ensure_mcp playwright npx -y @playwright/mcp@latest --headless
 
   # Ensure Playwright browsers are installed (required for @playwright/mcp to work)
   if npx -y @playwright/mcp@latest --help &>/dev/null 2>&1; then
