@@ -25,6 +25,9 @@ CLAUDE.local.md
 # poma-memory database (generated at runtime)
 .poma-memory.db*
 
+# Playwright MCP scratch (browser snapshots/screenshots)
+.playwright-mcp/
+
 # Editor
 *.swp
 *.swo
