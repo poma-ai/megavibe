@@ -94,8 +94,6 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 
 `/prune-context` hints fire automatically from `on-pre-compact.sh` (appended to the pre-compact alert) and from proactive-compaction tier nudges in `log-tool-event.sh` when `FULL_CONTEXT.md` exceeds 500 lines, so you don't have to watch for it.
 
-**Proactive compaction.** A hook measures exact token usage from the conversation transcript and nudges at three escalating tiers: 🟡 100K (advisory), 🟠 250K (urgent), 🔴 500K (critical — auto-compact approaches at ~835K on 1M windows). Each tier fires at most once per session; the counter resets after an actual compaction. At every tier, **flush all pending context to `.agent/` files first, then run `/compact`**. Post-compact recovery (`/rehydrate`) only has what's on disk. For manual `.agent/FULL_CONTEXT.md` cleanup (rare), use `/prune-context` (AI-driven selective line removal — distinct from `/compact`). If context feels stale mid-session, use `/rehydrate`.
-
 ## Backend availability check
 
 On every fresh session start, call `mcp__gemini-cli__ping` to test Gemini connectivity. If it fails or Gemini MCP tools are not listed, mark Gemini as **unavailable** for this session and use the Fallback column in the routing table in `.claude/rules/delegation.md`.

@@ -27,7 +27,7 @@ Read the files specified in your prompt (typically `.agent/FULL_CONTEXT.md`, `.a
 
 ## Rules
 
-- Output MUST be at least as long as the input or 400 lines, whichever is SMALLER. Do not over-compress small inputs.
+- Output max 400 lines. For short inputs (<50 lines), preserve substantially all content — do not over-compress.
 - PRESERVE: all open/in-progress tasks, recent decisions, architectural context, lessons learned, current goal, risks, unknowns.
 - REMOVE: resolved issues, old debugging notes, completed task details, duplicate status updates, superseded decisions.
 - If asked to summarize a short text (e.g., for TTS voice output), produce a concise 2-3 sentence summary capturing the key action/result.
