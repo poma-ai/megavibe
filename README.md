@@ -95,7 +95,7 @@ Recovery uses a fallback chain: Gemini (subscription) → Gemini (API key) → C
 
 Every time Claude searches your code (Grep), a hook automatically searches your project memory too and injects relevant context. Claude sees both code results AND related decisions/history — without you asking.
 
-Powered by poma-memory (bundled): hybrid BM25 + vector search over your `.agent/` files. Works locally, no API calls.
+Powered by [poma-memory](https://github.com/poma-ai/poma-memory) (pip-installed): hybrid BM25 + vector search over your `.agent/` files. Works locally, no API calls.
 
 ### Self-improvement
 

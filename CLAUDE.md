@@ -16,7 +16,6 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `install.sh` | One-command cross-platform install (`curl \| bash`) | Medium — bootstrap only |
 | `setup.sh` | One-time machine bootstrapper (tools, MCP, CLI, protocol) | High — affects all users |
 | `init.sh` | Per-project bootstrapper (.agent/, hooks, skills, settings) | High — affects all projects |
-| `poma_memory.py` | Bundled poma-memory: markdown chunker + hybrid search + MCP server | Medium — search behavior |
 | `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
 | `template/CLAUDE.md` | Core protocol (90 lines) — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/spinouts.md` | Subtask spinout protocol | Medium — review recommended |

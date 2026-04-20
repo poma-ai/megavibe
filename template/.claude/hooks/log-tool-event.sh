@@ -79,12 +79,9 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 
-  # Background-index the file via poma-memory (pip preferred, bundled fallback)
+  # Background-index the file via poma-memory (pip-installed)
   if command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
-  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-    PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-    "$PYCMD" "$HOME/.megavibe/poma_memory.py" index --file "$FILE_PATH" &>/dev/null &
   fi
 
   # --- Event emission for remote bot (replaces ntfy) ---
@@ -112,9 +109,6 @@ fi
 if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]]; then
   if command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
-  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-    PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-    "$PYCMD" "$HOME/.megavibe/poma_memory.py" index --file "$FILE_PATH" &>/dev/null &
   fi
   # Don't exit — still need to count this tool call
 fi

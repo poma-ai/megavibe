@@ -52,16 +52,8 @@ fi
 # --- poma-memory: search for context related to open tasks ---
 POMA_CONTEXT=""
 if [ "$OPEN_TASKS" -gt 0 ] 2>/dev/null && [ -f ".agent/.poma-memory.db" ]; then
-  # Find poma-memory command (pip preferred, bundled fallback)
-  POMA_CMD=""
   if command -v poma-memory &>/dev/null; then
     POMA_CMD="poma-memory"
-  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-    PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-    POMA_CMD="$PYCMD $HOME/.megavibe/poma_memory.py"
-  fi
-
-  if [ -n "$POMA_CMD" ]; then
     # Extract open task names as search terms
     TASK_TERMS=$(grep -E "\| pending|\| in.progress" ".agent/TASKS.md" 2>/dev/null \
       | sed 's/|/\n/g' | sed -n '3p' | tr -d '[:space:]' | head -c 200)
@@ -114,8 +106,6 @@ POMA_STATUS=$(mcp_status "poma-memory")
 if [ -z "$POMA_STATUS" ]; then
   if command -v poma-memory &>/dev/null; then
     POMA_STATUS="CLI only (no MCP)"
-  elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-    POMA_STATUS="bundled script (no MCP)"
   else
     POMA_STATUS="not installed"
   fi

@@ -25,16 +25,9 @@ set -u
 # Only run if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0
 
-# Find poma-memory (pip preferred, bundled fallback)
-POMA_CMD=""
-if command -v poma-memory &>/dev/null; then
-  POMA_CMD="poma-memory"
-elif [ -f "$HOME/.megavibe/poma_memory.py" ]; then
-  PYCMD=$(cat "$HOME/.megavibe/python-cmd" 2>/dev/null || echo "python3")
-  POMA_CMD="$PYCMD $HOME/.megavibe/poma_memory.py"
-else
-  exit 0
-fi
+# Require poma-memory (pip-installed)
+command -v poma-memory &>/dev/null || exit 0
+POMA_CMD="poma-memory"
 
 # Check index exists (no point searching an empty index)
 [ -f ".agent/.poma-memory.db" ] || exit 0
