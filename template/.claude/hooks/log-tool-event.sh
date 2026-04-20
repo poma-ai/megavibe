@@ -34,7 +34,14 @@ command -v jq &>/dev/null || exit 0
 LOGDIR=".agent/LOGS"
 NUDGE_THRESHOLD=8
 NUDGE_REPEAT=20
-TOKEN_COMPACT_THRESHOLD=100000
+# Tiered proactive-compaction thresholds (escalating urgency).
+# Calibrated against Claude Code's built-in auto-compact at ~83.5% of window
+# (~835K on 1M), and against megavibe's own research (150K–300K = orange,
+# 300K+ = red). Each tier fires AT MOST once per session until a higher tier
+# is crossed; the tier counter resets after an actual compaction event.
+COMPACT_TIER1=100000   # 🟡 advisory
+COMPACT_TIER2=250000   # 🟠 urgent
+COMPACT_TIER3=500000   # 🔴 critical (auto-compact approaching)
 TOKEN_COOLDOWN_SECS=300
 
 mkdir -p "$LOGDIR" 2>/dev/null || true
@@ -133,14 +140,18 @@ fi
 # Re-read counter after flock (the subshell variable doesn't propagate)
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
 
-# --- Proactive compaction: measure exact token usage from transcript ---
-# Runs on EVERY PostToolUse, gated only by cooldown timestamp.
-# Previously this was gated behind the .agent/-freshness counter reaching
-# a multiple of 20, which conflicted with the 8-call nudge: every diligent
-# .agent/ write reset the counter to 0, so the token check almost never
-# ran. Cost of the check is sub-millisecond (tail 100 + grep + jq).
+# --- Proactive compaction: tiered escalating nudges ---
+# Runs on EVERY PostToolUse. Fires at most once per tier per session, so the
+# user/Claude sees escalating warnings as context grows (100K → 250K → 500K)
+# instead of a single advisory message that gets ignored.
+#
+# The post-compact grace period uses .compact-ts.${SID} (stamped by
+# on-pre-compact.sh and on-compact.sh). This hook only READS that file to
+# know "compaction just happened"; it does NOT write to it. Tier tracking
+# lives in .compact-tier.${SID} (independent).
 COMPACT_NUDGE=""
 COOLDOWN_TS_FILE="${LOGDIR}/.compact-ts.${SID}"
+COMPACT_TIER_FILE="${LOGDIR}/.compact-tier.${SID}"
 IN_COOLDOWN=0
 if [ -f "$COOLDOWN_TS_FILE" ]; then
   LAST_COMPACT_TS=$(cat "$COOLDOWN_TS_FILE" 2>/dev/null || echo "0")
@@ -149,10 +160,15 @@ if [ -f "$COOLDOWN_TS_FILE" ]; then
   [ "$ELAPSED" -lt "$TOKEN_COOLDOWN_SECS" ] 2>/dev/null && IN_COOLDOWN=1
 fi
 
+# Reset tier tracking when a compaction just happened — post-compact context
+# starts fresh, so tier 1 should fire again as it refills.
+if [ "$IN_COOLDOWN" -eq 1 ] && [ -f "$COMPACT_TIER_FILE" ]; then
+  echo "0" > "$COMPACT_TIER_FILE" 2>/dev/null || true
+fi
+
 if [ "$IN_COOLDOWN" -eq 0 ]; then
   TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-    # Extract last usage entry: total context = input + cache_creation + cache_read
     TOTAL_TOKENS=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
       | grep 'input_tokens' \
       | tail -1 \
@@ -160,10 +176,22 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
       || echo "0")
     TOTAL_TOKENS="${TOTAL_TOKENS:-0}"
 
-    if [ "$TOTAL_TOKENS" -gt "$TOKEN_COMPACT_THRESHOLD" ] 2>/dev/null; then
-      COMPACT_NUDGE="🔄 Context at ~${TOTAL_TOKENS} tokens (threshold: ${TOKEN_COMPACT_THRESHOLD}). BEFORE running /compact: ensure ALL pending context, decisions, lessons, and task updates are written to their respective .agent/ files (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md). Then run /compact — post-compaction recovery (/catchup + /rehydrate) will only have what's on disk."
-      # Arm the cooldown so the nudge doesn't fire on every subsequent tool call
-      date +%s > "$COOLDOWN_TS_FILE" 2>/dev/null || true
+    # Determine current tier (highest threshold exceeded)
+    CURRENT_TIER=0
+    [ "$TOTAL_TOKENS" -gt "$COMPACT_TIER1" ] 2>/dev/null && CURRENT_TIER=1
+    [ "$TOTAL_TOKENS" -gt "$COMPACT_TIER2" ] 2>/dev/null && CURRENT_TIER=2
+    [ "$TOTAL_TOKENS" -gt "$COMPACT_TIER3" ] 2>/dev/null && CURRENT_TIER=3
+
+    LAST_TIER=$(cat "$COMPACT_TIER_FILE" 2>/dev/null || echo "0")
+    LAST_TIER="${LAST_TIER:-0}"
+
+    if [ "$CURRENT_TIER" -gt "$LAST_TIER" ] 2>/dev/null; then
+      case "$CURRENT_TIER" in
+        1) COMPACT_NUDGE="🟡 Context at ~${TOTAL_TOKENS} tokens (tier 1 / 100K advisory). When the current task wraps, flush pending decisions, tasks, and lessons to .agent/ files (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md) and run /compact. Doing it early keeps post-compact recovery clean." ;;
+        2) COMPACT_NUDGE="🟠 Context at ~${TOTAL_TOKENS} tokens (tier 2 / 250K urgent). Flush now: write ALL pending context to .agent/ files, then run /compact before starting the next non-trivial operation. Quality degrades in this range and post-compact recovery ONLY has what's on disk." ;;
+        3) COMPACT_NUDGE="🔴 Context at ~${TOTAL_TOKENS} tokens (tier 3 / 500K critical). COMPACT IMMEDIATELY. Claude Code's built-in auto-compaction fires at ~835K on a 1M window — if it triggers before you flush, the summary is all post-compact Claude will see. Write every pending thought to .agent/ files NOW, then /compact." ;;
+      esac
+      echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
     fi
   fi
 fi
