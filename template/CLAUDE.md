@@ -83,6 +83,17 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/prune-context` — selectively prune redundant lines from `.agent/FULL_CONTEXT.md` via AI (rare, when the log grows noisy). **Not the same as `/compact`** — see the decision table below.
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 
+### Which compaction do I need?
+
+| Situation | Command | What it does |
+|-----------|---------|--------------|
+| Live conversation is long, context pressure rising | `/compact` (built-in) | Summarizes the live conversation in place |
+| After any compaction (manual or auto) | `/rehydrate` | Rebuilds `WORKING_CONTEXT.md` from `.agent/` + git |
+| Session feels stale mid-work | `/rehydrate` | Same |
+| `.agent/FULL_CONTEXT.md` has grown large (500+ lines of redundant/superseded noise) | `/prune-context` | AI-selected line removal from the append-only log |
+
+`/prune-context` hints fire automatically from `on-pre-compact.sh` (appended to the pre-compact alert) and from proactive-compaction tier nudges in `log-tool-event.sh` when `FULL_CONTEXT.md` exceeds 500 lines, so you don't have to watch for it.
+
 **Proactive compaction.** A hook measures exact token usage from the conversation transcript and nudges at three escalating tiers: 🟡 100K (advisory), 🟠 250K (urgent), 🔴 500K (critical — auto-compact approaches at ~835K on 1M windows). Each tier fires at most once per session; the counter resets after an actual compaction. At every tier, **flush all pending context to `.agent/` files first, then run `/compact`**. Post-compact recovery (`/rehydrate`) only has what's on disk. For manual `.agent/FULL_CONTEXT.md` cleanup (rare), use `/prune-context` (AI-driven selective line removal — distinct from `/compact`). If context feels stale mid-session, use `/rehydrate`.
 
 ## Backend availability check

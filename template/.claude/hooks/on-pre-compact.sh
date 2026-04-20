@@ -75,6 +75,16 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 
 After compaction, your only required action is: run /rehydrate (single command — it regenerates WORKING_CONTEXT.md via Gemini/Codex). A 5-minute post-compact grace period suppresses stale-context nags while /rehydrate runs, so you won't get double-yelled-at during recovery. On auto-compactions the on-compact hook will additionally inline git state + DECISIONS/TASKS/LESSONS in its systemMessage — on manual /compact that orientation lives in this compaction summary instead."
 
+# --- Optional /prune-context hint (appended only if FULL_CONTEXT.md is large) ---
+# Distinct from /compact: /prune-context trims redundant lines from the
+# durable .agent/FULL_CONTEXT.md log. Keeps future rehydrations focused.
+PRUNE_THRESHOLD=500
+if [ "$FC_LINES" -gt "$PRUNE_THRESHOLD" ] 2>/dev/null; then
+  MSG="$MSG
+
+🧹 FULL_CONTEXT.md is ${FC_LINES} lines (above the ${PRUNE_THRESHOLD}-line pruning threshold). After /rehydrate, consider running /prune-context to let Gemini/Codex selectively remove redundant or superseded entries. This is distinct from /compact: /compact summarizes the live conversation, /prune-context cleans the durable .agent/FULL_CONTEXT.md log."
+fi
+
 # --- User-visible alert ---
 # The systemMessage below is folded into the compaction summary, so the user
 # never sees it as a standalone turn. To prove the hook ran, we ALSO:
