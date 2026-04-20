@@ -404,7 +404,10 @@ else
   skip "Telegram bot (user skipped)"
 fi
 
-# 
+# Sync template bundle to ~/.megavibe/. Guard against an empty MEGAVIBE_HOME
+# (set -u would already catch it, but this is cheap belt-and-suspenders
+# given the rm -rf that follows).
+[ -n "${MEGAVIBE_HOME:-}" ] || { err "MEGAVIBE_HOME is empty — refusing to rm -rf"; exit 1; }
 rm -rf "$MEGAVIBE_HOME/template"
 cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
 ok "~/.megavibe/ synced"
@@ -550,12 +553,15 @@ MEGAVIBE_SETTINGS='{"statusLine":{"type":"command","command":"~/.claude/statusli
 
 if [ -f "$USER_SETTINGS" ]; then
   if command -v jq &>/dev/null; then
+    # Backup before mutating — user may have deep customizations (statusLine,
+    # attribution, permissions) that recursive merge could surprise.
+    cp "$USER_SETTINGS" "${USER_SETTINGS}.megavibe-backup"
     # Merge megavibe defaults (statusLine + attribution) into existing settings
     # jq * does recursive merge — user overrides are preserved if set after setup
     jq --argjson mv "$MEGAVIBE_SETTINGS" '. * $mv' \
       "$USER_SETTINGS" > "${USER_SETTINGS}.tmp"
     mv "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
-    ok "settings.json updated (statusLine + attribution)"
+    ok "settings.json updated (statusLine + attribution; backup at ${USER_SETTINGS}.megavibe-backup)"
   else
     warn "Could not merge settings (jq not available)"
   fi

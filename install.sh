@@ -108,7 +108,18 @@ if [ "$OS" = "macos" ]; then
     echo "  Installing Xcode Command Line Tools (this may take a few minutes)..."
     echo -e "  ${DIM}A popup may appear — click 'Install' if it does.${RESET}"
     xcode-select --install 2>/dev/null || true
+    # Bounded wait: 60 × 5s = 5 minutes. User must engage the popup for
+    # install to proceed; indefinite wait would hang the installer forever
+    # if they dismiss it.
+    tries=0
     until xcode-select -p &>/dev/null; do
+      tries=$((tries + 1))
+      if [ $tries -ge 60 ]; then
+        echo -e "  ${RED}Xcode CLT install did not complete after 5 minutes.${RESET}"
+        echo "    Click 'Install' on the popup (or run: xcode-select --install)"
+        echo "    then re-run this installer."
+        exit 1
+      fi
       sleep 5
     done
     ok "Xcode Command Line Tools"
