@@ -192,6 +192,17 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
         3) COMPACT_NUDGE="🔴 Context at ~${TOTAL_TOKENS} tokens (tier 3 / 500K critical). COMPACT IMMEDIATELY. Claude Code's built-in auto-compaction fires at ~835K on a 1M window — if it triggers before you flush, the summary is all post-compact Claude will see. Write every pending thought to .agent/ files NOW, then /compact." ;;
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
+
+      # If FULL_CONTEXT.md is large, also hint at /prune-context.
+      # Distinct from /compact: /prune-context trims redundant lines from the
+      # durable .agent/FULL_CONTEXT.md log via AI. Tier-gated so wc -l runs
+      # at most once per tier per session.
+      FC_LINES_NUDGE=$(wc -l < .agent/FULL_CONTEXT.md 2>/dev/null | tr -d ' ' || echo "0")
+      FC_LINES_NUDGE="${FC_LINES_NUDGE:-0}"
+      if [ "$FC_LINES_NUDGE" -gt 500 ] 2>/dev/null; then
+        COMPACT_NUDGE="${COMPACT_NUDGE}
+🧹 FULL_CONTEXT.md is ${FC_LINES_NUDGE} lines — after flushing, consider /prune-context (AI-driven line removal on the durable log; distinct from /compact)."
+      fi
     fi
   fi
 fi
