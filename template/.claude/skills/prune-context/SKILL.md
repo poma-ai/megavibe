@@ -1,13 +1,15 @@
 ---
-name: compact-context
-description: Selectively compact FULL_CONTEXT.md using Gemini to identify redundant lines. Use only when FULL_CONTEXT.md is very large (500+ lines).
+name: prune-context
+description: Selectively prune redundant lines from .agent/FULL_CONTEXT.md via AI (Gemini/Codex). Use when FULL_CONTEXT.md has grown large (500+ lines). Distinct from /compact (Claude Code built-in, which summarizes the live conversation).
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Glob
 ---
 
-# Selective Context Compaction
+# Prune FULL_CONTEXT.md (selective line removal)
 
-Use Gemini to surgically remove redundant lines from FULL_CONTEXT.md while preserving all important context.
+> **Not to be confused with `/compact`.** `/compact` is Claude Code's built-in conversation summarizer. `/prune-context` removes redundant lines from the durable `.agent/FULL_CONTEXT.md` log. See the "Which compaction do I need?" table in `CLAUDE.md`.
+
+Use Gemini (or the standard fallback chain) to surgically remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
 
 ## Prerequisites
 

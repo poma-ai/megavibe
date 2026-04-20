@@ -80,10 +80,10 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/rehydrate` — regenerate WORKING_CONTEXT.md from .agent/ files via Gemini/Codex
 - `/catchup` — orient yourself in a project at session start (reads .agent/ + git state)
-- `/compact-context` — selectively compact FULL_CONTEXT.md via standard fallback chain (rare, for very large logs)
+- `/prune-context` — selectively prune redundant lines from `.agent/FULL_CONTEXT.md` via AI (rare, when the log grows noisy). **Not the same as `/compact`** — see the decision table below.
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 
-**Proactive compaction.** A hook measures exact token usage from the conversation transcript and nudges at three escalating tiers: 🟡 100K (advisory), 🟠 250K (urgent), 🔴 500K (critical — auto-compact approaches at ~835K on 1M windows). Each tier fires at most once per session; the counter resets after an actual compaction. At every tier, **flush all pending context to `.agent/` files first, then run `/compact`**. Post-compact recovery (`/rehydrate`) only has what's on disk. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
+**Proactive compaction.** A hook measures exact token usage from the conversation transcript and nudges at three escalating tiers: 🟡 100K (advisory), 🟠 250K (urgent), 🔴 500K (critical — auto-compact approaches at ~835K on 1M windows). Each tier fires at most once per session; the counter resets after an actual compaction. At every tier, **flush all pending context to `.agent/` files first, then run `/compact`**. Post-compact recovery (`/rehydrate`) only has what's on disk. For manual `.agent/FULL_CONTEXT.md` cleanup (rare), use `/prune-context` (AI-driven selective line removal — distinct from `/compact`). If context feels stale mid-session, use `/rehydrate`.
 
 ## Backend availability check
 
