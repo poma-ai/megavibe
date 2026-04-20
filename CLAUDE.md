@@ -21,7 +21,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/CLAUDE.md` | Core protocol (90 lines) — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/spinouts.md` | Subtask spinout protocol | Medium — review recommended |
 | `template/.claude/rules/delegation.md` | Tool routing + delegation protocols + selective compaction | Medium — review recommended |
-| `template/.claude/skills/*/SKILL.md` | Slash command skills (rehydrate, catchup, compact-context) | Low — workflow shortcuts |
+| `template/.claude/skills/*/SKILL.md` | Slash command skills (rehydrate, catchup, prune-context) | Low — workflow shortcuts |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (6 hooks incl. augment-search.sh) | Medium |
@@ -136,7 +136,7 @@ Don't use subagents for: single-file edits, README tweaks, reading one script.
 
 These are NOT currently implemented but are worth considering as megavibe evolves:
 
-- ~~**Skills (`.claude/skills/`)**~~: **Done.** Four skills: `/rehydrate`, `/catchup`, `/compact-context`, `/megavibe-restart`. Deployed by init.sh.
+- ~~**Skills (`.claude/skills/`)**~~: **Done.** Four skills: `/rehydrate`, `/catchup`, `/prune-context`, `/megavibe-restart`. Deployed by init.sh.
 - ~~**Scoped rules (`.claude/rules/*.md`)**~~: **Done.** Protocol split into core (90 lines in CLAUDE.md) + rules (spinouts.md, delegation.md). Deployed by init.sh.
 - ~~**`CLAUDE.local.md`**~~: **Done.** Auto-gitignored personal overrides. Created by init.sh, added to .gitignore.
 - **PreToolUse input modification** (v2.0.10+): Hooks can now modify tool inputs, not just block. Could enable transparent sandboxing or convention enforcement.

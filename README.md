@@ -156,7 +156,7 @@ Inside a megavibe session:
 |---------|------------|
 | `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook already inlines its output. |
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
-| `/compact-context` | When FULL_CONTEXT.md gets very large (rare) |
+| `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
 
 ---
