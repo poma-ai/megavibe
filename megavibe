@@ -347,7 +347,8 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
     if ! diff -q "$SOURCE_TEMPLATE/CLAUDE.md" "$MEGAVIBE_HOME/template/CLAUDE.md" &>/dev/null; then
       CLAUDE_MD_CHANGED=1
     fi
-    # Sync template to ~/.megavibe/
+    # Sync template to ~/.megavibe/. Guard before rm -rf.
+    [ -n "${MEGAVIBE_HOME:-}" ] || { echo "ERROR: MEGAVIBE_HOME is empty — refusing to rm -rf" >&2; exit 1; }
     rm -rf "$MEGAVIBE_HOME/template"
     cp -R "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template"
 
