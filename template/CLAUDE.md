@@ -117,4 +117,6 @@ Standard schemas:
 
 **Respect execution mode.** When the user says "do NOT switch to plan mode" or asks you to execute autonomously/unattended, do NOT use TaskCreate, TaskUpdate, or EnterPlanMode. These tools trigger interactive permission prompts that break autonomous execution — even re-entering bypass mode doesn't suppress them. Just execute directly, reporting progress via text output.
 
+**Bash output discipline.** Claude Code hooks cannot retroactively truncate Bash output — verbose stdout enters context the moment the tool returns. Act upfront: for commands likely to produce heavy output (long `npm`/`pytest` runs, `git log -p`, bulk `grep`/`find`), pipe through `| head -N`, `| tail -N`, or redirect to `.agent/LOGS/` and `Read` the slices you need. Megavibe auto-rewrites a few known-noisy commands via the `truncate-verbose-bash.sh` PreToolUse hook (`npm install`/`npm ci` → tee + tail 50, `git log -p` → head 500) and auto-stubs re-Reads of unchanged files via `read-delta.sh` — for everything else, be explicit in your pipe.
+
 <!-- /megavibe-v3 -->
