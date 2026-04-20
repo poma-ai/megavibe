@@ -24,7 +24,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/.claude/skills/*/SKILL.md` | Slash command skills (rehydrate, catchup, prune-context) | Low — workflow shortcuts |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (6 hooks incl. augment-search.sh) | Medium |
+| `template/.claude/hooks/*.sh` | Hook scripts template (13 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
