@@ -74,6 +74,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/nudge-native-tools.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/truncate-verbose-bash.sh"
           }
         ]
       },
