@@ -101,6 +101,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/resize-image.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/read-delta.sh"
           }
         ]
       },
