@@ -71,25 +71,6 @@ When FULL_CONTEXT.md becomes too large for the re-hydration backend to process i
 
 This is a rare operation — most projects will never hit the limit. The Claude subagent fallback has a smaller context window (200K tokens vs Gemini's ~1M), so for very large logs it may need to process in chunks.
 
-### Image description (accessibility-grade)
-
-Rules:
-- Assume reader cannot see the image.
-- Literal and high recall: layout, text, icons, charts.
-- Transcribe all visible text faithfully.
-- Charts: describe axes, legends, main trend.
-- UI: describe hierarchy (header, nav, main, CTAs, errors, states).
-
-Output: Overview → Text present → Layout/elements → Notable details → Inferred intent (labeled).
-
-### Large-corpus digestion
-
-Output: Index (outline with anchors) → Relevant extracts only → Brief (claims + evidence) → Risks/edge cases.
-
-### Second opinion review
-
-Output: What could fail → Missing tests → Security/perf concerns → Alternative approach.
-
 ## Codex delegation protocols
 
 ### Research memo
