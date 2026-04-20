@@ -142,7 +142,7 @@ fi
 # Node.js (for npm/npx, needed by MCP servers)
 if ! command -v node &>/dev/null; then
   echo "  Installing Node.js..."
-  pkg_install node nodejs nodejs nodejs
+  pkg_install node nodejs
   ok "Node.js $(node --version 2>/dev/null || echo '')"
 else
   ok "Node.js $(node --version) (already installed)"
@@ -151,14 +151,14 @@ fi
 # npm (sometimes separate on Linux)
 if ! command -v npm &>/dev/null; then
   echo "  Installing npm..."
-  pkg_install npm npm npm npm
+  pkg_install npm npm
   ok "npm"
 fi
 
 # jq (needed by hooks)
 if ! command -v jq &>/dev/null; then
   echo "  Installing jq..."
-  pkg_install jq jq jq jq
+  pkg_install jq jq
   ok "jq"
 else
   ok "jq (already installed)"
@@ -175,7 +175,7 @@ done
 
 if [ -z "$PYTHON_FOUND" ]; then
   echo "  Installing Python 3 (3.10+ required for poma-memory)..."
-  pkg_install python3 python3 python3 python
+  pkg_install python3 python3 python3 python  # pacman name differs
   # Check if the newly installed version is 3.10+
   for pycmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python; do
     if command -v "$pycmd" &>/dev/null && "$pycmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
@@ -196,7 +196,7 @@ fi
 # curl (usually pre-installed, but not always on minimal Linux)
 if ! command -v curl &>/dev/null; then
   echo "  Installing curl..."
-  pkg_install curl curl curl curl
+  pkg_install curl curl
   ok "curl"
 fi
 

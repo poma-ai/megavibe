@@ -195,9 +195,7 @@ claude_install() {
 }
 
 # Codex CLI
-CODEX_INSTALLED=0
 codex_install() {
-  CODEX_INSTALLED=1
   if command -v codex &>/dev/null; then
     skip "Codex CLI"
   else
@@ -400,10 +398,8 @@ should_install_telegram() {
   esac
 }
 
-TELEGRAM_INSTALLED=0
 if should_install_telegram; then
   telegram_bot_install
-  TELEGRAM_INSTALLED=1
 else
   skip "Telegram bot (user skipped)"
 fi
@@ -499,8 +495,6 @@ info "4) Installing Megavibe protocol"
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 MARKER="<!-- megavibe-v3 -->"
 END_MARKER="<!-- /megavibe-v3 -->"
-V2_HEADING="Operating rules (Megavibe v2)"
-
 mkdir -p "$HOME/.claude"
 
 if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
@@ -520,32 +514,6 @@ if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
     echo "    Add '<!-- /megavibe-v3 -->' at the end of the megavibe block, then re-run."
   fi
 
-elif [ -f "$CLAUDE_MD" ] && grep -q "$V2_HEADING" "$CLAUDE_MD"; then
-  # ── v2 detected — strip and replace ──
-  warn "Megavibe v2 protocol detected in ~/.claude/CLAUDE.md"
-
-  # Back up before modifying
-  cp "$CLAUDE_MD" "${CLAUDE_MD}.pre-v3-backup"
-  ok "backup saved to ${CLAUDE_MD}.pre-v3-backup"
-
-  # v2 was always appended at the end — strip from v2 heading to EOF
-  sed "/$V2_HEADING/,\$d" "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
-
-  # Remove trailing blank lines from remaining content
-  if [ -s "${CLAUDE_MD}.tmp" ] && grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
-    # User had content before v2 block — preserve it, append v3
-    sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' "${CLAUDE_MD}.tmp" > "${CLAUDE_MD}.tmp2"
-    mv "${CLAUDE_MD}.tmp2" "${CLAUDE_MD}.tmp"
-    echo "" >> "${CLAUDE_MD}.tmp"
-    cat "$SCRIPT_DIR/template/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
-    mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
-    ok "v2 replaced with v3 (user content preserved)"
-  else
-    # File was entirely v2 content
-    cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
-    ok "v2 replaced with v3"
-  fi
-
 elif [ -f "$CLAUDE_MD" ]; then
   # ── User has a CLAUDE.md but no megavibe — append ──
   echo "" >> "$CLAUDE_MD"
@@ -556,15 +524,6 @@ else
   cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
   ok "~/.claude/CLAUDE.md created"
 fi
-
-# Warn about v2 in parent-directory CLAUDE.md files (Claude Code walks up)
-for check_file in "$HOME/CLAUDE.md" "$HOME/Documents/CLAUDE.md"; do
-  if [ -f "$check_file" ] && grep -q "$V2_HEADING" "$check_file"; then
-    warn "Megavibe v2 content found in $check_file"
-    echo "    Claude Code walks up directories for CLAUDE.md files."
-    echo "    v2 rules there may conflict with v3. Consider removing them."
-  fi
-done
 
 # Clean up stale tmp files
 rm -f "${CLAUDE_MD}.tmp" "${CLAUDE_MD}.tmp2"
