@@ -344,37 +344,23 @@ if [ -n "$PYTHON" ]; then
   echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
 fi
 
-# Install poma-memory from PyPI (preferred) or fall back to bundled poma_memory.py
-if [ -n "$PYTHON" ] && [ -n "$PIP" ]; then
+# Install poma-memory from PyPI — provides hybrid BM25 + vector search
+# One-shot cleanup: remove any pre-existing bundled single-file (deprecated)
+rm -f "$MEGAVIBE_HOME/poma_memory.py"
+if [ -z "$PYTHON" ] || [ -z "$PIP" ]; then
+  warn "poma-memory requires Python 3.10+ and pip — search will be unavailable"
+elif $PYTHON -c "import poma_memory" &>/dev/null; then
+  skip "poma-memory (pip, already installed)"
+else
+  echo "  Installing poma-memory from PyPI (this may take a minute)..."
+  $PIP install --user "poma-memory[semantic,mcp]" \
+    || $PIP install "poma-memory[semantic,mcp]" \
+    || true
   if $PYTHON -c "import poma_memory" &>/dev/null; then
-    skip "poma-memory (pip, already installed)"
+    ok "poma-memory (pip)"
   else
-    echo "  Installing poma-memory from PyPI (this may take a minute)..."
-    $PIP install --user "poma-memory[semantic,mcp]" \
-      || $PIP install "poma-memory[semantic,mcp]" \
-      || true
-    if $PYTHON -c "import poma_memory" &>/dev/null; then
-      ok "poma-memory (pip)"
-    else
-      # Fallback: bundled single-file poma_memory.py (works without pip)
-      if [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
-        cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
-        # Install minimal deps for bundled version
-        $PIP install --user numpy model2vec \
-          || $PIP install numpy model2vec \
-          || warn "Could not install poma-memory deps — search will be unavailable"
-        ok "poma-memory (bundled fallback)"
-      else
-        warn "poma-memory unavailable — search will be disabled"
-      fi
-    fi
+    warn "poma-memory install failed — search will be unavailable. Try: $PIP install 'poma-memory[semantic,mcp]'"
   fi
-elif [ -n "$PYTHON" ] && [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
-  # Python available but no pip — deploy bundled version (deps missing, but file is there)
-  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
-  warn "poma-memory deployed without deps (pip unavailable)"
-elif [ -f "$SCRIPT_DIR/poma_memory.py" ]; then
-  cp "$SCRIPT_DIR/poma_memory.py" "$MEGAVIBE_HOME/poma_memory.py"
 fi
 
 # Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
@@ -747,8 +733,7 @@ else
   skip "Playwright MCP server (user skipped)"
 fi
 
-# poma-memory MCP (pip-installed preferred, bundled fallback)
-# Can't use ensure_mcp directly — has pip vs bundled fallback logic
+# poma-memory MCP (pip-installed; bundled script was removed)
 POMA_MCP_STATUS=0
 mcp_health "poma-memory" || POMA_MCP_STATUS=$?
 if [ "$POMA_MCP_STATUS" -eq 0 ]; then
@@ -761,9 +746,6 @@ else
   if command -v poma-memory &>/dev/null && poma-memory mcp --help &>/dev/null; then
     claude mcp add --transport stdio --scope user poma-memory -- poma-memory mcp
     ok "poma-memory MCP server (pip)"
-  elif [ -f "$MEGAVIBE_HOME/poma_memory.py" ] && [ -n "$PYTHON" ]; then
-    claude mcp add --transport stdio --scope user poma-memory -- "$PYTHON" "$MEGAVIBE_HOME/poma_memory.py" mcp
-    ok "poma-memory MCP server (bundled)"
   else
     skip "poma-memory MCP server (not installed — run: pip install poma-memory[mcp])"
   fi
