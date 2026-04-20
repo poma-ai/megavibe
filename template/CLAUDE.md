@@ -34,9 +34,9 @@ The on-compact hook tells you your session ID and WORKING_CONTEXT path. Use the 
 
 Compaction has three phases, all hook-driven:
 
-**Pre-compact** (PreCompact hook): A hook stamps the compaction summary with the current `.agent/` file status and staleness (tool calls since last write). This tells post-compaction Claude whether files might be stale.
+**Pre-compact** (PreCompact hook): A hook stamps the compaction summary with the current `.agent/` file status and staleness (tool calls since last write), echoes the same report to stderr so the user sees it, and writes `.agent/LOGS/pre-compact-alert.${SID}.md` as a durable audit trail. This tells post-compaction Claude whether files might be stale.
 
-**Proactive nudge** (before compaction triggers): When context exceeds ~120K tokens, a hook nudges you to **flush all pending context to `.agent/` files first**, then run `/compact`. Follow the nudge — post-compaction recovery only has what's on disk.
+**Proactive nudge** (before compaction triggers): A hook measures transcript token usage and nudges at three escalating tiers — 🟡 100K (advisory), 🟠 250K (urgent), 🔴 500K (critical; Claude Code's built-in auto-compact fires at ~835K on a 1M window). Each tier fires at most once; the counter resets after an actual compaction. At every tier: **flush all pending context to `.agent/` files first**, then run `/compact`. Post-compaction recovery only has what's on disk.
 
 **Post-compact** (on-compact hook): After compaction, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, `.agent/LESSONS.md`, the current git state, and the pre-compact `WORKING_CONTEXT.md` (as a stale hint) — i.e. everything `/catchup` would produce, inlined directly into the systemMessage. **Your only required action is:**
 1. Run `/rehydrate` — full AI-powered recovery via Gemini/Codex fallback chain, writes a fresh `WORKING_CONTEXT.md`
@@ -83,7 +83,7 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/compact-context` — selectively compact FULL_CONTEXT.md via standard fallback chain (rare, for very large logs)
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 
-**Proactive compaction.** A hook measures exact token usage from the conversation transcript. When context exceeds ~120K tokens, it nudges you to **flush all pending context to `.agent/` files first, then run `/compact`**. Follow the nudge — post-compact recovery (`/rehydrate`) only has what's on disk. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
+**Proactive compaction.** A hook measures exact token usage from the conversation transcript and nudges at three escalating tiers: 🟡 100K (advisory), 🟠 250K (urgent), 🔴 500K (critical — auto-compact approaches at ~835K on 1M windows). Each tier fires at most once per session; the counter resets after an actual compaction. At every tier, **flush all pending context to `.agent/` files first, then run `/compact`**. Post-compact recovery (`/rehydrate`) only has what's on disk. For manual FULL_CONTEXT.md cleanup (rare), use `/compact-context` (Gemini-driven selective removal). If context feels stale mid-session, use `/rehydrate`.
 
 ## Backend availability check
 

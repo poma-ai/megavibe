@@ -75,4 +75,25 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 
 After compaction, your only required action is: run /rehydrate (single command — it regenerates WORKING_CONTEXT.md via Gemini/Codex). A 5-minute post-compact grace period suppresses stale-context nags while /rehydrate runs, so you won't get double-yelled-at during recovery. On auto-compactions the on-compact hook will additionally inline git state + DECISIONS/TASKS/LESSONS in its systemMessage — on manual /compact that orientation lives in this compaction summary instead."
 
+# --- User-visible alert ---
+# The systemMessage below is folded into the compaction summary, so the user
+# never sees it as a standalone turn. To prove the hook ran, we ALSO:
+#   1. Write a durable alert file the user can tail/grep
+#   2. Echo the report to stderr (Claude Code surfaces hook stderr to the user)
+ALERT_FILE="${LOGDIR}/pre-compact-alert.${SID}.md"
+{
+  echo "# Pre-compact alert — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo ""
+  echo "$MSG"
+} > "$ALERT_FILE" 2>/dev/null || true
+
+# Echo to stderr — visible to the user in the Claude Code UI
+echo "" >&2
+echo "═══════════════════════════════════════════════════════════════" >&2
+echo "$MSG" >&2
+echo "" >&2
+echo "(saved to $ALERT_FILE)" >&2
+echo "═══════════════════════════════════════════════════════════════" >&2
+echo "" >&2
+
 jq -n --arg msg "$MSG" '{systemMessage: $msg}' 2>/dev/null || true
