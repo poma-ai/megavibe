@@ -643,8 +643,8 @@ if [ -d "$LOCK_DIR" ]; then
         exit 1
       fi
 
-      # Sanitize branch name
-      BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_.-/')
+      # Sanitize branch name. Dash at end so it's literal, not a range.
+      BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
       PROJECT_NAME=$(basename "$PWD")
       WORKTREE_DIR="$MEGAVIBE_HOME/worktrees/${PROJECT_NAME}-${BRANCH_NAME}"
 
@@ -666,8 +666,13 @@ if [ -d "$LOCK_DIR" ]; then
       bash "$INIT_SCRIPT" "$WORKTREE_DIR"
       cd "$WORKTREE_DIR"
       echo -e "  ${BOLD}Working in:${RESET} $WORKTREE_DIR"
-      echo -e "  ${BOLD}Branch:${RESET} $BRANCH_NAME"
-      echo -e "  When done, merge with: ${BOLD}git merge $BRANCH_NAME${RESET}"
+      echo -e "  ${BOLD}Branch:${RESET}     $BRANCH_NAME"
+      echo ""
+      echo -e "  ${DIM}Resume this worktree later (copy-paste):${RESET}"
+      echo -e "    ${BOLD}cd $WORKTREE_DIR && megavibe${RESET}"
+      echo ""
+      echo -e "  ${DIM}Merge back when done (from $PROJECT_NAME):${RESET}"
+      echo -e "    ${BOLD}git merge $BRANCH_NAME${RESET}"
       # Fall through to startup tips + launch below
     else
       # Not a git dir — hard block
