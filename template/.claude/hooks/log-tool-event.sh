@@ -24,6 +24,12 @@ set -u
 #
 # Concurrency safety: flock is used for atomic counter operations.
 # JSONL logging is best-effort — failures must not block the nudge path.
+#
+# ⚠️ MORATORIUM (self-audit 2026-04-20): this hook already carries six
+# independent concerns (logging, staleness counter, three compact tiers,
+# rehydrate nag, update-applied alert, task-progress events) across ~280
+# lines. It fires on every tool call. Any seventh concern goes in its own
+# hook file — do not pile further into this one.
 
 # Only run if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0
