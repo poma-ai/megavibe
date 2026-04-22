@@ -85,8 +85,11 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 
-  # Background-index the file via poma-memory (pip-installed)
-  if command -v poma-memory &>/dev/null; then
+  # Background-index the file via poma-memory (pip-installed).
+  # Skip .agent/LOGS/ — audit trail (rehydration-instructions, flag files,
+  # per-session counters); indexing it makes old "CONTEXT WAS JUST COMPACTED"
+  # text resurface via augment-search.sh as if it were a live nag.
+  if command -v poma-memory &>/dev/null && [[ "$FILE_PATH" != *"/.agent/LOGS/"* ]]; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
 
@@ -111,8 +114,9 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
   exit 0
 fi
 
-# Also index .agent/ files on Read (keeps search index warm for augment-search hook)
-if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]]; then
+# Also index .agent/ files on Read (keeps search index warm for augment-search hook).
+# Skip .agent/LOGS/ — see rationale in the write branch above.
+if [[ "$TOOL_NAME" == "Read" ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]] && [[ "$FILE_PATH" != *"/.agent/LOGS/"* ]]; then
   if command -v poma-memory &>/dev/null; then
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
