@@ -58,8 +58,27 @@ if [[ "$SEARCH_PATH" == *".agent"* ]]; then
   exit 0
 fi
 
-# Run poma-memory search (no timeout — <10ms on typical indexes)
-RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 3 2>/dev/null || echo "")
+# Run poma-memory search (no timeout — <10ms on typical indexes).
+# Request extra results so the .agent/LOGS/ filter below can drop noise
+# (stale rehydration-instructions, session state dumps) without starving
+# the useful matches.
+RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 6 2>/dev/null || echo "")
+
+# Drop result blocks whose File: path is under .agent/LOGS/ — that dir is an
+# audit trail (rehydration-instructions, per-session flags, counters), not
+# semantic context. Without this filter, old "⚠️ CONTEXT WAS JUST COMPACTED"
+# instruction files leak back in and look like live re-hydration nags.
+RESULTS=$(echo "$RAW_RESULTS" | awk '
+/^--- Result/ {
+  if (buf != "" && !skip) printf "%s", buf
+  buf = $0 "\n"
+  skip = 0
+  next
+}
+/^File:.*\.agent\/LOGS\// { skip = 1 }
+{ buf = buf $0 "\n" }
+END { if (buf != "" && !skip) printf "%s", buf }
+')
 
 # Only inject if we got meaningful results (not "No results found.")
 if [ -z "$RESULTS" ] || [[ "$RESULTS" == *"No results found"* ]]; then
