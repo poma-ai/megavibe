@@ -729,10 +729,57 @@ elif [ -f "$VERSION_FILE" ]; then
 fi
 export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
 
+# ─── Auto-compact threshold ──────────────────────────────────────────
+#
+# Cap effective context window so built-in auto-compact fires earlier,
+# before answer quality degrades at ~800K tokens. Silent: claude handles
+# compaction itself; .agent/ files + on-compact hook carry state forward.
+#
+# Formula: threshold = WINDOW - 33K (20K summary output + 13K buffer).
+# Default WINDOW=283000 yields ~250K threshold on 1M-context models and
+# auto-clamps to ~167K on 200K-native models (both in 150K-250K band).
+#
+# Precedence (matches claude binary): env var > project settings.json
+# > user settings.json > megavibe default. We only set the env var if
+# nothing else is configured, so explicit user choices are respected.
+COMPACT_WINDOW=""
+COMPACT_SOURCE=""
+if [ -n "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ]; then
+  COMPACT_WINDOW="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+  COMPACT_SOURCE="env (pre-set)"
+elif [ -f ".claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+  PROJ_VAL=$(jq -r '.autoCompactWindow // empty' .claude/settings.json 2>/dev/null || true)
+  if [ -n "$PROJ_VAL" ]; then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$PROJ_VAL"
+    COMPACT_WINDOW="$PROJ_VAL"
+    COMPACT_SOURCE="project settings.json"
+  fi
+fi
+if [ -z "$COMPACT_WINDOW" ] && [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
+  USER_VAL=$(jq -r '.autoCompactWindow // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
+  if [ -n "$USER_VAL" ]; then
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$USER_VAL"
+    COMPACT_WINDOW="$USER_VAL"
+    COMPACT_SOURCE="user settings.json"
+  fi
+fi
+if [ -z "$COMPACT_WINDOW" ]; then
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW=283000
+  COMPACT_WINDOW=283000
+  COMPACT_SOURCE="megavibe default"
+fi
+
 # ─── Startup tips ────────────────────────────────────────────────────
 
 echo ""
 echo -e "  ${BOLD}Permissions auto-approved.${RESET} Press ${BOLD}Shift+Tab${RESET} to toggle manual approval."
+if [[ "$COMPACT_WINDOW" =~ ^[0-9]+$ ]]; then
+  COMPACT_THRESHOLD_K=$(( (COMPACT_WINDOW - 33000) / 1000 ))
+  echo -e "  ${BOLD}Auto-compact:${RESET} ~${COMPACT_THRESHOLD_K}K / ~167K threshold (1M / 200K-native models, ${COMPACT_SOURCE})."
+else
+  echo -e "  ${BOLD}Auto-compact:${RESET} window=${COMPACT_WINDOW} (${COMPACT_SOURCE})."
+fi
+echo -e "  ${DIM}Silent — .agent/ + on-compact hook carry state forward; no /compact typing needed.${RESET}"
 echo ""
 if [ -d ".agent" ] && [ -f ".agent/TASKS.md" ]; then
   OPEN_TASKS=$(grep -cE "\| pending|\| in.progress" ".agent/TASKS.md" 2>/dev/null || true)
