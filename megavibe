@@ -773,12 +773,37 @@ fi
 
 echo ""
 echo -e "  ${BOLD}Permissions auto-approved.${RESET} Press ${BOLD}Shift+Tab${RESET} to toggle manual approval."
+# Probe poma-memory in the current Python env. Distinguishes "binary exists
+# but not importable" (common pyenv-per-project gotcha) from "not installed".
+# Keeps the startup echo honest — don't promise what isn't there.
+POMA_STATE="missing"
+if command -v poma-memory >/dev/null 2>&1; then
+  if poma-memory --help >/dev/null 2>&1; then
+    POMA_STATE="ok"
+  else
+    POMA_STATE="broken"
+  fi
+fi
+case "$POMA_STATE" in
+  ok)      POMA_TAIL=" — tighter beats 800K autopilot; poma-memory carries the detail." ;;
+  broken|missing) POMA_TAIL="" ;;
+esac
+
 if [[ "$COMPACT_WINDOW" =~ ^[0-9]+$ ]]; then
   COMPACT_THRESHOLD_K=$(( (COMPACT_WINDOW - 33000) / 1000 ))
-  echo -e "  ${BOLD}Auto-compact:${RESET} ~${COMPACT_THRESHOLD_K}K / ~167K threshold (1M / 200K-native, ${COMPACT_SOURCE}) — tighter beats 800K autopilot when poma-memory carries the detail."
+  echo -e "  ${BOLD}Auto-compact:${RESET} ~${COMPACT_THRESHOLD_K}K / ~167K threshold (1M / 200K-native, ${COMPACT_SOURCE})${POMA_TAIL}"
 else
   echo -e "  ${BOLD}Auto-compact:${RESET} window=${COMPACT_WINDOW} (${COMPACT_SOURCE})."
 fi
+case "$POMA_STATE" in
+  broken)
+    echo -e "  ${YELLOW}⚠ poma-memory found but not importable in this Python env — likely pyenv mismatch.${RESET}"
+    echo -e "  ${DIM}  Fix: pip install \"poma-memory[semantic,mcp]\" inside this project's active Python.${RESET}"
+    ;;
+  missing)
+    echo -e "  ${DIM}poma-memory not installed — cross-session search disabled. Install: pip install \"poma-memory[semantic,mcp]\"${RESET}"
+    ;;
+esac
 echo -e "  ${DIM}Override: \$CLAUDE_CODE_AUTO_COMPACT_WINDOW env or autoCompactWindow in .claude/settings.json. State carries via .agent/ + on-compact hook.${RESET}"
 echo ""
 if [ -d ".agent" ] && [ -f ".agent/TASKS.md" ]; then
