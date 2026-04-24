@@ -775,11 +775,11 @@ echo ""
 echo -e "  ${BOLD}Permissions auto-approved.${RESET} Press ${BOLD}Shift+Tab${RESET} to toggle manual approval."
 if [[ "$COMPACT_WINDOW" =~ ^[0-9]+$ ]]; then
   COMPACT_THRESHOLD_K=$(( (COMPACT_WINDOW - 33000) / 1000 ))
-  echo -e "  ${BOLD}Auto-compact:${RESET} ~${COMPACT_THRESHOLD_K}K / ~167K threshold (1M / 200K-native models, ${COMPACT_SOURCE})."
+  echo -e "  ${BOLD}Auto-compact:${RESET} ~${COMPACT_THRESHOLD_K}K / ~167K threshold (1M / 200K-native, ${COMPACT_SOURCE}) — tighter beats 800K autopilot when poma-memory carries the detail."
 else
   echo -e "  ${BOLD}Auto-compact:${RESET} window=${COMPACT_WINDOW} (${COMPACT_SOURCE})."
 fi
-echo -e "  ${DIM}Silent — .agent/ + on-compact hook carry state forward; no /compact typing needed.${RESET}"
+echo -e "  ${DIM}Override: \$CLAUDE_CODE_AUTO_COMPACT_WINDOW env or autoCompactWindow in .claude/settings.json. State carries via .agent/ + on-compact hook.${RESET}"
 echo ""
 if [ -d ".agent" ] && [ -f ".agent/TASKS.md" ]; then
   OPEN_TASKS=$(grep -cE "\| pending|\| in.progress" ".agent/TASKS.md" 2>/dev/null || true)
