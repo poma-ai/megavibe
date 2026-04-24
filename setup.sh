@@ -237,7 +237,8 @@ gemini_install() {
   # via bare binary instead of `npx -y gemini-mcp-tool`. The npx fetch+spawn
   # cold start can race Claude's tool-list deadline → server shows Connected
   # but tools never register in the session. Pre-installing kills the race.
-  if command -v gemini-mcp-tool &>/dev/null; then
+  # Note: the npm package is `gemini-mcp-tool`, but the installed binary is `gemini-mcp`.
+  if command -v gemini-mcp &>/dev/null; then
     skip "gemini-mcp-tool"
   else
     echo "  Installing gemini-mcp-tool (avoids npx cold-start race in MCP)..."
@@ -621,18 +622,19 @@ fi
 echo ""
 info "6) Registering MCP servers"
 
-# Check which MCP servers are already registered
-EXISTING_MCP=$(claude mcp list 2>/dev/null || echo "")
-
 # Helper: check MCP server health. Returns:
 #   0 = connected and healthy (skip)
 #   1 = not registered (needs add)
 #   2 = registered but not connected (needs remove + re-add)
+# Re-queries claude mcp list each call so callers that just removed an MCP
+# (e.g. legacy-arg detection) see fresh state instead of the cached snapshot.
 mcp_health() {
   local name="$1"
-  if echo "$EXISTING_MCP" | grep -qi "${name}.*Connected"; then
+  local current
+  current=$(claude mcp list 2>/dev/null || echo "")
+  if echo "$current" | grep -qi "${name}.*Connected"; then
     return 0
-  elif echo "$EXISTING_MCP" | grep -qi "$name"; then
+  elif echo "$current" | grep -qi "$name"; then
     return 2
   else
     return 1
@@ -670,18 +672,21 @@ fi
 register_gemini_mcp() {
   # Prefer the pre-installed binary over `npx -y` to avoid cold-start race.
   # If a legacy `npx -y` registration exists, drop it so we re-register clean.
+  # Binary name is `gemini-mcp` (npm package is `gemini-mcp-tool`).
+  # `claude mcp get` exits 1 when the server isn't registered — || true keeps
+  # errexit/pipefail from killing the script in that (expected) case.
   if command -v claude &>/dev/null; then
     local gemini_args
-    gemini_args=$(claude mcp get gemini-cli 2>/dev/null | awk -F': ' '/^  Args:/{sub(/^  Args: /,""); print; exit}')
+    gemini_args=$( (claude mcp get gemini-cli 2>/dev/null || true) | awk -F': ' '/^  Args:/{sub(/^  Args: /,""); print; exit}' )
     if [ -n "$gemini_args" ] && echo "$gemini_args" | grep -q -- "-y gemini-mcp-tool" \
-       && command -v gemini-mcp-tool &>/dev/null; then
+       && command -v gemini-mcp &>/dev/null; then
       warn "Gemini MCP using npx -y (cold-start race risk) — re-registering with bare binary"
       claude mcp remove gemini-cli 2>/dev/null || true
     fi
   fi
 
-  if command -v gemini-mcp-tool &>/dev/null; then
-    ensure_mcp gemini-cli gemini-mcp-tool
+  if command -v gemini-mcp &>/dev/null; then
+    ensure_mcp gemini-cli gemini-mcp
   else
     ensure_mcp gemini-cli npx -y gemini-mcp-tool
   fi
@@ -715,9 +720,10 @@ fi
 # Playwright MCP
 register_playwright_mcp() {
   # Re-register if args drift (legacy --no-sandbox, or missing --headless).
+  # `claude mcp get` exits 1 when not registered — || true keeps errexit/pipefail happy.
   if command -v claude &>/dev/null; then
     local current_args
-    current_args=$(claude mcp get playwright 2>/dev/null | awk -F': ' '/^  Args:/{sub(/^  Args: /,""); print; exit}')
+    current_args=$( (claude mcp get playwright 2>/dev/null || true) | awk -F': ' '/^  Args:/{sub(/^  Args: /,""); print; exit}' )
     if [ -n "$current_args" ]; then
       if echo "$current_args" | grep -q -- "--no-sandbox" || ! echo "$current_args" | grep -q -- "--headless"; then
         warn "Playwright MCP args stale — re-registering (was: $current_args)"
