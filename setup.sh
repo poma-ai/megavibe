@@ -40,13 +40,27 @@ fi
 # ─── Python detection (Windows Git Bash has 'python' not 'python3') ──
 
 PYTHON=""
-# poma-memory requires Python >=3.10. Prefer Homebrew python (3.12+) over Xcode CLT python (often 3.9).
-for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python; do
-  if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
+# poma-memory requires Python >=3.10.
+# Pass 1: prefer any Python that ALREADY has poma_memory installed — respects
+# pyenv shims, virtualenvs, conda. PATH order first so we follow user's actual env.
+for cmd in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 python; do
+  command -v "$cmd" &>/dev/null || continue
+  "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" &>/dev/null || continue
+  if "$cmd" -c "import poma_memory" &>/dev/null; then
     PYTHON="$cmd"
     break
   fi
 done
+
+# Pass 2: no existing install — pick first viable 3.10+ Python (PATH first).
+if [ -z "$PYTHON" ]; then
+  for cmd in python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 python; do
+    command -v "$cmd" &>/dev/null || continue
+    "$cmd" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" &>/dev/null || continue
+    PYTHON="$cmd"
+    break
+  done
+fi
 
 # If no 3.10+ found, try to install via brew (macOS) or accept older Python with limited functionality
 if [ -z "$PYTHON" ]; then
@@ -342,6 +356,29 @@ if [ -n "$PYTHON" ]; then
   echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
 fi
 
+# pip_install_with_fallback: --user, then plain, then a dedicated venv at
+# ~/.megavibe/venv. Handles PEP 668 / externally-managed-environment (Homebrew
+# Python 3.12+, recent Debian/Ubuntu) which rejects --user installs outright.
+# On venv fallback, switches PYTHON/PIP to the venv so subsequent installs and
+# the deployed python-cmd point at the right interpreter.
+pip_install_with_fallback() {
+  $PIP install --user "$@" 2>/dev/null && return 0
+  $PIP install "$@" 2>/dev/null && return 0
+
+  local VENV="$MEGAVIBE_HOME/venv"
+  if [ ! -d "$VENV" ]; then
+    echo "  Creating ~/.megavibe/venv (system Python rejects external installs per PEP 668)..."
+    $PYTHON -m venv "$VENV" 2>/dev/null || return 1
+    "$VENV/bin/pip" install --upgrade pip 2>/dev/null || true
+  fi
+  "$VENV/bin/pip" install "$@" 2>/dev/null || return 1
+
+  echo "$VENV/bin/python" > "$MEGAVIBE_HOME/python-cmd"
+  PYTHON="$VENV/bin/python"
+  PIP="$PYTHON -m pip"
+  return 0
+}
+
 # Install poma-memory from PyPI — provides hybrid BM25 + vector search
 # One-shot cleanup: remove any pre-existing bundled single-file (deprecated)
 rm -f "$MEGAVIBE_HOME/poma_memory.py"
@@ -351,9 +388,7 @@ elif $PYTHON -c "import poma_memory" &>/dev/null; then
   skip "poma-memory (pip, already installed)"
 else
   echo "  Installing poma-memory from PyPI (this may take a minute)..."
-  $PIP install --user "poma-memory[semantic,mcp]" \
-    || $PIP install "poma-memory[semantic,mcp]" \
-    || true
+  pip_install_with_fallback "poma-memory[semantic,mcp]" || true
   if $PYTHON -c "import poma_memory" &>/dev/null; then
     ok "poma-memory (pip)"
   else
@@ -373,8 +408,7 @@ telegram_bot_install() {
         skip "python-telegram-bot"
       else
         echo "  Installing python-telegram-bot (for Megavibe Remote)..."
-        $PIP install --user "python-telegram-bot>=21" httpx \
-          || $PIP install "python-telegram-bot>=21" httpx \
+        pip_install_with_fallback "python-telegram-bot>=21" httpx \
           || warn "Could not install python-telegram-bot — remote will be unavailable"
         if $PYTHON -c "import telegram" &>/dev/null; then
           ok "python-telegram-bot + httpx"
@@ -666,15 +700,26 @@ register_playwright_mcp() {
 
   ensure_mcp playwright npx -y @playwright/mcp@latest --headless
 
-  # Ensure Playwright browsers are installed (required for @playwright/mcp to work)
-  if npx -y @playwright/mcp@latest --help &>/dev/null 2>&1; then
-    if npx playwright install chromium &>/dev/null 2>&1; then
+  # Ensure Playwright Chromium binary is installed. Skip if cache already has it
+  # — first install is ~170MB and several minutes; re-running on every setup
+  # made update feel like a 10-min hang.
+  local PW_CACHE="${PLAYWRIGHT_BROWSERS_PATH:-}"
+  if [ -z "$PW_CACHE" ]; then
+    case "$(uname -s)" in
+      Darwin) PW_CACHE="$HOME/Library/Caches/ms-playwright" ;;
+      *)      PW_CACHE="$HOME/.cache/ms-playwright" ;;
+    esac
+  fi
+
+  if ls "$PW_CACHE"/chromium-* "$PW_CACHE"/chromium_headless_shell-* 2>/dev/null | head -1 | grep -q .; then
+    skip "Playwright chromium browser"
+  else
+    echo "  Downloading Playwright Chromium (~170MB, may take several minutes)..."
+    if npx playwright install chromium 2>&1 | tail -5; then
       ok "Playwright chromium browser"
     else
       warn "Could not install Playwright browsers — run: npx playwright install chromium"
     fi
-  else
-    warn "Playwright MCP not available — browser install skipped"
   fi
 }
 
