@@ -66,6 +66,17 @@ REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "unknown")
 echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' >> "$LOGFILE" 2>/dev/null || true
 
+# --- Cross-tool rehydrate-flag clear (defense in depth) ---
+# The Edit/Write branch below clears the flag when Claude writes the canonical
+# WORKING_CONTEXT via the Write tool. But /rehydrate's curl fallback redirects
+# jq output into the file (Bash), which produces no Write event. Generic fix:
+# if the canonical file exists and is newer than the flag, rehydration
+# happened — clear regardless of which tool wrote it. Two stats per call.
+SESSION_WC=".agent/sessions/${SID}/WORKING_CONTEXT.md"
+if [ -f "$REHYDRATE_FLAG" ] && [ -s "$SESSION_WC" ] && [ "$SESSION_WC" -nt "$REHYDRATE_FLAG" ]; then
+  rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
+fi
+
 # --- Context freshness nudge (the CRITICAL path) ---
 # Check if this tool call was itself a write to .agent/*.md (reset counter if so)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
