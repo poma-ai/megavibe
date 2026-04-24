@@ -232,6 +232,18 @@ gemini_install() {
     ok "Gemini CLI"
     NEEDS_LOGIN+=("gemini")
   fi
+
+  # gemini-mcp-tool: pre-install globally so Claude Code spawns it instantly
+  # via bare binary instead of `npx -y gemini-mcp-tool`. The npx fetch+spawn
+  # cold start can race Claude's tool-list deadline → server shows Connected
+  # but tools never register in the session. Pre-installing kills the race.
+  if command -v gemini-mcp-tool &>/dev/null; then
+    skip "gemini-mcp-tool"
+  else
+    echo "  Installing gemini-mcp-tool (avoids npx cold-start race in MCP)..."
+    npm i -g gemini-mcp-tool 2>/dev/null && ok "gemini-mcp-tool" \
+      || warn "gemini-mcp-tool global install failed — will fall back to npx -y at MCP register"
+  fi
 }
 
 # jq (required by hooks)
@@ -656,7 +668,23 @@ fi
 
 # Gemini MCP
 register_gemini_mcp() {
-  ensure_mcp gemini-cli npx -y gemini-mcp-tool
+  # Prefer the pre-installed binary over `npx -y` to avoid cold-start race.
+  # If a legacy `npx -y` registration exists, drop it so we re-register clean.
+  if command -v claude &>/dev/null; then
+    local gemini_args
+    gemini_args=$(claude mcp get gemini-cli 2>/dev/null | awk -F': ' '/^  Args:/{sub(/^  Args: /,""); print; exit}')
+    if [ -n "$gemini_args" ] && echo "$gemini_args" | grep -q -- "-y gemini-mcp-tool" \
+       && command -v gemini-mcp-tool &>/dev/null; then
+      warn "Gemini MCP using npx -y (cold-start race risk) — re-registering with bare binary"
+      claude mcp remove gemini-cli 2>/dev/null || true
+    fi
+  fi
+
+  if command -v gemini-mcp-tool &>/dev/null; then
+    ensure_mcp gemini-cli gemini-mcp-tool
+  else
+    ensure_mcp gemini-cli npx -y gemini-mcp-tool
+  fi
 
   # Gemini CLI auth: use API key when GEMINI_API_KEY is set
   # (OAuth hits Cloud AI Companion API which requires GCP IAM permissions;
