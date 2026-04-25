@@ -736,8 +736,10 @@ export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
 # compaction itself; .agent/ files + on-compact hook carry state forward.
 #
 # Formula: threshold = WINDOW - 33K (20K summary output + 13K buffer).
-# Default WINDOW=283000 yields ~250K threshold on 1M-context models and
-# auto-clamps to ~167K on 200K-native models (both in 150K-250K band).
+# Default WINDOW=533000 yields ~500K threshold on 1M-context models and
+# auto-clamps to ~167K on 200K-native models. Large-context models get
+# ~500K headroom (Opus 4.7's prompt caching makes the higher threshold
+# cost-neutral); small models stay aggressive at ~167K to preserve quality.
 #
 # Precedence (matches claude binary): env var > project settings.json
 # > user settings.json > megavibe default. We only set the env var if
@@ -776,8 +778,8 @@ if [ -z "$COMPACT_WINDOW" ] && [ "$HAS_JQ" = "0" ] \
    && { [ -f ".claude/settings.json" ] || [ -f "$HOME/.claude/settings.json" ]; }; then
   COMPACT_SOURCE="unknown (jq needed)"
 elif [ -z "$COMPACT_WINDOW" ]; then
-  export CLAUDE_CODE_AUTO_COMPACT_WINDOW=283000
-  COMPACT_WINDOW=283000
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW=533000
+  COMPACT_WINDOW=533000
   COMPACT_SOURCE="megavibe default"
 fi
 

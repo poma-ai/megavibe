@@ -40,14 +40,13 @@ command -v jq &>/dev/null || exit 0
 LOGDIR=".agent/LOGS"
 NUDGE_THRESHOLD=8
 NUDGE_REPEAT=20
-# Tiered proactive-compaction thresholds (escalating urgency).
-# Calibrated against Claude Code's built-in auto-compact at ~83.5% of window
-# (~835K on 1M), and against megavibe's own research (150K–300K = orange,
-# 300K+ = red). Each tier fires AT MOST once per session until a higher tier
-# is crossed; the tier counter resets after an actual compaction event.
-COMPACT_TIER1=100000   # 🟡 advisory
-COMPACT_TIER2=250000   # 🟠 urgent
-COMPACT_TIER3=500000   # 🔴 critical (auto-compact approaching)
+# Tiered proactive-compaction nudges (escalating urgency). Tier values are
+# computed at runtime as 20% / 60% / 90% of the model's effective auto-compact
+# threshold (set by the megavibe launcher via CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+# clamps to model-native context). This guarantees all tiers fire BEFORE the
+# harness compacts, regardless of model size (1M Opus vs 200K Sonnet/Haiku).
+# Each tier fires AT MOST once per session until a higher tier is crossed;
+# the tier counter resets after an actual compaction event.
 TOKEN_COOLDOWN_SECS=300
 
 mkdir -p "$LOGDIR" 2>/dev/null || true
@@ -177,7 +176,9 @@ COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
 
 # --- Proactive compaction: tiered escalating nudges ---
 # Runs on EVERY PostToolUse. Fires at most once per tier per session, so the
-# user/Claude sees escalating warnings as context grows (100K → 250K → 500K)
+# user/Claude sees escalating warnings as context grows (100K → 300K → 450K),
+# all firing BELOW the harness auto-compact threshold (megavibe launcher
+# default WINDOW=533000 → ~500K threshold; override via env or settings.json)
 # instead of a single advisory message that gets ignored.
 #
 # The post-compact grace period uses .compact-ts.${SID} (stamped by
@@ -211,6 +212,36 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
       || echo "0")
     TOTAL_TOKENS="${TOTAL_TOKENS:-0}"
 
+    # Detect model from transcript so tiers scale per model's native context.
+    # Patterns match explicit [1m] suffix, opus-*-1m, and *-1m style names so
+    # detection isn't pinned to a single model version. Anything else falls
+    # back to 200K (safe baseline for Sonnet/Haiku/older Claude variants).
+    MODEL=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
+      | grep '"model"' \
+      | tail -1 \
+      | jq -r '.message.model // ""' 2>/dev/null || echo "")
+    case "$MODEL" in
+      *opus*1m*|*\[1m\]*|*-1m*) EFFECTIVE_CTX=1000000 ;;
+      *) EFFECTIVE_CTX=200000 ;;
+    esac
+
+    # Effective threshold = min(launcher WINDOW, model native) - 33K buffer.
+    # The harness clamps WINDOW to native context; tiers follow whichever is
+    # smaller. Falls back to pre-bump default if env var unset.
+    COMPACT_WIN="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-533000}"
+    EFFECTIVE_WIN=$(( COMPACT_WIN < EFFECTIVE_CTX ? COMPACT_WIN : EFFECTIVE_CTX ))
+    THRESHOLD=$(( EFFECTIVE_WIN - 33000 ))
+    [ "$THRESHOLD" -lt 50000 ] 2>/dev/null && THRESHOLD=50000  # sanity floor
+    THRESHOLD_K=$(( THRESHOLD / 1000 ))
+    TOK_K=$(( TOTAL_TOKENS / 1000 ))
+    RUNWAY_K=$(( THRESHOLD_K - TOK_K ))
+    [ "$RUNWAY_K" -lt 0 ] 2>/dev/null && RUNWAY_K=0
+
+    # Tier thresholds as % of effective threshold — always fire below it.
+    COMPACT_TIER1=$(( THRESHOLD * 20 / 100 ))
+    COMPACT_TIER2=$(( THRESHOLD * 60 / 100 ))
+    COMPACT_TIER3=$(( THRESHOLD * 90 / 100 ))
+
     # Determine current tier (highest threshold exceeded)
     CURRENT_TIER=0
     [ "$TOTAL_TOKENS" -gt "$COMPACT_TIER1" ] 2>/dev/null && CURRENT_TIER=1
@@ -222,9 +253,9 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
 
     if [ "$CURRENT_TIER" -gt "$LAST_TIER" ] 2>/dev/null; then
       case "$CURRENT_TIER" in
-        1) COMPACT_NUDGE="🟡 Context at ~${TOTAL_TOKENS} tokens (tier 1 / 100K advisory). When the current task wraps, flush pending decisions, tasks, and lessons to .agent/ files (FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md) and run /compact. Doing it early keeps post-compact recovery clean." ;;
-        2) COMPACT_NUDGE="🟠 Context at ~${TOTAL_TOKENS} tokens (tier 2 / 250K urgent). Flush now: write ALL pending context to .agent/ files, then run /compact before starting the next non-trivial operation. Quality degrades in this range and post-compact recovery ONLY has what's on disk." ;;
-        3) COMPACT_NUDGE="🔴 Context at ~${TOTAL_TOKENS} tokens (tier 3 / 500K critical). COMPACT IMMEDIATELY. Claude Code's built-in auto-compaction fires at ~835K on a 1M window — if it triggers before you flush, the summary is all post-compact Claude will see. Write every pending thought to .agent/ files NOW, then /compact." ;;
+        1) COMPACT_NUDGE="🟡 Context ~${TOK_K}K (advisory). Auto-compact at ~${THRESHOLD_K}K — ~${RUNWAY_K}K runway. Start flushing decisions, tasks, and lessons to .agent/ continuously; every line saved is a recovery line later." ;;
+        2) COMPACT_NUDGE="🟠 Context ~${TOK_K}K — ~${RUNWAY_K}K to auto-compact at ~${THRESHOLD_K}K. Flush ALL pending state to .agent/ NOW and run /compact at the next clean break. The threshold is deterministic — it WILL fire." ;;
+        3) COMPACT_NUDGE="🔴 Context ~${TOK_K}K — ~${RUNWAY_K}K to auto-compact at ~${THRESHOLD_K}K. /compact NOW. If the harness fires first it picks the moment (likely mid-tool-call); post-compact Claude only sees the summary." ;;
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
