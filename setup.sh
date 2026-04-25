@@ -617,6 +617,37 @@ else
   ok "~/.claude/settings.json created (statusLine + attribution)"
 fi
 
+# ─── 5b. Strip legacy user-level hook registrations ─────────────────
+# Pre-2026-04 megavibe registered hooks under ~/.claude/. Current
+# megavibe registers them per-project via init.sh. Users who upgraded
+# end up with BOTH registrations active — every PostToolUse, SessionStart,
+# etc. fires twice (same tool_use_id, byte-identical events). Symptoms:
+# JSONL bloats, counter nudges fire at half the intended threshold,
+# /compact recovery runs twice, statusMessage redraws double in scrollback.
+#
+# Strip the .hooks key from ~/.claude/settings.json if present, and
+# archive ~/.claude/hooks/ to ~/.claude/hooks.legacy-YYYYMMDD/ (don't
+# delete — preserve any user customizations). Idempotent: re-runs find
+# nothing to clean, skip silently.
+LEGACY_HOOK_DIR="$HOME/.claude/hooks"
+if command -v jq &>/dev/null && [ -f "$USER_SETTINGS" ]; then
+  if jq -e '.hooks' "$USER_SETTINGS" >/dev/null 2>&1; then
+    jq 'del(.hooks)' "$USER_SETTINGS" > "${USER_SETTINGS}.tmp" && \
+      mv "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
+    ok "removed legacy .hooks block from ~/.claude/settings.json (project-level still active)"
+  fi
+fi
+if [ -d "$LEGACY_HOOK_DIR" ]; then
+  ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d)"
+  if [ ! -e "$ARCHIVE_DIR" ]; then
+    mv "$LEGACY_HOOK_DIR" "$ARCHIVE_DIR"
+    ok "archived legacy hook scripts to ${ARCHIVE_DIR}/"
+  else
+    rm -rf "$LEGACY_HOOK_DIR"
+    ok "removed legacy hook scripts (archive ${ARCHIVE_DIR}/ already exists)"
+  fi
+fi
+
 # ─── 6. Register MCP servers ────────────────────────────────────────
 
 echo ""
