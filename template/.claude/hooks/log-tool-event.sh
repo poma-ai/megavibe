@@ -77,6 +77,24 @@ if [ -f "$REHYDRATE_FLAG" ] && [ -s "$SESSION_WC" ] && [ "$SESSION_WC" -nt "$REH
   rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
 fi
 
+# --- Generic mtime-based reset ---
+# Catches writes to .agent/*.md by any tool, not just Edit/Write. Bash
+# heredocs (`cat >> .agent/FULL_CONTEXT.md <<EOF`), `tee -a`, multi-line
+# scripts, and any other write path leave the file's mtime newer than the
+# counter file. Treat that as "context just got flushed". Excludes
+# .agent/LOGS/ so the hook's own JSONL writes don't reset the counter.
+MTIME_RESET=0
+if [ -f "$COUNTER_FILE" ]; then
+  NEWEST_AGENT_MD=$(find .agent -name '*.md' -not -path '.agent/LOGS/*' -newer "$COUNTER_FILE" -print -quit 2>/dev/null)
+  if [ -n "$NEWEST_AGENT_MD" ]; then
+    MTIME_RESET=1
+    (
+      flock -x 200 2>/dev/null
+      echo "0" > "$COUNTER_FILE"
+    ) 200>"${COUNTER_FILE}.lock" 2>/dev/null || echo "0" > "$COUNTER_FILE" 2>/dev/null || true
+  fi
+fi
+
 # --- Context freshness nudge (the CRITICAL path) ---
 # Check if this tool call was itself a write to .agent/*.md (reset counter if so)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
@@ -141,9 +159,11 @@ case "$TOOL_NAME" in
   Edit|MultiEdit|Write|Bash|NotebookEdit) IMPL_TOOL=1 ;;
 esac
 
-# Increment counter atomically using flock (only for implementation tools)
+# Increment counter atomically using flock (only for implementation tools).
+# Skip if mtime-reset already fired — this call IS the writer, don't re-bump
+# it back above zero on the very same invocation.
 COUNT=0
-if [ "$IMPL_TOOL" -eq 1 ]; then
+if [ "$IMPL_TOOL" -eq 1 ] && [ "$MTIME_RESET" -eq 0 ]; then
   (
     flock -x 200 2>/dev/null
     COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
