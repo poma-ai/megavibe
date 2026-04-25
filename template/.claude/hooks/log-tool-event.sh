@@ -212,18 +212,19 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
       || echo "0")
     TOTAL_TOKENS="${TOTAL_TOKENS:-0}"
 
-    # Detect model from transcript so tiers scale per model's native context.
-    # Patterns match explicit [1m] suffix, opus-*-1m, and *-1m style names so
-    # detection isn't pinned to a single model version. Anything else falls
-    # back to 200K (safe baseline for Sonnet/Haiku/older Claude variants).
-    MODEL=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
-      | grep '"model"' \
-      | tail -1 \
-      | jq -r '.message.model // ""' 2>/dev/null || echo "")
-    case "$MODEL" in
-      *opus*1m*|*\[1m\]*|*-1m*) EFFECTIVE_CTX=1000000 ;;
-      *) EFFECTIVE_CTX=200000 ;;
-    esac
+    # Read effective context size cached by statusline.sh (which gets it
+    # straight from Claude Code's stdin: .context_window.context_window_size).
+    # Transcript model field strips the [1m] suffix so we cannot detect 1M
+    # from there; the statusline JSON is the only reliable source. Falls
+    # back to 200K (safe baseline) before statusline runs the first time.
+    EFFECTIVE_CTX=200000
+    CTX_FILE=".agent/LOGS/.ctx-size.${SID}"
+    if [ -f "$CTX_FILE" ]; then
+      CACHED_CTX=$(cat "$CTX_FILE" 2>/dev/null)
+      if [ -n "$CACHED_CTX" ] && [ "$CACHED_CTX" -gt 0 ] 2>/dev/null; then
+        EFFECTIVE_CTX=$CACHED_CTX
+      fi
+    fi
 
     # Effective threshold = min(launcher WINDOW, model native) - 33K buffer.
     # The harness clamps WINDOW to native context; tiers follow whichever is
