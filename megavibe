@@ -744,26 +744,38 @@ export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
 # nothing else is configured, so explicit user choices are respected.
 COMPACT_WINDOW=""
 COMPACT_SOURCE=""
+HAS_JQ=0
+command -v jq >/dev/null 2>&1 && HAS_JQ=1
+
+# Stricter jq filter: must be a number > 33000 (anything smaller would
+# yield a non-positive threshold). Rejects strings, nulls, tiny ints.
+JQ_FILTER='.autoCompactWindow | select(type=="number" and . > 33000)'
+
 if [ -n "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ]; then
   COMPACT_WINDOW="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
   COMPACT_SOURCE="env (pre-set)"
-elif [ -f ".claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-  PROJ_VAL=$(jq -r '.autoCompactWindow // empty' .claude/settings.json 2>/dev/null || true)
+elif [ -f ".claude/settings.json" ] && [ "$HAS_JQ" = "1" ]; then
+  PROJ_VAL=$(jq -er "$JQ_FILTER" .claude/settings.json 2>/dev/null || true)
   if [ -n "$PROJ_VAL" ]; then
     export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$PROJ_VAL"
     COMPACT_WINDOW="$PROJ_VAL"
     COMPACT_SOURCE="project settings.json"
   fi
 fi
-if [ -z "$COMPACT_WINDOW" ] && [ -f "$HOME/.claude/settings.json" ] && command -v jq >/dev/null 2>&1; then
-  USER_VAL=$(jq -r '.autoCompactWindow // empty' "$HOME/.claude/settings.json" 2>/dev/null || true)
+if [ -z "$COMPACT_WINDOW" ] && [ -f "$HOME/.claude/settings.json" ] && [ "$HAS_JQ" = "1" ]; then
+  USER_VAL=$(jq -er "$JQ_FILTER" "$HOME/.claude/settings.json" 2>/dev/null || true)
   if [ -n "$USER_VAL" ]; then
     export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$USER_VAL"
     COMPACT_WINDOW="$USER_VAL"
     COMPACT_SOURCE="user settings.json"
   fi
 fi
-if [ -z "$COMPACT_WINDOW" ]; then
+# jq missing but a settings file exists: don't override claude's own
+# parsing of autoCompactWindow with the megavibe default. Mark unknown.
+if [ -z "$COMPACT_WINDOW" ] && [ "$HAS_JQ" = "0" ] \
+   && { [ -f ".claude/settings.json" ] || [ -f "$HOME/.claude/settings.json" ]; }; then
+  COMPACT_SOURCE="unknown (jq needed)"
+elif [ -z "$COMPACT_WINDOW" ]; then
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW=283000
   COMPACT_WINDOW=283000
   COMPACT_SOURCE="megavibe default"
@@ -789,9 +801,17 @@ case "$POMA_STATE" in
   broken|missing) POMA_TAIL="" ;;
 esac
 
-if [[ "$COMPACT_WINDOW" =~ ^[0-9]+$ ]]; then
-  COMPACT_THRESHOLD_K=$(( (COMPACT_WINDOW - 33000) / 1000 ))
-  echo -e "  ${BOLD}Auto-compact:${RESET} ~${COMPACT_THRESHOLD_K}K / ~167K threshold (1M / 200K-native, ${COMPACT_SOURCE})${POMA_TAIL}"
+if [ -z "$COMPACT_WINDOW" ]; then
+  echo -e "  ${BOLD}Auto-compact:${RESET} ${COMPACT_SOURCE} — install jq for visibility${POMA_TAIL}"
+elif [[ "$COMPACT_WINDOW" =~ ^[0-9]+$ ]]; then
+  LARGE_THRESHOLD_K=$(( (COMPACT_WINDOW - 33000) / 1000 ))
+  CLAMPED=$(( COMPACT_WINDOW < 200000 ? COMPACT_WINDOW : 200000 ))
+  SMALL_THRESHOLD_K=$(( (CLAMPED - 33000) / 1000 ))
+  if [ "$LARGE_THRESHOLD_K" = "$SMALL_THRESHOLD_K" ]; then
+    echo -e "  ${BOLD}Auto-compact:${RESET} ~${LARGE_THRESHOLD_K}K threshold (${COMPACT_SOURCE})${POMA_TAIL}"
+  else
+    echo -e "  ${BOLD}Auto-compact:${RESET} ~${LARGE_THRESHOLD_K}K / ~${SMALL_THRESHOLD_K}K threshold (1M / 200K-native, ${COMPACT_SOURCE})${POMA_TAIL}"
+  fi
 else
   echo -e "  ${BOLD}Auto-compact:${RESET} window=${COMPACT_WINDOW} (${COMPACT_SOURCE})."
 fi
