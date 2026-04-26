@@ -298,19 +298,37 @@ if [ "$POST_COMPACT_GRACE" -eq 0 ]; then
   fi
 fi
 
-# Re-hydration nag (appended to nudge if both apply) — suppressed during grace
+# Re-hydration nag — suppressed during grace. Capped at REHYDRATE_NAG_MAX
+# fires per flag: if Claude has been told 3 times and still hasn't written
+# a fresh WORKING_CONTEXT, it's an informed choice (carryover context is
+# enough, or the user moved on). Auto-clear after the cap and emit one
+# final notice — repeating the same warning on every tool call indefinitely
+# is noise, not signal.
+REHYDRATE_NAG_MAX=3
 if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ]; then
-  INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
-  if [ -f "$INSTRUCTIONS_FILE" ]; then
-    REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed. Read ${INSTRUCTIONS_FILE} for full instructions (Gemini MCP → GEMINI_API_KEY fallback → Codex)."
+  NAG_COUNT=$(cat "$REHYDRATE_FLAG" 2>/dev/null | tr -d ' \n')
+  NAG_COUNT="${NAG_COUNT:-0}"
+  REHYDRATE_MSG=""
+  if [ "$NAG_COUNT" -ge "$REHYDRATE_NAG_MAX" ] 2>/dev/null; then
+    rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
+    REHYDRATE_MSG="ℹ️ Rehydration flag auto-cleared after ${REHYDRATE_NAG_MAX} nags. Continuing with carryover context. /rehydrate is still available if you want a fresh WORKING_CONTEXT.md."
   else
-    REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed. Call Gemini (or use \$GEMINI_API_KEY via curl, or Codex) to regenerate WORKING_CONTEXT.md."
+    NEW_COUNT=$((NAG_COUNT + 1))
+    echo "$NEW_COUNT" > "$REHYDRATE_FLAG" 2>/dev/null || true
+    INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
+    if [ -f "$INSTRUCTIONS_FILE" ]; then
+      REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Read ${INSTRUCTIONS_FILE} for instructions, OR ignore if your carryover context is sufficient — flag auto-clears after ${REHYDRATE_NAG_MAX} nags."
+    else
+      REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Call Gemini/Codex to regenerate WORKING_CONTEXT.md, or ignore if carryover context is enough."
+    fi
   fi
-  if [ -n "$NUDGE_MSG" ]; then
-    NUDGE_MSG="${NUDGE_MSG}
+  if [ -n "$REHYDRATE_MSG" ]; then
+    if [ -n "$NUDGE_MSG" ]; then
+      NUDGE_MSG="${NUDGE_MSG}
 ${REHYDRATE_MSG}"
-  else
-    NUDGE_MSG="$REHYDRATE_MSG"
+    else
+      NUDGE_MSG="$REHYDRATE_MSG"
+    fi
   fi
 fi
 
