@@ -59,6 +59,20 @@ mkdir -p "$SESSION_DIR"
 WC_PATH="${SESSION_DIR}/WORKING_CONTEXT.md"
 INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 
+# WC freshness gate: if /rehydrate ran within the last hour, the existing
+# WORKING_CONTEXT is still useful and post-compact orientation injection is
+# enough. Setting the rehydration flag here would just spawn a sticky nag
+# that fires on every tool call until Claude *re-runs* /rehydrate — which
+# Claude won't do if it (correctly) decides carryover context is sufficient.
+# Skip the flag in that case; user can still invoke /rehydrate voluntarily.
+WC_FRESH=0
+if [ -f "$WC_PATH" ]; then
+  WC_MTIME=$(stat -f %m "$WC_PATH" 2>/dev/null || stat -c %Y "$WC_PATH" 2>/dev/null || echo 0)
+  NOW_TS=$(date +%s)
+  WC_AGE=$(( NOW_TS - WC_MTIME ))
+  [ "$WC_AGE" -lt 3600 ] 2>/dev/null && WC_FRESH=1
+fi
+
 # --- Read structured files (always small, always injected) ---
 DECISIONS=$(cat .agent/DECISIONS.md 2>/dev/null || echo "(empty)")
 TASKS=$(cat .agent/TASKS.md 2>/dev/null || echo "(empty)")
@@ -105,7 +119,7 @@ echo "FULL_CONTEXT: ${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines" >&2
 if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
   # === BOOTSTRAP: .agent/ files are empty ===
   echo "Strategy: bootstrap (empty .agent/ files)" >&2
-  touch ".agent/LOGS/.needs-rehydration.${SID}"
+  [ "$WC_FRESH" -eq 0 ] && touch ".agent/LOGS/.needs-rehydration.${SID}"
 
   CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED — .agent/ FILES ARE EMPTY
 
@@ -177,10 +191,22 @@ ${FULL_CONTEXT}"
 
 else
   # === NORMAL: instruct Claude to call Gemini/Codex for focused summary ===
-  echo "Strategy: rehydration instructions (${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines)" >&2
-  touch ".agent/LOGS/.needs-rehydration.${SID}"
+  echo "Strategy: rehydration instructions (${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines, wc_fresh=${WC_FRESH})" >&2
+  [ "$WC_FRESH" -eq 0 ] && touch ".agent/LOGS/.needs-rehydration.${SID}"
 
-  CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED — RE-HYDRATION REQUIRED
+  if [ "$WC_FRESH" -eq 1 ]; then
+    REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_PATH}) was written within the last hour
+and is likely still valid. Treat it as your source of truth — running
+/rehydrate now is OPTIONAL. If you decide carryover context is enough,
+just continue working; no nag will fire."
+  else
+    REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the Gemini/Codex fallback
+chain (full AI-powered recovery). Do /rehydrate BEFORE resuming any other
+work. Until it completes, stale-context nags are suppressed for ~5 minutes
+so you get a clean window."
+  fi
+
+  CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED
 
 Session: ${SID}
 WORKING_CONTEXT path: ${WC_PATH}
@@ -189,13 +215,10 @@ Durable backup of these instructions: ${INSTRUCTIONS_FILE}
 
 ## Post-compact recovery
 
-Run /rehydrate — it regenerates ${WC_PATH} via the Gemini/Codex fallback
-chain (full AI-powered recovery). That is the ONLY slash command you need
-to type; orientation (git state + structured .agent/ files) is inlined
-below so /catchup is not needed separately.
+${REHYDRATE_HINT}
 
-Do /rehydrate BEFORE resuming any other work. Until it completes,
-stale-context nags are suppressed for ~5 minutes so you get a clean window.
+Orientation (git state + structured .agent/ files) is inlined below so
+/catchup is not needed separately.
 
 ${GIT_STATE}
 
