@@ -94,6 +94,12 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 
 `/prune-context` hints fire automatically from `on-pre-compact.sh` (appended to the pre-compact alert) and from proactive-compaction tier nudges in `log-tool-event.sh` when `FULL_CONTEXT.md` exceeds 500 lines, so you don't have to watch for it.
 
+## Doc hygiene (periodic)
+
+After significant docs or code edits that change the project's documentation surface, run **`/doc-review`** — sends the project MD set (`CLAUDE.md` + every `README*.md`) to Gemini AND Codex **in parallel** for an independent challenge: drift, contradictions, dead pointers, bloat. Synthesize the two reviews, then act on findings. Not every session — a regular exercise after material doc changes.
+
+Keep CLAUDE.md a **rule index, not an encyclopedia.** When a section grows past ~30 lines or describes a system in detail, extract to `README-<topic>.md` and leave a short pointer. CLAUDE.md is loaded eagerly on every session — detail there is paid for forever; READMEs are lazy and free until referenced. See `.claude/rules/claude-md-authoring.md` for the full authoring convention.
+
 ## Backend availability check
 
 On every fresh session start, call `mcp__gemini-cli__ping` to test Gemini connectivity. If it fails or Gemini MCP tools are not listed, mark Gemini as **unavailable** for this session and use the Fallback column in the routing table in `.claude/rules/delegation.md`.
