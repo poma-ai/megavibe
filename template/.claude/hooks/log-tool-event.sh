@@ -215,9 +215,8 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
     # Read effective context size cached by statusline.sh (which gets it
     # straight from Claude Code's stdin: .context_window.context_window_size).
     # Transcript model field strips the [1m] suffix so we cannot detect 1M
-    # from there; the statusline JSON is the only reliable source. Falls
-    # back to 200K (safe baseline) before statusline runs the first time.
-    EFFECTIVE_CTX=200000
+    # from there; the statusline JSON is the only reliable source.
+    EFFECTIVE_CTX=0
     CTX_FILE=".agent/LOGS/.ctx-size.${SID}"
     if [ -f "$CTX_FILE" ]; then
       CACHED_CTX=$(cat "$CTX_FILE" 2>/dev/null)
@@ -230,13 +229,46 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
     # The harness clamps WINDOW to native context; tiers follow whichever is
     # smaller. Falls back to pre-bump default if env var unset.
     COMPACT_WIN="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-533000}"
+
+    # Cache missing (statusline hasn't rendered yet for this session): infer
+    # from the launcher window. The harness clamps COMPACT_WIN to model-native
+    # context, so a >200K window can only mean a 1M-context model. Otherwise
+    # assume 200K-native — safe baseline for Sonnet/Haiku without [1m] variant.
+    if [ "$EFFECTIVE_CTX" -eq 0 ] 2>/dev/null; then
+      if [ "$COMPACT_WIN" -gt 200000 ] 2>/dev/null; then
+        EFFECTIVE_CTX=1000000
+      else
+        EFFECTIVE_CTX=200000
+      fi
+    fi
+
+    # Empirical self-correct: if observed tokens exceed the supposed window
+    # without any auto-compact firing, the cache is provably wrong (model was
+    # switched up between sessions, or stdin lacked context_window_size).
+    # Trust observation over the cache and bump to 1M. Without this, a stale
+    # 200K cache on a 1M-context session triggers tier-3 nudges with
+    # nonsensical math like "~0K to auto-compact at ~167K".
+    if [ "$TOTAL_TOKENS" -gt "$EFFECTIVE_CTX" ] 2>/dev/null; then
+      EFFECTIVE_CTX=1000000
+    fi
+
     EFFECTIVE_WIN=$(( COMPACT_WIN < EFFECTIVE_CTX ? COMPACT_WIN : EFFECTIVE_CTX ))
     THRESHOLD=$(( EFFECTIVE_WIN - 33000 ))
     [ "$THRESHOLD" -lt 50000 ] 2>/dev/null && THRESHOLD=50000  # sanity floor
     THRESHOLD_K=$(( THRESHOLD / 1000 ))
     TOK_K=$(( TOTAL_TOKENS / 1000 ))
+
+    # Runway: positive if room remains, negative if past trigger.
+    # When negative, render as "past" rather than clamping to 0 — the
+    # latter implies "approaching trigger" which is false and gaslights
+    # the user when the harness threshold is clearly higher than ours.
     RUNWAY_K=$(( THRESHOLD_K - TOK_K ))
-    [ "$RUNWAY_K" -lt 0 ] 2>/dev/null && RUNWAY_K=0
+    if [ "$RUNWAY_K" -lt 0 ] 2>/dev/null; then
+      PAST_K=$(( -RUNWAY_K ))
+      RUNWAY_DESC="${PAST_K}K past our ~${THRESHOLD_K}K estimate (harness threshold likely higher — no auto-compact yet)"
+    else
+      RUNWAY_DESC="~${RUNWAY_K}K to auto-compact at ~${THRESHOLD_K}K"
+    fi
 
     # Tier thresholds as % of effective threshold — always fire below it.
     COMPACT_TIER1=$(( THRESHOLD * 20 / 100 ))
@@ -254,9 +286,9 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
 
     if [ "$CURRENT_TIER" -gt "$LAST_TIER" ] 2>/dev/null; then
       case "$CURRENT_TIER" in
-        1) COMPACT_NUDGE="🟡 Context ~${TOK_K}K (advisory). Auto-compact at ~${THRESHOLD_K}K — ~${RUNWAY_K}K runway. Start flushing decisions, tasks, and lessons to .agent/ continuously; every line saved is a recovery line later." ;;
-        2) COMPACT_NUDGE="🟠 Context ~${TOK_K}K — ~${RUNWAY_K}K to auto-compact at ~${THRESHOLD_K}K. Flush ALL pending state to .agent/ NOW and run /compact at the next clean break. The threshold is deterministic — it WILL fire." ;;
-        3) COMPACT_NUDGE="🔴 Context ~${TOK_K}K — ~${RUNWAY_K}K to auto-compact at ~${THRESHOLD_K}K. /compact NOW. If the harness fires first it picks the moment (likely mid-tool-call); post-compact Claude only sees the summary." ;;
+        1) COMPACT_NUDGE="🟡 Context ~${TOK_K}K (advisory). ${RUNWAY_DESC}. Start flushing decisions, tasks, and lessons to .agent/ continuously; every line saved is a recovery line later." ;;
+        2) COMPACT_NUDGE="🟠 Context ~${TOK_K}K — ${RUNWAY_DESC}. Flush ALL pending state to .agent/ NOW and run /compact at the next clean break. The threshold is deterministic — it WILL fire." ;;
+        3) COMPACT_NUDGE="🔴 Context ~${TOK_K}K — ${RUNWAY_DESC}. /compact NOW. If the harness fires first it picks the moment (likely mid-tool-call); post-compact Claude only sees the summary." ;;
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
