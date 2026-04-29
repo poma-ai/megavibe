@@ -25,9 +25,18 @@ set -u
 # Only run if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0
 
-# Require poma-memory (pip-installed)
-command -v poma-memory &>/dev/null || exit 0
-POMA_CMD="poma-memory"
+# Find poma-memory: prefer PATH, fall back to ~/.megavibe/{,.}venv/bin/.
+# The venv path matters when pip_install_with_fallback (setup.sh) used a
+# PEP 668 fallback and the symlink to ~/.local/bin/ never landed on PATH.
+if command -v poma-memory &>/dev/null; then
+  POMA_CMD="poma-memory"
+elif [ -x "$HOME/.megavibe/venv/bin/poma-memory" ]; then
+  POMA_CMD="$HOME/.megavibe/venv/bin/poma-memory"
+elif [ -x "$HOME/.megavibe/.venv/bin/poma-memory" ]; then
+  POMA_CMD="$HOME/.megavibe/.venv/bin/poma-memory"
+else
+  exit 0
+fi
 
 # Check index exists (no point searching an empty index)
 [ -f ".agent/.poma-memory.db" ] || exit 0

@@ -409,6 +409,26 @@ else
   fi
 fi
 
+# Expose the poma-memory CLI on PATH. When pip_install_with_fallback uses a
+# venv (PEP 668 path), the binary lives in ~/.megavibe/{,.}venv/bin/ — not on
+# PATH — so `command -v poma-memory` fails for the launcher status check and
+# the augment-search.sh hook. Symlink into ~/.local/bin/ (POSIX user bin,
+# already on PATH for most shells) to fix that without touching system dirs.
+if ! command -v poma-memory >/dev/null 2>&1; then
+  for candidate in "$MEGAVIBE_HOME/venv/bin/poma-memory" "$MEGAVIBE_HOME/.venv/bin/poma-memory"; do
+    if [ -x "$candidate" ]; then
+      mkdir -p "$HOME/.local/bin"
+      ln -sf "$candidate" "$HOME/.local/bin/poma-memory"
+      if echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
+        ok "poma-memory CLI symlinked to ~/.local/bin"
+      else
+        warn "poma-memory symlinked to ~/.local/bin/poma-memory — add ~/.local/bin to PATH"
+      fi
+      break
+    fi
+  done
+fi
+
 # Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
 telegram_bot_install() {
   if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then

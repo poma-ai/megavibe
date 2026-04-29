@@ -791,8 +791,16 @@ echo -e "  ${BOLD}Permissions auto-approved.${RESET} Press ${BOLD}Shift+Tab${RES
 # but not importable" (common pyenv-per-project gotcha) from "not installed".
 # Keeps the startup echo honest — don't promise what isn't there.
 POMA_STATE="missing"
+POMA_BIN=""
 if command -v poma-memory >/dev/null 2>&1; then
-  if poma-memory --help >/dev/null 2>&1; then
+  POMA_BIN="poma-memory"
+else
+  for candidate in "$HOME/.megavibe/venv/bin/poma-memory" "$HOME/.megavibe/.venv/bin/poma-memory"; do
+    if [ -x "$candidate" ]; then POMA_BIN="$candidate"; break; fi
+  done
+fi
+if [ -n "$POMA_BIN" ]; then
+  if "$POMA_BIN" --help >/dev/null 2>&1; then
     POMA_STATE="ok"
   else
     POMA_STATE="broken"
