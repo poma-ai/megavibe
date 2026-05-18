@@ -271,8 +271,10 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
     fi
 
     # Tier thresholds as % of effective threshold — always fire below it.
-    COMPACT_TIER1=$(( THRESHOLD * 20 / 100 ))
-    COMPACT_TIER2=$(( THRESHOLD * 60 / 100 ))
+    # Ratios 50/75/90: half-way is the earliest yellow, three-quarters urgent,
+    # 90% critical. Lower ratios fire too early when there's still real runway.
+    COMPACT_TIER1=$(( THRESHOLD * 50 / 100 ))
+    COMPACT_TIER2=$(( THRESHOLD * 75 / 100 ))
     COMPACT_TIER3=$(( THRESHOLD * 90 / 100 ))
 
     # Determine current tier (highest threshold exceeded)
