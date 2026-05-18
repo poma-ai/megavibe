@@ -46,7 +46,7 @@ elif [[ "$TOOL_NAME" == "Glob" ]]; then
   # Extract meaningful terms from glob pattern (e.g., "**/*.test.ts" → "test")
   RAW=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null || echo "")
   # Strip glob syntax to get searchable keywords
-  PATTERN=$(echo "$RAW" | sed 's/\*\*\///g; s/\*//g; s/\.//g; s/\///g' | tr '-_' ' ')
+  PATTERN=$(echo "$RAW" | sed 's/\*\*\///g; s/\*//g; s/\.//g; s/\///g' | tr -- '-_' ' ')
 fi
 
 # Skip trivial patterns (too short to be meaningful)
