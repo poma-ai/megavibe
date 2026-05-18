@@ -68,7 +68,11 @@ if [ -f "$SETTINGS" ]; then
     # Always sync hooks from template (infrastructure — matches hook script overwrite policy)
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
     # Rewrite relative hook paths to absolute (prevents breakage when session cd's to subdirectory)
-    ABS_PROJECT=$(cd "$PROJECT" && pwd)
+    # `pwd -P` resolves symlinks. Bare `pwd` would record the logical (symlink)
+    # path — if the symlink is later removed or its target moves, the hardcoded
+    # hook paths in settings.json break with "No such file or directory" and the
+    # session cannot run any tool. Always anchor to the canonical filesystem path.
+    ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
     # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
     # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
     jq -s '.[0] * {hooks: .[1].hooks}' "$SETTINGS" "$TEMPLATE_SETTINGS" \
