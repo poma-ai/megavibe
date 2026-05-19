@@ -27,6 +27,31 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 # Only act on fresh startup (not compact — that's handled by on-compact.sh)
 [ "$SOURCE" = "startup" ] || exit 0
 
+# --- Spawn the context-watcher daemon (per session, idempotent) ---
+# Opt-in: set MEGAVIBE_WATCHER=1 in your shell to enable. Off by default
+# while the feature is in shake-out. The watcher reads the transcript JSONL,
+# extracts narrative/lessons/tasks/decisions via Gemini→Codex fallback, and
+# applies them to .agent/ files between turns — replacing the need for
+# proactive in-session nudges. Decisions are STAGED to
+# .agent/LOGS/pending-decisions.$SID.jsonl, not auto-applied; review with
+# `python3 ~/.megavibe/scripts/review-decisions.py`.
+WATCHER_BIN="$HOME/.megavibe/scripts/context-watcher.py"
+if [ "${MEGAVIBE_WATCHER:-0}" = "1" ] && [ -x "$WATCHER_BIN" ] && command -v tmux &>/dev/null; then
+  WSID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)
+  if [ -n "$WSID" ]; then
+    WTMUX="mvw-${WSID}"
+    if ! tmux has-session -t "$WTMUX" 2>/dev/null; then
+      WPROJ="$(pwd)"
+      WTRANS=$(ls -t "$HOME/.claude/projects/"*"/${WSID}"*.jsonl 2>/dev/null | head -1)
+      if [ -n "$WTRANS" ] && [ -f "$WTRANS" ]; then
+        tmux new -d -s "$WTMUX" \
+          "python3 \"$WATCHER_BIN\" --session-id \"$WSID\" --project-dir \"$WPROJ\" --transcript \"$WTRANS\"" \
+          2>/dev/null || true
+      fi
+    fi
+  fi
+fi
+
 # Check if project has real context
 DECISIONS_LINES=$(wc -l < ".agent/DECISIONS.md" 2>/dev/null || echo "0")
 DECISIONS_LINES=$(echo "$DECISIONS_LINES" | tr -d ' ')
