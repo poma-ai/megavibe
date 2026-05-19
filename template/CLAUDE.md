@@ -43,6 +43,8 @@ Compaction has three phases, all hook-driven:
 
 You do NOT need to run `/catchup` separately after compaction — the orientation is already in the hook's injected message. `/catchup` remains useful for session-start orientation (fresh launch, no compaction event). A 5-minute post-compact grace period suppresses stale-context nags while `/rehydrate` runs, so you won't get double-yelled-at during recovery.
 
+**Context watcher** (opt-in): set `MEGAVIBE_WATCHER=1` to spawn an out-of-band daemon that flushes `.agent/` files on a trickle (every 5 min) directly from the transcript, replacing in-session nudges. Decisions are staged for human review; narrative/lessons/tasks auto-apply under flock. Full detail: **`README-watcher.md`**.
+
 ## Workflow: Explore → Plan → Implement → Verify → Commit → Learn → Reflect
 
 **Explore** (read-only)

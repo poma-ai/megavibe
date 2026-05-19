@@ -41,7 +41,7 @@ LOGDIR=".agent/LOGS"
 NUDGE_THRESHOLD=8
 NUDGE_REPEAT=20
 # Tiered proactive-compaction nudges (escalating urgency). Tier values are
-# computed at runtime as 20% / 60% / 90% of the model's effective auto-compact
+# computed at runtime as 50% / 75% / 90% of the model's effective auto-compact
 # threshold (set by the megavibe launcher via CLAUDE_CODE_AUTO_COMPACT_WINDOW;
 # clamps to model-native context). This guarantees all tiers fire BEFORE the
 # harness compacts, regardless of model size (1M Opus vs 200K Sonnet/Haiku).

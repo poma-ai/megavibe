@@ -364,6 +364,15 @@ if [ -f "$SCRIPT_DIR/session-status.sh" ]; then
   chmod +x "$MEGAVIBE_HOME/session-status.sh"
 fi
 
+# Deploy scripts/ — the context-watcher daemon + review CLI live here, invoked
+# by on-session-start.sh and the user respectively. Treated as infrastructure
+# (always overwrite) so updates propagate without a per-project init step.
+if [ -d "$SCRIPT_DIR/scripts" ]; then
+  mkdir -p "$MEGAVIBE_HOME/scripts"
+  cp -f "$SCRIPT_DIR/scripts/"*.py "$MEGAVIBE_HOME/scripts/" 2>/dev/null || true
+  chmod +x "$MEGAVIBE_HOME/scripts/"*.py 2>/dev/null || true
+fi
+
 # Save detected Python command so hooks and MCP can use it
 if [ -n "$PYTHON" ]; then
   echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
