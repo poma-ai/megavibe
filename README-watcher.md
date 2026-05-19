@@ -4,7 +4,7 @@ A long-running daemon that keeps `.agent/` files fresh from the live Claude Code
 
 The intent: replace the proactive tier-nudge architecture ("flush context NOW") with an out-of-band watcher that does the flush itself, on a trickle, while you work. Claude never has to be reminded; the files are already current when compaction or session end arrives.
 
-**Status: opt-in.** Default off. Enable per session with `MEGAVIBE_WATCHER=1`.
+**Status: default ON.** Opt out per session with `MEGAVIBE_WATCHER=0`.
 
 ---
 
@@ -12,7 +12,7 @@ The intent: replace the proactive tier-nudge architecture ("flush context NOW") 
 
 One `python3 ~/.megavibe/scripts/context-watcher.py` process per Claude session, hosted in a named tmux session `mvw-<sid12>`.
 
-- **Spawned** by `on-session-start.sh` (matcher `startup`) when `MEGAVIBE_WATCHER=1` is set in the shell that launched Claude.
+- **Spawned** by `on-session-start.sh` (matcher `startup`) — automatically, unless `MEGAVIBE_WATCHER=0` is set in the shell that launched Claude.
 - **Killed** by `on-session-end.sh` (matcher `.*`) which `tmux kill-session`s the daemon. The daemon catches the resulting SIGHUP, does one final flush, then exits.
 - **Self-contained**: lives entirely in tmux, never disowned to launchd, no LAN ports, no PID files needed.
 
@@ -39,17 +39,19 @@ python3 ~/.megavibe/scripts/review-decisions.py --yes-all  # accept everything (
 
 Accepted decisions get appended to `.agent/DECISIONS.md` continuing the existing sequence number; rejected ones stay in the staging JSONL with `status: rejected` for audit.
 
-## Enabling
+## Enabling / disabling
+
+The watcher is **on by default** — `claude` (or `megavibe`) launches and the spawn hook will start it automatically, provided tmux is on PATH and `~/.megavibe/scripts/context-watcher.py` exists.
 
 ```bash
-# one-off
-MEGAVIBE_WATCHER=1 claude
+# Disable for one session
+MEGAVIBE_WATCHER=0 claude
 
-# persistent
-echo 'export MEGAVIBE_WATCHER=1' >> ~/.zshrc   # or ~/.bashrc
+# Disable persistently
+echo 'export MEGAVIBE_WATCHER=0' >> ~/.zshrc   # or ~/.bashrc
 ```
 
-The hook checks the env var on session start. No env var = no watcher = old nudge behavior intact.
+When the watcher is alive (its `mvw-<sid12>` tmux session exists), the in-session tier nudges in `log-tool-event.sh` suppress automatically — the daemon is keeping `.agent/` fresh, so Claude doesn't need a "flush now" reminder. When the watcher is off, tier nudges remain the safety net.
 
 ## Inspecting / killing
 

@@ -28,15 +28,16 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 [ "$SOURCE" = "startup" ] || exit 0
 
 # --- Spawn the context-watcher daemon (per session, idempotent) ---
-# Opt-in: set MEGAVIBE_WATCHER=1 in your shell to enable. Off by default
-# while the feature is in shake-out. The watcher reads the transcript JSONL,
-# extracts narrative/lessons/tasks/decisions via Gemini→Codex fallback, and
-# applies them to .agent/ files between turns — replacing the need for
-# proactive in-session nudges. Decisions are STAGED to
-# .agent/LOGS/pending-decisions.$SID.jsonl, not auto-applied; review with
-# `python3 ~/.megavibe/scripts/review-decisions.py`.
+# On by default. Set MEGAVIBE_WATCHER=0 to opt out. The watcher reads the
+# transcript JSONL, extracts narrative/lessons/tasks/decisions via
+# Gemini→Codex fallback, and applies them to .agent/ files between turns —
+# replacing the need for proactive in-session nudges. Decisions are STAGED
+# to .agent/LOGS/pending-decisions.$SID.jsonl (not auto-applied); review
+# with `python3 ~/.megavibe/scripts/review-decisions.py`.
+# Required prerequisites (any missing = clean skip, no error to user):
+# the watcher binary, tmux, and either gemini or codex on PATH.
 WATCHER_BIN="$HOME/.megavibe/scripts/context-watcher.py"
-if [ "${MEGAVIBE_WATCHER:-0}" = "1" ] && [ -x "$WATCHER_BIN" ] && command -v tmux &>/dev/null; then
+if [ "${MEGAVIBE_WATCHER:-1}" != "0" ] && [ -x "$WATCHER_BIN" ] && command -v tmux &>/dev/null; then
   WSID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)
   if [ -n "$WSID" ]; then
     WTMUX="mvw-${WSID}"

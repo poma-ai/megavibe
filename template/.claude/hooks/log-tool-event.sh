@@ -202,7 +202,19 @@ if [ "$IN_COOLDOWN" -eq 1 ] && [ -f "$COMPACT_TIER_FILE" ]; then
   echo "0" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 fi
 
-if [ "$IN_COOLDOWN" -eq 0 ]; then
+# Watcher gate: if the context-watcher daemon is alive for this session
+# (named tmux session 'mvw-<sid>'), it is keeping .agent/ files fresh
+# between turns and Claude doesn't need in-session nudges to flush.
+# Suppress tier nudges entirely when watcher is active — they become noise
+# without value. The user can still see context size in the statusline.
+# When watcher is OFF (opted-out or prerequisites missing), tier nudges
+# remain the safety net.
+WATCHER_ACTIVE=0
+if command -v tmux >/dev/null 2>&1 && tmux has-session -t "mvw-${SID}" 2>/dev/null; then
+  WATCHER_ACTIVE=1
+fi
+
+if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
   TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     TOTAL_TOKENS=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
@@ -227,15 +239,23 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
 
     # Effective threshold = min(launcher WINDOW, model native) - 33K buffer.
     # The harness clamps WINDOW to native context; tiers follow whichever is
-    # smaller. Falls back to pre-bump default if env var unset.
-    COMPACT_WIN="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-533000}"
+    # smaller. Sentinel 0 = "env unset" → use native ctx directly (no
+    # megavibe-imposed cap). Used to default to 533000 here; removed because
+    # the context-watcher now keeps .agent/ fresh out-of-band, and capping a
+    # 1M-context model at 500K wastes half the window.
+    COMPACT_WIN="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-0}"
 
     # Cache missing (statusline hasn't rendered yet for this session): infer
     # from the launcher window. The harness clamps COMPACT_WIN to model-native
     # context, so a >200K window can only mean a 1M-context model. Otherwise
     # assume 200K-native — safe baseline for Sonnet/Haiku without [1m] variant.
+    # If COMPACT_WIN is also 0 (no env, no settings), we can't distinguish —
+    # default to 1M (Opus is the common 1M case; Sonnet/Haiku 200K users get
+    # statusline cache early and self-correct downward below).
     if [ "$EFFECTIVE_CTX" -eq 0 ] 2>/dev/null; then
       if [ "$COMPACT_WIN" -gt 200000 ] 2>/dev/null; then
+        EFFECTIVE_CTX=1000000
+      elif [ "$COMPACT_WIN" -eq 0 ] 2>/dev/null; then
         EFFECTIVE_CTX=1000000
       else
         EFFECTIVE_CTX=200000
@@ -252,7 +272,12 @@ if [ "$IN_COOLDOWN" -eq 0 ]; then
       EFFECTIVE_CTX=1000000
     fi
 
-    EFFECTIVE_WIN=$(( COMPACT_WIN < EFFECTIVE_CTX ? COMPACT_WIN : EFFECTIVE_CTX ))
+    # COMPACT_WIN=0 (sentinel for unset) means "no megavibe cap" → use native ctx.
+    if [ "$COMPACT_WIN" -gt 0 ] 2>/dev/null; then
+      EFFECTIVE_WIN=$(( COMPACT_WIN < EFFECTIVE_CTX ? COMPACT_WIN : EFFECTIVE_CTX ))
+    else
+      EFFECTIVE_WIN=$EFFECTIVE_CTX
+    fi
     THRESHOLD=$(( EFFECTIVE_WIN - 33000 ))
     [ "$THRESHOLD" -lt 50000 ] 2>/dev/null && THRESHOLD=50000  # sanity floor
     THRESHOLD_K=$(( THRESHOLD / 1000 ))
