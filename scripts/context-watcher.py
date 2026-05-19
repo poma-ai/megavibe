@@ -264,6 +264,48 @@ def validate_evidence(env: dict, slice_text: str, user_text: str,
     return out, dropped
 
 
+def dedup_decisions(env: dict, decisions_md: Path,
+                    title_floor: int = 30) -> tuple[dict, list[str]]:
+    """Drop candidate decisions whose normalized title is already a substring
+    of the existing DECISIONS.md corpus.
+
+    Gemini sometimes re-extracts the same decision multiple times — once from
+    the conversation, again from a commit message that quoted it in tool
+    output, etc. The watcher v3 evidence-check passes both, so the same row
+    can stage twice. This filter looks at the existing durable file and
+    skips candidates that look like dupes BEFORE staging.
+
+    Conservative bias: requires a normalized title prefix of at least
+    `title_floor` chars to be found verbatim in the existing corpus.
+    Short or generic titles (<title_floor chars normalized) cannot dedup
+    by title alone — they pass through, on the theory that ambiguity should
+    favor inclusion (user can reject in review). False positives here are
+    silent data loss; false negatives just mean a duplicate to reject by hand.
+    """
+    dropped: list[str] = []
+    if not decisions_md.exists():
+        return env, dropped
+    try:
+        corpus = _norm_ws(decisions_md.read_text()).lower()
+    except OSError:
+        return env, dropped
+
+    out = dict(env)
+    decs = out.get("decisions") or []
+    kept: list[dict] = []
+    for i, d in enumerate(decs):
+        title = (d.get("title") or "").strip()
+        ntitle = _norm_ws(title).lower()
+        # Use the longest distinctive prefix we have, capped at 60 chars.
+        probe = ntitle[:60]
+        if len(probe) >= title_floor and probe in corpus:
+            dropped.append(f"decision[{i}] '{title[:40]}': title already in DECISIONS.md")
+            continue
+        kept.append(d)
+    out["decisions"] = kept
+    return out, dropped
+
+
 def parse_envelope(raw: str) -> dict[str, Any]:
     s = raw.strip()
     if s.startswith("```"):
@@ -473,7 +515,12 @@ def run_cycle(args, log) -> dict:
         return stats
 
     filtered, dropped = validate_evidence(env, slice_text, user_text)
+    # Pre-stage dedup against existing DECISIONS.md — Gemini sometimes
+    # re-extracts the same decision from a commit message that quoted it.
+    filtered, dup_dropped = dedup_decisions(filtered, args.agent_dir / "DECISIONS.md")
+    dropped.extend(dup_dropped)
     stats["dropped"] = len(dropped)
+    stats["dedup_dropped"] = len(dup_dropped)
     if dropped:
         for d in dropped:
             log(f"  drop: {d}")
