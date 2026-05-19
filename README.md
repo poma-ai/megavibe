@@ -72,7 +72,7 @@ your-project/
 
 **How recovery works:**
 
-1. Claude writes to `.agent/` files as it works (a hook nudges it every ~8 tool calls)
+1. An **out-of-band watcher daemon** reads the live transcript and writes summaries to `.agent/` files between turns — no in-session token tax, on by default. (Hook-based nudges are still there as a safety net when the watcher is off.)
 2. When Claude's context gets compacted, a hook fires automatically
 3. Claude calls Gemini (or ChatGPT, or a built-in subagent) to read the full log and produce a focused summary
 4. Claude reads the summary and continues — zero information loss, no human intervention
@@ -80,6 +80,12 @@ your-project/
 ---
 
 ## Features
+
+### Continuous out-of-band context flush (the watcher)
+
+A background Python daemon (`~/.megavibe/scripts/context-watcher.py`) tails the live transcript JSONL and, on a 5-minute trickle, asks Gemini to extract decisions, lessons, task changes, and a narrative recap — then writes them straight to `.agent/` files under `flock`. No in-session token cost, no prompts for Claude. Decisions are **staged** to a per-session queue for human review (low-stakes items auto-apply); review with `python3 ~/.megavibe/scripts/review-decisions.py`.
+
+The watcher is on by default — set `MEGAVIBE_WATCHER=0` to opt out. When it's running, in-session tier nudges suppress automatically (no double-up). Full design and operations notes: **[README-watcher.md](README-watcher.md)**.
 
 ### Automatic context recovery
 
@@ -346,7 +352,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 **Gemini/Codex not connecting** — Run the CLI directly (`gemini` or `codex`) to re-authenticate. Megavibe works without them.
 
-**Context recovery not working** — Check that `.agent/FULL_CONTEXT.md` has content. If empty, Claude hasn't started writing context yet. The hook nudges it after the first few tool calls.
+**Context recovery not working** — Check that `.agent/FULL_CONTEXT.md` has content. If empty, the watcher hasn't flushed yet (cycles every 5 min by default) or it isn't running. Verify with `tmux ls | grep '^mvw-'`; tail its log at `.agent/LOGS/watcher.<sid12>.log`. If the watcher is off (`MEGAVIBE_WATCHER=0`), the safety-net hook nudges Claude to flush manually after the first few tool calls.
 
 **poma-memory search not working** — Check Python deps: `python3 -c "import numpy, model2vec"`. If missing: `pip3 install numpy model2vec`
 
