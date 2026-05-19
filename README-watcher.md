@@ -98,6 +98,14 @@ python3 ~/.megavibe/scripts/review-decisions.py --list
 
 The watcher never blocks the user, never throws errors into the Claude context. Worst-case it does nothing useful that cycle.
 
+## Known quirks
+
+**Commit-message mining.** Bash tool output that contains a git commit message ends up in the transcript slice the watcher reads. Gemini's evidence-quote check passes against commit messages perfectly — they're verbatim, >=20 chars, on disk. So a decision you captured in a commit message can re-stage as a "new" pending decision next cycle, even though it's already on a row in `DECISIONS.md`.
+
+A pre-stage dedup filter (`dedup_decisions` in `context-watcher.py`) catches the obvious cases by checking whether the candidate title (normalized, lowercased, first 60 chars) already appears anywhere in `DECISIONS.md`. Titles shorter than 30 chars normalized can't be safely deduped this way and pass through — you'll see them in review and reject by hand if redundant.
+
+This is acceptable noise; the cost of a false-positive rejection (silent data loss of a real decision) is higher than a false-negative pass-through (one extra reject click in the review CLI).
+
 ## Architecture notes
 
 - **Cursor is line-indexed, atomic** (tmp + rename). Advanced only after successful application — a crash mid-cycle re-processes the same slice next time, no data loss.
