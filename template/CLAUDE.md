@@ -117,7 +117,7 @@ Standard schemas:
 - `{assumptions, facts[], decisions[], risks[], next_steps[]}`
 - `claim | evidence | confidence | action`
 
-**Clipboard on request only.** Never auto-copy to clipboard — it overwrites whatever the user has there. Only copy when the user explicitly asks ("clip", "copy that", "clipboard"). Use the platform's clipboard tool: `pbcopy` (macOS), `xclip -selection clipboard` or `xsel --clipboard` (Linux), `clip.exe` (Windows/WSL). When they do: clean markdown, no hard wraps, no gutter artifacts.
+**Clipboard on request only.** Never auto-copy to clipboard — it overwrites whatever the user has there. Only copy when the user explicitly asks ("clip", "copy that", "clipboard") — use `/copy` for format selection. Use the platform's clipboard tool: `pbcopy` (macOS), `xclip -selection clipboard` or `xsel --clipboard` (Linux), `clip.exe` (Windows/WSL).
 
 **Respect execution mode.** When the user says "do NOT switch to plan mode" or asks you to execute autonomously/unattended, do NOT use TaskCreate, TaskUpdate, or EnterPlanMode. These tools trigger interactive permission prompts that break autonomous execution — even re-entering bypass mode doesn't suppress them. Just execute directly, reporting progress via text output.
 
