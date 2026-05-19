@@ -51,7 +51,26 @@ MEGAVIBE_WATCHER=0 claude
 echo 'export MEGAVIBE_WATCHER=0' >> ~/.zshrc   # or ~/.bashrc
 ```
 
-When the watcher is alive (its `mvw-<sid12>` tmux session exists), the in-session tier nudges in `log-tool-event.sh` suppress automatically — the daemon is keeping `.agent/` fresh, so Claude doesn't need a "flush now" reminder. When the watcher is off, tier nudges remain the safety net.
+When the watcher is alive (its `mvw-<sid12>` tmux session exists), the in-session tier nudges and the 8-call stale-context nudge in `log-tool-event.sh` both suppress automatically — the daemon is keeping `.agent/` fresh, so Claude doesn't need a "flush now" reminder. When the watcher is off, those nudges remain the safety net.
+
+## The ratio nudge (user-facing)
+
+With the watcher running and the launcher's 500K cap removed, context can grow much larger before the harness auto-compacts. Most of the time that's fine — the watcher is flushing knowledge as you work. But occasionally context grows faster than the watcher can keep up with: a long exploration burst, a wall of tool output, etc.
+
+For that case `log-tool-event.sh` fires a **once-per-session** stderr nudge (visible to you, not folded into Claude's context) when:
+
+- `tokens > 400K`, **AND**
+- `tokens_grown_per_hour / agent_writes_per_hour > 100K` (the watcher is genuinely outrun)
+
+Sample output:
+
+```
+📊 Context at 580K — grew 230K in the last hour with 1 .agent/ writes.
+   The watcher is being outrun. If this thread of work is winding down,
+   consider /compact (durable state is in .agent/ — recovery is cheap).
+```
+
+If you want to suppress it for a session, `touch .agent/LOGS/.user-nudge-fired.<sid>` (or just ignore it — it only fires once anyway).
 
 ## Inspecting / killing
 

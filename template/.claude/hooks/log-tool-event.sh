@@ -174,12 +174,16 @@ fi
 # Re-read counter after flock (the subshell variable doesn't propagate)
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
 
-# --- Proactive compaction: tiered escalating nudges ---
-# Runs on EVERY PostToolUse. Fires at most once per tier per session, so the
-# user/Claude sees escalating warnings as context grows (100K → 300K → 450K),
-# all firing BELOW the harness auto-compact threshold (megavibe launcher
-# default WINDOW=533000 → ~500K threshold; override via env or settings.json)
-# instead of a single advisory message that gets ignored.
+# --- Proactive compaction: tiered escalating nudges + user ratio nudge ---
+# Runs on EVERY PostToolUse. Two distinct paths now:
+#   (a) Claude-facing tier nudges (50/75/90% of harness threshold) — only
+#       when the context-watcher is OFF; otherwise the watcher keeps
+#       .agent/ fresh and tier nudges become noise.
+#   (b) User-facing stderr nudge (the "ratio nudge") — fires once per
+#       session when the watcher IS on but context has grown faster than
+#       the watcher can keep up with (>400K tokens AND token-gain-per-hour
+#       to agent-write-per-hour ratio is poor). The statusline already
+#       shows token usage continuously, so this is rare and informational.
 #
 # The post-compact grace period uses .compact-ts.${SID} (stamped by
 # on-pre-compact.sh and on-compact.sh). This hook only READS that file to
@@ -333,6 +337,68 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
   fi
 fi
 
+# --- User-facing ratio nudge (only when watcher is alive) -----------------
+# Fires AT MOST ONCE per session via stderr (visible to user, not folded
+# into Claude's context). Triggers when:
+#   - total context > 400K tokens AND
+#   - tokens-grown-per-hour / agent-writes-per-hour > 100K   (the watcher
+#     is being outrun: lots of context coming in, not many durable writes)
+# Watcher-off path is covered by the Claude-facing tier nudges above —
+# this nudge intentionally doesn't double up.
+USER_NUDGE_FIRED="${LOGDIR}/.user-nudge-fired.${SID}"
+TOKEN_MARK_FILE="${LOGDIR}/.token-mark.${SID}"  # format: <unix_ts>:<tokens>
+if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDGE_FIRED" ]; then
+  RTRANS=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
+  if [ -n "$RTRANS" ] && [ -f "$RTRANS" ]; then
+    RTOK=$(tail -100 "$RTRANS" 2>/dev/null \
+      | grep 'input_tokens' | tail -1 \
+      | jq '(.message.usage.input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0)' 2>/dev/null \
+      || echo "0")
+    RTOK="${RTOK:-0}"
+
+    # Refresh / read the token-mark window. Older than 60 min → rewrite.
+    NOW_TS=$(date +%s)
+    OLD_TS=0
+    OLD_TOK=0
+    if [ -f "$TOKEN_MARK_FILE" ]; then
+      MARK=$(cat "$TOKEN_MARK_FILE" 2>/dev/null || echo "0:0")
+      OLD_TS=${MARK%:*}
+      OLD_TOK=${MARK#*:}
+    fi
+    AGE_SEC=$((NOW_TS - OLD_TS))
+    if [ "$OLD_TS" -eq 0 ] || [ "$AGE_SEC" -gt 3600 ] 2>/dev/null; then
+      echo "${NOW_TS}:${RTOK}" > "$TOKEN_MARK_FILE" 2>/dev/null
+    fi
+
+    # Only evaluate ratio once we have a mark older than 5 min (otherwise the
+    # extrapolation to per-hour is noisy).
+    if [ "$RTOK" -gt 400000 ] 2>/dev/null && [ "$AGE_SEC" -gt 300 ] 2>/dev/null; then
+      TOK_GAIN=$((RTOK - OLD_TOK))
+      # Extrapolate to per-hour. Integer math; clamp to non-negative.
+      [ "$TOK_GAIN" -lt 0 ] && TOK_GAIN=0
+      TOK_GAIN_HR=$(( TOK_GAIN * 3600 / AGE_SEC ))
+      # Count .agent/*.md files modified in the last 60 min (proxy for watcher activity).
+      RECENT_WRITES=$(find .agent -name '*.md' -not -path '.agent/LOGS/*' -mmin -60 -print 2>/dev/null | wc -l | tr -d ' ')
+      SAFE_WRITES=$(( RECENT_WRITES > 0 ? RECENT_WRITES : 1 ))
+      RATIO=$(( TOK_GAIN_HR / SAFE_WRITES ))
+      if [ "$RATIO" -gt 100000 ] 2>/dev/null; then
+        TOK_K=$(( RTOK / 1000 ))
+        GAIN_K=$(( TOK_GAIN_HR / 1000 ))
+        # stderr (user-visible), NOT systemMessage — this is for the human,
+        # not for Claude to act on. Fire-once via the sentinel file.
+        {
+          echo ""
+          echo "📊 Context at ${TOK_K}K — grew ${GAIN_K}K in the last hour with ${RECENT_WRITES} .agent/ writes."
+          echo "   The watcher is being outrun. If this thread of work is winding down,"
+          echo "   consider /compact (durable state is in .agent/ — recovery is cheap)."
+          echo ""
+        } >&2
+        touch "$USER_NUDGE_FIRED" 2>/dev/null || true
+      fi
+    fi
+  fi
+fi
+
 # --- Build nudge message if needed ---
 NUDGE_MSG=""
 
@@ -347,8 +413,10 @@ if [ "$IN_COOLDOWN" -eq 1 ]; then
   POST_COMPACT_GRACE=1
 fi
 
-# Threshold nudge (first hit) — suppressed during post-compact grace
-if [ "$POST_COMPACT_GRACE" -eq 0 ]; then
+# Threshold nudge (first hit) — suppressed during post-compact grace AND
+# when the context-watcher is alive (the watcher writes .agent/ between
+# turns; nagging Claude to flush is redundant and noisy).
+if [ "$POST_COMPACT_GRACE" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
   if [ "$COUNT" -eq "$NUDGE_THRESHOLD" ] 2>/dev/null; then
     NUDGE_MSG="⚠️ $COUNT tool calls since last .agent/ update. Write current state to FULL_CONTEXT.md, DECISIONS.md, and TASKS.md now."
   # Repeat nudge
