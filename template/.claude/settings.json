@@ -49,6 +49,15 @@
             "command": ".claude/hooks/on-compact.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/start-context-watcher.sh"
+          }
+        ]
       }
     ],
     "PreCompact": [
