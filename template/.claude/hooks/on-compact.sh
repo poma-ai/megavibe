@@ -73,10 +73,35 @@ if [ -f "$WC_PATH" ]; then
   [ "$WC_AGE" -lt 3600 ] 2>/dev/null && WC_FRESH=1
 fi
 
-# --- Read structured files (always small, always injected) ---
-DECISIONS=$(cat .agent/DECISIONS.md 2>/dev/null || echo "(empty)")
-TASKS=$(cat .agent/TASKS.md 2>/dev/null || echo "(empty)")
-LESSONS=$(cat .agent/LESSONS.md 2>/dev/null || echo "(empty)")
+# --- Read structured files (capped to fit under Claude Code's hook
+# systemMessage inline limit; ~32KB triggers persist-to-disk + 2KB preview,
+# which hides everything past the header from post-compact Claude). DECISIONS
+# in particular grows unbounded — at ~140KB it crowds out git state, tasks,
+# and lessons entirely. Cap each section by BYTES (line-based tail is
+# unbounded when individual lines are long, as they are in DECISIONS tables).
+# Emit a pointer so Claude can Read the full file on demand.
+_cap_inline() {
+  local path="$1" max_bytes="$2"
+  if [ ! -f "$path" ]; then
+    echo "(empty)"
+    return
+  fi
+  local size
+  size=$(wc -c < "$path" 2>/dev/null | tr -d ' ')
+  size="${size:-0}"
+  if [ "$size" -le "$max_bytes" ] 2>/dev/null; then
+    cat "$path"
+    return
+  fi
+  local total_lines
+  total_lines=$(wc -l < "$path" 2>/dev/null | tr -d ' ')
+  printf '...[truncated — showing last %s of %s bytes (%s lines total). Read %s for full content; the first line below may be partial.]...\n\n' \
+    "$max_bytes" "$size" "$total_lines" "$path"
+  tail -c "$max_bytes" "$path"
+}
+DECISIONS=$(_cap_inline .agent/DECISIONS.md 8192)
+TASKS=$(_cap_inline .agent/TASKS.md 6144)
+LESSONS=$(_cap_inline .agent/LESSONS.md 6144)
 
 # --- Inline /catchup: git state + pre-compact WORKING_CONTEXT (if any) ---
 # Folding catchup into the hook means post-compact Claude only has to run
@@ -96,12 +121,13 @@ ${GIT_DIFF_STAT}"
 
 # Pre-compact WORKING_CONTEXT may still exist from before /compact fired.
 # It's stale (compaction summary is now the source of truth) but useful as
-# a what-was-I-doing hint. Truncate to 80 lines to avoid bloating the inject.
+# a what-was-I-doing hint. Truncate to 40 lines — even at 40 lines this is
+# a stale hint, not authoritative; longer was bloating the systemMessage.
 OLD_WC=""
 if [ -f "$WC_PATH" ]; then
-  OLD_WC_BODY=$(head -80 "$WC_PATH" 2>/dev/null || echo "")
+  OLD_WC_BODY=$(head -40 "$WC_PATH" 2>/dev/null || echo "")
   if [ -n "$OLD_WC_BODY" ]; then
-    OLD_WC="--- Pre-compact WORKING_CONTEXT.md (first 80 lines, stale hint only) ---
+    OLD_WC="--- Pre-compact WORKING_CONTEXT.md (first 40 lines, stale hint only) ---
 ${OLD_WC_BODY}"
   fi
 fi
