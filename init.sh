@@ -189,6 +189,25 @@ chmod +x "$PROJECT/.claude/hooks/"*.sh 2>/dev/null || true
 # macOS quarantine xattr blocks execution of downloaded scripts
 xattr -rd com.apple.quarantine "$PROJECT/.claude/hooks/" 2>/dev/null || true
 
+# --- Trust this directory in Gemini CLI (if installed) ---
+# Gemini CLI's trust gate refuses @file references in untrusted dirs, which
+# silently degrades Gemini MCP quality. Trust is per-folder (TRUST_FOLDER),
+# matching Claude Code's per-dir trust model. Skip silently if Gemini isn't
+# installed (no ~/.gemini directory) — don't presume installation.
+if [ -d "$HOME/.gemini" ] && command -v jq &>/dev/null; then
+  GEMINI_TRUST="$HOME/.gemini/trustedFolders.json"
+  ABS_TARGET="$(cd "$PROJECT" && pwd -P)"
+  [ -f "$GEMINI_TRUST" ] || echo '{}' > "$GEMINI_TRUST"
+  if jq -e --arg p "$ABS_TARGET" 'has($p)' "$GEMINI_TRUST" >/dev/null; then
+    echo "  skip: Gemini CLI already trusts $ABS_TARGET"
+  else
+    tmp="$(mktemp)"
+    jq --arg p "$ABS_TARGET" '. + {($p): "TRUST_FOLDER"}' "$GEMINI_TRUST" > "$tmp"
+    mv "$tmp" "$GEMINI_TRUST"
+    echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+  fi
+fi
+
 echo ""
 echo "Done. Megavibe is ready in: $PROJECT"
 echo ""
