@@ -12,9 +12,12 @@ set -u
 # Megavibe — augment Grep/Glob + Bash search with poma-memory vector search
 # Triggered by: PreToolUse (Grep, Glob, Bash)
 #
-# Bash branch covers shell search (grep/rg/ag/fd/ack/find) — including piped
-# forms the native-tools nudge deliberately ignores — so memory recall fires no
-# matter how Claude searches, not only via the native Grep/Glob tools.
+# Bash branch covers shell CONTENT search (grep/rg/ag/ack) so memory recall fires
+# however Claude searches, not only via the native Grep/Glob tools. It is gated to
+# AVOID operational misfires: skips greps that filter piped output (`… | grep x`),
+# counting/quiet/only-matching flags (-c/-q/-o), and log/config targets (*.log,
+# .claude/, .megavibe/, /tmp). find/fd are excluded (file-name location, not a
+# concept search). A search reading repo files (`rg x`, `grep -rn x src/`) fires.
 #
 # When Claude searches for something, this hook silently runs a poma-memory
 # search with the same query and injects any relevant .agent/ context as a
@@ -52,46 +55,58 @@ elif [[ "$TOOL_NAME" == "Glob" ]]; then
   # Strip glob syntax to get searchable keywords
   PATTERN=$(echo "$RAW" | sed 's/\*\*\///g; s/\*//g; s/\.//g; s/\///g' | tr -- '-_' ' ')
 elif [[ "$TOOL_NAME" == "Bash" ]]; then
-  # Shell search: pull the pattern out of grep/rg/ag/fd/ack/find invocations.
+  # Shell CONTENT search: pull the pattern out of grep/rg/ag/ack invocations,
+  # but only when it's a genuine codebase search — not operational plumbing.
   CMD=$(echo "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
-  # Cheap gate: only parse when a search tool appears as a command word.
+  # Cheap gate: only parse when a content-search tool appears as a command word.
   if command -v python3 &>/dev/null && \
-     printf '%s' "$CMD" | grep -qE '(^|[|;&(]|[[:space:]])(grep|egrep|fgrep|rg|ag|ack|fd|find)([[:space:]]|$)' 2>/dev/null; then
+     printf '%s' "$CMD" | grep -qE '(^|[|;&(]|[[:space:]])(grep|egrep|fgrep|rg|ag|ack)([[:space:]]|$)' 2>/dev/null; then
     # shlex handles quotes; per-tool flag logic avoids grabbing paths/flag values.
     PATTERN=$(python3 - "$CMD" 2>/dev/null <<'PYEOF' || true
 import sys, re, shlex
 PATTERN_FLAGS = {'-e', '--regexp'}
 SKIP_VAL = {'-f','--file','-g','--glob','-t','--type','--include','--exclude',
             '-m','--max-count','-A','-B','-C','--context','-d','--max-depth','--threads','-j'}
-SEARCH = {'grep','egrep','fgrep','rg','ag','fd','ack'}
+OPS_FLAGS = {'--count','--quiet','--silent','--only-matching'}
+SEARCH = {'grep','egrep','fgrep','rg','ag','ack'}
+# Operational targets — filtering/counting/log-poking, not codebase exploration.
+OPS_PATH = re.compile(r'\.log\b|\.jsonl\b|/\.claude/|/\.megavibe/|/tmp/|/var/log|hook-errors')
 def clean(p):
     return ' '.join(re.sub(r'[^A-Za-z0-9 ]+', ' ', p).split())
 def extract(cmd):
+    # Skip operational commands that merely contain a search tool.
+    if OPS_PATH.search(cmd):
+        return ''
+    m = re.search(r'(?<!\w)(egrep|fgrep|grep|rg|ag|ack)(?!\w)', cmd)
+    if not m:
+        return ''
+    # A search tool downstream of a pipe is FILTERING output, not searching files.
+    if '|' in cmd[:m.start()]:
+        return ''
     try:
         toks = shlex.split(cmd)
     except Exception:
         return ''
-    n = len(toks); i = 0
-    while i < n:
-        base = toks[i].split('/')[-1]
-        if base in SEARCH:
-            j = i + 1
-            while j < n:
-                a = toks[j]
-                if a in PATTERN_FLAGS and j + 1 < n:
-                    return clean(toks[j + 1])
-                if a.startswith('-'):
-                    if '=' in a: j += 1; continue
-                    if a in SKIP_VAL: j += 2; continue
-                    j += 1; continue
-                return clean(a)
-            return ''
-        if base == 'find':
-            for k in range(i + 1, n):
-                if toks[k] in ('-name','-iname','-path','-ipath','-regex','-iregex') and k + 1 < n:
-                    return clean(toks[k + 1])
-            return ''
-        i += 1
+    n = len(toks)
+    for i in range(n):
+        if toks[i].split('/')[-1] not in SEARCH:
+            continue
+        j = i + 1
+        while j < n:
+            a = toks[j]
+            # count/quiet/only-matching = scripting, not exploration
+            if a in OPS_FLAGS:
+                return ''
+            if re.fullmatch(r'-[A-Za-z]+', a) and (set(a[1:]) & set('cqo')):
+                return ''
+            if a in PATTERN_FLAGS and j + 1 < n:
+                return clean(toks[j + 1])
+            if a.startswith('-'):
+                if '=' in a: j += 1; continue
+                if a in SKIP_VAL: j += 2; continue
+                j += 1; continue
+            return clean(a)
+        return ''
     return ''
 print(extract(sys.argv[1]))
 PYEOF
