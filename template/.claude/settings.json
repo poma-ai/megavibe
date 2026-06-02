@@ -1,4 +1,5 @@
 {
+  "plansDirectory": ".agent/PLANS",
   "hooks": {
     "PostToolUse": [
       {
@@ -105,15 +106,6 @@
           {
             "type": "command",
             "command": ".claude/hooks/nudge-quiet-bash.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "TaskCreate|TaskUpdate|EnterPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/block-plan-mode.sh"
           }
         ]
       },

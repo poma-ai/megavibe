@@ -42,6 +42,7 @@ echo "Bootstrapping Megavibe in: $PROJECT"
 # --- Create directories ---
 mkdir -p "$PROJECT/.agent/RESEARCH"
 mkdir -p "$PROJECT/.agent/ASSETS"
+mkdir -p "$PROJECT/.agent/PLANS"
 mkdir -p "$PROJECT/.agent/LOGS/transcripts"
 mkdir -p "$PROJECT/.agent/sessions"
 mkdir -p "$PROJECT/.claude/hooks"
@@ -67,6 +68,9 @@ if [ -f "$SETTINGS" ]; then
   if command -v jq &>/dev/null; then
     # Always sync hooks from template (infrastructure — matches hook script overwrite policy)
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
+    # plansDirectory: default it fleet-wide (set-if-absent) so plans persist into
+    # .agent/PLANS instead of the user-global ~/.claude/plans/, but never clobber a
+    # value the project set deliberately. Relative path resolves to project root.
     # Rewrite relative hook paths to absolute (prevents breakage when session cd's to subdirectory)
     # `pwd -P` resolves symlinks. Bare `pwd` would record the logical (symlink)
     # path — if the symlink is later removed or its target moves, the hardcoded
@@ -75,7 +79,7 @@ if [ -f "$SETTINGS" ]; then
     ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
     # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
     # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
-    jq -s '.[0] * {hooks: .[1].hooks}' "$SETTINGS" "$TEMPLATE_SETTINGS" \
+    jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
       > "${SETTINGS}.tmp"
     mv "${SETTINGS}.tmp" "$SETTINGS"
@@ -94,7 +98,7 @@ fi
 
 # --- Hook scripts (infrastructure — always overwrite) ---
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh block-plan-mode.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh after-edit.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh truncate-verbose-bash.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh after-edit.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh truncate-verbose-bash.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     cp "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook"
     echo "  synced: .claude/hooks/$hook"
@@ -181,6 +185,7 @@ fi
 # .gitkeep files for empty dirs
 touch "$PROJECT/.agent/RESEARCH/.gitkeep"
 touch "$PROJECT/.agent/ASSETS/.gitkeep"
+touch "$PROJECT/.agent/PLANS/.gitkeep"
 touch "$PROJECT/.agent/LOGS/.gitkeep"
 touch "$PROJECT/.agent/sessions/.gitkeep"
 

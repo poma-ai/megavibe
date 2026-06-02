@@ -1,5 +1,5 @@
 # Megavibe — .agent/.gitignore
-# Track: FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md, RESEARCH/
+# Track: FULL_CONTEXT.md, DECISIONS.md, TASKS.md, LESSONS.md, RESEARCH/, PLANS/
 # Ignore: everything ephemeral, binary, or regenerable
 
 # Session-scoped state (per-session WORKING_CONTEXT, counters, flags)
