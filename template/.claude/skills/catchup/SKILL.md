@@ -22,6 +22,7 @@ Fast, read-only orientation. No Gemini/Codex calls — this should finish in sec
    - `git log --oneline -10`
    - `git diff --stat` (uncommitted changes)
    - `git branch --show-current`
+   - `git fetch` then `git status -sb` — surface if the branch is behind its upstream or `main` (you may be on stale code; see protocol rule 6 before building on it). If fetch fails or there's no upstream, just note it and continue.
 
 4. **Open-tasks mode only** — also read:
    - `.agent/FULL_CONTEXT.md` (last 100 lines — recent context around open work)

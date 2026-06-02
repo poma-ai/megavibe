@@ -22,6 +22,8 @@ Claude Code is the executor and orchestrator. Gemini and Codex are subcontractor
 
 5. **Never drop uncommitted changes.** Before any git operation that could lose work (checkout, reset, pull, rebase, clean, restore, switch branches): run `git status`. If there are uncommitted changes, `git stash push -m "megavibe-auto: <reason>"` first, inform the user what was stashed, and ask before popping or discarding. Never silently overwrite dirty state.
 
+6. **Work from current code.** At session start, and before you commit, open/update a PR, or push: `git fetch` and check whether the branch is behind its upstream or `main` — multiple sessions and machines push to these repos, so a checkout from earlier today may already be stale. If behind, **stop and surface it**; don't implicitly `git pull` or create a merge commit — only fast-forward or rebase when the branch relationship is clear and the repo's workflow calls for it (stash first, per rule 5). If fetch fails, there's no upstream, `HEAD` is detached, the clone is shallow, or the branch isn't clearly comparable, don't guess — report the state and wait.
+
 ## Session isolation
 
 Multiple Claude Code sessions can run in the same project simultaneously. To prevent races:
