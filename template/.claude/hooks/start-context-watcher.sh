@@ -46,10 +46,16 @@ if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   exit 0
 fi
 
-# Find the transcript file by session-id glob. Claude Code stores transcripts
-# at ~/.claude/projects/<slug>/<full-sid>.jsonl. The session_id field is the
-# full UUID; our SID is the 12-char prefix. Glob for it.
-WTRANS=$(ls -t "$HOME/.claude/projects/"*"/${SID}"*.jsonl 2>/dev/null | head -1)
+# Locate the transcript. Prefer the transcript_path the hook input carries
+# (present on PostToolUse — used by revive-watcher.sh's lazy re-spawn), which
+# is authoritative and dodges the startup race. Fall back to a session-id glob
+# at ~/.claude/projects/<slug>/<full-sid>.jsonl (the session_id field is the
+# full UUID; our SID is the 12-char prefix). At SessionStart the transcript may
+# not exist on disk yet — that's the race revive-watcher.sh later heals.
+WTRANS=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
+if [ -z "$WTRANS" ] || [ ! -f "$WTRANS" ]; then
+  WTRANS=$(ls -t "$HOME/.claude/projects/"*"/${SID}"*.jsonl 2>/dev/null | head -1)
+fi
 if [ -z "$WTRANS" ] || [ ! -f "$WTRANS" ]; then
   # Log the skip — useful for diagnosing "watcher never spawned" tickets.
   mkdir -p .agent/LOGS 2>/dev/null
@@ -68,8 +74,16 @@ mkdir -p .agent/LOGS 2>/dev/null
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) spawn attempt: sid=${SID} tmux=${TMUX_SESSION} transcript=${WTRANS##*/}"
 } >> "$SPAWN_LOG" 2>/dev/null
 
+# tmux runs the command string through a shell, so each arg is parsed TWICE
+# (once here, once by tmux's shell). Plain "\"$VAR\"" quoting survives spaces
+# but not $, backticks, or quotes in a path. printf %q makes each value safe
+# for that second parse.
+WATCHER_BIN_Q=$(printf '%q' "$WATCHER_BIN")
+SID_Q=$(printf '%q' "$SID")
+PWD_Q=$(printf '%q' "$(pwd)")
+WTRANS_Q=$(printf '%q' "$WTRANS")
 if tmux new -d -s "$TMUX_SESSION" \
-     "python3 \"$WATCHER_BIN\" --session-id \"$SID\" --project-dir \"$(pwd)\" --transcript \"$WTRANS\"" \
+     "python3 $WATCHER_BIN_Q --session-id $SID_Q --project-dir $PWD_Q --transcript $WTRANS_Q" \
      2>>"$SPAWN_LOG"; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) spawn ok" >> "$SPAWN_LOG" 2>/dev/null
 else
