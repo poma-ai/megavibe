@@ -115,6 +115,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/nudge-quiet-bash.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/augment-search.sh"
           }
         ]
       },

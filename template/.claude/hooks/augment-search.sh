@@ -9,8 +9,12 @@ _hook_error() {
 trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
 set -u
 
-# Megavibe — augment Grep/Glob with poma-memory vector search
-# Triggered by: PreToolUse (Grep, Glob)
+# Megavibe — augment Grep/Glob + Bash search with poma-memory vector search
+# Triggered by: PreToolUse (Grep, Glob, Bash)
+#
+# Bash branch covers shell search (grep/rg/ag/fd/ack/find) — including piped
+# forms the native-tools nudge deliberately ignores — so memory recall fires no
+# matter how Claude searches, not only via the native Grep/Glob tools.
 #
 # When Claude searches for something, this hook silently runs a poma-memory
 # search with the same query and injects any relevant .agent/ context as a
@@ -47,6 +51,52 @@ elif [[ "$TOOL_NAME" == "Glob" ]]; then
   RAW=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null || echo "")
   # Strip glob syntax to get searchable keywords
   PATTERN=$(echo "$RAW" | sed 's/\*\*\///g; s/\*//g; s/\.//g; s/\///g' | tr -- '-_' ' ')
+elif [[ "$TOOL_NAME" == "Bash" ]]; then
+  # Shell search: pull the pattern out of grep/rg/ag/fd/ack/find invocations.
+  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+  # Cheap gate: only parse when a search tool appears as a command word.
+  if command -v python3 &>/dev/null && \
+     printf '%s' "$CMD" | grep -qE '(^|[|;&(]|[[:space:]])(grep|egrep|fgrep|rg|ag|ack|fd|find)([[:space:]]|$)' 2>/dev/null; then
+    # shlex handles quotes; per-tool flag logic avoids grabbing paths/flag values.
+    PATTERN=$(python3 - "$CMD" 2>/dev/null <<'PYEOF' || true
+import sys, re, shlex
+PATTERN_FLAGS = {'-e', '--regexp'}
+SKIP_VAL = {'-f','--file','-g','--glob','-t','--type','--include','--exclude',
+            '-m','--max-count','-A','-B','-C','--context','-d','--max-depth','--threads','-j'}
+SEARCH = {'grep','egrep','fgrep','rg','ag','fd','ack'}
+def clean(p):
+    return ' '.join(re.sub(r'[^A-Za-z0-9 ]+', ' ', p).split())
+def extract(cmd):
+    try:
+        toks = shlex.split(cmd)
+    except Exception:
+        return ''
+    n = len(toks); i = 0
+    while i < n:
+        base = toks[i].split('/')[-1]
+        if base in SEARCH:
+            j = i + 1
+            while j < n:
+                a = toks[j]
+                if a in PATTERN_FLAGS and j + 1 < n:
+                    return clean(toks[j + 1])
+                if a.startswith('-'):
+                    if '=' in a: j += 1; continue
+                    if a in SKIP_VAL: j += 2; continue
+                    j += 1; continue
+                return clean(a)
+            return ''
+        if base == 'find':
+            for k in range(i + 1, n):
+                if toks[k] in ('-name','-iname','-path','-ipath','-regex','-iregex') and k + 1 < n:
+                    return clean(toks[k + 1])
+            return ''
+        i += 1
+    return ''
+print(extract(sys.argv[1]))
+PYEOF
+)
+  fi
 fi
 
 # Skip trivial patterns (too short to be meaningful)
