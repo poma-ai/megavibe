@@ -518,8 +518,19 @@ else
   skip "~/.megavibe/projects.json (already exists)"
 fi
 
-# Remember source repo so the deployed CLI can sync from it later
-echo "$SCRIPT_DIR" > "$MEGAVIBE_HOME/source-repo"
+# Remember source repo so the deployed CLI can sync from it later.
+# Skip ephemeral dirs: the GitHub auto-update path runs this setup.sh from a
+# mktemp clone (megavibe `do_update`), which is rm -rf'd right after. Persisting
+# that tmpdir here dangles the pointer, so the wrapper's launch-time repo-sync
+# silently stops refreshing ~/.megavibe/template for every auto-update user.
+# Author-mode (real clone) writes a durable path; curl users get no pointer
+# (correct — they have no persistent repo and update via do_update → setup.sh).
+case "$SCRIPT_DIR" in
+  /tmp/*|/private/tmp/*|/var/folders/*|*/tmp.??????????*)
+    info "Ephemeral source dir ($SCRIPT_DIR) — not persisting as source-repo" ;;
+  *)
+    echo "$SCRIPT_DIR" > "$MEGAVIBE_HOME/source-repo" ;;
+esac
 
 # Install CLI wrapper to ~/.local/bin/ (symlink to ~/.megavibe/ copy)
 CLI_DIR="$HOME/.local/bin"

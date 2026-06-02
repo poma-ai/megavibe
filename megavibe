@@ -374,6 +374,21 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
   fi
 fi
 
+# Keep the active statusline in sync with the template. The block above
+# surgically updates ~/.claude/CLAUDE.md on launch but historically never the
+# statusline, so edits to template/statusline.sh silently failed to propagate
+# (the gap that made the "⚠ autosave off" warning not appear after a restart).
+# Update-only — never create: first-install + the statusLine settings wiring is
+# setup.sh's job, mirroring the CLAUDE.md-only-if-markers-present pattern above.
+TPL_STATUSLINE="$MEGAVIBE_HOME/template/statusline.sh"
+ACTIVE_STATUSLINE="$HOME/.claude/statusline.sh"
+if [ -f "$TPL_STATUSLINE" ] && [ -f "$ACTIVE_STATUSLINE" ] \
+   && ! diff -q "$TPL_STATUSLINE" "$ACTIVE_STATUSLINE" &>/dev/null; then
+  cp "$TPL_STATUSLINE" "$ACTIVE_STATUSLINE"
+  chmod +x "$ACTIVE_STATUSLINE"
+  echo "  Statusline updated."
+fi
+
 # ─── Auto-update check + tools (background, non-blocking) ───────────
 
 # Check at most once per day (stamp file tracks last check)
