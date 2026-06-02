@@ -97,6 +97,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/truncate-verbose-bash.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/nudge-quiet-bash.sh"
           }
         ]
       },
@@ -115,6 +119,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/block-stray-working-context.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/nudge-quiet-bash.sh"
           }
         ]
       },
