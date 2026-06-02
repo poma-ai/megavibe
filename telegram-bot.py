@@ -193,13 +193,22 @@ def start_personal_session():
 
 
 def inject_message(text: str):
-    """Inject a message into the personal tmux session via send-keys."""
-    # Escape special characters for tmux
-    # Send Ctrl+C first to interrupt any in-progress generation
+    """Inject a message into the personal tmux session via send-keys.
+
+    Text and Enter MUST be sent in separate send-keys calls. Claude Code's
+    Ink TUI does paste detection: if text+Enter arrive as one fast burst,
+    the trailing Enter is treated as a newline-within-paste instead of
+    submit, and the message sits in the input forever. The -l (literal)
+    flag also prevents tmux from interpreting key names that may appear
+    in user text (e.g. someone writing "Enter" or "C-c" in a message).
+    """
+    # Interrupt any in-progress generation
     subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "C-c"], timeout=5)
     time.sleep(0.3)
-    # Send the actual message
-    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, text, "Enter"],
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "-l", text],
+                    timeout=5, check=True)
+    time.sleep(0.3)
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"],
                     timeout=5, check=True)
 
 
