@@ -486,9 +486,35 @@ def write_cursor(agent_dir: Path, sid: str, value: int) -> None:
 
 
 _stop = False
+
+# A kill request must terminate the watcher FAST, even when it's blocked mid-
+# flush in call_backend (which can block up to --timeout, or hang on a stalled
+# backend). On any stop signal we set _stop AND arm a hard-exit alarm: if the
+# process hasn't exited within SHUTDOWN_GRACE seconds (e.g. a hung final flush),
+# SIGALRM force-exits it. Without this, `tmux kill-session` (the on-session-end
+# cleanup path) only delivers SIGHUP/SIGTERM — a watcher stuck in a backend call
+# ignores it for minutes and gets stranded, which is the watcher accumulation
+# this daemon was built to avoid.
+SHUTDOWN_GRACE = 10
+
+# Self-reap: if the transcript goes untouched this long, the owning session is
+# gone or long-idle — exit so a watcher orphaned by an unclean session exit
+# (crash / kill -9 of claude) can't linger forever. revive-watcher.sh respawns
+# us on the next tool call if the session resumes, so a false reap of an idle-
+# but-live session self-heals cheaply.
+REAP_AFTER = 1800  # 30 min
+
 def _handle_signal(signum, frame):
     global _stop
     _stop = True
+    try:
+        signal.alarm(SHUTDOWN_GRACE)
+    except (ValueError, OSError):
+        pass
+
+def _handle_alarm(signum, frame):
+    # Last resort: a stop was requested but we're still alive (hung flush).
+    os._exit(0)
 
 
 def run_cycle(args, log) -> dict:
@@ -589,11 +615,28 @@ def main() -> int:
     # as SIGTERM lets the watcher do its final flush before exit instead of
     # dying mid-cycle.
     signal.signal(signal.SIGHUP, _handle_signal)
+    # Hard backstop: force-exits SHUTDOWN_GRACE seconds after the first stop
+    # signal if a hung flush keeps the clean path from returning.
+    signal.signal(signal.SIGALRM, _handle_alarm)
 
     log(f"watcher start  sid={args.session_id[:12]}  transcript={args.transcript.name}  "
         f"interval={args.interval}s  min-turns={args.min_new_turns}  backend={args.backend}")
 
+    reaped = False
     while not _stop:
+        # Self-reap when the session is gone / long-idle (see REAP_AFTER).
+        if not args.once:
+            try:
+                idle = time.time() - args.transcript.stat().st_mtime
+            except OSError:
+                log("transcript gone — self-reaping")
+                reaped = True
+                break
+            if idle > REAP_AFTER:
+                log(f"transcript idle {int(idle)}s > {REAP_AFTER}s — session gone, self-reaping")
+                reaped = True
+                break
+
         try:
             stats = run_cycle(args, log)
             log(f"cycle  {json.dumps(stats)}")
@@ -609,8 +652,10 @@ def main() -> int:
             time.sleep(min(2, args.interval - slept))
             slept += 2
 
-    # final pass before exit (best-effort)
-    if not args.once:
+    # final pass before exit (best-effort) — skipped when self-reaped (no point
+    # flushing a dead/idle session). Any backend hang here is bounded by the
+    # SHUTDOWN_GRACE alarm a stop signal armed.
+    if not args.once and not reaped:
         try:
             stats = run_cycle(args, log)
             log(f"final cycle on shutdown: {json.dumps(stats)}")
