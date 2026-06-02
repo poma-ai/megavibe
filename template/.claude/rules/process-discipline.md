@@ -43,6 +43,21 @@ When you start a long-running process, your final report must include:
 
 Without this, the user cannot clean up after the session ends. Process hygiene is a deliverable, not an afterthought.
 
+## Reap by orphan-status, never by age
+
+A long-lived process is **not** the same as a stale one. The kill signal is a
+**dead owner** — parent reparented to PID 1, or the session/tmux/script that
+spawned it is gone — not how long it has been running. An 8-day-old process can
+be a live daemon doing exactly its job; a 2-minute-old one can already be an
+orphan. Before killing anything:
+
+- Confirm the parent: `ps -p <pid> -o ppid=`. PPID 1 (launchd/init) = orphaned.
+- If PPID is alive, trace it (`ps -p <ppid> -o command=`) — a live parent means the process is still owned. Leave it.
+- Never batch-kill by `etime` or a name match alone. Match each candidate against the expected set first.
+
+This is a real footgun: "kill the oldest `node`/`gemini-mcp`/`python` process"
+will happily take down a multi-day session that is still in active use.
+
 ## Audit periodically
 
 To find user processes orphaned to launchd (likely candidates for cleanup):
