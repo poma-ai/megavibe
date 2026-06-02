@@ -23,6 +23,15 @@
             "command": ".claude/hooks/after-edit.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/reindex-agent.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

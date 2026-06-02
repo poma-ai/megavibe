@@ -101,7 +101,7 @@ Recovery uses a fallback chain: Gemini (subscription) → Gemini (API key) → C
 
 Every time Claude searches your code (Grep), a hook automatically searches your project memory too and injects relevant context. Claude sees both code results AND related decisions/history — without you asking.
 
-Powered by [poma-memory](https://github.com/poma-ai/poma-memory) (pip-installed): hybrid BM25 + vector search over your `.agent/` files. Works locally, no API calls.
+Powered by [poma-memory](https://github.com/poma-ai/poma-memory) (pip-installed): hybrid BM25 + local vector search (model2vec) over your `.agent/` files. Works locally, no API calls. A `reindex-agent.sh` hook keeps the index fresh — it re-indexes changed `.agent/*.md` after edits and Bash appends (debounced, mtime-gated), so semantic recall never drifts stale.
 
 ### Self-improvement
 
@@ -297,7 +297,7 @@ export OPENAI_API_KEY="your-key-here"
 
 | What | Where |
 |------|-------|
-| Hooks (16 scripts) | `.claude/hooks/` |
+| Hooks (17 scripts) | `.claude/hooks/` |
 | Rules (2 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (4 commands) | `.claude/skills/` |
