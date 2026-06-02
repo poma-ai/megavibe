@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/log-tool-event.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/revive-watcher.sh"
           }
         ]
       },

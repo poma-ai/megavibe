@@ -93,10 +93,19 @@ python3 ~/.megavibe/scripts/review-decisions.py --list
 - `MEGAVIBE_WATCHER` not set → never spawns
 - No `.agent/` directory in cwd → not a megavibe project
 - `tmux` not on PATH → silent skip
-- Transcript file not yet readable → silent skip (will retry next session)
+- Transcript file not yet on disk at SessionStart → spawn skipped, but **self-heals**: see below
 - All backends failed → cycle skipped, log entry written, next cycle retries
 
 The watcher never blocks the user, never throws errors into the Claude context. Worst-case it does nothing useful that cycle.
+
+## Self-heal + visibility
+
+The spawn hook (`start-context-watcher.sh`) fires once at `SessionStart` and globs for the transcript JSONL. Claude Code sometimes hasn't written that file yet — the hook would then give up *permanently*, leaving the watcher dead all session and `.agent/` silently stale (the failure mode that motivated this section).
+
+Two guards close that gap:
+
+- **`revive-watcher.sh`** (PostToolUse, all tools) — if no `mvw-<sid12>` session is alive, it re-runs the spawn logic, throttled to once per 60s per session. By the first tool call the transcript exists, so a lost startup race heals on the next action. It passes the `transcript_path` from the hook input straight through, so the spawn skips the racey glob entirely.
+- **Statusline warning** — when the watcher *should* be running (not opted out, prereqs present) but its tmux session is gone, `statusline.sh` appends a red **`⚠ autosave off`** to the bar. A bare context-% means nothing to someone who doesn't know the daemon exists; this names the problem in plain language. A brief flicker at startup is normal (revive heals it within one tool call); a persistent warning means autosave is genuinely down.
 
 ## Known quirks
 
