@@ -112,7 +112,12 @@ fi
 # Request extra results so the .agent/LOGS/ filter below can drop noise
 # (stale rehydration-instructions, session state dumps) without starving
 # the useful matches.
-RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 6 2>/dev/null || echo "")
+# --min-score is a relevance floor: RRF scores cluster ~0.027+ when BOTH BM25 and
+# semantic corroborate a hit vs ~0.016 for single-signal noise, so 0.02 keeps only
+# corroborated context and injects NOTHING when nothing is genuinely relevant —
+# no more random off-topic cheatsheets. Tune via MEGAVIBE_POMA_MIN_SCORE.
+MIN_SCORE="${MEGAVIBE_POMA_MIN_SCORE:-0.02}"
+RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 6 --min-score "$MIN_SCORE" 2>/dev/null || echo "")
 
 # Drop result blocks whose File: path is under .agent/LOGS/ — that dir is an
 # audit trail (rehydration-instructions, per-session flags, counters), not
