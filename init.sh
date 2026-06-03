@@ -194,6 +194,37 @@ chmod +x "$PROJECT/.claude/hooks/"*.sh 2>/dev/null || true
 # macOS quarantine xattr blocks execution of downloaded scripts
 xattr -rd com.apple.quarantine "$PROJECT/.claude/hooks/" 2>/dev/null || true
 
+# --- One-time poma-memory index heal (purge stale / cross-project-contaminated db) ---
+# Older installs could leave .agent/.poma-memory.db indexed against a prior checkout,
+# or polluted by a parent-dir `poma-memory index` that swept sibling sub-projects into
+# one db. `poma-memory index` is additive (mtime-gated) with no --rebuild flag, so that
+# bad data never clears itself. Run ONCE per project (marker-gated) to delete the db and
+# rebuild it scoped to THIS .agent/ only — never a parent dir (that caused the pollution).
+# Safe: marker-gated (idempotent), no-op without poma-memory, never aborts init.
+HEAL_MARKER="$PROJECT/.agent/LOGS/.poma-heal-v1"
+if command -v poma-memory &>/dev/null && [ ! -f "$HEAL_MARKER" ]; then
+  echo "  healing poma-memory index (one-time clean rebuild)..."
+  mkdir -p "$PROJECT/.agent/LOGS"
+  DB="$PROJECT/.agent/.poma-memory.db"
+  BAK="${DB}.heal-bak"
+  # Move the (possibly contaminated) db aside rather than deleting outright, so a
+  # failed reindex leaves a stale-but-functional index instead of an empty one.
+  rm -f "$BAK"
+  if [ -f "$DB" ]; then mv "$DB" "$BAK"; fi
+  rm -f "${DB}-shm" "${DB}-wal"
+  if ( cd "$PROJECT" && poma-memory index .agent/ >/dev/null 2>&1 ); then
+    rm -f "$BAK"
+    echo "v1 healed $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HEAL_MARKER" 2>/dev/null || true
+    echo "  healed: .agent/.poma-memory.db (clean per-project rebuild)"
+  else
+    # Reindex failed (missing deps, transient SQLite lock, OOM). Restore the prior
+    # index so search keeps working; leave the marker absent so init retries later.
+    rm -f "$DB" "${DB}-shm" "${DB}-wal"
+    if [ -f "$BAK" ]; then mv "$BAK" "$DB"; fi
+    echo "  note: poma-memory reindex failed — kept prior index. Retry: (cd $PROJECT && poma-memory index .agent/)" >&2
+  fi
+fi
+
 # --- Trust this directory in Gemini CLI (if installed) ---
 # Gemini CLI's trust gate refuses @file references in untrusted dirs, which
 # silently degrades Gemini MCP quality. Trust is per-folder (TRUST_FOLDER),

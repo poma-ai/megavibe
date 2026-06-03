@@ -401,18 +401,50 @@ pip_install_with_fallback() {
   return 0
 }
 
-# Install poma-memory from PyPI — provides hybrid BM25 + vector search
-# One-shot cleanup: remove any pre-existing bundled single-file (deprecated)
-rm -f "$MEGAVIBE_HOME/poma_memory.py"
+# poma_version_ge MIN — exit 0 if the installed poma-memory dist is >= MIN.
+# Digit-tolerant (handles 0.3.7rc1 / .dev0 suffixes); exit 1 if absent or older.
+poma_version_ge() {
+  "$PYTHON" - "$1" <<'PY'
+import sys, re
+from importlib.metadata import version, PackageNotFoundError
+def parse(s):
+    out = []
+    for p in (str(s).split('.') + ['0', '0', '0'])[:3]:
+        m = re.match(r'\d+', p)
+        out.append(int(m.group()) if m else 0)
+    return tuple(out)
+try:
+    cur = parse(version('poma-memory'))
+except PackageNotFoundError:
+    sys.exit(1)
+sys.exit(0 if cur >= parse(sys.argv[1]) else 1)
+PY
+}
+
+# Install / UPGRADE poma-memory from PyPI — hybrid BM25 + local-vector search.
+# Floor is 0.3.7: it brings the local-model2vec default (no silent OpenAI egress
+# when OPENAI_API_KEY is in env) AND the --min-score relevance floor that
+# augment-search.sh passes unconditionally — older CLIs reject that flag, so recall
+# silently returns nothing. An importable-but-old install (e.g. 0.3.2) must be
+# UPGRADED, not skipped; the old bare `skip` stranded users on the buggy build.
+POMA_MIN="0.3.7"
+rm -f "$MEGAVIBE_HOME/poma_memory.py"   # one-shot cleanup of deprecated bundled file
 if [ -z "$PYTHON" ] || [ -z "$PIP" ]; then
   warn "poma-memory requires Python 3.10+ and pip — search will be unavailable"
-elif $PYTHON -c "import poma_memory" &>/dev/null; then
-  skip "poma-memory (pip, already installed)"
+elif $PYTHON -c "import poma_memory" &>/dev/null && poma_version_ge "$POMA_MIN"; then
+  skip "poma-memory (pip, >= $POMA_MIN)"
 else
-  echo "  Installing poma-memory from PyPI (this may take a minute)..."
-  pip_install_with_fallback "poma-memory[semantic,mcp]" || true
   if $PYTHON -c "import poma_memory" &>/dev/null; then
-    ok "poma-memory (pip)"
+    echo "  Upgrading poma-memory to >= $POMA_MIN (local-model default + relevance floor)..."
+    pip_install_with_fallback --upgrade "poma-memory[semantic,mcp]" || true
+  else
+    echo "  Installing poma-memory from PyPI (this may take a minute)..."
+    pip_install_with_fallback "poma-memory[semantic,mcp]" || true
+  fi
+  if $PYTHON -c "import poma_memory" &>/dev/null && poma_version_ge "$POMA_MIN"; then
+    ok "poma-memory (pip, >= $POMA_MIN)"
+  elif $PYTHON -c "import poma_memory" &>/dev/null; then
+    warn "poma-memory present but below $POMA_MIN — try: $PIP install -U 'poma-memory[semantic,mcp]'"
   else
     warn "poma-memory install failed — search will be unavailable. Try: $PIP install 'poma-memory[semantic,mcp]'"
   fi

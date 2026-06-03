@@ -357,6 +357,8 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 **poma-memory search not working** — Check Python deps: `python3 -c "import numpy, model2vec"`. If missing: `pip3 install numpy model2vec`
 
+**Memory recall returns stale or off-topic hits** — An older index can be stale (built against a prior checkout) or cross-project-contaminated (an early `poma-memory index` run from a parent dir swept sibling `.agent/` dirs into one db). `poma-memory index` is additive and won't clear that. **Self-heal:** re-run `bash ~/.megavibe/setup.sh` (upgrades poma-memory to ≥0.3.7) and `bash ~/.megavibe/init.sh <project>` (or `/megavibe-restart`) — init does a one-time clean rebuild of that project's index, gated on `.agent/LOGS/.poma-heal-v1`. Force a re-heal anytime by deleting that marker and re-running init, or manually: `rm -f .agent/.poma-memory.db*; poma-memory index .agent/` from inside the project. **Never** run `poma-memory index` from a parent dir containing sub-project `.agent/` dirs — that is what causes the contamination.
+
 **Remote bot: "No response received"** — Check the tmux session: `tmux attach -t megavibe-personal`. Claude may be waiting for input or stuck on a prompt.
 
 **Remote bot: voice not working** — Requires `OPENAI_API_KEY` and `httpx`: `pip3 install httpx`
