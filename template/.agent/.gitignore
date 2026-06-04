@@ -30,6 +30,8 @@ events.jsonl
 .poma-memory.db
 .poma-memory.db-shm
 .poma-memory.db-wal
+# transient heal/rebuild artifacts (init.sh .heal-bak, reindex atomic-swap .rebuild.PID)
+.poma-memory.db.*
 
 # .gitkeep files (scaffolding only)
 .gitkeep
