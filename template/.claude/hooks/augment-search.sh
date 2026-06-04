@@ -134,10 +134,16 @@ fi
 MIN_SCORE="${MEGAVIBE_POMA_MIN_SCORE:-0.02}"
 RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 6 --min-score "$MIN_SCORE" 2>/dev/null || echo "")
 
-# Drop result blocks whose File: path is under .agent/LOGS/ — that dir is an
-# audit trail (rehydration-instructions, per-session flags, counters), not
-# semantic context. Without this filter, old "⚠️ CONTEXT WAS JUST COMPACTED"
-# instruction files leak back in and look like live re-hydration nags.
+# Drop result blocks whose File: path points at ephemeral, per-session, or audit
+# state rather than durable semantic context:
+#   .agent/LOGS/         — audit trail (rehydration-instructions, flags, counters)
+#   .agent/sessions/     — per-session WORKING_CONTEXT snapshots, stale by construction
+#   .agent/WORKING_CONTEXT.md — legacy root snapshot (pre-session-scoped layout)
+# Without this, old "⚠️ CONTEXT WAS JUST COMPACTED" instructions and prior-session
+# working-context dumps leak back in — they score the same as live docs (RRF
+# saturates ~0.033 for any corroborated hit) so a score floor cannot exclude them;
+# only a path filter can. Observed: stale session WORKING_CONTEXT outranking
+# DECISIONS.md as a #1 hit for a code-symbol search.
 RESULTS=$(echo "$RAW_RESULTS" | awk '
 /^--- Result/ {
   if (buf != "" && !skip) printf "%s", buf
@@ -145,7 +151,8 @@ RESULTS=$(echo "$RAW_RESULTS" | awk '
   skip = 0
   next
 }
-/^File:.*\.agent\/LOGS\// { skip = 1 }
+/^File:.*\.agent\/(LOGS|sessions)\// { skip = 1 }
+/^File:.*\.agent\/WORKING_CONTEXT\.md/ { skip = 1 }
 { buf = buf $0 "\n" }
 END { if (buf != "" && !skip) printf "%s", buf }
 ')
