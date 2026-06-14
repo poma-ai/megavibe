@@ -192,24 +192,99 @@ def start_personal_session():
     log.info("Personal session started in tmux session '%s'", TMUX_SESSION)
 
 
-def inject_message(text: str):
-    """Inject a message into the personal tmux session via send-keys.
+def _norm(s: str) -> str:
+    """Collapse all whitespace (incl. newlines) so multi-line text matches."""
+    return " ".join(s.split())
 
-    Text and Enter MUST be sent in separate send-keys calls. Claude Code's
-    Ink TUI does paste detection: if text+Enter arrive as one fast burst,
-    the trailing Enter is treated as a newline-within-paste instead of
-    submit, and the message sits in the input forever. The -l (literal)
-    flag also prevents tmux from interpreting key names that may appear
-    in user text (e.g. someone writing "Enter" or "C-c" in a message).
+
+def _new_user_turns(jsonl_path: Path, start_offset: int) -> list[str]:
+    """Text of user turns appended to the JSONL after start_offset."""
+    out: list[str] = []
+    try:
+        with open(jsonl_path) as f:
+            f.seek(start_offset)
+            data = f.read()
+    except OSError:
+        return out
+    for line in data.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "user":
+            continue
+        content = entry.get("message", {}).get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if isinstance(content, str):
+            out.append(content)
+    return out
+
+
+def _submit_confirmed(jsonl_path: Path, start_offset: int, needle: str) -> bool:
+    """True once a user turn matching `needle` lands in the JSONL after offset."""
+    n = _norm(needle)[:60]
+    turns = _new_user_turns(jsonl_path, start_offset)
+    if not n:
+        return bool(turns)  # empty message: any new user turn counts
+    return any(n in _norm(t) for t in turns)
+
+
+def inject_message(text: str, jsonl_path: Path | None = None) -> bool:
+    """Type a message into the personal tmux session and CONFIRM it submitted.
+
+    Returns True once the user turn is observed in the session JSONL (i.e. the
+    message actually submitted), False if it could not be confirmed.
+
+    Why the confirm loop: submission into Claude Code's Ink TUI is unreliable
+    for multi-line / pasted input — the trailing Enter can be swallowed by
+    paste-detection and the message then sits in the input box forever. That is
+    exactly what produced "only 'Wtf?' arrived, ohne Bezug" failures: the real
+    question never submitted, only later one-word follow-ups did. So we send
+    Enter and verify the user turn landed in the JSONL, re-pressing Enter until
+    it does. Claude writes the user turn to the JSONL at submit time, which is a
+    reliable oracle.
     """
-    # Interrupt any in-progress generation
+    # Byte offset to read NEW jsonl lines from, so we only match OUR turn.
+    start_offset = 0
+    if jsonl_path is not None and jsonl_path.exists():
+        try:
+            start_offset = jsonl_path.stat().st_size
+        except OSError:
+            start_offset = 0
+
+    # Interrupt any in-progress generation and clear the input box.
+    # Exactly ONE Ctrl-C: a second consecutive Ctrl-C would quit Claude.
     subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "C-c"], timeout=5)
-    time.sleep(0.3)
-    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "-l", text],
-                    timeout=5, check=True)
-    time.sleep(0.3)
-    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"],
-                    timeout=5, check=True)
+    time.sleep(0.4)
+
+    # Type the message literally. -l stops tmux interpreting key-names that
+    # appear in user text (e.g. "Enter", "C-c"); `--` guards a leading dash.
+    subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "-l", "--", text],
+                   timeout=5, check=True)
+    time.sleep(0.4)
+
+    # Cold start (no JSONL yet): blind submit, can't confirm.
+    if jsonl_path is None:
+        subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"], timeout=5)
+        return True
+
+    # Confirm-and-retry: press Enter until the user turn appears in the JSONL.
+    for attempt in range(1, 9):
+        subprocess.run(["tmux", "send-keys", "-t", TMUX_SESSION, "Enter"], timeout=5)
+        for _ in range(8):  # poll ~2s per Enter
+            time.sleep(0.25)
+            if _submit_confirmed(jsonl_path, start_offset, text):
+                log.info("Submit confirmed on Enter attempt %d", attempt)
+                return True
+    log.error("Submit NOT confirmed after 8 Enter attempts — message may be stuck")
+    return False
 
 
 async def wait_for_response(jsonl_path: Path, after_timestamp: float,
@@ -283,13 +358,23 @@ async def ask_personal(text: str, is_voice: bool = False) -> str:
     if is_voice:
         prompt = text + " (Keep it concise — user is on mobile/Watch.)"
 
-    timestamp = time.time()
-    inject_message(prompt)
-
-    # Wait a moment for Claude to start processing, then find the JSONL
-    await asyncio.sleep(2)
+    # Find the JSONL BEFORE injecting so inject_message can confirm our turn
+    # actually landed (it captures the file's current end as its read offset).
     jsonl = find_session_jsonl(PERSONAL_DIR)
     log.info("Personal JSONL: %s", jsonl)
+    timestamp = time.time()
+
+    submitted = inject_message(prompt, jsonl)
+    if not submitted:
+        log.error("Message not confirmed submitted to personal session")
+        return ("⚠️ Couldn't get that into the session — it may be stuck in the "
+                "input box. Send it once more, or check: "
+                "tmux attach -t megavibe-personal")
+
+    # Cold start: the JSONL may have only just been created.
+    if jsonl is None:
+        await asyncio.sleep(2)
+        jsonl = find_session_jsonl(PERSONAL_DIR)
 
     if jsonl:
         response = await wait_for_response(jsonl, timestamp, timeout=600)
