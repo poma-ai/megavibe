@@ -197,6 +197,8 @@ if [ "${1:-}" = "remote" ]; then
   BOT_SCRIPT="$MEGAVIBE_HOME/telegram-bot.py"
   PID_FILE="$MEGAVIBE_HOME/remote.pid"
   PYCMD=$(cat "$MEGAVIBE_HOME/python-cmd" 2>/dev/null || echo "python3")
+  BOT_TMUX="megavibe-bot"
+  SELF="$(command -v megavibe 2>/dev/null || echo "$0")"
 
   if [ ! -f "$BOT_SCRIPT" ]; then
     echo "Error: telegram-bot.py not found in $MEGAVIBE_HOME/"
@@ -206,37 +208,85 @@ if [ "${1:-}" = "remote" ]; then
 
   case "${1:-}" in
     --stop)
+      stopped=0
+      if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
+        tmux kill-session -t "$BOT_TMUX" 2>/dev/null && stopped=1
+      fi
       if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        kill "$(cat "$PID_FILE")"
-        rm -f "$PID_FILE"
+        kill "$(cat "$PID_FILE")" 2>/dev/null && stopped=1   # legacy nohup
+      fi
+      rm -f "$PID_FILE"
+      if [ "$stopped" = 1 ]; then
         echo -e "${GREEN}Remote bot stopped.${RESET}"
       else
-        rm -f "$PID_FILE"
         echo "Not running."
       fi
       ;;
     --status)
-      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo -e "${GREEN}Running${RESET} (PID $(cat "$PID_FILE"))"
+      if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
+        echo -e "${GREEN}Running${RESET} (supervised — tmux: $BOT_TMUX)"
+        echo "  Log:    $MEGAVIBE_HOME/remote.log"
+        echo "  Attach: tmux attach -t $BOT_TMUX"
+      elif [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo -e "${YELLOW}Running (legacy, unsupervised)${RESET} (PID $(cat "$PID_FILE"))"
+        echo "  Restart supervised: megavibe remote --stop && megavibe remote --bg"
       else
         rm -f "$PID_FILE"
         echo "Not running."
       fi
       ;;
     --bg)
+      if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
+        echo "Already running (tmux: $BOT_TMUX). Use: megavibe remote --stop"
+        exit 0
+      fi
+      # Clear any stale legacy nohup process before taking over.
       if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo "Already running (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
+        kill "$(cat "$PID_FILE")" 2>/dev/null
+      fi
+      rm -f "$PID_FILE"
+      # Supervised: a named tmux session runs the bot in a restart loop, so a
+      # crash or network drop self-heals instead of going silently dead (the
+      # root cause of "megavibe remote failed a lot"). Not LAN-exposed — the
+      # bot is an outbound Telegram poller.
+      # Forward the bot's secrets explicitly: tmux does NOT propagate custom
+      # env vars to a new session (they aren't in update-environment), so a
+      # plain new-session would start the bot with no token → instant crash
+      # loop. Pass them via -e so the supervised pane actually sees them.
+      ENV_ARGS=()
+      for v in MEGAVIBE_TELEGRAM_TOKEN MEGAVIBE_TELEGRAM_USER_ID OPENAI_API_KEY; do
+        [ -n "${!v:-}" ] && ENV_ARGS+=( -e "$v=${!v}" )
+      done
+      tmux new-session -d -s "$BOT_TMUX" -c "$MEGAVIBE_HOME" \
+        ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$SELF remote --supervise"
+      sleep 1
+      if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
+        echo -e "${GREEN}Remote bot started (supervised, auto-restart)${RESET}"
+        echo "  tmux:   $BOT_TMUX"
+        echo "  Log:    $MEGAVIBE_HOME/remote.log"
+        echo "  Attach: tmux attach -t $BOT_TMUX"
+        echo "  Stop:   megavibe remote --stop"
+      else
+        echo "Failed to start supervised session; check $MEGAVIBE_HOME/remote.log"
         exit 1
       fi
-      nohup "$PYCMD" "$BOT_SCRIPT" > "$MEGAVIBE_HOME/remote.log" 2>&1 &
-      echo "$!" > "$PID_FILE"
-      echo -e "${GREEN}Remote bot started in background${RESET} (PID $!)"
-      echo "  Log: $MEGAVIBE_HOME/remote.log"
-      echo "  Stop: megavibe remote --stop"
+      ;;
+    --supervise)
+      # Internal: runs INSIDE the $BOT_TMUX session. Restart the bot forever,
+      # with crash-loop backoff so a config error (e.g. bad token) can't hammer.
+      while true; do
+        start=$(date +%s)
+        "$PYCMD" "$BOT_SCRIPT" >> "$MEGAVIBE_HOME/remote.log" 2>&1
+        code=$?
+        end=$(date +%s)
+        echo "[$(date '+%F %T')] bot exited (code $code) after $((end - start))s; restarting" \
+          >> "$MEGAVIBE_HOME/remote.log"
+        if [ $((end - start)) -lt 5 ]; then sleep 15; else sleep 3; fi
+      done
       ;;
     ""|--fg)
-      if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo "Already running in background (PID $(cat "$PID_FILE")). Use: megavibe remote --stop"
+      if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
+        echo "Already running in background (tmux: $BOT_TMUX). Use: megavibe remote --stop"
         exit 1
       fi
       echo -e "${BOLD}Megavibe Remote v4${RESET} — Telegram bot (Ctrl+C to stop)"
@@ -247,7 +297,7 @@ if [ "${1:-}" = "remote" ]; then
       echo "Usage: megavibe remote [--bg|--stop|--status]"
       echo ""
       echo "  (default)  Start in foreground (Ctrl+C to stop)"
-      echo "  --bg       Start in background"
+      echo "  --bg       Start in background (supervised, auto-restart)"
       echo "  --stop     Stop background bot"
       echo "  --status   Check if running"
       exit 1
