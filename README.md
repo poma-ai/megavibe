@@ -219,18 +219,34 @@ export MEGAVIBE_TELEGRAM_USER_ID="your-user-id"
 # Optional: for voice transcription (Watch voice notes)
 export OPENAI_API_KEY="your-key"
 
-# 4. Start the bot — one idempotent command
-megavibe remote              # ensure it's up (supervised, auto-restart, persists
-                             #   across terminal closes). Re-run = no-op if running.
-megavibe remote --stop       # stop the bot
-megavibe remote --status     # check if running
-megavibe remote --autostart on  # start at login on macOS (also: off | status)
-megavibe remote --fg         # foreground, to watch logs live (debugging)
+# 4. Start the bot — ONCE. It stays up (supervised, auto-restart) and you
+#    rarely touch it again; re-running is a harmless no-op.
+megavibe remote
+
+#    Occasional controls (you won't need these often):
+megavibe remote --status        # is it running?
+megavibe remote --stop          # stop it
+megavibe remote --autostart on  # also start it at login, macOS (off | status too)
+megavibe remote --fg            # run in foreground to watch logs (debugging)
 
 # 5. Register your projects (in Telegram DM with the bot):
 #    /register megavibe ~/Documents/megavibe
 #    /register officeqa ~/Documents/_1_WORK/poma/poma-officeqa
 ```
+
+#### Day to day — what to type, when
+
+After the one-time setup above, **the bot stays up on its own.** You don't keep starting it. In normal use you only ever do one of these:
+
+| You want to… | Do this |
+|---|---|
+| Ask your assistant something from your **phone/Watch** | Just message the bot in Telegram (text or voice note) — nothing to type on your computer |
+| Sit at that **same** assistant from your **keyboard** | `megavibe assistant` — attaches your terminal to the live session; press `Ctrl-b` then `d` to leave it running |
+| Work on a specific **project** from your phone | Message the bot, e.g. `fix the auth bug in megavibe` → it sends a link to tap |
+| Make the bot **survive reboots** | `megavibe remote --autostart on` (once, macOS) |
+| Check it's alive / stop it | `megavibe remote --status` · `megavibe remote --stop` |
+
+You normally **never re-type `megavibe remote`** — it's idempotent and supervised, so it's only for the very first start (or after a `--stop`). `megavibe remote` (phone) and `megavibe assistant` (keyboard) are two doors into the **same** live Claude.
 
 #### How it works
 
