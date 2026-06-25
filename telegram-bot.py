@@ -19,6 +19,7 @@ Env vars:
 """
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -53,6 +54,7 @@ ALLOWED_USER_ID = int(ALLOWED_USER)
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from telegram.error import Conflict, NetworkError, TimedOut
     from telegram.ext import (
         ApplicationBuilder, CommandHandler,
         ContextTypes, MessageHandler, filters,
@@ -60,6 +62,34 @@ try:
 except ImportError:
     print("Error: python-telegram-bot not installed. Run: pip3 install python-telegram-bot", file=sys.stderr)
     sys.exit(1)
+
+
+# ─── Single-instance lock ────────────────────────────────────────────
+# Two pollers sharing one token make Telegram return
+# `Conflict: terminated by other getUpdates request`, which the network
+# retry loop then spams forever. This happens whenever a foreground
+# `megavibe remote` is running and a `--bg`/--supervise instance also
+# starts (the CLI's tmux check doesn't catch the foreground case), or a
+# second machine reuses the token. An flock held for the process lifetime
+# makes the second LOCAL instance refuse to start instead of conflicting.
+_LOCK_FH = None  # module-global keeps the fd (and thus the lock) alive
+
+
+def acquire_single_instance_lock() -> None:
+    global _LOCK_FH
+    MEGAVIBE_HOME.mkdir(parents=True, exist_ok=True)
+    _LOCK_FH = open(MEGAVIBE_HOME / "remote.lock", "w")
+    try:
+        fcntl.flock(_LOCK_FH.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(
+            "Error: another megavibe remote bot already holds "
+            "~/.megavibe/remote.lock. Stop it first: megavibe remote --stop",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    _LOCK_FH.write(str(os.getpid()))
+    _LOCK_FH.flush()
 
 # ─── Project registry ────────────────────────────────────────────────
 
@@ -680,12 +710,35 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── Main ────────────────────────────────────────────────────────────
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Keep polling errors quiet and legible.
+
+    Without a registered error handler, PTB logs a full multi-frame traceback
+    for every transient get_updates failure ("No error handlers are registered,
+    logging exception") — alarming noise for what is just a flaky network. Route
+    them here: transient drops get one warning line, Conflict gets an actionable
+    message, everything else keeps its traceback.
+    """
+    err = context.error
+    if isinstance(err, Conflict):
+        log.error(
+            "Telegram Conflict: another instance is polling with this token. "
+            "Only one bot may run — check `megavibe remote --status` and any "
+            "other machine/session. Polling will keep retrying."
+        )
+    elif isinstance(err, (NetworkError, TimedOut)):
+        log.warning("Transient network error (%s); polling will retry.", type(err).__name__)
+    else:
+        log.error("Unhandled error in update %s", update, exc_info=err)
+
+
 def main():
     # Ensure personal session is running
     if subprocess.run(["which", "tmux"], capture_output=True).returncode != 0:
         print("Error: tmux not installed. Run: brew install tmux", file=sys.stderr)
         sys.exit(1)
 
+    acquire_single_instance_lock()
     start_personal_session()
 
     app = ApplicationBuilder().token(TOKEN).build()
@@ -697,6 +750,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(on_error)
 
     log.info("Megavibe Remote v4 — personal (tmux:%s) + project launcher", TMUX_SESSION)
     app.run_polling(drop_pending_updates=True)
