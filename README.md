@@ -163,6 +163,9 @@ Inside a megavibe session:
 | `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook already inlines its output. |
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
 | `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
+| `/doc-review` | After material doc/code changes — dual-backend (Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
+| `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply |
+| `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
 
 ---
@@ -216,11 +219,13 @@ export MEGAVIBE_TELEGRAM_USER_ID="your-user-id"
 # Optional: for voice transcription (Watch voice notes)
 export OPENAI_API_KEY="your-key"
 
-# 4. Start the bot
-megavibe remote          # foreground (Ctrl+C to stop)
-megavibe remote --bg     # background
-megavibe remote --stop   # stop background bot
-megavibe remote --status # check if running
+# 4. Start the bot — one idempotent command
+megavibe remote              # ensure it's up (supervised, auto-restart, persists
+                             #   across terminal closes). Re-run = no-op if running.
+megavibe remote --stop       # stop the bot
+megavibe remote --status     # check if running
+megavibe remote --autostart on  # start at login on macOS (also: off | status)
+megavibe remote --fg         # foreground, to watch logs live (debugging)
 
 # 5. Register your projects (in Telegram DM with the bot):
 #    /register megavibe ~/Documents/megavibe
@@ -246,6 +251,8 @@ megavibe remote
 ```
 
 The personal assistant is a standard megavibe project at `~/.megavibe/personal/` — same `.agent/` files, same poma-memory indexing. Your personal context persists across sessions just like project context.
+
+**One workspace, reachable two ways.** The personal assistant lives at `~/.megavibe/personal/` — a standard megavibe project with its own `.agent/` memory and poma-memory index. From your phone or Watch, `megavibe remote` talks to a persistent Claude the bot keeps running there in the `megavibe-personal` tmux session. From your keyboard, `megavibe assistant` opens a local Claude session in that **same workspace** — it shares the memory and context, though it's a *separate* session from the tmux one the bot drives (it doesn't attach to or start that one). Run either from **any directory**: everything uses absolute `~/.megavibe/` paths, so there's no folder you need to `cd` into first.
 
 #### Apple Watch
 
@@ -298,9 +305,9 @@ export OPENAI_API_KEY="your-key-here"
 | What | Where |
 |------|-------|
 | Hooks (17 scripts) | `.claude/hooks/` |
-| Rules (2 files) | `.claude/rules/` |
+| Rules (4 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
-| Skills (4 commands) | `.claude/skills/` |
+| Skills (6 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |
 | Hook config | `.claude/settings.json` |
 | Context structure | `.agent/` |
@@ -385,7 +392,7 @@ Megavibe still works. Context recovery falls back to a built-in Claude subagent 
 No. Every session has `/rc` (Remote Control) built in — connect from the Claude app on your phone with no extra setup. Telegram adds a personal assistant and project launcher on top.
 
 **Does the Telegram bot need to run all the time?**
-No. It's optional. Start it when you want remote access, stop it when you don't. Your terminal sessions work exactly the same either way.
+No. It's optional. Run `megavibe remote` to spin it up in the background (it will persist across terminal closes). To make it automatically start when your computer boots up, run `megavibe remote --autostart on`. Your normal terminal sessions work exactly the same either way.
 
 **How do I uninstall?**
 ```bash
