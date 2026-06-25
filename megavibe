@@ -229,15 +229,112 @@ if [ "${1:-}" = "remote" ]; then
         echo "  Attach: tmux attach -t $BOT_TMUX"
       elif [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
         echo -e "${YELLOW}Running (legacy, unsupervised)${RESET} (PID $(cat "$PID_FILE"))"
-        echo "  Restart supervised: megavibe remote --stop && megavibe remote --bg"
+        echo "  Restart supervised: megavibe remote --stop && megavibe remote"
       else
         rm -f "$PID_FILE"
         echo "Not running."
       fi
       ;;
-    --bg)
+    --autostart)
+      # Opt-in (default off): run the bot at login so it survives reboots.
+      # The supervised tmux loop already handles crash/network recovery; this
+      # just kicks `megavibe remote` once at login via a launchd LaunchAgent.
+      shift
+      PLIST="$HOME/Library/LaunchAgents/com.megavibe.remote.plist"
+      LABEL="com.megavibe.remote"
+      if ! command -v launchctl >/dev/null 2>&1; then
+        echo "Autostart-on-login needs macOS (launchd). On Linux, wrap"
+        echo "\`megavibe remote\` in a systemd --user service or your session autostart."
+        exit 1
+      fi
+      case "${1:-status}" in
+        on)
+          # launchd agents do NOT source your shell profile, so the bot's
+          # secrets must be baked into the plist (written mode 600). Re-run
+          # 'on' after rotating your token.
+          if [ -z "${MEGAVIBE_TELEGRAM_TOKEN:-}" ] || [ -z "${MEGAVIBE_TELEGRAM_USER_ID:-}" ]; then
+            echo "Set MEGAVIBE_TELEGRAM_TOKEN and MEGAVIBE_TELEGRAM_USER_ID in this shell first"
+            echo "(see README → Telegram setup), then re-run: megavibe remote --autostart on"
+            exit 1
+          fi
+          mkdir -p "$HOME/Library/LaunchAgents"
+          ENV_XML="    <key>MEGAVIBE_TELEGRAM_TOKEN</key><string>${MEGAVIBE_TELEGRAM_TOKEN}</string>
+    <key>MEGAVIBE_TELEGRAM_USER_ID</key><string>${MEGAVIBE_TELEGRAM_USER_ID}</string>"
+          [ -n "${OPENAI_API_KEY:-}" ] && ENV_XML="${ENV_XML}
+    <key>OPENAI_API_KEY</key><string>${OPENAI_API_KEY}</string>"
+          ( umask 077; cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${SELF}</string>
+    <string>remote</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${ENV_XML}
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>${MEGAVIBE_HOME}/remote-autostart.log</string>
+  <key>StandardErrorPath</key><string>${MEGAVIBE_HOME}/remote-autostart.log</string>
+</dict>
+</plist>
+PLISTEOF
+          )
+          chmod 600 "$PLIST"
+          if ! plutil -lint "$PLIST" >/dev/null 2>&1; then
+            echo "Generated plist failed validation: $PLIST"; exit 1
+          fi
+          launchctl unload "$PLIST" 2>/dev/null   # clear any prior load (idempotent)
+          if launchctl load -w "$PLIST" 2>/dev/null; then
+            echo -e "${GREEN}Autostart enabled${RESET} — the bot starts at login (and just started now)."
+            echo "  Plist:   $PLIST  (mode 600; re-run 'on' after rotating your token)"
+            echo "  Disable: megavibe remote --autostart off"
+          else
+            echo "Wrote $PLIST but launchctl load failed — check Console.app or run it manually."
+            exit 1
+          fi
+          ;;
+        off)
+          if [ -f "$PLIST" ]; then
+            launchctl unload "$PLIST" 2>/dev/null
+            rm -f "$PLIST"
+            echo -e "${GREEN}Autostart disabled.${RESET} A running bot keeps going — stop it with: megavibe remote --stop"
+          else
+            echo "Autostart was not enabled."
+          fi
+          ;;
+        status|"")
+          if [ -f "$PLIST" ]; then
+            echo -e "${GREEN}Autostart enabled${RESET} ($PLIST)"
+            if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+              echo "  Loaded in launchd."
+            else
+              echo "  Plist present but not loaded — re-run: megavibe remote --autostart on"
+            fi
+          else
+            echo "Autostart disabled. Enable: megavibe remote --autostart on"
+          fi
+          ;;
+        *)
+          echo "Usage: megavibe remote --autostart [on|off|status]"
+          exit 1
+          ;;
+      esac
+      ;;
+    ""|--bg|--start)
+      # Default. Idempotent: ensure ONE supervised background bot is up, or
+      # reuse the running one. Never start a second — two pollers on one token
+      # trigger Telegram's "Conflict: terminated by other getUpdates" storm.
+      # The bot is self-contained (it spawns its own Claude in the
+      # megavibe-personal tmux), so it persists across terminal closes and
+      # needs no foreground session. To watch logs live instead, use --fg.
       if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
-        echo "Already running (tmux: $BOT_TMUX). Use: megavibe remote --stop"
+        echo -e "${GREEN}Remote bot already running${RESET} (supervised, tmux: $BOT_TMUX) — your phone is connected."
+        echo "  Status: megavibe remote --status   Stop: megavibe remote --stop"
         exit 0
       fi
       # Clear any stale legacy nohup process before taking over.
@@ -284,22 +381,82 @@ if [ "${1:-}" = "remote" ]; then
         if [ $((end - start)) -lt 5 ]; then sleep 15; else sleep 3; fi
       done
       ;;
-    ""|--fg)
+    --fg)
+      # Foreground, for debugging — watch the bot's logs live in this terminal,
+      # Ctrl+C to stop. Not the normal path: closing the terminal kills it.
+      # Refuses to run alongside the supervised bot (would be a second poller).
       if tmux has-session -t "$BOT_TMUX" 2>/dev/null; then
-        echo "Already running in background (tmux: $BOT_TMUX). Use: megavibe remote --stop"
+        echo "Supervised bot already running (tmux: $BOT_TMUX). Stop it first: megavibe remote --stop"
         exit 1
       fi
-      echo -e "${BOLD}Megavibe Remote v4${RESET} — Telegram bot (Ctrl+C to stop)"
+      echo -e "${BOLD}Megavibe Remote v4${RESET} — Telegram bot, foreground (Ctrl+C to stop)"
       echo "  Use /register in TG to link projects"
       "$PYCMD" "$BOT_SCRIPT"
       ;;
+    --autostart)
+      shift
+      case "${1:-}" in
+        on)
+          if [ "$(uname -s)" != "Darwin" ]; then
+            echo "Error: Autostart via launchd is only supported on macOS (Darwin)."
+            exit 1
+          fi
+          PLIST_PATH="$HOME/Library/LaunchAgents/com.megavibe.remote.plist"
+          mkdir -p "$(dirname "$PLIST_PATH")"
+          cat > "$PLIST_PATH" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.megavibe.remote</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>PATH="\$HOME/.local/bin:\$PATH" "$MEGAVIBE_HOME/megavibe" remote</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+EOF
+          launchctl unload "$PLIST_PATH" 2>/dev/null || true
+          if launchctl load "$PLIST_PATH" 2>/dev/null; then
+            :
+          else
+            launchctl bootstrap gui/"$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+          fi
+          echo -e "${GREEN}Autostart enabled.${RESET} Megavibe remote will start automatically on login."
+          echo "  plist: $PLIST_PATH"
+          ;;
+        off)
+          PLIST_PATH="$HOME/Library/LaunchAgents/com.megavibe.remote.plist"
+          if [ -f "$PLIST_PATH" ]; then
+            launchctl unload "$PLIST_PATH" 2>/dev/null || launchctl bootout gui/"$(id -u)" "$PLIST_PATH" 2>/dev/null || true
+            rm -f "$PLIST_PATH"
+            echo -e "${GREEN}Autostart disabled.${RESET}"
+          else
+            echo "Autostart was not enabled."
+          fi
+          ;;
+        *)
+          echo "Usage: megavibe remote --autostart [on|off]"
+          exit 1
+          ;;
+      esac
+      ;;
     *)
-      echo "Usage: megavibe remote [--bg|--stop|--status]"
+      echo "Usage: megavibe remote [--stop|--status|--fg|--autostart on|off]"
       echo ""
-      echo "  (default)  Start in foreground (Ctrl+C to stop)"
-      echo "  --bg       Start in background (supervised, auto-restart)"
-      echo "  --stop     Stop background bot"
-      echo "  --status   Check if running"
+      echo "  (default)          Ensure the bot is running (supervised, auto-restart,"
+      echo "                     persists across terminal closes). Reuses one already up."
+      echo "  --stop             Stop the bot"
+      echo "  --status           Check if running"
+      echo "  --fg               Run in foreground to watch logs live (debugging)"
+      echo "  --autostart on|off Manage macOS login autostart agent"
       exit 1
       ;;
   esac
@@ -377,6 +534,13 @@ if [ -n "$REPO_DIR" ]; then
   # Sync init.sh
   if ! diff -q "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" &>/dev/null 2>&1; then
     cp "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
+  fi
+  # Sync telegram-bot.py — keep the deployed bot in lockstep with the repo so
+  # fixes land on a normal `megavibe` run, not only via setup.sh. A running
+  # supervised bot keeps its in-memory copy until the next restart.
+  if [ -f "$REPO_DIR/telegram-bot.py" ] \
+     && ! diff -q "$REPO_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py" &>/dev/null 2>&1; then
+    cp "$REPO_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
   fi
 fi
 
