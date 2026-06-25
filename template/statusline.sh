@@ -26,15 +26,31 @@ if [ -d ".agent" ]; then
   # Autosave health: the context-watcher daemon keeps .agent/ fresh between
   # turns. If it SHOULD be running (not opted out, prereqs present) but its
   # tmux session is gone, say so in plain language — a bare % tells you nothing
-  # if you don't know the daemon exists or that it can die. revive-watcher.sh
-  # heals this on the next tool call, so a brief flicker at startup is normal;
-  # a persistent warning means autosave is genuinely down.
+  # if you don't know the daemon exists or that it can die.
+  #
+  # Startup grace: the watcher is spawned at SessionStart but often loses a
+  # transcript race; revive-watcher.sh heals it on the FIRST tool call. So a
+  # fresh session shows the daemon down until then. Don't cry wolf during that
+  # window — record first-seen time per session and only warn once the session
+  # is old enough (45s) that the watcher genuinely should be up. A persistent
+  # warning past that means autosave is really down.
   if [ -n "$SID" ] \
      && [ "${MEGAVIBE_WATCHER:-1}" != "0" ] \
      && command -v tmux >/dev/null 2>&1 \
      && [ -x "$HOME/.megavibe/scripts/context-watcher.py" ] \
      && ! tmux has-session -t "mvw-${SID}" 2>/dev/null; then
-    WARN=' \033[0;31m⚠ autosave off\033[0m'
+    SEEN_FILE=".agent/LOGS/.statusline-seen.${SID}"
+    NOW=$(date +%s 2>/dev/null || echo 0)
+    FIRST="$NOW"
+    if [ -f "$SEEN_FILE" ]; then
+      FIRST=$(cat "$SEEN_FILE" 2>/dev/null || echo "$NOW")
+    else
+      mkdir -p .agent/LOGS 2>/dev/null
+      echo "$NOW" > "$SEEN_FILE" 2>/dev/null
+    fi
+    if [ "$((NOW - FIRST))" -ge 45 ] 2>/dev/null; then
+      WARN=' \033[0;31m⚠ autosave off\033[0m'
+    fi
   fi
 fi
 
