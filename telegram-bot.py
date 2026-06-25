@@ -67,11 +67,11 @@ except ImportError:
 # ─── Single-instance lock ────────────────────────────────────────────
 # Two pollers sharing one token make Telegram return
 # `Conflict: terminated by other getUpdates request`, which the network
-# retry loop then spams forever. This happens whenever a foreground
-# `megavibe remote` is running and a `--bg`/--supervise instance also
-# starts (the CLI's tmux check doesn't catch the foreground case), or a
-# second machine reuses the token. An flock held for the process lifetime
-# makes the second LOCAL instance refuse to start instead of conflicting.
+# retry loop then spams forever. The CLI guards its own paths (the default
+# reuses a running bot; `--fg` refuses if the supervised bot is up), but a
+# second machine reusing the token — or any direct launch — can still
+# collide. An flock held for the process lifetime is the real guard: the
+# second LOCAL instance refuses to start instead of conflicting.
 _LOCK_FH = None  # module-global keeps the fd (and thus the lock) alive
 
 

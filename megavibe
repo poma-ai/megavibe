@@ -393,70 +393,15 @@ PLISTEOF
       echo "  Use /register in TG to link projects"
       "$PYCMD" "$BOT_SCRIPT"
       ;;
-    --autostart)
-      shift
-      case "${1:-}" in
-        on)
-          if [ "$(uname -s)" != "Darwin" ]; then
-            echo "Error: Autostart via launchd is only supported on macOS (Darwin)."
-            exit 1
-          fi
-          PLIST_PATH="$HOME/Library/LaunchAgents/com.megavibe.remote.plist"
-          mkdir -p "$(dirname "$PLIST_PATH")"
-          cat > "$PLIST_PATH" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.megavibe.remote</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>PATH="\$HOME/.local/bin:\$PATH" "$MEGAVIBE_HOME/megavibe" remote</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <false/>
-</dict>
-</plist>
-EOF
-          launchctl unload "$PLIST_PATH" 2>/dev/null || true
-          if launchctl load "$PLIST_PATH" 2>/dev/null; then
-            :
-          else
-            launchctl bootstrap gui/"$(id -u)" "$PLIST_PATH" 2>/dev/null || true
-          fi
-          echo -e "${GREEN}Autostart enabled.${RESET} Megavibe remote will start automatically on login."
-          echo "  plist: $PLIST_PATH"
-          ;;
-        off)
-          PLIST_PATH="$HOME/Library/LaunchAgents/com.megavibe.remote.plist"
-          if [ -f "$PLIST_PATH" ]; then
-            launchctl unload "$PLIST_PATH" 2>/dev/null || launchctl bootout gui/"$(id -u)" "$PLIST_PATH" 2>/dev/null || true
-            rm -f "$PLIST_PATH"
-            echo -e "${GREEN}Autostart disabled.${RESET}"
-          else
-            echo "Autostart was not enabled."
-          fi
-          ;;
-        *)
-          echo "Usage: megavibe remote --autostart [on|off]"
-          exit 1
-          ;;
-      esac
-      ;;
     *)
-      echo "Usage: megavibe remote [--stop|--status|--fg|--autostart on|off]"
+      echo "Usage: megavibe remote [--stop|--status|--fg|--autostart [on|off|status]]"
       echo ""
-      echo "  (default)          Ensure the bot is running (supervised, auto-restart,"
-      echo "                     persists across terminal closes). Reuses one already up."
-      echo "  --stop             Stop the bot"
-      echo "  --status           Check if running"
-      echo "  --fg               Run in foreground to watch logs live (debugging)"
-      echo "  --autostart on|off Manage macOS login autostart agent"
+      echo "  (default)     Ensure the bot is running (supervised, auto-restart,"
+      echo "                persists across terminal closes). Reuses one already up."
+      echo "  --stop        Stop the bot"
+      echo "  --status      Check if running"
+      echo "  --fg          Run in foreground to watch logs live (debugging)"
+      echo "  --autostart   Manage macOS login autostart: on | off | status"
       exit 1
       ;;
   esac
