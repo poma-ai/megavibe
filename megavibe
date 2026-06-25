@@ -412,14 +412,29 @@ fi
 
 if [ "${1:-}" = "assistant" ]; then
   PERSONAL_DIR="$MEGAVIBE_HOME/personal"
+  PERSONAL_TMUX="megavibe-personal"
   if [ ! -d "$PERSONAL_DIR" ]; then
     echo "Personal assistant not set up yet."
     echo "  Run: bash setup.sh"
     exit 1
   fi
-  shift
-  cd "$PERSONAL_DIR"
-  exec "$MEGAVIBE_HOME/megavibe" "$@"
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "Error: tmux is required for the personal assistant. macOS: brew install tmux"
+    exit 1
+  fi
+  # Attach to the ONE persistent personal brain (tmux: megavibe-personal) — the
+  # SAME live Claude the Telegram bot drives. Desk and phone then share a single
+  # conversation, not just the .agent/ memory. Create it the bot's way if it's
+  # not up yet (detached, so it boots cleanly), then attach. Detach with C-b d;
+  # the brain keeps running.
+  if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
+    echo "Starting the personal assistant (first run may take a few seconds)…"
+    # Pre-accept workspace trust once, matching telegram-bot.py's start path.
+    ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true
+    tmux new-session -d -s "$PERSONAL_TMUX" -c "$PERSONAL_DIR" \
+      claude --dangerously-skip-permissions --remote-control --name "Personal Assistant"
+  fi
+  exec tmux attach -t "$PERSONAL_TMUX"
 fi
 
 # ─── Pre-flight: check setup ────────────────────────────────────────

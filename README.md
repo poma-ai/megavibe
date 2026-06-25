@@ -252,7 +252,7 @@ megavibe remote
 
 The personal assistant is a standard megavibe project at `~/.megavibe/personal/` — same `.agent/` files, same poma-memory indexing. Your personal context persists across sessions just like project context.
 
-**One workspace, reachable two ways.** The personal assistant lives at `~/.megavibe/personal/` — a standard megavibe project with its own `.agent/` memory and poma-memory index. From your phone or Watch, `megavibe remote` talks to a persistent Claude the bot keeps running there in the `megavibe-personal` tmux session. From your keyboard, `megavibe assistant` opens a local Claude session in that **same workspace** — it shares the memory and context, though it's a *separate* session from the tmux one the bot drives (it doesn't attach to or start that one). Run either from **any directory**: everything uses absolute `~/.megavibe/` paths, so there's no folder you need to `cd` into first.
+**One brain, reachable two ways.** The personal assistant is a *single* persistent Claude running in the `megavibe-personal` tmux session, working out of `~/.megavibe/personal/` (its own `.agent/` memory and poma-memory index). You reach the **same live session** two ways: `megavibe remote` drives it from your phone or Watch over Telegram, and `megavibe assistant` attaches your terminal straight to it. Start a thought at your desk, continue it on your phone — one conversation, not just shared files. (`megavibe assistant` spins the brain up if it isn't running yet; detach with `Ctrl-b d` and it keeps going.) Run either from **any directory**: everything uses absolute `~/.megavibe/` paths, so there's no folder you need to `cd` into first.
 
 #### Apple Watch
 
