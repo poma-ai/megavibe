@@ -127,11 +127,15 @@ fi
 # Request extra results so the .agent/LOGS/ filter below can drop noise
 # (stale rehydration-instructions, session state dumps) without starving
 # the useful matches.
-# --min-score is a relevance floor: RRF scores cluster ~0.027+ when BOTH BM25 and
-# semantic corroborate a hit vs ~0.016 for single-signal noise, so 0.02 keeps only
-# corroborated context and injects NOTHING when nothing is genuinely relevant —
-# no more random off-topic cheatsheets. Tune via MEGAVIBE_POMA_MIN_SCORE.
-MIN_SCORE="${MEGAVIBE_POMA_MIN_SCORE:-0.02}"
+# --min-score is a relevance floor on the RRF-fused score. Anatomy: a hit at
+# rank r in a list contributes 1/(61+r), so the scale runs ~0.016 (top of ONE
+# list = single-signal noise) to ~0.033 (top of BOTH lists). 0.028 requires
+# both BM25 and semantic to rank the hit ~top-8 — tight corroboration. Note
+# the ceiling: RRF is rank-based and saturates at 0.033, so no floor can drop
+# an irrelevant hit that happens to top both lists; that's what poma-memory's
+# cosine empty gate (v0.4+) is for — it suppresses ALL results when even the
+# best semantic match is weak. Tune via MEGAVIBE_POMA_MIN_SCORE.
+MIN_SCORE="${MEGAVIBE_POMA_MIN_SCORE:-0.028}"
 RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 6 --min-score "$MIN_SCORE" 2>/dev/null || echo "")
 
 # Drop result blocks whose File: path points at ephemeral, per-session, or audit
