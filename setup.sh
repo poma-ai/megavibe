@@ -422,12 +422,14 @@ PY
 }
 
 # Install / UPGRADE poma-memory from PyPI — hybrid BM25 + local-vector search.
-# Floor is 0.3.7: it brings the local-model2vec default (no silent OpenAI egress
-# when OPENAI_API_KEY is in env) AND the --min-score relevance floor that
-# augment-search.sh passes unconditionally — older CLIs reject that flag, so recall
-# silently returns nothing. An importable-but-old install (e.g. 0.3.2) must be
-# UPGRADED, not skipped; the old bare `skip` stranded users on the buggy build.
-POMA_MIN="0.3.7"
+# Floor is 0.4.0: it brings the cosine EMPTY GATE — when even the best semantic
+# match is weak, ALL results are suppressed instead of injecting the best of a
+# bad lot (RRF fused scores saturate ~0.033 for any top-of-both-lists hit, so
+# augment-search.sh's --min-score floor alone cannot express "nothing relevant").
+# 0.4.0 also keeps the 0.3.7 guarantees: local-model2vec default (no silent
+# OpenAI egress) + --min-score support. An importable-but-old install must be
+# UPGRADED, not skipped; a bare `skip` would strand users without the gate.
+POMA_MIN="0.4.0"
 rm -f "$MEGAVIBE_HOME/poma_memory.py"   # one-shot cleanup of deprecated bundled file
 if [ -z "$PYTHON" ] || [ -z "$PIP" ]; then
   warn "poma-memory requires Python 3.10+ and pip — search will be unavailable"
