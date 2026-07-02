@@ -563,6 +563,47 @@ if [ -f "$TPL_STATUSLINE" ] && [ -f "$ACTIVE_STATUSLINE" ] \
   echo "  Statusline updated."
 fi
 
+# Auto-heal legacy USER-LEVEL hooks (setup.sh has the same cleanup, but it
+# only runs when the pre-flight above re-triggers setup — a machine set up
+# before the cleanup landed never healed). Hooks are project-level since the
+# layout change; a stale .hooks block in ~/.claude/settings.json pointing at
+# ~/.claude/hooks/ makes every hook fire TWICE (observed: poma-memory context
+# injected 2x per search). Surgical, unlike setup.sh's del(.hooks): only
+# entries whose command references ~/.claude/hooks/ are removed, so hooks the
+# user deliberately added at user level (other paths) survive. The script dir
+# is archived, never deleted. Runs pre-claude — no live session loses hooks
+# mid-flight. Idempotent: nothing legacy → no-op, no output.
+USER_SETTINGS_HEAL="$HOME/.claude/settings.json"
+LEGACY_USER_HOOKS="$HOME/.claude/hooks"
+if command -v jq &>/dev/null && [ -f "$USER_SETTINGS_HEAL" ] \
+   && jq -e --arg d "$LEGACY_USER_HOOKS/" \
+        '[.hooks // {} | .. | objects | select(.type? == "command") | .command // "" | select(contains($d))] | length > 0' \
+        "$USER_SETTINGS_HEAL" >/dev/null 2>&1; then
+  jq --arg d "$LEGACY_USER_HOOKS/" '
+    .hooks |= (
+      with_entries(
+        .value |= map(
+          .hooks |= map(select((.command // "" | contains($d)) | not))
+        ) | .value |= map(select(.hooks | length > 0))
+      ) | with_entries(select(.value | length > 0))
+    ) | if .hooks == {} then del(.hooks) else . end
+  ' "$USER_SETTINGS_HEAL" > "${USER_SETTINGS_HEAL}.tmp" \
+    && jq -e . "${USER_SETTINGS_HEAL}.tmp" >/dev/null 2>&1 \
+    && mv "${USER_SETTINGS_HEAL}.tmp" "$USER_SETTINGS_HEAL"
+  rm -f "${USER_SETTINGS_HEAL}.tmp"
+  echo "  Healed: removed legacy ~/.claude/hooks/ entries from user settings (they double-fired against project hooks)."
+fi
+if [ -d "$LEGACY_USER_HOOKS" ]; then
+  HOOKS_ARCHIVE="${LEGACY_USER_HOOKS}.legacy-$(date +%Y%m%d)"
+  if [ ! -e "$HOOKS_ARCHIVE" ]; then
+    mv "$LEGACY_USER_HOOKS" "$HOOKS_ARCHIVE"
+    echo "  Healed: archived legacy ~/.claude/hooks/ to ${HOOKS_ARCHIVE}/."
+  else
+    rm -rf "$LEGACY_USER_HOOKS"
+    echo "  Healed: removed legacy ~/.claude/hooks/ (archive ${HOOKS_ARCHIVE}/ already exists)."
+  fi
+fi
+
 # ─── Auto-update check + tools (background, non-blocking) ───────────
 
 # Check at most once per day (stamp file tracks last check)
