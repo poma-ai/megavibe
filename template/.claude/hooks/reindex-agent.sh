@@ -23,6 +23,35 @@ trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
 set -u
 
 [ -d ".agent" ] || exit 0
+
+INPUT=$(cat 2>/dev/null || echo '{}')
+
+# Session-write ledger: record .agent/ files THIS session FULLY authored (Write
+# tool only), so augment-search.sh can suppress re-injecting content already in
+# the live context. Runs BEFORE the poma/debounce gates so it logs even on
+# debounced calls and without poma-memory. jq-gated + trap-safe.
+#
+# Deliberately Write-only: appends (Bash `>>`) and partial Edits are NOT recorded.
+# Suppression is file-level, so recording an append would hide EVERY older chunk
+# of that file for the rest of the session — fatal for FULL_CONTEXT.md, which the
+# protocol appends to constantly and which is the single most useful recall source.
+# A full Write means the whole file content is in context, so suppressing it is safe.
+if command -v jq &>/dev/null; then
+  TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+  if [ "$TOOL" = "Write" ]; then
+    FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
+    case "$FP" in
+      */.agent/*|.agent/*)
+        SID=$(printf '%s' "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12 || echo "default")
+        SID="${SID:-default}"
+        case "$FP" in /*) : ;; *) FP="$(pwd)/$FP" ;; esac
+        mkdir -p .agent/LOGS 2>/dev/null || true
+        printf '%s\n' "$FP" >> ".agent/LOGS/session-writes.${SID}.log" 2>/dev/null || true
+        ;;
+    esac
+  fi
+fi
+
 command -v poma-memory &>/dev/null || exit 0
 
 # Debounce: at most one reindex per DEBOUNCE seconds. The stamp is project-level

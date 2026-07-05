@@ -44,6 +44,9 @@ command -v jq &>/dev/null || exit 0
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+# Session scope for the per-session injection ledgers (dedup + self-write suppression).
+SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12 || echo "default")
+SID="${SID:-default}"
 
 # Extract search term based on tool type
 PATTERN=""
@@ -136,30 +139,101 @@ fi
 # cosine empty gate (v0.4+) is for — it suppresses ALL results when even the
 # best semantic match is weak. Tune via MEGAVIBE_POMA_MIN_SCORE.
 MIN_SCORE="${MEGAVIBE_POMA_MIN_SCORE:-0.028}"
-RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k 6 --min-score "$MIN_SCORE" 2>/dev/null || echo "")
+# Over-request candidates so the filters below (ephemeral paths, self-written
+# files, already-injected blocks) have room to drop noise without starving the
+# final set. MAX_RESULTS caps what actually gets injected — the top few are the
+# highest-scored survivors, which trims the low-signal 0.028-0.030 floor band
+# that read as "unrelated". Tune via MEGAVIBE_POMA_{TOPK,MAX_RESULTS}.
+TOPK="${MEGAVIBE_POMA_TOPK:-8}"
+MAX_RESULTS="${MEGAVIBE_POMA_MAX_RESULTS:-3}"
+# Numeric-guard the knobs: a non-numeric TOPK would make poma error (empty recall);
+# a non-numeric MAX_RESULTS would crash the python int() and force the awk fallback.
+case "$TOPK" in ''|*[!0-9]*) TOPK=8 ;; esac; [ "$TOPK" -ge 1 ] 2>/dev/null || TOPK=1
+case "$MAX_RESULTS" in ''|*[!0-9]*) MAX_RESULTS=3 ;; esac   # 0 is valid = inject nothing
+RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k "$TOPK" --min-score "$MIN_SCORE" 2>/dev/null || echo "")
 
-# Drop result blocks whose File: path points at ephemeral, per-session, or audit
-# state rather than durable semantic context:
-#   .agent/LOGS/         — audit trail (rehydration-instructions, flags, counters)
-#   .agent/sessions/     — per-session WORKING_CONTEXT snapshots, stale by construction
-#   .agent/WORKING_CONTEXT.md — legacy root snapshot (pre-session-scoped layout)
+# Per-session ledgers (see the python filter for full rationale):
+#   injected.<sid>.log       — content-keys of blocks already injected this session
+#   session-writes.<sid>.log — abspaths this session wrote under .agent/ (fed by
+#                              reindex-agent.sh); their content is already in the
+#                              live context, so re-injecting it is pure waste.
+# Both are cleared on compaction (on-compact.sh) — after a summary the content has
+# left the window, so recall becomes useful again.
+mkdir -p .agent/LOGS 2>/dev/null || true
+INJ_LEDGER=".agent/LOGS/injected.${SID}.log"
+WRITES_LEDGER=".agent/LOGS/session-writes.${SID}.log"
+
+# Fallback filter (no python3): drop result blocks whose File: path points at
+# ephemeral, per-session, or audit state rather than durable semantic context.
 # Without this, old "⚠️ CONTEXT WAS JUST COMPACTED" instructions and prior-session
 # working-context dumps leak back in — they score the same as live docs (RRF
 # saturates ~0.033 for any corroborated hit) so a score floor cannot exclude them;
 # only a path filter can. Observed: stale session WORKING_CONTEXT outranking
 # DECISIONS.md as a #1 hit for a code-symbol search.
-RESULTS=$(echo "$RAW_RESULTS" | awk '
-/^--- Result/ {
-  if (buf != "" && !skip) printf "%s", buf
-  buf = $0 "\n"
-  skip = 0
-  next
+# Honours MAX_RESULTS so the no-python3 path can't inject the full top-k (no dedup
+# is available without hashing, but at least the volume matches the primary path).
+_ephemeral_awk() {
+  awk -v max="${MAX_RESULTS:-3}" '
+  function flush() { if (buf ~ /^--- Result/ && !skip && printed < max) { printf "%s", buf; printed++ } }
+  /^--- Result/ { flush(); buf = $0 "\n"; skip = 0; next }
+  /^File:.*\.agent\/(LOGS|sessions)\// { skip = 1 }
+  /^File:.*\.agent\/WORKING_CONTEXT\.md/ { skip = 1 }
+  { buf = buf $0 "\n" }
+  END { flush() }
+  '
 }
-/^File:.*\.agent\/(LOGS|sessions)\// { skip = 1 }
-/^File:.*\.agent\/WORKING_CONTEXT\.md/ { skip = 1 }
-{ buf = buf $0 "\n" }
-END { if (buf != "" && !skip) printf "%s", buf }
-')
+
+# Primary path (python3): ephemeral filter + self-written suppression + per-session
+# dedup + cap. Dedup keys on the chunk BODY (File: path + text, minus the volatile
+# "--- Result N (score) ---" header and "Updated:" line) so the same chunk is
+# suppressed across DIFFERENT queries whose RRF scores differ — "one appearance is
+# enough". Degrades to the awk ephemeral filter (no dedup) if python3 is absent or
+# errors, so behaviour never regresses below today's.
+if command -v python3 &>/dev/null; then
+  # Pass data via env, not stdin: `python3 - <<HEREDOC` already consumes stdin as
+  # the PROGRAM source, so a piped payload would never reach sys.stdin.read().
+  RESULTS=$(RAW_RESULTS="$RAW_RESULTS" INJ_LEDGER="$INJ_LEDGER" WRITES_LEDGER="$WRITES_LEDGER" MAXN="$MAX_RESULTS" python3 - 2>/dev/null <<'PYEOF'
+import sys, re, os, hashlib
+inj_path = os.environ["INJ_LEDGER"]; writes_path = os.environ["WRITES_LEDGER"]
+maxn = int(os.environ["MAXN"]); raw = os.environ.get("RAW_RESULTS", "")
+blocks = [b for b in re.split(r'(?m)(?=^--- Result )', raw) if b.strip().startswith('--- Result')]
+def load(p):
+    try:
+        return set(l.strip() for l in open(p) if l.strip())
+    except Exception:
+        return set()
+injected = load(inj_path)
+written = set(os.path.abspath(w) for w in load(writes_path))
+EPHEMERAL = re.compile(r'\.agent/(LOGS|sessions)/|\.agent/WORKING_CONTEXT\.md')
+kept, new = [], []
+for b in blocks:
+    if len(kept) >= maxn:                           # cap-at-top: maxn=0 -> inject nothing
+        break
+    m = re.search(r'(?m)^File: (\S+)', b)
+    fp = m.group(1) if m else ''
+    if fp and EPHEMERAL.search(fp):
+        continue
+    if fp and os.path.abspath(fp) in written:      # self-written (full Write) this session
+        continue
+    body = '\n'.join(l for l in b.splitlines()
+                     if not l.startswith('--- Result') and not l.startswith('Updated:'))
+    key = hashlib.md5(body.encode('utf-8', 'replace')).hexdigest()
+    if key in injected:                             # already injected this session
+        continue
+    kept.append(b.rstrip('\n'))
+    new.append(key)
+if new:
+    try:
+        with open(inj_path, 'a') as f:
+            f.write('\n'.join(new) + '\n')
+    except Exception:
+        pass
+sys.stdout.write('\n'.join(kept))
+PYEOF
+) || RESULTS=$(printf '%s' "$RAW_RESULTS" | _ephemeral_awk)
+else
+  RESULTS=$(printf '%s' "$RAW_RESULTS" | _ephemeral_awk)
+fi
 
 # Only inject if we got meaningful results (not "No results found.")
 if [ -z "$RESULTS" ] || [[ "$RESULTS" == *"No results found"* ]]; then

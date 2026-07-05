@@ -56,6 +56,12 @@ SID=$(echo "$INPUT" | jq -r '.session_id // "default"' | cut -c1-12)
 SESSION_DIR=".agent/sessions/${SID}"
 mkdir -p "$SESSION_DIR"
 
+# Reset augment-search ledgers: compaction drops the just-written / already-seen
+# content out of the live window, so re-injecting it becomes useful again. Without
+# this reset, post-compaction recall would stay silent on exactly the context the
+# summary just shed. (See augment-search.sh / reindex-agent.sh.)
+rm -f ".agent/LOGS/injected.${SID}.log" ".agent/LOGS/session-writes.${SID}.log" 2>/dev/null || true
+
 WC_PATH="${SESSION_DIR}/WORKING_CONTEXT.md"
 INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 
