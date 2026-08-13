@@ -410,7 +410,7 @@ fi
 
 # ─── Assistant subcommand ────────────────────────────────────────────
 
-if [ "${1:-}" = "assistant" ]; then
+if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
   PERSONAL_DIR="$MEGAVIBE_HOME/personal"
   PERSONAL_TMUX="megavibe-personal"
   if [ ! -d "$PERSONAL_DIR" ]; then
@@ -431,10 +431,47 @@ if [ "${1:-}" = "assistant" ]; then
     echo "Starting the personal assistant (first run may take a few seconds)…"
     # Pre-accept workspace trust once, matching telegram-bot.py's start path.
     ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true
+    # Race: `megavibe remote` boots the bot, which runs the SAME
+    # has-session/new-session dance (telegram-bot.py:194-215). If the bot won
+    # while the pre-flight above was running, this create fails with
+    # "duplicate session" — and under `set -e` that aborts the script before
+    # the attach below, leaving a healthy brain the user never reaches.
+    # Tolerate the failure, then confirm the session really is there.
     tmux new-session -d -s "$PERSONAL_TMUX" -c "$PERSONAL_DIR" \
-      claude --dangerously-skip-permissions --remote-control --name "Personal Assistant"
+      claude --dangerously-skip-permissions --remote-control --name "Personal Assistant" \
+      2>/dev/null || true
+    if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
+      echo "Error: could not start the personal assistant (tmux: $PERSONAL_TMUX)."
+      echo "  Inspect: tmux ls"
+      echo "  Bot log: $MEGAVIBE_HOME/remote.log"
+      exit 1
+    fi
   fi
   exec tmux attach -t "$PERSONAL_TMUX"
+fi
+
+# ─── Unknown subcommand guard ────────────────────────────────────────
+#
+# Everything below forwards "$@" straight to `claude`, where a bare word lands
+# in the initial-prompt slot and is silently swallowed. So a typo'd or
+# imagined subcommand (`megavibe personl`) used to look like it worked while
+# doing nothing. Flags and multi-word prompts still pass through untouched —
+# only a lone bare word is rejected, since that shape is almost always a
+# subcommand the user expected to exist.
+if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
+  echo "Unknown subcommand: ${1}"
+  echo ""
+  echo "Usage: megavibe [subcommand | claude-args...]"
+  echo ""
+  echo "  (no args)             Launch a session in the current directory"
+  echo "  assistant | personal  Attach to the persistent Personal Assistant"
+  echo "                        (tmux: megavibe-personal — the same brain the"
+  echo "                        Telegram bot drives)"
+  echo "  remote                Manage the Telegram bot (--stop|--status|--fg)"
+  echo "  update                Update megavibe (--check to peek only)"
+  echo ""
+  echo "  Flags and multi-word prompts are passed to claude unchanged."
+  exit 1
 fi
 
 # ─── Pre-flight: check setup ────────────────────────────────────────
