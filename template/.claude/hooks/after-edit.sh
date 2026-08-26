@@ -17,6 +17,10 @@ set -u
 #   #!/bin/bash
 #   npx prettier --write "$1"   # $1 = the edited file path
 #   npx eslint "$1"
+#
+# A ready-made example ships alongside this hook as .claude/verify.sh.example — it
+# strips invisible/exotic Unicode from edited text files. Enable it with:
+#   cp .claude/verify.sh.example .claude/verify.sh && chmod +x .claude/verify.sh
 
 # Only act if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0

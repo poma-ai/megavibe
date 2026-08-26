@@ -1,0 +1,55 @@
+#!/bin/bash
+# Megavibe — example .claude/verify.sh
+#
+# after-edit.sh (PostToolUse on Edit|Write) runs .claude/verify.sh "<edited-file>"
+# if it exists and is executable. This example strips invisible / exotic Unicode
+# from edited text files — the "Layer A" hygiene that AI-watermark removers sell,
+# in ~20 lines of stdlib with no daemon, no HTTP, and no Python dependency.
+#
+# To enable in a project:
+#   cp .claude/verify.sh.example .claude/verify.sh && chmod +x .claude/verify.sh
+#
+# Deliberately NOT enabled by default: this rewrites files in place, and the
+# measured hit rate on a normal shell/markdown repo is zero. Opt in where you
+# actually publish prose, or where invisible chars have bitten you before.
+#
+# Add your own lint/format/test commands below the scrub block as needed.
+
+set -u
+FILE="${1:-}"
+
+# Nothing to do without a real, regular, non-symlink file
+[ -n "$FILE" ] || exit 0
+[ -f "$FILE" ] || exit 0
+[ -L "$FILE" ] && exit 0
+
+# Text extensions only — never touch binaries, archives, or images
+case "$FILE" in
+  *.md|*.markdown|*.txt|*.sh|*.bash|*.zsh|*.py|*.rb|*.pl \
+  |*.js|*.mjs|*.cjs|*.ts|*.tsx|*.jsx|*.json|*.jsonc \
+  |*.yml|*.yaml|*.toml|*.ini|*.cfg|*.conf \
+  |*.html|*.css|*.scss|*.sql|*.go|*.rs|*.java|*.c|*.h|*.cpp|*.hpp) ;;
+  *) exit 0 ;;
+esac
+
+# Second guard: grep -I reports binary files, whatever the extension says
+grep -Iq . "$FILE" 2>/dev/null || exit 0
+
+SCRUBBED=$(mktemp "${TMPDIR:-/tmp}/mv-scrub.XXXXXX") || exit 0
+trap 'rm -f "$SCRUBBED"' EXIT
+
+# Layer A:
+#   1. delete zero-width, bidi, format-control, soft-hyphen, BOM, tag characters
+#   2. fold non-breaking / exotic spaces down to a plain ASCII space
+perl -CSD -pe '
+  s/[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{2066}-\x{206F}\x{FEFF}\x{00AD}\x{180E}\x{FFF9}-\x{FFFB}\x{E0000}-\x{E007F}]//g;
+  s/[\x{00A0}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}]/ /g;
+' "$FILE" > "$SCRUBBED" 2>/dev/null || exit 0
+
+# Only rewrite when something actually changed — preserves mtime, inode and
+# permissions on the overwhelmingly common no-op path, and keeps file watchers quiet.
+if ! cmp -s "$FILE" "$SCRUBBED"; then
+  cat "$SCRUBBED" > "$FILE" && echo "scrubbed invisible Unicode: $FILE" >&2
+fi
+
+exit 0

@@ -125,6 +125,13 @@ for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
   echo "  synced: .claude/rules/$(basename "$rule")"
 done
 
+# --- verify.sh example (opt-in — inert until the user copies it into place) ---
+if [ -f "$TEMPLATE_DIR/.claude/verify.sh.example" ]; then
+  cp "$TEMPLATE_DIR/.claude/verify.sh.example" "$PROJECT/.claude/verify.sh.example"
+  chmod +x "$PROJECT/.claude/verify.sh.example"
+  echo "  synced: .claude/verify.sh.example (opt-in; cp to verify.sh to enable)"
+fi
+
 # --- Skills (infrastructure — always overwrite) ---
 if [ -d "$TEMPLATE_DIR/.claude/skills" ]; then
   for skill_dir in "$TEMPLATE_DIR/.claude/skills/"*/; do

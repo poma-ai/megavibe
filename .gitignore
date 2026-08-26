@@ -18,6 +18,8 @@ build/
 /.claude/skills/
 /.claude/agents/
 /.claude/settings.json
+/.claude/verify.sh
+/.claude/verify.sh.example
 
 # Personal overrides (not shared)
 CLAUDE.local.md

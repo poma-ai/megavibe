@@ -18,15 +18,40 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # If we couldn't parse the command, allow it (don't block on parse errors)
 [ -n "$COMMAND" ] || exit 0
 
-# rm -rf on root, home, or current dir
-if echo "$COMMAND" | grep -Eqi '(^|[;&|[:space:]])rm[[:space:]]+-r[f]*[[:space:]]+(\/|~|\$HOME|\.)[[:space:]\/]*([;&|]|$)'; then
-  echo "Blocked: rm -rf on root/home/cwd paths" >&2
-  exit 2
-fi
+# Recursive/forced rm targeting root, home, or cwd — INCLUDING glob forms.
+#
+# Three tests ANDed: is rm invoked, does it carry a destructive flag, is the target
+# a bare top-level path or top-level glob. Splitting them is what lets scoped deletes
+# through (./build/*, /tmp/x, *.log) while still catching the top-level globs that an
+# earlier single-regex version allowed straight past it.
+#
+# Evaluated PER COMMAND SEGMENT, not against the whole string. Applied globally, the
+# three tests combine across unrelated fragments of a long command line — a heredoc
+# that merely mentions rm in one line and a glob in another would trip all three and
+# block a completely safe command.
+_RM_INVOKED='(^|[[:space:]])rm([[:space:]]+-{1,2}[[:alnum:]-]+)*[[:space:]]'
+_RM_DESTRUCTIVE_FLAG='[[:space:]]-{1,2}[[:alnum:]]*[rRf]'
+_RM_TOPLEVEL_TARGET='(^|[[:space:]])(\*|\.|\.\*|\.\/\*?|\/\*?|~\/?\*?|\$HOME\/?\*?|\.\[[^]]*\]\*?)([[:space:]]|$)'
 
-# git push --force to main/master
+# tr (not sed) for the split: BSD/macOS sed does not expand \n in the replacement.
+# ; | & and newline all become segment boundaries; && and || yield an empty segment.
+while IFS= read -r _seg; do
+  [ -n "$_seg" ] || continue
+  # pad with a trailing space so end-of-segment behaves like a word boundary
+  _seg="$_seg "
+  if printf '%s' "$_seg" | grep -Eq "$_RM_INVOKED" \
+     && printf '%s' "$_seg" | grep -Eq "$_RM_DESTRUCTIVE_FLAG" \
+     && printf '%s' "$_seg" | grep -Eq "$_RM_TOPLEVEL_TARGET"; then
+    echo "Blocked: recursive rm targeting root/home/cwd or a top-level glob. Use an explicit scoped path." >&2
+    exit 2
+  fi
+done <<EOF
+$(printf '%s' "$COMMAND" | tr ';|&' '\n\n\n')
+EOF
+
+# force-push to the trunk branch
 if echo "$COMMAND" | grep -Eqi 'git[[:space:]]+push[[:space:]]+.*--force.*[[:space:]]+(main|master)'; then
-  echo "Blocked: force push to main/master" >&2
+  echo "Blocked: force push to trunk" >&2
   exit 2
 fi
 
