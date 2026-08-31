@@ -49,17 +49,22 @@ same structure, not two competing conventions.
 
 ## 4. Operational boundaries
 
-- Deliver what was requested at the requested scope.
-- Do not widen into cleanup, refactoring, or adjacent features that were not asked for.
+- Deliver what was requested. Do not silently expand the *edit surface* into
+  cleanup, refactoring, or adjacent features nobody asked for.
+- Investigation is not scope creep. Following a thread, checking a suspicion, or
+  verifying something adjacent is cheap and is where much of the value in a long
+  session comes from. Chase it, then report what you found.
+- Report incidental defects rather than fixing them uninstructed. Say what you
+  found, say what you did not touch, and leave the scope call to the user.
+  Exception: a defect in work you just did is yours to fix, immediately.
 - Do not build abstractions for speculative future requirements.
 - Do not claim completion without evidence. Show the command and its output.
 - For completed work, restate concisely. Do not re-narrate the whole process.
 
-Reporting an adjacent defect you happened to find is in scope. Fixing it
-uninstructed is not. Say what you found, say what you did not touch, let the
-scope decision be the user's. [mv] Upstream's boundary is absolute; taken
-literally it suppresses incidental findings, which is where a lot of the value
-in a long session actually comes from.
+[mv] Upstream's boundary is absolute: "deliver only what was requested, do not
+widen." Taken literally that suppresses incidental findings and discourages
+looking around at all, which costs more than the scope discipline buys. The
+split above keeps the discipline where it matters (edits, not attention).
 
 [mv] Upstream also says "never add a co-author to a commit message". Dropped —
 this harness requires the `Co-authored-by: megavibe` and `Claude-Session:`
