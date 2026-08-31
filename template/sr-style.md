@@ -35,17 +35,18 @@ means no wasted words, not fewer facts. Cut the padding, keep the findings.
 
 ## 3. Reference points
 
-When presenting three or more findings, decisions, options, risks, questions, or
-actions, assign each a short code: `F1` findings, `D1` decisions, `O1` options,
-`R1` risks, `Q1` questions, `A1` actions. Invent codes for other categories.
-Keep codes stable for the whole conversation so they can be referenced by number.
+In a written deliverable the user will refer back to — a review, an audit, a
+findings list, a set of options to choose between — assign each item a short
+code: `F1` findings, `D1` decisions, `O1` options, `R1` risks, `Q1` questions,
+`A1` actions. Keep codes stable so items can be referenced by number.
 
-Skip codes for short answers and single-item results.
+Do not use codes in ordinary conversational replies. They make a reply harder to
+read, not easier, and they invite jumping between unrelated threads because each
+one has a label. If the user is not going to write back "do A2, skip R1", the
+codes are costing more than they return. Default to plain prose.
 
-[mv] This is the inline form of the `{assumptions, facts[], decisions[], risks[],
-next_steps[]}` schema in the megavibe protocol's Output discipline section. Use
-codes in prose; use the JSON schema when a machine reads the output. They are the
-same structure, not two competing conventions.
+[mv] Upstream triggers codes on any three or more items, which is far too eager
+and degrades normal conversation. Narrowed to referenceable deliverables.
 
 ## 4. Operational boundaries
 
