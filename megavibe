@@ -15,6 +15,15 @@ set -euo pipefail
 #   /rehydrate — full context recovery via Gemini/Codex
 
 MEGAVIBE_HOME="$HOME/.megavibe"
+
+# Communication-style system prompt, layered onto every session launch.
+# Non-destructive: --append-system-prompt adds to the harness prompt, it does
+# not replace it. Disable for one run with MEGAVIBE_STYLE=0.
+STYLE_ARGS=()
+STYLE_FILE="$MEGAVIBE_HOME/template/sr-style.md"
+if [ "${MEGAVIBE_STYLE:-1}" != "0" ] && [ -f "$STYLE_FILE" ]; then
+  STYLE_ARGS=(--append-system-prompt "$(cat "$STYLE_FILE")")
+fi
 BOLD='\033[1m'
 YELLOW='\033[0;33m'
 GREEN='\033[0;32m'
@@ -439,6 +448,7 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
     # Tolerate the failure, then confirm the session really is there.
     tmux new-session -d -s "$PERSONAL_TMUX" -c "$PERSONAL_DIR" \
       claude --dangerously-skip-permissions --remote-control --name "Personal Assistant" \
+      ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} \
       2>/dev/null || true
     if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
       echo "Error: could not start the personal assistant (tmux: $PERSONAL_TMUX)."
@@ -871,7 +881,7 @@ if $IS_RESUME; then
   # Skip init.sh (LESSONS.md: never overwrite hooks mid-session)
   # Go straight to claude
   trap release_lock EXIT HUP INT TERM
-  claude --dangerously-skip-permissions --remote-control "$@" &
+  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
   CLAUDE_PID=$!
   update_lock_pid "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
@@ -1132,7 +1142,7 @@ RESTART_MARKER="$MEGAVIBE_HOME/.restart-session"
 CLAUDE_EXTRA_ARGS=("$@")
 
 while true; do
-  claude --dangerously-skip-permissions --remote-control ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
+  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"

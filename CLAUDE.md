@@ -20,6 +20,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/CLAUDE.md` | Core protocol (90 lines) — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/*.md` | 4 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline) | Medium — review recommended |
 | `template/.claude/skills/*/SKILL.md` | 6 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy) | Low — workflow shortcuts |
+| `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (17 hooks; canonical list in init.sh) | Medium |
@@ -29,6 +30,21 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
+
+## Communication style prompt
+
+`template/sr-style.md` is appended to every session's system prompt by the wrapper
+(`--append-system-prompt`, non-destructive). Adapted from
+github.com/disler/fixing-smartass-opus-5 (MIT). Disable for one run with
+`MEGAVIBE_STYLE=0 megavibe`.
+
+Two gotchas:
+- Upstream says "never add a co-author to a commit message" and this harness
+  requires the `Co-authored-by` trailer. That rule is deliberately dropped; do not
+  re-sync it from upstream. All deviations are marked `[mv]` in the file.
+- It rides the wrapper's `diff -rq` template sync to `~/.megavibe/template/`, so it
+  is user-level. `init.sh` does not deploy it into projects.
+
 
 ## Critical invariants
 
