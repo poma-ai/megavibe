@@ -5,8 +5,8 @@
 **Megavibe works with ONLY a Claude Code subscription.** External backends (Gemini, Codex) improve quality for specific tasks but are never required. Every task has a last-resort path through Claude itself (via the `summarizer` subagent at `.claude/agents/summarizer.md`).
 
 **Standard fallback chain** (Gemini-primary tasks):
-1. Gemini MCP (subscription/OAuth)
-2. `$GEMINI_API_KEY` via curl (for geo-blocked regions)
+1. Gemini MCP (requires `$GEMINI_API_KEY` — Google-account OAuth was retired 2026-06-18; without the key, skip straight to Codex)
+2. `$GEMINI_API_KEY` via curl (direct REST fallback if the MCP server itself fails)
 3. Codex MCP
 4. Claude subagent (always available — same subscription)
 

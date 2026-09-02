@@ -18,7 +18,7 @@ Claude Code is the executor and orchestrator. Gemini and Codex are subcontractor
 
 3. **Full context log is durable.** `.agent/FULL_CONTEXT.md` is append-only with no length limit — let it grow. Store research in `.agent/RESEARCH/`. Store screenshots/HTML/PDFs in `.agent/ASSETS/`.
 
-4. **Second opinions for risky changes.** If ambiguous, risky, or repeatedly corrected: request a second opinion from Codex and/or Gemini before shipping. When requesting second opinions, ask the reviewer to consider the neutral case, the devil's advocate case, and the optimistic case — then synthesize.
+4. **Independent review by default.** Every important result, change, or product gets an independent review before it ships — without the user having to ask. Important = new/changed code beyond trivial mechanical edits, documents or plans the user will rely on, analyses that drive decisions, anything user-facing. Route it: code diffs → fresh-context Claude subagent review (or `/code-review`); prose, plans, analyses → second opinion from Codex and/or Gemini. If ambiguous, risky, or repeatedly corrected: escalate to BOTH Codex and Gemini, asking the reviewer to consider the neutral case, the devil's advocate case, and the optimistic case — then synthesize. Act on findings before declaring done. Exceptions: trivial/mechanical edits, deliverables that are themselves reviews (no recursion), and urgent hotfixes (ship, then review immediately after).
 
 5. **Never drop uncommitted changes.** Before any git operation that could lose work (checkout, reset, pull, rebase, clean, restore, switch branches): run `git status`. If there are uncommitted changes, `git stash push -m "megavibe-auto: <reason>"` first, inform the user what was stashed, and ask before popping or discarding. Never silently overwrite dirty state.
 
@@ -68,6 +68,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 
 **Verify**
 - Run verification commands. For UI: Playwright screenshots + Gemini description.
+- Important results/changes/products: independent review per non-negotiable 4 (fresh-context subagent or external backend) — by default, not on request.
 
 **Commit**
 - Descriptive message. Include what was verified.
@@ -106,7 +107,7 @@ Keep CLAUDE.md a **rule index, not an encyclopedia.** When a section grows past 
 
 ## Backend availability check
 
-On every fresh session start, call `mcp__gemini-cli__ping` to test Gemini connectivity. If it fails or Gemini MCP tools are not listed, mark Gemini as **unavailable** for this session and use the Fallback column in the routing table in `.claude/rules/delegation.md`.
+On every fresh session start, call `mcp__gemini-cli__ping` to test Gemini connectivity. If it fails or Gemini MCP tools are not listed, mark Gemini as **unavailable** for this session and use the Fallback column in the routing table in `.claude/rules/delegation.md`. Note: ping only proves the MCP server is up, not that Gemini auth works — Google-account OAuth was retired June 2026, so if `GEMINI_API_KEY` is not set in the environment, mark Gemini unavailable regardless of ping.
 
 Do the same for Codex: attempt a simple Codex tool call. If it fails, mark Codex as unavailable.
 

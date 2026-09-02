@@ -95,7 +95,7 @@ When Claude runs out of memory and compacts, megavibe detects it and triggers re
 - **Normal projects**: Claude calls Gemini to produce a focused ~400-line summary
 - **Empty context** (first compaction): instructs Claude to save the compaction summary before it's lost
 
-Recovery uses a fallback chain: Gemini (subscription) → Gemini (API key) → ChatGPT/Codex → Claude subagent (always works, same subscription).
+Recovery uses a fallback chain: Gemini (API key) → ChatGPT/Codex → Claude subagent (always works, same subscription).
 
 ### Semantic search augmentation
 
@@ -126,13 +126,15 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 | What you add | How | What it unlocks |
 |-------------|-----|-----------------|
 | **Claude Code** (required) | Subscription | Core: editing, commands, memory, context recovery via built-in subagent |
-| **Gemini CLI** | Run `gemini` to log in | Better context recovery (1M token window), large file analysis |
+| **Gemini CLI** | Set `GEMINI_API_KEY` ([free key](https://aistudio.google.com/apikey)) | Better context recovery (1M token window), large file analysis |
 | **ChatGPT/Codex CLI** | Run `codex` to log in | Research with web search, second opinions |
 | **Playwright** | Installed by setup | Browser automation, screenshots, UI testing |
 | **poma-memory** | Bundled (automatic) | Semantic search over project memory |
 | **Telegram bot** | Optional, see below | Personal assistant + project launcher from phone/Watch |
 
-Setup installs Gemini/Codex/Playwright CLIs and walks you through login. You can skip any — megavibe adapts.
+Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. You can skip any — megavibe adapts.
+
+> **Note (June 2026):** Google retired "Login with Google" for Gemini CLI on June 18, 2026, steering individual accounts to its Antigravity CLI successor. The Gemini CLI itself still works with an API key, which is now the only supported auth for megavibe's Gemini backend. Setup prompts for the key.
 
 ### Structured workflow
 
@@ -145,7 +147,7 @@ Explore → Plan → Implement → Verify → Commit → Learn → Reflect
 | **Explore** | Read-only investigation |
 | **Plan** | Define files, steps, verification commands |
 | **Implement** | Follow the plan. Stop and re-plan if it diverges |
-| **Verify** | Run tests/commands |
+| **Verify** | Run tests/commands; important results get an independent subagent/backend review by default |
 | **Commit** | Descriptive message, log to FULL_CONTEXT.md |
 | **Learn** | After corrections, record the pattern |
 | **Reflect** | After major features, assess if approach is still sound |
@@ -292,7 +294,7 @@ Megavibe works without any API keys. Adding them unlocks extra capabilities:
 
 | Key | What it does | Cost | How to get it |
 |-----|-------------|------|---------------|
-| `GEMINI_API_KEY` | Fallback for Gemini CLI when OAuth is geo-blocked | Free tier available | [aistudio.google.com](https://aistudio.google.com/apikey) |
+| `GEMINI_API_KEY` | **Required for the Gemini backend** — Google-account OAuth was retired June 18, 2026 | Free tier available | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | `OPENAI_API_KEY` | Better poma-memory search + voice transcription for Remote | ~$0.01/month search; ~$0.006/voice note | [platform.openai.com](https://platform.openai.com/api-keys) |
 
 ```bash
@@ -374,7 +376,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 **Hooks aren't firing** — Install jq: `brew install jq` (macOS), `sudo apt install jq` (Ubuntu), `sudo dnf install jq` (Fedora)
 
-**Gemini/Codex not connecting** — Run the CLI directly (`gemini` or `codex`) to re-authenticate. Megavibe works without them.
+**Codex not connecting** — Run `codex` directly to re-authenticate. **Gemini not connecting** — check that `GEMINI_API_KEY` is exported and `~/.gemini/settings.json` has `security.auth.selectedType = "gemini-api-key"` (Google-account login was retired June 18, 2026). Megavibe works without either.
 
 **Context recovery not working** — Check that `.agent/FULL_CONTEXT.md` has content. If empty, the watcher hasn't flushed yet (cycles every 5 min by default) or it isn't running. Verify with `tmux ls | grep '^mvw-'`; tail its log at `.agent/LOGS/watcher.<sid12>.log`. If the watcher is off (`MEGAVIBE_WATCHER=0`), the safety-net hook nudges Claude to flush manually after the first few tool calls.
 

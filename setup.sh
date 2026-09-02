@@ -230,7 +230,6 @@ gemini_install() {
     echo "  Installing Gemini CLI..."
     npm i -g @google/gemini-cli
     ok "Gemini CLI"
-    NEEDS_LOGIN+=("gemini")
   fi
 
   # gemini-mcp-tool: pre-install globally so Claude Code spawns it instantly
@@ -334,7 +333,6 @@ if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
     case "$tool" in
       claude) echo "    claude          (requires Claude subscription)" ;;
       codex)  echo "    codex           (optional — uses your ChatGPT account)" ;;
-      gemini) echo "    gemini          (optional — uses your Google account)" ;;
       *)      echo "    $tool" ;;
     esac
   done
@@ -345,6 +343,49 @@ if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
 else
   echo ""
   info "2) Logins — all tools already installed, skipping"
+fi
+
+# ─── 2b. Gemini API key ─────────────────────────────────────────────
+# Google retired "Login with Google" for Gemini CLI on 2026-06-18 (individual
+# accounts are pointed at the Antigravity CLI instead). API key auth still
+# works and is now the ONLY supported auth for megavibe's Gemini backend.
+
+if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+  echo ""
+  info "2b) Gemini API key"
+  echo ""
+  echo "  Google-account login for Gemini CLI was retired on June 18, 2026."
+  echo "  The Gemini backend now needs an API key (free tier available):"
+  echo "    → create one at https://aistudio.google.com/apikey"
+  echo ""
+  # curl|bash pipes stdin, so fall back to /dev/tty; -s hides the key.
+  _gem_key=""
+  if [ -t 0 ]; then
+    read -r -s -p "  Paste your GEMINI_API_KEY (Enter to skip): " _gem_key || _gem_key=""
+    echo ""
+  elif ( : < /dev/tty ) 2>/dev/null; then
+    read -r -s -p "  Paste your GEMINI_API_KEY (Enter to skip): " _gem_key < /dev/tty || _gem_key=""
+    echo ""
+  fi
+  if [ -n "$_gem_key" ]; then
+    # zsh → .zshrc; bash → .bash_profile when present (macOS login shells read it, not .bashrc)
+    _rc="$HOME/.bashrc"
+    case "$(basename "${SHELL:-bash}")" in
+      zsh) _rc="$HOME/.zshrc" ;;
+      *)   [ -f "$HOME/.bash_profile" ] && _rc="$HOME/.bash_profile" ;;
+    esac
+    if grep -q '^[[:space:]]*export GEMINI_API_KEY=' "$_rc" 2>/dev/null; then
+      warn "Existing GEMINI_API_KEY assignment in $(basename "$_rc") left untouched — update it there if the key changed"
+    else
+      printf '\nexport GEMINI_API_KEY=%q\n' "$_gem_key" >> "$_rc"
+      ok "GEMINI_API_KEY saved to $(basename "$_rc")"
+    fi
+    export GEMINI_API_KEY="$_gem_key"
+  else
+    warn "No key entered — Gemini backend stays unavailable until you run:"
+    echo "        export GEMINI_API_KEY=\"<your key>\"    # and add it to your shell profile"
+    echo "        bash ~/.megavibe/setup.sh              # then re-run setup"
+  fi
 fi
 
 # ─── 3. Deploy megavibe to ~/.megavibe/ + install CLI ─────────────
@@ -770,31 +811,36 @@ register_gemini_mcp() {
     fi
   fi
 
-  if command -v gemini-mcp &>/dev/null; then
-    ensure_mcp gemini-cli gemini-mcp
-  else
-    ensure_mcp gemini-cli npx -y gemini-mcp-tool
-  fi
-
-  # Gemini CLI auth: use API key when GEMINI_API_KEY is set
-  # (OAuth hits Cloud AI Companion API which requires GCP IAM permissions;
-  #  API key mode hits the public generativelanguage.googleapis.com endpoint)
+  # Gemini CLI auth FIRST (so a freshly registered MCP server never starts on
+  # the dead OAuth selection): API key is the only working auth for individual
+  # accounts since Google retired "Login with Google" on 2026-06-18 (Antigravity
+  # CLI is the OAuth successor). API key mode hits generativelanguage.googleapis.com.
   GEMINI_SETTINGS="$HOME/.gemini/settings.json"
   if [ -n "${GEMINI_API_KEY:-}" ]; then
     mkdir -p "$HOME/.gemini"
-    if [ -f "$GEMINI_SETTINGS" ]; then
-      if command -v jq &>/dev/null && jq -e '.security.auth.selectedType' "$GEMINI_SETTINGS" &>/dev/null; then
-        CURRENT_AUTH=$(jq -r '.security.auth.selectedType' "$GEMINI_SETTINGS")
+    if command -v jq &>/dev/null; then
+      if [ -f "$GEMINI_SETTINGS" ] && jq -e . "$GEMINI_SETTINGS" &>/dev/null; then
+        CURRENT_AUTH=$(jq -r '.security.auth.selectedType // "unset"' "$GEMINI_SETTINGS")
         if [ "$CURRENT_AUTH" != "gemini-api-key" ]; then
           jq '.security.auth.selectedType = "gemini-api-key"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
           mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
           ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
         fi
+      elif [ -f "$GEMINI_SETTINGS" ]; then
+        warn "~/.gemini/settings.json is not valid JSON — fix it and set security.auth.selectedType=\"gemini-api-key\""
+      else
+        echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' | jq . > "$GEMINI_SETTINGS"
+        ok "Gemini CLI configured for API key auth"
       fi
-    else
-      echo '{"security":{"auth":{"selectedType":"gemini-api-key"}}}' | jq . > "$GEMINI_SETTINGS"
-      ok "Gemini CLI configured for API key auth"
     fi
+  else
+    warn "GEMINI_API_KEY not set — Gemini backend unavailable (Google-account login retired 2026-06-18; get a free key at https://aistudio.google.com/apikey)"
+  fi
+
+  if command -v gemini-mcp &>/dev/null; then
+    ensure_mcp gemini-cli gemini-mcp
+  else
+    ensure_mcp gemini-cli npx -y gemini-mcp-tool
   fi
 }
 
