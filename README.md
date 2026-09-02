@@ -134,7 +134,14 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 
 Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. You can skip any — megavibe adapts.
 
-> **Note (June 2026):** Google retired "Login with Google" for Gemini CLI on June 18, 2026, steering individual accounts to its Antigravity CLI successor. The Gemini CLI itself still works with an API key, which is now the only supported auth for megavibe's Gemini backend. Setup prompts for the key.
+> **Note (June 2026):** Google retired "Login with Google" for Gemini CLI on June 18, 2026, steering individual accounts to its Antigravity CLI successor. The Gemini CLI itself still works with an API key, which is now the only supported auth for megavibe's Gemini backend. Setup opens the key page and prompts for the key.
+>
+> **Gemini auth options, ranked:**
+> 1. **API key from a Google Workspace enterprise account** (recommended) — per [Google's Gemini API terms](https://ai.google.dev/gemini-api/terms), Workspace enterprise accounts get *Paid Service* data treatment (prompts/responses NOT used for training) even on free quota. Enable billing on the key's project for unambiguous paid-tier treatment.
+> 2. **API key from a personal account** — works, but free-tier prompts may be used to improve Google products; enable billing to opt out.
+> 3. **Gemini Code Assist Standard/Enterprise license** (separate Google Cloud SKU) — the old `gemini` CLI OAuth still works unchanged under these licenses; megavibe uses it as-is if it authenticates.
+>
+> **Antigravity CLI is deliberately not integrated:** closed-source, ~20 requests/day on the free tier, and it would replace `gemini-mcp-tool` with immature community wrappers. Revisit only if Google cuts API-key access to the legacy CLI.
 
 ### Structured workflow
 

@@ -272,8 +272,10 @@ if [ -n "$VERSION_HASH" ]; then
   echo "$VERSION_HASH" > "$MEGAVIBE_HOME/version"
 fi
 
-# Ensure ~/.local/bin is on PATH permanently (Linux/WSL — npm globals go here)
-if [[ "$OS" != "macos" ]] && [[ "$(id -u)" != "0" ]]; then
+# Ensure ~/.local/bin is on PATH permanently (all platforms — the claude
+# native installer and the megavibe CLI symlink both land in ~/.local/bin,
+# so skipping this on macOS left fresh installs with "command not found")
+if [[ "$(id -u)" != "0" ]]; then
   LOCAL_BIN="$HOME/.local/bin"
   case ":$PATH:" in
     *":$LOCAL_BIN:"*) ;;

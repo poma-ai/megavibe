@@ -358,6 +358,19 @@ if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo "  The Gemini backend now needs an API key (free tier available):"
   echo "    → create one at https://aistudio.google.com/apikey"
   echo ""
+  echo "  Tip: create it signed into your company Google Workspace account —"
+  echo "  Workspace enterprise accounts get Google's paid-tier data treatment"
+  echo "  (prompts are NOT used for training) even on free quota. Personal"
+  echo "  accounts: free-tier prompts MAY be used for training; enable billing"
+  echo "  on the key's project if that matters."
+  echo ""
+  # Open the key page for them (best effort, interactive runs only)
+  if [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null; then
+    case "$(uname -s)" in
+      Darwin) open "https://aistudio.google.com/apikey" 2>/dev/null || true ;;
+      Linux)  command -v xdg-open &>/dev/null && xdg-open "https://aistudio.google.com/apikey" 2>/dev/null || true ;;
+    esac
+  fi
   # curl|bash pipes stdin, so fall back to /dev/tty; -s hides the key.
   _gem_key=""
   if [ -t 0 ]; then
@@ -617,19 +630,23 @@ chmod +x "$MEGAVIBE_HOME/megavibe"
 ln -sf "$MEGAVIBE_HOME/megavibe" "$CLI_DIR/megavibe"
 ok "megavibe CLI installed to $CLI_DIR/megavibe → ~/.megavibe/megavibe"
 
-# Warn if ~/.local/bin is not in PATH
+# Ensure ~/.local/bin is in PATH — persist it, don't just warn (fresh macOS
+# installs otherwise lose both `claude` and `megavibe` in new terminals)
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$CLI_DIR"; then
-  warn "$CLI_DIR is not in your PATH"
   SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
   case "$SHELL_NAME" in
-    zsh)  PROFILE_FILE="~/.zshrc" ;;
-    bash) PROFILE_FILE="~/.bashrc" ;;
-    fish) PROFILE_FILE="~/.config/fish/config.fish" ;;
-    *)    PROFILE_FILE="~/.bashrc or ~/.profile" ;;
+    zsh)  _path_rc="$HOME/.zshrc" ;;
+    bash) _path_rc="$HOME/.bashrc"; [ -f "$HOME/.bash_profile" ] && _path_rc="$HOME/.bash_profile" ;;
+    fish) _path_rc="" ;;
+    *)    _path_rc="$HOME/.profile" ;;
   esac
-  echo "    Add this to your shell profile ($PROFILE_FILE):"
-  echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""
-  echo ""
+  if [ -n "$_path_rc" ] && ! grep -q '\.local/bin' "$_path_rc" 2>/dev/null; then
+    printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$_path_rc"
+    ok "Added ~/.local/bin to PATH in $(basename "$_path_rc") (takes effect in new terminals)"
+  elif [ -z "$_path_rc" ]; then
+    warn "$CLI_DIR is not in your PATH — for fish, run: fish_add_path ~/.local/bin"
+  fi
+  export PATH="$CLI_DIR:$PATH"
 fi
 
 # ─── 4. Install/update Megavibe protocol in user-level CLAUDE.md ────
