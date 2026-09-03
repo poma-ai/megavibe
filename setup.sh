@@ -882,6 +882,9 @@ register_gemini_mcp() {
   # project is refused gemini-2.5-flash), so probe rather than hardcode; the
   # probe prefers the self-updating `gemini-flash-latest` alias. Everything
   # inherits this (watcher, /rehydrate, MCP without -m); per-call -m overrides.
+  if ! command -v jq &>/dev/null; then
+    warn "jq missing — cannot pin the Gemini model; an un-pinned key may bill for Pro"
+  fi
   if command -v jq &>/dev/null && [ -f "$GEMINI_SETTINGS" ] && jq -e . "$GEMINI_SETTINGS" &>/dev/null; then
     if [ "$(jq -r '.model.name // empty' "$GEMINI_SETTINGS")" = "" ]; then
       _model=$(bash "$SCRIPT_DIR/scripts/pick-gemini-model.sh" "$GEMINI_API_KEY" 2>/dev/null || echo "")

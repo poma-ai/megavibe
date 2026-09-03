@@ -17,7 +17,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `setup.sh` | One-time machine bootstrapper (tools, MCP, CLI, protocol) | High — affects all users |
 | `init.sh` | Per-project bootstrapper (.agent/, hooks, skills, settings) | High — affects all projects |
 | `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
-| `template/CLAUDE.md` | Core protocol (90 lines) — installed to `~/.claude/CLAUDE.md` | Critical — review required |
+| `template/CLAUDE.md` | Core protocol — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/*.md` | 4 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline) | Medium — review recommended |
 | `template/.claude/skills/*/SKILL.md` | 6 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy) | Low — workflow shortcuts |
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
@@ -28,6 +28,9 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
+| `nondev/` | Derived profile for non-technical users (sandbox, launcher, doctor) | Medium — see `nondev/README.md` |
+| `scripts/mint-gemini-key.sh`, `gcp-token.sh`, `pick-gemini-model.sh` | Gemini key provisioning, browser-free GCP auth, model probing | Medium — touches credentials |
+| `README-data-treatment.md`, `README-watcher.md` | No-training account tricks; context-watcher detail | Low |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
 

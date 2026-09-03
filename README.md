@@ -139,7 +139,7 @@ Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. Yo
 > **Gemini auth options, ranked:**
 > 1. **API key from a Google Workspace enterprise account** (recommended) — per [Google's Gemini API terms](https://ai.google.dev/gemini-api/terms), Workspace enterprise accounts get *Paid Service* data treatment (prompts/responses NOT used for training) even on free quota. Enable billing on the key's project for unambiguous paid-tier treatment.
 > 2. **API key from a personal account** — works, but free-tier prompts may be used to improve Google products; enable billing to opt out.
-> 3. **Gemini Code Assist Standard/Enterprise license** (separate Google Cloud SKU) — the old `gemini` CLI OAuth still works unchanged under these licenses; megavibe uses it as-is if it authenticates.
+> 3. **Gemini Code Assist Standard/Enterprise license** (separate Google Cloud SKU) — the old `gemini` CLI OAuth still works under these licenses. Note that megavibe's own routing keys off `GEMINI_API_KEY`: without it the protocol marks Gemini unavailable and falls through to Codex, so set a key even if your OAuth works.
 >
 > **Antigravity CLI is deliberately not integrated:** closed-source, ~20 requests/day on the free tier, and it would replace `gemini-mcp-tool` with immature community wrappers. Revisit only if Google cuts API-key access to the legacy CLI.
 
@@ -240,7 +240,7 @@ megavibe remote --fg            # run in foreground to watch logs (debugging)
 
 # 5. Register your projects (in Telegram DM with the bot):
 #    /register megavibe ~/Documents/megavibe
-#    /register officeqa ~/Documents/_1_WORK/poma/poma-officeqa
+#    /register myapp ~/code/myapp
 ```
 
 #### Day to day — what to type, when
@@ -294,6 +294,14 @@ Install [Pigeon for Telegram](https://apps.apple.com/app/pigeon-for-telegram/id1
 | `/help` | Show all commands |
 
 ---
+
+## For non-technical colleagues: `nondev/`
+
+A derived profile for people who are not programmers: plain language, one folder
+they own, and a macOS sandbox that confines writes to it while leaving reads
+broad. Same harness underneath. `bash nondev/init-nondev.sh` then `nondev-doctor`.
+
+Full detail: **`nondev/README.md`**.
 
 ## Optional API Keys
 
