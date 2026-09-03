@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# megavibe-nondev launcher — starts a jailed, plain-language Claude session.
+#
+# Implements the launch contract proven by nondev/spike/jail-spike.sh (10/10):
+#   claude --restricted --strict-mcp-config --mcp-config <policy> \
+#          --settings <policy> --add-dir <data folder>
+#
+#   --restricted        removes Bash/code tools and WebFetch, confines file
+#                       tools to the working directories, refuses bypass mode,
+#                       and ignores user/project settings (so a colleague's
+#                       stray ~/.claude config cannot widen the jail)
+#   --settings          the admin-owned policy IS still honoured (verified)
+#   --strict-mcp-config no MCP servers, including account-level claude.ai
+#                       connectors (verified absent)
+#
+# The control plane (this script, policy, protocol) lives OUTSIDE the data
+# folder on purpose: a session that can write the folder must never be able to
+# rewrite its own guardrails.
+
+set -euo pipefail
+
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+DATA_DEFAULT="$HOME/megavibe-nondev"
+
+[ -d "$ENGINE" ] || { echo "megavibe-nondev is not set up on this Mac yet."; exit 1; }
+
+DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "$DATA_DEFAULT")
+POLICY="$ENGINE/policy"
+PROTOCOL="$ENGINE/prompts/CLAUDE-nondev.md"
+
+for f in "$POLICY/settings.json" "$POLICY/mcp.json" "$PROTOCOL"; do
+  [ -f "$f" ] || { echo "Something is missing from the setup ($(basename "$f")). Ask your admin to re-run the installer."; exit 1; }
+done
+[ -d "$DATA" ] || { echo "Your folder is missing. Ask your admin to re-run the installer."; exit 1; }
+
+command -v claude &>/dev/null || { echo "Claude is not installed on this Mac. Ask your admin."; exit 1; }
+
+# Never let a stray environment variable loosen the jail.
+unset CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS ANTHROPIC_API_KEY 2>/dev/null || true
+
+cd "$DATA"
+
+exec claude \
+  --restricted \
+  --strict-mcp-config \
+  --mcp-config "$POLICY/mcp.json" \
+  --settings "$POLICY/settings.json" \
+  --add-dir "$DATA" \
+  --append-system-prompt "$(cat "$PROTOCOL")" \
+  "$@"
