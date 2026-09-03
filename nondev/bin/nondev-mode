@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# nondev-mode on|off|status — decide, explicitly, which megavibe this Mac runs.
+#
+# Why this exists: a nondev session is NOT --restricted (that is what buys back
+# Bash, MCP servers and connectors), so Claude Code reads the user-level
+# ~/.claude/CLAUDE.md like it always does. On a machine that also has classic
+# megavibe installed, its developer protocol (write .agent/ context files, git
+# discipline, spinouts, verification loops) therefore leaks into the
+# non-technical assistant's instructions — verified, not theoretical.
+#
+# Two clean states, never a blend:
+#
+#   on   nondev machine.  The classic protocol is parked, so the plain-language
+#        assistant is the only protocol in play. Classic `megavibe` still runs,
+#        it simply behaves as ordinary Claude Code.
+#   off  developer machine. The classic protocol is restored; nondev sessions
+#        would inherit developer rules, so use this when the person has
+#        graduated to the real thing.
+#
+# Switching is one command and prints what changed. Nothing here is destructive:
+# the protocol is moved aside, never deleted.
+
+set -uo pipefail
+
+LIVE="$HOME/.claude/CLAUDE.md"
+PARKED="$HOME/.claude/CLAUDE.md.classic-megavibe"
+
+status() {
+  if [ -f "$PARKED" ] && [ ! -f "$LIVE" ]; then
+    echo "nondev mode is ON — plain-language assistant only."
+    echo "  classic megavibe protocol parked at: $PARKED"
+    echo "  classic 'megavibe' still runs, as ordinary Claude Code."
+  elif [ -f "$LIVE" ]; then
+    if grep -q 'megavibe-v3' "$LIVE" 2>/dev/null; then
+      echo "nondev mode is OFF — the classic megavibe protocol is active."
+      echo "  nondev sessions would also inherit its developer rules."
+      echo "  run 'nondev-mode on' to keep the two apart."
+    else
+      echo "nondev mode is OFF — a user-level CLAUDE.md exists (not megavibe's)."
+      echo "  nondev sessions inherit it. 'nondev-mode on' parks it."
+    fi
+  else
+    echo "nondev mode is ON — no user-level protocol is installed at all."
+  fi
+}
+
+case "${1:-status}" in
+  on)
+    if [ -f "$LIVE" ]; then
+      [ -f "$PARKED" ] && mv "$PARKED" "$PARKED.$(date +%Y%m%d%H%M%S)"
+      mv "$LIVE" "$PARKED" && echo "nondev mode ON — classic protocol parked at $PARKED"
+      echo "  (restore any time with: nondev-mode off)"
+    else
+      echo "nondev mode ON — nothing to park."
+    fi ;;
+  off)
+    if [ -f "$PARKED" ]; then
+      [ -f "$LIVE" ] && mv "$LIVE" "$LIVE.nondev-replaced.$(date +%Y%m%d%H%M%S)"
+      mv "$PARKED" "$LIVE" && echo "nondev mode OFF — classic megavibe protocol restored."
+      echo "  nondev sessions will now also inherit developer rules."
+    else
+      echo "nondev mode OFF — nothing parked; classic protocol is already in place (or was never installed)."
+    fi ;;
+  status) status ;;
+  *) echo "usage: nondev-mode [on|off|status]" >&2; exit 2 ;;
+esac

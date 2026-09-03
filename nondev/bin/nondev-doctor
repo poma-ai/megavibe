@@ -76,13 +76,31 @@ fi
 [ -n "${GEMINI_API_KEY:-}" ] && ok "Gemini backend configured" || warn "no Gemini key — Claude-only (fine; run mint-gemini-key.sh to add one)"
 command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — Claude-only (fine)"
 
+# ── one machine, one protocol ──
+if [ -f "$HOME/.claude/CLAUDE.md" ] && grep -q 'megavibe-v3' "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
+  warn "classic megavibe protocol is active — nondev sessions inherit developer rules (run: nondev-mode on)"
+else
+  ok "no conflicting protocol (plain-language assistant only)"
+fi
+
 # ── recent trouble the colleague may not have mentioned ──
 if [ -d "$ENGINE/logs" ]; then
   N=$(find "$ENGINE/logs" -type f -mtime -7 2>/dev/null | wc -l | tr -d ' ')
   [ "$N" -gt 0 ] && warn "$N log file(s) from the last week — worth a look" || ok "no recent error logs"
 fi
-[ -d "$DATA/.snapshots" ] && ok "undo history present ($(ls -1 "$DATA/.snapshots" 2>/dev/null | wc -l | tr -d ' ') snapshots)" \
+[ -d "$ENGINE/snapshots" ] && ok "undo history present ($(ls -1 "$ENGINE/snapshots" 2>/dev/null | wc -l | tr -d ' ') snapshots)" \
   || warn "no snapshots yet (normal before first use)"
+
+# ── cloud-synced folder: supported, with two things worth knowing ──
+case "$DATA" in
+  *CloudStorage/GoogleDrive*|*"Google Drive"*)
+    ok "folder lives in Google Drive (syncs across his devices)"
+    if command -v mdls &>/dev/null && mdls -name kMDItemIsDownloaded "$DATA" 2>/dev/null | grep -q 0; then
+      warn "Drive may be in stream-only mode — set the folder to 'Available offline' or files may not open"
+    fi ;;
+  *"Mobile Documents"*|*iCloud*)
+    warn "folder is in iCloud — prefer Google Drive or a local folder; iCloud can lock files mid-session" ;;
+esac
 
 echo ""
 echo "  $P ok, $F problem(s), $W note(s)"

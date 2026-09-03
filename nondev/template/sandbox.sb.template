@@ -18,6 +18,7 @@
 (allow file-write*
   (subpath "@DATA@")                    ; the colleague's four folders
   (subpath "@ENGINE@/logs")             ; our own logs
+  (subpath "@ENGINE@/snapshots")        ; undo history (kept out of synced folders)
   (subpath "@HOME@/.claude")            ; Claude Code's own state (history, todos)
   (literal "@HOME@/.claude.json")
   (subpath "@HOME@/.cache")

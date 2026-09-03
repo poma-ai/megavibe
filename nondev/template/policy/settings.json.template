@@ -5,7 +5,7 @@
     "deny": ["Bash(sudo:*)", "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
              "mcp__*__send*", "mcp__*__delete*", "mcp__*__create_draft*"]
   },
-  "env": { "MEGAVIBE_NONDEV_DATA": "@DATA@" },
+  "env": { "MEGAVIBE_NONDEV_DATA": "@DATA@", "MEGAVIBE_NONDEV_ENGINE": "@ENGINE@" },
   "hooks": {
     "PreToolUse": [
       { "matcher": "Write|Edit",

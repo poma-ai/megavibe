@@ -19,10 +19,12 @@ ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
 DATA="$HOME/megavibe-nondev"
 APPNAME="Megavibe Nondev"
 MAKE_APP=1
+USE_GDRIVE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --data)   DATA="$2"; shift 2 ;;
+    --gdrive) USE_GDRIVE=1; shift ;;
     --name)   APPNAME="$2"; shift 2 ;;
     --no-app) MAKE_APP=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -30,6 +32,20 @@ while [ $# -gt 0 ]; do
 done
 
 ok(){ echo "  ✓ $*"; }
+
+# Google Drive as the native home: many non-technical people already live there,
+# and it makes the folder reachable from their phone and shareable with others.
+# Snapshots deliberately live in the engine, so sync never sees them.
+if [ "$USE_GDRIVE" -eq 1 ]; then
+  GD=$(ls -d "$HOME/Library/CloudStorage/GoogleDrive-"*/"My Drive" 2>/dev/null | head -1)
+  if [ -n "$GD" ]; then
+    DATA="$GD/Megavibe"
+    echo "  using Google Drive: $DATA"
+  else
+    echo "  ! Google Drive for Desktop not found — falling back to $DATA"
+    echo "    (install Drive, sign in, then re-run with --gdrive)"
+  fi
+fi
 
 # ─── Engine (control plane) ─────────────────────────────────────────
 mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs"
@@ -43,7 +59,8 @@ cp "$SRC/template/policy/mcp.json"      "$ENGINE/policy/mcp.json"
 cp "$SRC/template/CLAUDE-nondev.md"     "$ENGINE/prompts/CLAUDE-nondev.md"
 cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
 cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
-chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor"
+cp "$SRC/bin/nondev-mode"               "$ENGINE/bin/nondev-mode"
+chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode"
 printf '%s\n' "$DATA" > "$ENGINE/data-dir"
 
 # Render the seatbelt profile with resolved absolute paths. Seatbelt matches on
@@ -82,7 +99,25 @@ ok "folder ready at $DATA"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
 ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
-ok "commands installed: megavibe-nondev, nondev-doctor"
+ln -sf "$ENGINE/bin/nondev-mode"    "$HOME/.local/bin/nondev-mode"
+ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode"
+
+# One machine, one protocol. A nondev session is not --restricted, so a
+# user-level classic megavibe protocol would otherwise leak developer rules
+# (.agent writes, git discipline, spinouts) into the plain-language assistant.
+if [ -f "$HOME/.claude/CLAUDE.md" ]; then
+  echo ""
+  echo "  This Mac has a user-level protocol (classic megavibe) that a nondev"
+  echo "  session would also inherit — developer rules in a non-technical"
+  echo "  assistant. Parking it keeps the two apart; classic 'megavibe' keeps"
+  echo "  working as ordinary Claude Code, and 'nondev-mode off' restores it."
+  if [ -t 0 ]; then
+    read -r -p "  Park the classic protocol now? [Y/n] " _pk
+    case "${_pk:-y}" in [yY]*|"") bash "$ENGINE/bin/nondev-mode" on ;; *) echo "  left in place — sessions will blend both protocols" ;; esac
+  else
+    echo "  (non-interactive: left in place — run 'nondev-mode on' to separate them)"
+  fi
+fi
 
 # ─── Dock-able launcher app ─────────────────────────────────────────
 if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
@@ -95,11 +130,19 @@ if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
     cat > "$TMP_SCPT" <<APPLESCRIPT
 tell application "Terminal"
     activate
-    do script "clear; '$ENGINE/bin/megavibe-nondev'"
+    set w to do script "clear; '$ENGINE/bin/megavibe-nondev'"
+    try
+        set custom title of w to "$APPNAME"
+    end try
 end tell
 APPLESCRIPT
     rm -rf "$APP" 2>/dev/null || true
     if osacompile -o "$APP" "$TMP_SCPT" 2>/dev/null; then
+      # POMA mark with MV inside, so it is recognisable in the Dock
+      if [ -f "$SRC/template/icon.icns" ]; then
+        cp "$SRC/template/icon.icns" "$APP/Contents/Resources/applet.icns" 2>/dev/null \
+          && touch "$APP" && ok "icon applied"
+      fi
       ok "launcher created: $APP  (drag it to the Dock)"
     else
       echo "  ! could not create the launcher app (needs write access to /Applications)"
