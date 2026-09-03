@@ -43,14 +43,21 @@ note() { echo "  $*"; }
 
 command -v gcloud &>/dev/null || die "gcloud not found (brew install --cask google-cloud-sdk)"
 
-# Fail fast and loud on stale credentials — never loop retrying auth.
+# Credentials: prefer live gcloud creds; otherwise mint a token non-interactively
+# from the Gemini CLI's stored OAuth grant (scripts/gcp-token.sh) so this needs
+# no browser. Never loop retrying auth.
 if ! gcloud projects list --limit=1 &>/dev/null; then
-  die "gcloud credentials are stale/absent. Run:  gcloud auth login"
+  TOKFILE=$(bash "$(dirname "$0")/gcp-token.sh") \
+    || die "gcloud credentials are stale and inline mint failed. Run:  gcloud auth login"
+  export CLOUDSDK_AUTH_ACCESS_TOKEN
+  CLOUDSDK_AUTH_ACCESS_TOKEN=$(cat "$TOKFILE")
+  gcloud projects list --limit=1 &>/dev/null \
+    || die "minted token does not grant project access. Run:  gcloud auth login"
+  note "auth: inline-minted token (no browser needed)"
 fi
 
-ACCOUNT=$(gcloud config get-value account 2>/dev/null)
-[ -n "$ACCOUNT" ] || die "no active gcloud account"
-note "account: $ACCOUNT"
+ACCOUNT=$(gcloud config get-value account 2>/dev/null || echo "")
+[ -n "$ACCOUNT" ] && note "account: $ACCOUNT"
 
 # ─── Project: dedicated, billing-less ───────────────────────────────
 if [ -z "$PROJECT" ]; then
@@ -100,15 +107,21 @@ fi
 
 # ─── The auth key, restricted to the Gemini API only ────────────────
 note "minting auth key (restricted to generativelanguage.googleapis.com)"
-KEY_RESOURCE=$(gcloud services api-keys create \
-  --project "$PROJECT" \
+# --billing-project is REQUIRED: without it the API Keys call is attributed to
+# the credential's own quota project (e.g. the Gemini CLI's), which fails with a
+# confusing SERVICE_DISABLED naming a project you never touched.
+gcloud services api-keys create \
+  --project "$PROJECT" --billing-project "$PROJECT" \
   --display-name="megavibe gemini auth key" \
   --service-account="$SA_EMAIL" \
-  --api-target=service=generativelanguage.googleapis.com \
-  --format='value(name)' 2>/dev/null) \
-  || die "key creation failed — needs roles/serviceusage.apiKeysAdmin on $PROJECT"
+  --api-target=service=generativelanguage.googleapis.com >/dev/null 2>&1 \
+  || die "key creation failed on $PROJECT (needs roles/serviceusage.apiKeysAdmin; re-run with the API Keys API enabled)"
 
-KEY_STRING=$(gcloud services api-keys get-key-string "$KEY_RESOURCE" --format='value(keyString)')
+KEY_RESOURCE=$(gcloud services api-keys list --project "$PROJECT" --billing-project "$PROJECT" \
+  --format='value(name)' 2>/dev/null | head -1)
+[ -n "$KEY_RESOURCE" ] || die "key created but not listable on $PROJECT"
+
+KEY_STRING=$(gcloud services api-keys get-key-string "$KEY_RESOURCE" --billing-project "$PROJECT" --format='value(keyString)')
 [ -n "$KEY_STRING" ] || die "key created but key string could not be read: $KEY_RESOURCE"
 
 # Never echo the whole key.

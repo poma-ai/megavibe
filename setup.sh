@@ -876,15 +876,22 @@ register_gemini_mcp() {
     warn "GEMINI_API_KEY not set — Gemini backend unavailable (Google-account login retired 2026-06-18; get a free key at https://aistudio.google.com/apikey)"
   fi
 
-  # Default model: pin flash-class unless the user already chose one. Pro is
-  # billing-gated (May 2026) — on a postpay key every un-pinned call BILLS, on
-  # a free key it 429s. Flash rides the free tier (~1,500 RPD). Everything
+  # Default model: pin the newest flash-class model this key can actually call.
+  # Pro is billing-gated (May 2026) — un-pinned calls silently BILL on a postpay
+  # key and 429 on a free one. Model ids are NOT stable across accounts (a fresh
+  # project is refused gemini-2.5-flash), so probe rather than hardcode; the
+  # probe prefers the self-updating `gemini-flash-latest` alias. Everything
   # inherits this (watcher, /rehydrate, MCP without -m); per-call -m overrides.
   if command -v jq &>/dev/null && [ -f "$GEMINI_SETTINGS" ] && jq -e . "$GEMINI_SETTINGS" &>/dev/null; then
     if [ "$(jq -r '.model.name // empty' "$GEMINI_SETTINGS")" = "" ]; then
-      jq '.model.name = "gemini-2.5-flash"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
-      mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-      ok "Gemini CLI default model pinned to gemini-2.5-flash (free tier; override per call with -m)"
+      _model=$(bash "$SCRIPT_DIR/scripts/pick-gemini-model.sh" "$GEMINI_API_KEY" 2>/dev/null || echo "")
+      if [ -n "$_model" ]; then
+        jq --arg m "$_model" '.model.name = $m' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
+        mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
+        ok "Gemini CLI default model pinned to $_model (flash-class, free tier; override per call with -m)"
+      else
+        warn "Could not probe a working flash model — leaving Gemini CLI default unset (risk: Pro billing on postpay keys)"
+      fi
     fi
   fi
 
