@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "defaultMode": "default",
-    "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch"],
-    "deny": ["Bash(sudo:*)", "Bash(rm -rf /*)",
-             "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
-             "mcp__*__send*", "mcp__*__delete*", "mcp__*__create_draft*"]
-  }
-}

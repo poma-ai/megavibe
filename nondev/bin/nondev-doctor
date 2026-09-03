@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# nondev-doctor — verify an installed megavibe-nondev, including that the
+# sandbox actually contains a real write attempt. Safe to run any time; makes
+# no changes. Written to be readable over a screen share.
+#
+# Usage: nondev-doctor [--verbose]
+
+set -uo pipefail
+
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+VERBOSE=0; [ "${1:-}" = "--verbose" ] && VERBOSE=1
+
+P=0; F=0; W=0
+ok(){   P=$((P+1)); echo "  ✓ $*"; }
+bad(){  F=$((F+1)); echo "  ✗ $*"; }
+warn(){ W=$((W+1)); echo "  ! $*"; }
+
+echo "megavibe-nondev health check"
+echo ""
+
+# ── install layout ──
+[ -d "$ENGINE" ] && ok "engine present ($ENGINE)" || { bad "engine missing at $ENGINE — not installed"; echo; echo "0 ok, 1 problem"; exit 1; }
+DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
+[ -n "$DATA" ] && [ -d "$DATA" ] && ok "folder present ($DATA)" || bad "the colleague's folder is missing"
+for d in Inbox Workspace Delivered Library; do
+  [ -d "$DATA/$d" ] || warn "missing subfolder: $d"
+done
+for f in policy/settings.json policy/sandbox.sb prompts/CLAUDE-nondev.md bin/megavibe-nondev hooks/snapshot.sh hooks/session-start.sh; do
+  [ -f "$ENGINE/$f" ] && [ -s "$ENGINE/$f" ] || bad "missing or empty: $f"
+done
+[ -f "$ENGINE/policy/settings.json" ] && { python3 -c "import json,sys;json.load(open('$ENGINE/policy/settings.json'))" 2>/dev/null \
+  && ok "policy is valid JSON" || bad "policy is not valid JSON — the session will refuse to start"; }
+
+# placeholders must have been substituted, or hooks/sandbox silently do nothing
+if grep -q '@DATA@\|@ENGINE@\|@HOME@' "$ENGINE/policy/sandbox.sb" "$ENGINE/policy/settings.json" 2>/dev/null; then
+  bad "unrendered placeholders in policy — re-run the installer"
+else
+  ok "policy paths are rendered"
+fi
+
+# ── prerequisites ──
+command -v claude &>/dev/null && ok "Claude Code installed ($(claude --version 2>/dev/null | head -1))" || bad "Claude Code is not installed"
+command -v jq &>/dev/null || warn "jq missing — snapshots (undo) will not run"
+if [ "$(uname -s)" = "Darwin" ]; then
+  command -v sandbox-exec &>/dev/null && ok "macOS sandbox available" \
+    || warn "no sandbox-exec — sessions fall back to reduced capability"
+fi
+
+# ── the important one: does the sandbox really contain a write? ──
+if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; then
+  CANARY="$HOME/.nondev-doctor-canary-$$"
+  sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$CANARY'" 2>/dev/null
+  if [ -f "$CANARY" ]; then
+    bad "SANDBOX NOT CONTAINING WRITES — a session could write outside the folder"
+    rm -f "$CANARY"
+  else
+    ok "sandbox blocks writes outside the folder (verified now)"
+  fi
+  IN_CANARY="$DATA/.doctor-canary-$$"
+  sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$IN_CANARY'" 2>/dev/null
+  if [ -f "$IN_CANARY" ]; then ok "writes inside the folder work"; rm -f "$IN_CANARY"
+  else bad "cannot write INSIDE the folder — the assistant will not be able to save anything"; fi
+fi
+
+# ── login state (the one thing the colleague must do) ──
+if command -v claude &>/dev/null; then
+  OUT=$(cd "${DATA:-$HOME}" && perl -e 'alarm 90; exec @ARGV' claude --model haiku -p "reply with exactly: DOCTOR-OK" </dev/null 2>&1 | tail -2)
+  case "$OUT" in
+    *DOCTOR-OK*)      ok "signed in and answering" ;;
+    *"Not logged in"*|*login*) bad "not signed in — run 'claude' once and sign in" ;;
+    *)                warn "could not confirm sign-in: $(printf '%s' "$OUT" | head -1 | cut -c1-70)" ;;
+  esac
+fi
+
+# ── backends (optional; absence is fine, the fallback chain copes) ──
+[ -n "${GEMINI_API_KEY:-}" ] && ok "Gemini backend configured" || warn "no Gemini key — Claude-only (fine; run mint-gemini-key.sh to add one)"
+command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — Claude-only (fine)"
+
+# ── recent trouble the colleague may not have mentioned ──
+if [ -d "$ENGINE/logs" ]; then
+  N=$(find "$ENGINE/logs" -type f -mtime -7 2>/dev/null | wc -l | tr -d ' ')
+  [ "$N" -gt 0 ] && warn "$N log file(s) from the last week — worth a look" || ok "no recent error logs"
+fi
+[ -d "$DATA/.snapshots" ] && ok "undo history present ($(ls -1 "$DATA/.snapshots" 2>/dev/null | wc -l | tr -d ' ') snapshots)" \
+  || warn "no snapshots yet (normal before first use)"
+
+echo ""
+echo "  $P ok, $F problem(s), $W note(s)"
+[ "$F" -gt 0 ] && exit 1 || exit 0

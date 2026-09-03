@@ -37,11 +37,13 @@ mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs"
 # writable again first, or re-running the installer dies on the copy and leaves
 # a half-updated engine (found by running init twice).
 chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || true
-cp "$SRC/template/policy/settings.json" "$ENGINE/policy/settings.json"
+mkdir -p "$ENGINE/hooks"
+cp "$SRC/template/hooks/"*.sh "$ENGINE/hooks/" && chmod +x "$ENGINE/hooks/"*.sh
 cp "$SRC/template/policy/mcp.json"      "$ENGINE/policy/mcp.json"
 cp "$SRC/template/CLAUDE-nondev.md"     "$ENGINE/prompts/CLAUDE-nondev.md"
 cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
-chmod +x "$ENGINE/bin/megavibe-nondev"
+cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
+chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor"
 printf '%s\n' "$DATA" > "$ENGINE/data-dir"
 
 # Render the seatbelt profile with resolved absolute paths. Seatbelt matches on
@@ -50,8 +52,9 @@ printf '%s\n' "$DATA" > "$ENGINE/data-dir"
 DATA_REAL=$(mkdir -p "$DATA" && cd "$DATA" && pwd -P)
 ENGINE_REAL=$(cd "$ENGINE" && pwd -P)
 HOME_REAL=$(cd "$HOME" && pwd -P)
-sed -e "s|@DATA@|$DATA_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" \
-  "$SRC/template/sandbox.sb.template" > "$ENGINE/policy/sandbox.sb"
+render(){ sed -e "s|@DATA@|$DATA_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" "$1" > "$2"; }
+render "$SRC/template/sandbox.sb.template"         "$ENGINE/policy/sandbox.sb"
+render "$SRC/template/policy/settings.json.template" "$ENGINE/policy/settings.json"
 ok "engine installed in $ENGINE"
 
 # The colleague must not be able to edit the policy from their own session;
@@ -78,7 +81,8 @@ ok "folder ready at $DATA"
 # ─── CLI shortcut ───────────────────────────────────────────────────
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
-ok "command installed: megavibe-nondev"
+ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
+ok "commands installed: megavibe-nondev, nondev-doctor"
 
 # ─── Dock-able launcher app ─────────────────────────────────────────
 if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
@@ -102,6 +106,26 @@ APPLESCRIPT
       echo "    the colleague can still start it by running: megavibe-nondev"
     fi
     rm -f "$TMP_SCPT"
+  fi
+fi
+
+# ─── Backends (optional, best effort) ───────────────────────────────
+# Tier 1: whatever they are already signed into (claude.ai connectors, codex,
+# an existing gemini setup) needs nothing from us — the session picks it up.
+# Tier 2: mint a free, billing-less Gemini key from their OWN Google identity.
+# Tier 3 (fallback): an admin hands over a key.
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; then
+  echo ""
+  echo "  Gemini backend: no key found."
+  if [ -t 0 ] && [ -f "$HOME/.gemini/oauth_creds.json" ]; then
+    read -r -p "  Mint a free one from this Mac's Google login now? [y/N] " _ans
+    case "${_ans:-n}" in
+      [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc \
+               || echo "  ! minting failed — Claude-only for now (that is fine)" ;;
+      *) echo "  skipped — Claude-only for now (that is fine)" ;;
+    esac
+  else
+    echo "  skipped — Claude works on its own; add one later with scripts/mint-gemini-key.sh"
   fi
 fi
 

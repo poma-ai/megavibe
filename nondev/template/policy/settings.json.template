@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch"],
+    "deny": ["Bash(sudo:*)", "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
+             "mcp__*__send*", "mcp__*__delete*", "mcp__*__create_draft*"]
+  },
+  "env": { "MEGAVIBE_NONDEV_DATA": "@DATA@" },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Write|Edit",
+        "hooks": [ { "type": "command", "command": "@ENGINE@/hooks/snapshot.sh" } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "@ENGINE@/hooks/session-start.sh" } ] }
+    ]
+  }
+}
