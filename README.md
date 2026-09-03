@@ -39,8 +39,9 @@ Stated plainly, because you should decide before pasting:
 - **Hooks run on every tool call** in projects you initialise — they write context
   files under `.agent/` and never send anything off your machine on their own.
 - **Backends see your content.** Delegating to Gemini or Codex sends the material
-  to those providers. See **`README-data-treatment.md`** for which accounts avoid
-  training on it.
+  to those providers. Whether they train on it depends on your account type with
+  them — for Gemini, a key minted under a Google Workspace account gets
+  paid-tier (no-training) treatment even on free quota.
 
 `megavibe-nondev` inverts these defaults: no bypassed permissions, and a kernel
 sandbox confining writes to one folder. See **`nondev/README.md`**.
@@ -246,8 +247,6 @@ not yet been piloted with a real non-technical user.
 Full detail: **`nondev/README.md`**.
 
 ## Optional API Keys
-
-> Account-type privacy tricks (the Workspace no-training carve-out and friends): **`README-data-treatment.md`**.
 
 Megavibe works without any API keys. Adding them unlocks extra capabilities:
 

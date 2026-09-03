@@ -43,3 +43,5 @@ events.jsonl
 nondev/template/icon.*
 nondev/PILOT-BRIEF.md
 nondev/org/
+README-data-treatment.md
+scripts/gcp-token.sh

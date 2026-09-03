@@ -248,7 +248,7 @@ fi
 if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; then
   echo ""
   echo "  Gemini backend: no key found."
-  if [ -t 0 ] && [ -f "$HOME/.gemini/oauth_creds.json" ]; then
+  if [ -t 0 ] && command -v gcloud &>/dev/null; then
     read -r -p "  Mint a free one from this Mac's Google login now? [y/N] " _ans || _ans=""
     case "${_ans:-n}" in
       [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc \

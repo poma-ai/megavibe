@@ -25,7 +25,7 @@ Add a Telegram bot for a richer experience: a personal assistant that answers qu
 |----------|-------------|
 | "fix the auth bug in **megavibe**" | Bot launches a Claude session in the project dir → sends you a link → tap → Claude app → full interactive session |
 | "what's the weather in Tokyo?" | Personal assistant answers directly in Telegram (readable on Watch) |
-| "**officeqa** status" | Bot reads `.agent/TASKS.md` → instant status, no Claude call |
+| "**myapp** status" | Bot reads `.agent/TASKS.md` → instant status, no Claude call |
 | Voice note from Watch | Transcribed via OpenAI Whisper → routed like text |
 
 The personal assistant runs as a **full Claude session** (not a limited headless mode) — it has access to all tools including web search, and maintains conversation history across messages.

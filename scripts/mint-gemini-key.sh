@@ -13,8 +13,8 @@
 #     `gcloud services api-keys create --service-account=...` mints exactly that.
 #
 # Data treatment: run this while authed as a Google Workspace enterprise
-# account and the key inherits Paid-Service treatment (prompts NOT used for
-# training) even on free quota — see README-data-treatment.md.
+# account and the key inherits Paid-Service treatment per Google's Gemini API
+# terms (prompts NOT used for training) even on free quota.
 #
 # Usage:
 #   gcloud auth login                       # once, interactively
@@ -43,17 +43,10 @@ note() { echo "  $*"; }
 
 command -v gcloud &>/dev/null || die "gcloud not found (brew install --cask google-cloud-sdk)"
 
-# Credentials: prefer live gcloud creds; otherwise mint a token non-interactively
-# from the Gemini CLI's stored OAuth grant (scripts/gcp-token.sh) so this needs
-# no browser. Never loop retrying auth.
+# Credentials: requires a live gcloud login. Never loop retrying auth — a stale
+# credential is not going to fix itself while we hammer the API.
 if ! gcloud projects list --limit=1 &>/dev/null; then
-  TOKFILE=$(bash "$(dirname "$0")/gcp-token.sh") \
-    || die "gcloud credentials are stale and inline mint failed. Run:  gcloud auth login"
-  export CLOUDSDK_AUTH_ACCESS_TOKEN
-  CLOUDSDK_AUTH_ACCESS_TOKEN=$(cat "$TOKFILE")
-  gcloud projects list --limit=1 &>/dev/null \
-    || die "minted token does not grant project access. Run:  gcloud auth login"
-  note "auth: inline-minted token (no browser needed)"
+  die "gcloud credentials are stale or absent. Run:  gcloud auth login"
 fi
 
 ACCOUNT=$(gcloud config get-value account 2>/dev/null || echo "")
