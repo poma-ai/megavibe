@@ -654,6 +654,25 @@ fi
 echo ""
 info "4) Installing Megavibe protocol"
 
+# Legacy cleanup: rules once lived user-level (~/.claude/rules) AND get
+# deployed per-project by init.sh — Claude Code eagerly loads BOTH, double-
+# paying ~4.5k tokens every session. Project-level is canonical (the protocol
+# references .claude/rules/ project-relatively). Remove user-level copies that
+# are byte-identical to the template; flag any the user customized.
+if [ -d "$HOME/.claude/rules" ]; then
+  for _rule in "$HOME/.claude/rules/"*.md; do
+    [ -f "$_rule" ] || continue
+    _tmpl="$SCRIPT_DIR/template/.claude/rules/$(basename "$_rule")"
+    if [ -f "$_tmpl" ] && cmp -s "$_rule" "$_tmpl"; then
+      rm "$_rule"
+      ok "Removed duplicate user-level rule $(basename "$_rule") (project-level is canonical)"
+    elif [ -f "$_tmpl" ]; then
+      warn "~/.claude/rules/$(basename "$_rule") differs from template — left in place (double-loads; merge into the project copy manually)"
+    fi
+  done
+  rmdir "$HOME/.claude/rules" 2>/dev/null && ok "Removed empty ~/.claude/rules/"
+fi
+
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 MARKER="<!-- megavibe-v3 -->"
 END_MARKER="<!-- /megavibe-v3 -->"
