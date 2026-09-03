@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse(Write|Edit) — keep a copy of every file before it is changed, so
 # "undo the last change" always works for someone who has never heard of git.
-# Snapshots live inside the data folder (.snapshots) because that is the only
-# place the sandbox permits writes.
 set -uo pipefail
 command -v jq &>/dev/null || exit 0
 IN=$(cat); F=$(printf '%s' "$IN" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
@@ -17,7 +15,14 @@ case "$F" in *"/snapshots/"*) exit 0 ;; esac            # never snapshot snapsho
 STAMP=$(date +%Y%m%d-%H%M%S)
 REL="${F#$DATA/}"
 DEST="$SNAPDIR/$STAMP/$REL"
-mkdir -p "$(dirname "$DEST")" 2>/dev/null && cp -p "$F" "$DEST" 2>/dev/null
+# First copy in a batch WINS: Claude often fires several Edits on one file
+# within the same second, and overwriting would leave "undo" restoring a
+# half-changed version instead of the original.
+mkdir -p "$(dirname "$DEST")" 2>/dev/null
+[ -e "$DEST" ] || cp -p "$F" "$DEST" 2>/dev/null
 # Keep the last 40 snapshot batches; this runs on every write, so stay cheap.
-ls -1d "$SNAPDIR/"*/ 2>/dev/null | head -n -40 | while read -r d; do rm -rf "$d"; done
+# BSD head rejects negative counts, so pruning never ran and snapshots grew
+# without bound. Reverse-sort by name (timestamps sort lexically) and drop all
+# but the newest 40.
+ls -1d "$SNAPDIR/"*/ 2>/dev/null | sort -r | tail -n +41 | while IFS= read -r d; do rm -rf "$d"; done
 exit 0

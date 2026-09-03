@@ -4,9 +4,11 @@ A megavibe profile for people who are not programmers: plain language, a single
 folder they own, and an OS-enforced boundary so nothing they ask for can wander
 outside it. Same harness underneath — hooks, context files, subagents, backends.
 
-Status: the containment is proven (`spike/RESULTS.md`, `spike/RESULTS-capable.md`);
-the profile installs, runs, and has been exercised end to end. Not yet piloted with
-a real non-technical user.
+Status: the *fallback* contract is scripted and passes 10/10 (`spike/RESULTS.md`);
+the adopted seatbelt contract is measured in `spike/RESULTS-capable.md` §D and
+re-checked live by `nondev-doctor` on every run. An adversarial review closed two
+sandbox escapes (see §D "Post-review hardening"). Installs, runs, and has been
+exercised end to end — but not yet piloted with a real non-technical user.
 
 ## Install
 

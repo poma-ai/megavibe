@@ -13,14 +13,34 @@
 (version 1)
 (allow default)
 
+; ── CRITICAL: block the LaunchServices escape ──
+; `open X.app` (or `open <document>`) asks launchd to spawn the target, and
+; launchd is OUTSIDE this sandbox — so the child runs unconfined. Verified
+; escape; denying the LaunchServices brokers closes it while leaving ordinary
+; file work and network untouched. Belt and braces: also refuse to exec the
+; usual front-ends (a copied binary loses the signature LaunchServices needs).
+(deny mach-lookup (global-name-regex #"^com\.apple\.(lsd|coreservices)"))
+(deny appleevent-send)
+(deny process-exec
+  (literal "/usr/bin/open") (literal "/usr/bin/osascript")
+  (literal "/bin/launchctl") (literal "/usr/bin/automator")
+  (literal "/usr/bin/qlmanage"))
+
 ; ── writes: denied everywhere, then allowed back in narrow places ──
 (deny file-write*)
 (allow file-write*
   (subpath "@DATA@")                    ; the colleague's four folders
   (subpath "@ENGINE@/logs")             ; our own logs
   (subpath "@ENGINE@/snapshots")        ; undo history (kept out of synced folders)
-  (subpath "@HOME@/.claude")            ; Claude Code's own state (history, todos)
-  (literal "@HOME@/.claude.json")
+  ; NOT all of ~/.claude — it is executable configuration (settings.json,
+  ; hooks/, skills/, statusline.sh) that later UNSANDBOXED sessions run. Only
+  ; the inert state directories are writable. (A separate CLAUDE_CONFIG_DIR
+  ; would be cleaner, but relocating it breaks Claude Code's login.)
+  (subpath "@HOME@/.claude/projects")
+  (subpath "@HOME@/.claude/todos")
+  (subpath "@HOME@/.claude/file-history")
+  (subpath "@HOME@/.claude/statsig")
+  (subpath "@HOME@/.claude/cache")
   (subpath "@HOME@/.cache")
   (subpath "/private/var/folders")      ; system temp (per-user, not shared)
   (subpath "/private/tmp")
@@ -40,4 +60,18 @@
   (subpath "@HOME@/Library/Cookies")
   (subpath "@HOME@/Library/Application Support/Firefox")
   (subpath "@HOME@/Library/Application Support/Google/Chrome")
-  (subpath "@HOME@/Library/Messages"))
+  (subpath "@HOME@/Library/Messages")
+  ; credentials a denylist must not miss
+  (subpath "@HOME@/.config/gh") (literal "@HOME@/.netrc") (literal "@HOME@/.npmrc")
+  (literal "@HOME@/.pypirc") (subpath "@HOME@/.kube") (subpath "@HOME@/.docker")
+  (subpath "@HOME@/.gemini") (subpath "@HOME@/.codex")
+  (literal "@HOME@/.claude/.credentials.json")
+  ; other people's mail, chat and password stores
+  (subpath "@HOME@/Library/Mail")
+  (subpath "@HOME@/Library/Containers/com.apple.Safari")
+  (subpath "@HOME@/Library/Application Support/BraveSoftware")
+  (subpath "@HOME@/Library/Application Support/Microsoft Edge")
+  (subpath "@HOME@/Library/Application Support/Arc")
+  (subpath "@HOME@/Library/Application Support/Slack")
+  (subpath "@HOME@/Library/Application Support/1Password")
+  (subpath "@HOME@/Library/Group Containers"))

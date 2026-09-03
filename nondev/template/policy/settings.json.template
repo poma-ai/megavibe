@@ -9,10 +9,10 @@
   "hooks": {
     "PreToolUse": [
       { "matcher": "Write|Edit",
-        "hooks": [ { "type": "command", "command": "@ENGINE@/hooks/snapshot.sh" } ] }
+        "hooks": [ { "type": "command", "command": "'@ENGINE@/hooks/snapshot.sh'" } ] }
     ],
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "@ENGINE@/hooks/session-start.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "'@ENGINE@/hooks/session-start.sh'" } ] }
     ]
   }
 }

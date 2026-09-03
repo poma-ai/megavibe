@@ -20,10 +20,11 @@ DATA="$HOME/megavibe-nondev"
 APPNAME="Megavibe Nondev"
 MAKE_APP=1
 USE_GDRIVE=0
+DATA_EXPLICIT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --data)   DATA="$2"; shift 2 ;;
+    --data)   DATA="$2"; DATA_EXPLICIT=1; shift 2 ;;
     --gdrive) USE_GDRIVE=1; shift ;;
     --name)   APPNAME="$2"; shift 2 ;;
     --no-app) MAKE_APP=0; shift ;;
@@ -36,8 +37,17 @@ ok(){ echo "  ✓ $*"; }
 # Google Drive as the native home: many non-technical people already live there,
 # and it makes the folder reachable from their phone and shareable with others.
 # Snapshots deliberately live in the engine, so sync never sees them.
+if [ "$USE_GDRIVE" -eq 1 ] && [ "$DATA_EXPLICIT" -eq 1 ]; then
+  echo "  ! --gdrive and --data are mutually exclusive; keeping --data" >&2
+  USE_GDRIVE=0
+fi
 if [ "$USE_GDRIVE" -eq 1 ]; then
-  GD=$(ls -d "$HOME/Library/CloudStorage/GoogleDrive-"*/"My Drive" 2>/dev/null | head -1)
+  # NOT `ls | head`: under set -euo pipefail an empty glob kills the installer
+  # outright, before the first message — a silent death mid-screen-share.
+  GD=""
+  for _c in "$HOME/Library/CloudStorage/GoogleDrive-"*/"My Drive"; do
+    [ -d "$_c" ] && { GD="$_c"; break; }
+  done
   if [ -n "$GD" ]; then
     DATA="$GD/Megavibe"
     echo "  using Google Drive: $DATA"
@@ -61,12 +71,13 @@ cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
 cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
 cp "$SRC/bin/nondev-mode"               "$ENGINE/bin/nondev-mode"
 chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode"
-printf '%s\n' "$DATA" > "$ENGINE/data-dir"
+mkdir -p "$DATA"
+DATA_REAL=$(cd "$DATA" && pwd -P)
+printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
 
 # Render the seatbelt profile with resolved absolute paths. Seatbelt matches on
 # REAL paths, so a symlinked location (e.g. /tmp -> /private/tmp) must be
 # resolved or the rules silently fail to match.
-DATA_REAL=$(mkdir -p "$DATA" && cd "$DATA" && pwd -P)
 ENGINE_REAL=$(cd "$ENGINE" && pwd -P)
 HOME_REAL=$(cd "$HOME" && pwd -P)
 render(){ sed -e "s|@DATA@|$DATA_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" "$1" > "$2"; }
@@ -100,6 +111,18 @@ mkdir -p "$HOME/.local/bin"
 ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
 ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
 ln -sf "$ENGINE/bin/nondev-mode"    "$HOME/.local/bin/nondev-mode"
+# ~/.local/bin is NOT on a stock macOS PATH, so "just run megavibe-nondev"
+# would be a lie on a clean machine. Persist it, idempotently.
+if ! command -v megavibe-nondev &>/dev/null; then
+  for _rc in "$HOME/.zprofile" "$HOME/.zshrc"; do
+    if [ -f "$_rc" ] || [ "$_rc" = "$HOME/.zprofile" ]; then
+      grep -q 'megavibe-nondev PATH' "$_rc" 2>/dev/null || \
+        printf '\n# megavibe-nondev PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$_rc"
+      break
+    fi
+  done
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode"
 
 # One machine, one protocol. A nondev session is not --restricted, so a
@@ -112,7 +135,7 @@ if [ -f "$HOME/.claude/CLAUDE.md" ]; then
   echo "  assistant. Parking it keeps the two apart; classic 'megavibe' keeps"
   echo "  working as ordinary Claude Code, and 'nondev-mode off' restores it."
   if [ -t 0 ]; then
-    read -r -p "  Park the classic protocol now? [Y/n] " _pk
+    read -r -p "  Park the classic protocol now? [Y/n] " _pk || _pk=""
     case "${_pk:-y}" in [yY]*|"") bash "$ENGINE/bin/nondev-mode" on ;; *) echo "  left in place — sessions will blend both protocols" ;; esac
   else
     echo "  (non-interactive: left in place — run 'nondev-mode on' to separate them)"
@@ -136,8 +159,10 @@ tell application "Terminal"
     end try
 end tell
 APPLESCRIPT
-    rm -rf "$APP" 2>/dev/null || true
-    if osacompile -o "$APP" "$TMP_SCPT" 2>/dev/null; then
+    # Stage first, swap only on success — otherwise a failed re-run leaves the
+    # colleague with a dead Dock icon and no launcher.
+    STAGE_DIR=$(mktemp -d); STAGE="$STAGE_DIR/app"
+    if osacompile -o "$STAGE" "$TMP_SCPT" 2>/dev/null && rm -rf "$APP" && mv "$STAGE" "$APP"; then
       # Branding comes from a private overlay, never from this repo: megavibe is
       # public and MIT, so company logos and named pilots do not belong in it.
       # Point MEGAVIBE_NONDEV_OVERLAY at your own dir, or use the default below.
@@ -148,10 +173,10 @@ APPLESCRIPT
       fi
       ok "launcher created: $APP  (drag it to the Dock)"
     else
-      echo "  ! could not create the launcher app (needs write access to /Applications)"
-      echo "    the colleague can still start it by running: megavibe-nondev"
+      echo "  ! could not create the launcher app (existing app left untouched)"
+      echo "    it can still be started by running: $ENGINE/bin/megavibe-nondev"
     fi
-    rm -f "$TMP_SCPT"
+    rm -rf "$STAGE_DIR"; rm -f "$TMP_SCPT" "${TMP_SCPT%.applescript}"
   fi
 fi
 
@@ -164,7 +189,7 @@ if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; 
   echo ""
   echo "  Gemini backend: no key found."
   if [ -t 0 ] && [ -f "$HOME/.gemini/oauth_creds.json" ]; then
-    read -r -p "  Mint a free one from this Mac's Google login now? [y/N] " _ans
+    read -r -p "  Mint a free one from this Mac's Google login now? [y/N] " _ans || _ans=""
     case "${_ans:-n}" in
       [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc \
                || echo "  ! minting failed — Claude-only for now (that is fine)" ;;

@@ -25,11 +25,23 @@ DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
 for d in Inbox Workspace Delivered Library; do
   [ -d "$DATA/$d" ] || warn "missing subfolder: $d"
 done
-for f in policy/settings.json policy/sandbox.sb prompts/CLAUDE-nondev.md bin/megavibe-nondev hooks/snapshot.sh hooks/session-start.sh; do
+for f in policy/settings.json policy/mcp.json policy/sandbox.sb prompts/CLAUDE-nondev.md; do
   [ -f "$ENGINE/$f" ] && [ -s "$ENGINE/$f" ] || bad "missing or empty: $f"
 done
-[ -f "$ENGINE/policy/settings.json" ] && { python3 -c "import json,sys;json.load(open('$ENGINE/policy/settings.json'))" 2>/dev/null \
-  && ok "policy is valid JSON" || bad "policy is not valid JSON — the session will refuse to start"; }
+# executables must actually be executable — a chmod -x hook fails silently
+for f in bin/megavibe-nondev bin/nondev-doctor bin/nondev-mode hooks/snapshot.sh hooks/session-start.sh; do
+  [ -x "$ENGINE/$f" ] || bad "missing or not executable: $f"
+done
+command -v megavibe-nondev &>/dev/null || warn "megavibe-nondev is not on PATH — start it with $ENGINE/bin/megavibe-nondev"
+# jq, not python3: on a Mac without Xcode CLT, /usr/bin/python3 is a stub that
+# pops a "install developer tools?" dialog and then fails, which would report a
+# perfectly good policy as broken.
+if command -v jq &>/dev/null; then
+  jq -e . "$ENGINE/policy/settings.json" >/dev/null 2>&1 \
+    && ok "policy is valid JSON" || bad "policy is not valid JSON — the session will refuse to start"
+else
+  warn "jq missing — cannot validate the policy (and hooks will not run)"
+fi
 
 # placeholders must have been substituted, or hooks/sandbox silently do nothing
 if grep -q '@DATA@\|@ENGINE@\|@HOME@' "$ENGINE/policy/sandbox.sb" "$ENGINE/policy/settings.json" 2>/dev/null; then
@@ -56,6 +68,32 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
   else
     ok "sandbox blocks writes outside the folder (verified now)"
   fi
+  # The escape that matters most: `open` hands the spawn to launchd, which runs
+  # OUTSIDE the sandbox. Build a tiny .app in the data folder and try it.
+  APP_CANARY="$DATA/.doctor-$$.app"; ESCAPE_OUT="$HOME/.doctor-escaped-$$"
+  mkdir -p "$APP_CANARY/Contents/MacOS" 2>/dev/null
+  printf '#!/bin/sh\necho escaped > "%s"\n' "$ESCAPE_OUT" > "$APP_CANARY/Contents/MacOS/x" 2>/dev/null
+  chmod +x "$APP_CANARY/Contents/MacOS/x" 2>/dev/null
+  printf '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>x</string></dict></plist>' \
+    > "$APP_CANARY/Contents/Info.plist" 2>/dev/null
+  sandbox-exec -f "$ENGINE/policy/sandbox.sb" /usr/bin/open "$APP_CANARY" 2>/dev/null
+  sleep 2
+  if [ -f "$ESCAPE_OUT" ]; then
+    bad "SANDBOX ESCAPE via 'open' — a session can run code outside the sandbox"; rm -f "$ESCAPE_OUT"
+  else
+    ok "'open' cannot escape the sandbox (verified now)"
+  fi
+  rm -rf "$APP_CANARY"
+
+  # Claude's own config is executable surface for LATER, unsandboxed sessions.
+  CFG_CANARY="$HOME/.claude/.doctor-canary-$$"
+  sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$CFG_CANARY'" 2>/dev/null
+  if [ -f "$CFG_CANARY" ]; then
+    bad "~/.claude is writable from the sandbox — a session could alter later sessions"; rm -f "$CFG_CANARY"
+  else
+    ok "Claude's own config is protected from the sandbox"
+  fi
+
   IN_CANARY="$DATA/.doctor-canary-$$"
   sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$IN_CANARY'" 2>/dev/null
   if [ -f "$IN_CANARY" ]; then ok "writes inside the folder work"; rm -f "$IN_CANARY"
@@ -64,11 +102,15 @@ fi
 
 # ── login state (the one thing the colleague must do) ──
 if command -v claude &>/dev/null; then
-  OUT=$(cd "${DATA:-$HOME}" && perl -e 'alarm 90; exec @ARGV' claude --model haiku -p "reply with exactly: DOCTOR-OK" </dev/null 2>&1 | tail -2)
+  # Probe through the REAL launcher (sandbox + policy + protocol), so a broken
+  # combination fails here rather than at the Dock.
+  OUT=$(MEGAVIBE_NONDEV_HOME="$ENGINE" perl -e 'alarm 150; exec @ARGV' \
+        "$ENGINE/bin/megavibe-nondev" --model haiku -p "reply with exactly: DOCTOR-OK" </dev/null 2>&1 | tail -2)
   case "$OUT" in
-    *DOCTOR-OK*)      ok "signed in and answering" ;;
+    *DOCTOR-OK*)      ok "a real session starts, signed in, under the full policy" ;;
     *"Not logged in"*|*login*) bad "not signed in — run 'claude' once and sign in" ;;
-    *)                warn "could not confirm sign-in: $(printf '%s' "$OUT" | head -1 | cut -c1-70)" ;;
+    "")               warn "the launch probe produced no output (timed out?)" ;;
+    *)                warn "could not confirm a working session: $(printf '%s' "$OUT" | head -1 | cut -c1-70)" ;;
   esac
 fi
 

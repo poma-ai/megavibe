@@ -50,6 +50,7 @@ SANDBOX="$ENGINE/policy/sandbox.sb"
 CLAUDE_ARGS=(
   --settings "$POLICY/settings.json"
   --add-dir "$DATA"
+  --add-dir "$ENGINE/snapshots"
   --append-system-prompt "$(cat "$PROTOCOL")"
 )
 
@@ -57,15 +58,22 @@ CLAUDE_ARGS=(
 # the admin policy — the Claude app merely attaches to it. That is the safe way
 # to give a non-technical colleague a phone/desktop app interface: starting a
 # session from inside the app instead would bypass the sandbox entirely.
-case "${MEGAVIBE_NONDEV_REMOTE:-}" in
-  1|true|yes) CLAUDE_ARGS+=( --remote-control "${MEGAVIBE_NONDEV_REMOTE_NAME:-Megavibe}" ) ;;
-esac
+# Filter --remote out properly. ${@/--remote/} is a per-element SUBSTRING
+# substitution, not removal: it left an empty argv element, mangled
+# --remote-control into -control, and corrupted any prompt containing the text.
+REMOTE=0
+case "${MEGAVIBE_NONDEV_REMOTE:-}" in 1|true|yes) REMOTE=1 ;; esac
+REST=()
 for a in "$@"; do
-  [ "$a" = "--remote" ] && CLAUDE_ARGS+=( --remote-control "${MEGAVIBE_NONDEV_REMOTE_NAME:-Megavibe}" )
+  if [ "$a" = "--remote" ]; then REMOTE=1; else REST+=( "$a" ); fi
 done
-set -- "${@/--remote/}"
+[ "$REMOTE" -eq 1 ] && CLAUDE_ARGS+=( --remote-control "${MEGAVIBE_NONDEV_REMOTE_NAME:-Megavibe}" )
+set -- ${REST+"${REST[@]}"}
 
-if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null; then
+# Probe the profile: `-f exists` is not the same as `it loads`. A syntax error
+# otherwise dumps a C-style seatbelt backtrace into the colleague's window.
+if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
+   && sandbox-exec -f "$SANDBOX" /usr/bin/true 2>/dev/null; then
   exec sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@"
 fi
 

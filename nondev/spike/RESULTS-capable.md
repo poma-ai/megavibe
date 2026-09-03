@@ -31,6 +31,11 @@ means the boundary must move to the OS.
 
 ## Contract D — macOS seatbelt sandbox, no `--restricted` (ADOPTED)
 
+> **Provenance: manually verified, not scripted.** `capable-spike.sh` produces the
+> B and C tables above; the D results below were run by hand. `nondev-doctor` now
+> re-checks the three that matter (outside write, `open` escape, `~/.claude`
+> write) on every run, which is the reproducible form of this evidence.
+
 `sandbox-exec -f <profile> claude --settings <policy> --add-dir <data> --append-system-prompt <protocol>`
 
 | Test | Expectation | Verdict | Evidence |
@@ -45,6 +50,16 @@ Writes are confined by the kernel regardless of how a command phrases them;
 reads stay broad by design (that is the "read-only access to everything else"
 the product wants), minus an explicit secrets denylist (`.ssh`, `.aws`, `.gnupg`,
 gcloud config, browser profiles, Messages).
+
+**Post-review hardening (2026-09-04).** An adversarial review found two escapes in
+the contract-D profile as first shipped, both now closed and re-verified:
+`open`-ing an `.app` built inside the data folder had LaunchServices spawn it via
+launchd *outside* the sandbox, and `~/.claude` was writable — a second control
+plane whose `settings.json`, hooks and `statusline.sh` execute in later,
+unsandboxed sessions. The profile now denies the LaunchServices brokers and the
+`open`/`osascript`/`launchctl` binaries, and narrows `~/.claude` to inert state
+directories. Reads were also broadened well beyond the original eight-path
+denylist (gh/kube/docker/npm tokens, Mail, Safari, Slack, 1Password).
 
 **Adopted:** contract D, with contract A's restricted mode kept as the automatic
 fallback when no OS sandbox is available — reduced capability, never reduced
