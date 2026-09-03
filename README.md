@@ -297,6 +297,8 @@ Install [Pigeon for Telegram](https://apps.apple.com/app/pigeon-for-telegram/id1
 
 ## Optional API Keys
 
+> Account-type privacy tricks (the Workspace no-training carve-out and friends): **`README-data-treatment.md`**.
+
 Megavibe works without any API keys. Adding them unlocks extra capabilities:
 
 | Key | What it does | Cost | How to get it |

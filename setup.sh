@@ -332,7 +332,10 @@ if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   for tool in "${NEEDS_LOGIN[@]}"; do
     case "$tool" in
       claude) echo "    claude          (requires Claude subscription)" ;;
-      codex)  echo "    codex           (optional — uses your ChatGPT account)" ;;
+      codex)  echo "    codex           (optional — uses your ChatGPT account)"
+              echo "                    tip: under Plus/Pro, disable 'Improve the model for"
+              echo "                    everyone' in ChatGPT settings — Codex CLI follows that"
+              echo "                    toggle, not the API no-training default" ;;
       *)      echo "    $tool" ;;
     esac
   done
