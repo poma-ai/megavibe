@@ -13,12 +13,27 @@ exercised end to end — but not yet piloted with a real non-technical user.
 ## Install
 
 ```bash
-bash nondev/init-nondev.sh                 # ~/megavibe-nondev + ~/.megavibe-nondev
-bash nondev/init-nondev.sh --gdrive        # folder in Google Drive instead
-nondev-doctor                              # verify, incl. a live sandbox canary
+bash nondev/init-nondev.sh          # asks where the folder should live
+bash nondev/init-nondev.sh --gdrive "Client work"   # straight to Google Drive
+nondev-doctor                       # verify, incl. live sandbox escape canaries
 ```
 
+Run interactively, the installer lists the locations that actually exist on the
+Mac — the home folder, every Google Drive account's *My Drive*, and every shared
+drive — so "which folder?" is a menu choice rather than a path to type.
+
 Then, once: sign in with `claude`, and drag the app from `/Applications` to the Dock.
+
+Afterwards the person can move it themselves, without an admin:
+
+```bash
+nondev-folder            # where is my folder?
+nondev-folder --list     # where could it be?
+nondev-folder "/path"    # move it there (copies, never a bare move)
+```
+
+They can also just *ask the assistant* to do it — the protocol tells it how.
+Moving re-renders the sandbox profile so containment follows the folder.
 
 ## How containment works
 
@@ -60,6 +75,7 @@ instead would bypass the sandbox and the policy entirely.
 | `bin/megavibe-nondev` | the launcher (implements the contract above) |
 | `bin/nondev-doctor` | health check, readable over a screen share |
 | `bin/nondev-mode` | park/restore a conflicting user-level protocol |
+| `bin/nondev-folder` | show/move the working folder (Drive-aware), re-rendering policy |
 | `template/sandbox.sb.template` | the seatbelt profile (rendered with real paths) |
 | `template/policy/*.template` | permissions + hook registrations |
 | `template/CLAUDE-nondev.md` | the plain-language protocol |

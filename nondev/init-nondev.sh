@@ -10,7 +10,11 @@
 # but must never be able to rewrite its own guardrails. Kept out of
 # ~/Desktop and ~/Documents so iCloud sync cannot lock the folders mid-session.
 #
-# Usage: bash nondev/init-nondev.sh [--data DIR] [--name "Display Name"] [--no-app]
+# Usage: bash nondev/init-nondev.sh [--data DIR] [--gdrive [FolderName]]
+#                                   [--folder-name NAME] [--name "App Name"] [--no-app]
+#
+# With no --data and a terminal, it asks where the folder should live and lists
+# the Google Drive locations (including shared drives) it finds on this Mac.
 
 set -euo pipefail
 
@@ -25,7 +29,9 @@ DATA_EXPLICIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --data)   DATA="$2"; DATA_EXPLICIT=1; shift 2 ;;
-    --gdrive) USE_GDRIVE=1; shift ;;
+    --gdrive) USE_GDRIVE=1
+              case "${2:-}" in -*|"") shift ;; *) FOLDER_NAME="$2"; shift 2 ;; esac ;;
+    --folder-name) FOLDER_NAME="$2"; shift 2 ;;
     --name)   APPNAME="$2"; shift 2 ;;
     --no-app) MAKE_APP=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -41,21 +47,65 @@ if [ "$USE_GDRIVE" -eq 1 ] && [ "$DATA_EXPLICIT" -eq 1 ]; then
   echo "  ! --gdrive and --data are mutually exclusive; keeping --data" >&2
   USE_GDRIVE=0
 fi
-if [ "$USE_GDRIVE" -eq 1 ]; then
-  # NOT `ls | head`: under set -euo pipefail an empty glob kills the installer
-  # outright, before the first message — a silent death mid-screen-share.
-  GD=""
-  for _c in "$HOME/Library/CloudStorage/GoogleDrive-"*/"My Drive"; do
-    [ -d "$_c" ] && { GD="$_c"; break; }
+
+# ─── Where should the folder live? ──────────────────────────────────
+# Non-technical people mostly live in Google Drive, and "which Drive folder"
+# is the one setup question they have a real opinion about. Detect the actual
+# options on this Mac and let them point at one, rather than guessing.
+FOLDER_NAME="${FOLDER_NAME:-Megavibe}"
+
+gdrive_roots() {   # every My Drive + every Shared drive, one per line
+  local r
+  for r in "$HOME/Library/CloudStorage/GoogleDrive-"*/"My Drive"; do
+    [ -d "$r" ] && printf '%s\n' "$r"
   done
-  if [ -n "$GD" ]; then
-    DATA="$GD/Megavibe"
+  for r in "$HOME/Library/CloudStorage/GoogleDrive-"*/"Shared drives"/*; do
+    [ -d "$r" ] && printf '%s\n' "$r"
+  done
+}
+
+if [ "$USE_GDRIVE" -eq 1 ]; then
+  _first=$(gdrive_roots | head -1 || true)
+  if [ -n "$_first" ]; then
+    DATA="$_first/$FOLDER_NAME"
     echo "  using Google Drive: $DATA"
   else
     echo "  ! Google Drive for Desktop not found — falling back to $DATA"
     echo "    (install Drive, sign in, then re-run with --gdrive)"
   fi
+elif [ "$DATA_EXPLICIT" -eq 0 ] && [ -t 0 ]; then
+  # Interactive install with no location given: offer what actually exists.
+  _opts=(); _labels=()
+  _opts+=("$HOME/$FOLDER_NAME");  _labels+=("Home folder — simple, stays on this Mac")
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    _opts+=("$r/$FOLDER_NAME")
+    case "$r" in
+      *"Shared drives"*) _labels+=("Google Drive (shared drive: $(basename "$r")) — the team can see it") ;;
+      *) _labels+=("Google Drive ($(basename "$(dirname "$r")" | sed 's/^GoogleDrive-//')) — reachable from their phone") ;;
+    esac
+  done < <(gdrive_roots)
+
+  echo ""
+  echo "  Where should the working folder live?"
+  for i in "${!_opts[@]}"; do printf '    %d) %s\n      %s\n' "$((i+1))" "${_opts[$i]}" "${_labels[$i]}"; done
+  printf '    %d) somewhere else (type a path)\n' "$(( ${#_opts[@]} + 1 ))"
+  echo ""
+  read -r -p "  Choose [1]: " _pick || _pick=""
+  _pick="${_pick:-1}"
+  if [ "$_pick" = "$(( ${#_opts[@]} + 1 ))" ]; then
+    read -r -p "  Full path to the folder: " _custom || _custom=""
+    [ -n "$_custom" ] && DATA="${_custom/#\~/$HOME}"
+  elif [ "$_pick" -ge 1 ] 2>/dev/null && [ "$_pick" -le "${#_opts[@]}" ]; then
+    DATA="${_opts[$((_pick-1))]}"
+  fi
+  echo "  → $DATA"
 fi
+
+case "$DATA" in
+  *"Mobile Documents"*|*"/iCloud"*)
+    echo "  ! that folder is in iCloud, which can lock files mid-session — Google Drive or the home folder is safer" >&2 ;;
+esac
 
 # ─── Engine (control plane) ─────────────────────────────────────────
 mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs"
@@ -65,12 +115,18 @@ mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs"
 chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || true
 mkdir -p "$ENGINE/hooks"
 cp "$SRC/template/hooks/"*.sh "$ENGINE/hooks/" && chmod +x "$ENGINE/hooks/"*.sh
+# Keep the templates with the engine so the folder can be moved later on a
+# machine that has no copy of the repo (see bin/nondev-folder).
+mkdir -p "$ENGINE/templates/policy"
+cp "$SRC/template/sandbox.sb.template"          "$ENGINE/templates/"
+cp "$SRC/template/policy/settings.json.template" "$ENGINE/templates/policy/"
 cp "$SRC/template/policy/mcp.json"      "$ENGINE/policy/mcp.json"
 cp "$SRC/template/CLAUDE-nondev.md"     "$ENGINE/prompts/CLAUDE-nondev.md"
 cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
 cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
 cp "$SRC/bin/nondev-mode"               "$ENGINE/bin/nondev-mode"
-chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode"
+cp "$SRC/bin/nondev-folder"             "$ENGINE/bin/nondev-folder"
+chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode" "$ENGINE/bin/nondev-folder"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
 printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
@@ -103,6 +159,9 @@ To start, open $APPNAME from your Dock and just say what you need —
 in normal words. For example: "summarise the three PDFs I put in Inbox".
 
 Your assistant can only see and change things inside this folder.
+
+Want it somewhere else — a Google Drive folder, say? Open the app and just ask,
+or run: nondev-folder --list
 TXT
 ok "folder ready at $DATA"
 
@@ -111,6 +170,7 @@ mkdir -p "$HOME/.local/bin"
 ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
 ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
 ln -sf "$ENGINE/bin/nondev-mode"    "$HOME/.local/bin/nondev-mode"
+ln -sf "$ENGINE/bin/nondev-folder"  "$HOME/.local/bin/nondev-folder"
 # ~/.local/bin is NOT on a stock macOS PATH, so "just run megavibe-nondev"
 # would be a lie on a clean machine. Persist it, idempotently.
 if ! command -v megavibe-nondev &>/dev/null; then
@@ -123,7 +183,7 @@ if ! command -v megavibe-nondev &>/dev/null; then
   done
   export PATH="$HOME/.local/bin:$PATH"
 fi
-ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode"
+ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-folder"
 
 # One machine, one protocol. A nondev session is not --restricted, so a
 # user-level classic megavibe protocol would otherwise leak developer rules

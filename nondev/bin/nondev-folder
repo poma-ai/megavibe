@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# nondev-folder — show or change where the working folder lives.
+#
+# "Actually, I'd rather work in my Drive 'Client work' folder" is a normal thing
+# to want, and it should not require an admin, a reinstall, or knowing what a
+# sandbox profile is. This re-points the engine at a new folder and re-renders
+# the policy so the sandbox follows.
+#
+# Usage:
+#   nondev-folder                 show the current folder
+#   nondev-folder --list          list places it could live (incl. Google Drive)
+#   nondev-folder <path>          move there (asks before moving any files)
+#   nondev-folder <path> --keep   re-point without moving existing files
+
+set -uo pipefail
+
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+[ -d "$ENGINE" ] || { echo "megavibe-nondev is not set up on this Mac."; exit 1; }
+CUR=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
+
+gdrive_roots() {
+  local r
+  for r in "$HOME/Library/CloudStorage/GoogleDrive-"*/"My Drive"; do [ -d "$r" ] && printf '%s\n' "$r"; done
+  for r in "$HOME/Library/CloudStorage/GoogleDrive-"*/"Shared drives"/*; do [ -d "$r" ] && printf '%s\n' "$r"; done
+}
+
+case "${1:-}" in
+  ""|--show)
+    echo "Your folder is:  $CUR"
+    case "$CUR" in
+      *CloudStorage/GoogleDrive*) echo "  (in Google Drive — it syncs to your other devices)" ;;
+      *) echo "  (on this Mac only)" ;;
+    esac
+    echo ""
+    echo "To move it:      nondev-folder \"<new path>\""
+    echo "To see options:  nondev-folder --list"
+    exit 0 ;;
+  --list)
+    echo "Places the folder could live:"
+    echo "  $HOME/Megavibe    (this Mac only)"
+    while IFS= read -r r; do [ -n "$r" ] && echo "  $r/Megavibe"; done < <(gdrive_roots)
+    echo ""
+    echo "Then run:  nondev-folder \"<the path you want>\""
+    exit 0 ;;
+esac
+
+NEW="${1/#\~/$HOME}"
+KEEP=0; [ "${2:-}" = "--keep" ] && KEEP=1
+case "$NEW" in /*) ;; *) echo "Please give the full path, starting with /"; exit 2 ;; esac
+[ "$NEW" = "$CUR" ] && { echo "That is already your folder."; exit 0; }
+
+case "$NEW" in
+  *"Mobile Documents"*|*"/iCloud"*)
+    echo "Warning: iCloud can lock files while you work. Google Drive or this Mac is safer."
+    read -r -p "Use it anyway? [y/N] " a || a=""; case "${a:-n}" in [yY]*) ;; *) exit 0 ;; esac ;;
+esac
+
+mkdir -p "$NEW" || { echo "Could not create $NEW"; exit 1; }
+NEW_REAL=$(cd "$NEW" && pwd -P)
+
+# Move existing work across, unless told to leave it.
+if [ "$KEEP" -eq 0 ] && [ -d "$CUR" ] && [ -n "$(ls -A "$CUR" 2>/dev/null)" ]; then
+  echo "Move everything from your current folder to the new one?"
+  echo "  from: $CUR"
+  echo "  to:   $NEW_REAL"
+  read -r -p "[Y/n] " a || a=""
+  case "${a:-y}" in
+    [yY]*|"")
+      # copy-then-verify, never a bare mv: a half-finished move on a syncing
+      # Drive folder would lose work.
+      if command -v rsync &>/dev/null; then rsync -a "$CUR"/ "$NEW_REAL"/ || { echo "Copy failed — nothing was changed."; exit 1; }
+      else cp -R "$CUR"/. "$NEW_REAL"/ || { echo "Copy failed — nothing was changed."; exit 1; }; fi
+      echo "  copied (your old folder is left in place; delete it yourself once happy)" ;;
+    *) echo "  leaving the old files where they are" ;;
+  esac
+fi
+
+for d in Inbox Workspace Delivered Library; do mkdir -p "$NEW_REAL/$d"; done
+
+# Re-render the policy so the sandbox actually follows the folder.
+T="$ENGINE/templates"
+if [ -f "$T/sandbox.sb.template" ] && [ -f "$T/policy/settings.json.template" ]; then
+  ENGINE_REAL=$(cd "$ENGINE" && pwd -P); HOME_REAL=$(cd "$HOME" && pwd -P)
+  chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || true
+  for pair in "$T/sandbox.sb.template:$ENGINE/policy/sandbox.sb" \
+              "$T/policy/settings.json.template:$ENGINE/policy/settings.json"; do
+    sed -e "s|@DATA@|$NEW_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" \
+      "${pair%%:*}" > "${pair##*:}"
+  done
+  chmod 444 "$ENGINE/policy/settings.json" "$ENGINE/policy/mcp.json" 2>/dev/null || true
+else
+  echo "Could not find the policy templates — ask your admin to re-run the installer."; exit 1
+fi
+
+printf '%s\n' "$NEW_REAL" > "$ENGINE/data-dir"
+
+# Prove the new profile loads before declaring success.
+if command -v sandbox-exec &>/dev/null && ! sandbox-exec -f "$ENGINE/policy/sandbox.sb" /usr/bin/true 2>/dev/null; then
+  echo "The new settings did not load correctly — ask your admin to run: nondev-doctor"; exit 1
+fi
+
+echo ""
+echo "Done. Your folder is now: $NEW_REAL"
+echo "Open the app again and it will work there."

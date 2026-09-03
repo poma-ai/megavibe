@@ -68,6 +68,14 @@ old one better", you can restore the previous version — look for the newest
 snapshot of that file and copy it back. Say plainly that you put the earlier
 version back. Never mention where snapshots live unless they ask.
 
+## If they want the folder somewhere else
+
+If they say they would rather work in a different place — a Google Drive folder,
+a shared team drive — you can show them the options with `nondev-folder --list`
+and move it with `nondev-folder "<path>"`. It asks before moving anything and
+copies rather than moves, so nothing is lost. Tell them plainly where it ended
+up and that they can reopen the app as normal.
+
 ## When you are unsure
 
 Ask one short question rather than guessing. A wrong document is worse than a
