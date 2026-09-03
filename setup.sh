@@ -876,6 +876,18 @@ register_gemini_mcp() {
     warn "GEMINI_API_KEY not set — Gemini backend unavailable (Google-account login retired 2026-06-18; get a free key at https://aistudio.google.com/apikey)"
   fi
 
+  # Default model: pin flash-class unless the user already chose one. Pro is
+  # billing-gated (May 2026) — on a postpay key every un-pinned call BILLS, on
+  # a free key it 429s. Flash rides the free tier (~1,500 RPD). Everything
+  # inherits this (watcher, /rehydrate, MCP without -m); per-call -m overrides.
+  if command -v jq &>/dev/null && [ -f "$GEMINI_SETTINGS" ] && jq -e . "$GEMINI_SETTINGS" &>/dev/null; then
+    if [ "$(jq -r '.model.name // empty' "$GEMINI_SETTINGS")" = "" ]; then
+      jq '.model.name = "gemini-2.5-flash"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
+      mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
+      ok "Gemini CLI default model pinned to gemini-2.5-flash (free tier; override per call with -m)"
+    fi
+  fi
+
   if command -v gemini-mcp &>/dev/null; then
     ensure_mcp gemini-cli gemini-mcp
   else
