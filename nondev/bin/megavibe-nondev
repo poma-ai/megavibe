@@ -40,11 +40,26 @@ unset CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS ANTHROPIC_API_KEY 2>/dev/null || 
 
 cd "$DATA"
 
-exec claude \
-  --restricted \
-  --strict-mcp-config \
-  --mcp-config "$POLICY/mcp.json" \
-  --settings "$POLICY/settings.json" \
-  --add-dir "$DATA" \
-  --append-system-prompt "$(cat "$PROTOCOL")" \
-  "$@"
+# The containment boundary is the macOS sandbox, NOT Claude's own flags:
+# --restricted confines Claude's file tools but leaves Bash free to read and
+# write anywhere (proven in nondev/spike/RESULTS-capable.md). Enforcing in the
+# kernel instead lets the assistant keep Bash, MCP servers and the colleague's
+# own claude.ai connectors — capability the colleague actually needs — while
+# writes stay inside their folder and secrets stay unreadable.
+SANDBOX="$ENGINE/policy/sandbox.sb"
+CLAUDE_ARGS=(
+  --settings "$POLICY/settings.json"
+  --add-dir "$DATA"
+  --append-system-prompt "$(cat "$PROTOCOL")"
+)
+
+if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null; then
+  exec sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@"
+fi
+
+# No sandbox available (non-macOS, or profile missing): fall back to Claude's
+# own restricted mode. Less capable — no Bash, no connectors — but never
+# unconfined, because an unconfined session is the one outcome we refuse.
+echo "note: running in reduced-capability mode (no OS sandbox available)" >&2
+exec claude --restricted --strict-mcp-config --mcp-config "$POLICY/mcp.json" \
+  "${CLAUDE_ARGS[@]}" "$@"

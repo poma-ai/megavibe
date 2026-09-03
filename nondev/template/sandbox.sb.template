@@ -1,0 +1,42 @@
+; megavibe-nondev seatbelt profile — the REAL containment boundary.
+;
+; Claude Code's --restricted mode confines its own file tools but NOT Bash
+; (proven: nondev/spike/RESULTS-capable.md, B2/B3 — Bash both wrote and read
+; outside the folder). Rather than forbid Bash and cripple the assistant, the
+; kernel enforces the boundary and Bash stays available.
+;
+; Policy: read widely (so the assistant can consult the colleague's material),
+; write ONLY inside their folder — which is exactly "read-only access to
+; everything else". Secrets are denied even for reading.
+;
+; Placeholders substituted at install time: @DATA@ @ENGINE@ @HOME@
+(version 1)
+(allow default)
+
+; ── writes: denied everywhere, then allowed back in narrow places ──
+(deny file-write*)
+(allow file-write*
+  (subpath "@DATA@")                    ; the colleague's four folders
+  (subpath "@ENGINE@/logs")             ; our own logs
+  (subpath "@HOME@/.claude")            ; Claude Code's own state (history, todos)
+  (literal "@HOME@/.claude.json")
+  (subpath "@HOME@/.cache")
+  (subpath "/private/var/folders")      ; system temp (per-user, not shared)
+  (subpath "/private/tmp")
+  (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr")
+  (literal "/dev/dtracehelper") (literal "/dev/tty"))
+
+; ── reads: broad by design, minus the things nobody should hoover up ──
+; NOTE: ~/Library/Keychains is deliberately NOT denied — Claude Code stores its
+; own login credentials there, and denying it leaves the session permanently
+; "Not logged in". Keychain ITEMS remain protected by macOS's own per-item ACLs
+; (reading the raw database yields ciphertext), so this is not a soft spot.
+(deny file-read*
+  (subpath "@HOME@/.ssh")
+  (subpath "@HOME@/.gnupg")
+  (subpath "@HOME@/.aws")
+  (subpath "@HOME@/.config/gcloud")
+  (subpath "@HOME@/Library/Cookies")
+  (subpath "@HOME@/Library/Application Support/Firefox")
+  (subpath "@HOME@/Library/Application Support/Google/Chrome")
+  (subpath "@HOME@/Library/Messages"))

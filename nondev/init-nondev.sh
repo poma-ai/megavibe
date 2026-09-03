@@ -33,12 +33,25 @@ ok(){ echo "  ✓ $*"; }
 
 # ─── Engine (control plane) ─────────────────────────────────────────
 mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs"
+# Policy files are left read-only (below) so a stray edit is obvious; make them
+# writable again first, or re-running the installer dies on the copy and leaves
+# a half-updated engine (found by running init twice).
+chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || true
 cp "$SRC/template/policy/settings.json" "$ENGINE/policy/settings.json"
 cp "$SRC/template/policy/mcp.json"      "$ENGINE/policy/mcp.json"
 cp "$SRC/template/CLAUDE-nondev.md"     "$ENGINE/prompts/CLAUDE-nondev.md"
 cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
 chmod +x "$ENGINE/bin/megavibe-nondev"
 printf '%s\n' "$DATA" > "$ENGINE/data-dir"
+
+# Render the seatbelt profile with resolved absolute paths. Seatbelt matches on
+# REAL paths, so a symlinked location (e.g. /tmp -> /private/tmp) must be
+# resolved or the rules silently fail to match.
+DATA_REAL=$(mkdir -p "$DATA" && cd "$DATA" && pwd -P)
+ENGINE_REAL=$(cd "$ENGINE" && pwd -P)
+HOME_REAL=$(cd "$HOME" && pwd -P)
+sed -e "s|@DATA@|$DATA_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" \
+  "$SRC/template/sandbox.sb.template" > "$ENGINE/policy/sandbox.sb"
 ok "engine installed in $ENGINE"
 
 # The colleague must not be able to edit the policy from their own session;
