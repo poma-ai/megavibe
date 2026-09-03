@@ -557,6 +557,14 @@ fi
 [ -n "${MEGAVIBE_HOME:-}" ] || { err "MEGAVIBE_HOME is empty — refusing to rm -rf"; exit 1; }
 rm -rf "$MEGAVIBE_HOME/template"
 cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
+# The nondev profile ships with the install too — the curl installer clones to a
+# temp dir and deletes it, so without this `megavibe nondev` would have nothing
+# to run and the documented setup path would be broken for every quickstart user.
+if [ -d "$SCRIPT_DIR/nondev" ]; then
+  rm -rf "$MEGAVIBE_HOME/nondev"
+  cp -R "$SCRIPT_DIR/nondev" "$MEGAVIBE_HOME/nondev"
+  chmod +x "$MEGAVIBE_HOME/nondev/init-nondev.sh" "$MEGAVIBE_HOME/nondev/bin/"* 2>/dev/null || true
+fi
 ok "~/.megavibe/ synced"
 
 
@@ -580,7 +588,7 @@ You are the user's personal assistant, responding via Telegram (often from Apple
 - Answer general questions (weather, facts, calculations, advice)
 - Remember personal preferences, goals, and context from .agent/ files
 - Help with life admin (scheduling, reminders, planning)
-- When asked about a specific coding project, mention that the user should ask about it by name (e.g. "megavibe", "officeqa") to route to that project
+- When asked about a specific coding project, mention that the user should ask about it by name (e.g. the project folder name) to route to that project
 
 ## Session & project visibility
 When asked about running sessions, active projects, or "what's going on":

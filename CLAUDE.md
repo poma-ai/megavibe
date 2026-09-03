@@ -153,9 +153,6 @@ Don't use subagents for: single-file edits, README tweaks, reading one script.
 
 These are NOT currently implemented but are worth considering as megavibe evolves:
 
-- ~~**Skills (`.claude/skills/`)**~~: **Done.** Four skills: `/rehydrate`, `/catchup`, `/prune-context`, `/megavibe-restart`. Deployed by init.sh.
-- ~~**Scoped rules (`.claude/rules/*.md`)**~~: **Done.** Protocol split into core (90 lines in CLAUDE.md) + rules (spinouts.md, delegation.md). Deployed by init.sh.
-- ~~**`CLAUDE.local.md`**~~: **Done.** Auto-gitignored personal overrides. Created by init.sh, added to .gitignore.
 - **PreToolUse input modification** (v2.0.10+): Hooks can now modify tool inputs, not just block. Could enable transparent sandboxing or convention enforcement.
 - **Custom subagents** (`.claude/agents/`): A review subagent with `model: haiku` could cheaply validate hook scripts before committing.
 
@@ -164,4 +161,3 @@ These are NOT currently implemented but are worth considering as megavibe evolve
 - `init.sh` settings merge uses `jq -s` with reduce — fragile if template `settings.json` structure changes. Always test the merge path.
 - `on-compact.sh` builds JSON via `jq -Rs` — escaping is delicate. Test with content containing quotes, newlines, special chars.
 - `log-tool-event.sh` counter resets on ANY write to `.agent/*.md`. By design (prefers low false-negatives over precision).
-- Parent directory `../CLAUDE.md` may contain Megavibe v2 rules. Claude Code walks up for CLAUDE.md files — v2 and v3 rules could conflict.
