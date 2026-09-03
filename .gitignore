@@ -37,3 +37,9 @@ CLAUDE.local.md
 .vscode/
 .idea/
 events.jsonl
+
+# Org-specific nondev overlay (branding, named pilots) — this repo is PUBLIC.
+# Keep these in ~/.megavibe/personal/nondev/ instead.
+nondev/template/icon.*
+nondev/PILOT-BRIEF.md
+nondev/org/

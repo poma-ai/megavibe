@@ -138,10 +138,13 @@ end tell
 APPLESCRIPT
     rm -rf "$APP" 2>/dev/null || true
     if osacompile -o "$APP" "$TMP_SCPT" 2>/dev/null; then
-      # POMA mark with MV inside, so it is recognisable in the Dock
-      if [ -f "$SRC/template/icon.icns" ]; then
-        cp "$SRC/template/icon.icns" "$APP/Contents/Resources/applet.icns" 2>/dev/null \
-          && touch "$APP" && ok "icon applied"
+      # Branding comes from a private overlay, never from this repo: megavibe is
+      # public and MIT, so company logos and named pilots do not belong in it.
+      # Point MEGAVIBE_NONDEV_OVERLAY at your own dir, or use the default below.
+      OVERLAY="${MEGAVIBE_NONDEV_OVERLAY:-$HOME/.megavibe/personal/nondev}"
+      if [ -f "$OVERLAY/icon.icns" ]; then
+        cp "$OVERLAY/icon.icns" "$APP/Contents/Resources/applet.icns" 2>/dev/null \
+          && touch "$APP" && ok "icon applied (from overlay)"
       fi
       ok "launcher created: $APP  (drag it to the Dock)"
     else

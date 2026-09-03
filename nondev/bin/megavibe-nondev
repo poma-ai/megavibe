@@ -53,6 +53,18 @@ CLAUDE_ARGS=(
   --append-system-prompt "$(cat "$PROTOCOL")"
 )
 
+# Remote Control: the session still starts HERE, inside the sandbox and under
+# the admin policy — the Claude app merely attaches to it. That is the safe way
+# to give a non-technical colleague a phone/desktop app interface: starting a
+# session from inside the app instead would bypass the sandbox entirely.
+case "${MEGAVIBE_NONDEV_REMOTE:-}" in
+  1|true|yes) CLAUDE_ARGS+=( --remote-control "${MEGAVIBE_NONDEV_REMOTE_NAME:-Megavibe}" ) ;;
+esac
+for a in "$@"; do
+  [ "$a" = "--remote" ] && CLAUDE_ARGS+=( --remote-control "${MEGAVIBE_NONDEV_REMOTE_NAME:-Megavibe}" )
+done
+set -- "${@/--remote/}"
+
 if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null; then
   exec sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@"
 fi
