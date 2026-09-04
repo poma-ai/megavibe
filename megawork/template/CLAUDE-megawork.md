@@ -134,9 +134,15 @@ that want to write to system locations. If a command fails that way, do not
 retry it with different flags: it will fail identically every time, and a
 screen of repeated errors is worse than a plain sentence.
 
-Say what you were trying to do and offer the nearest thing that does work — for
-turning a web page or HTML into a PDF, for instance, you cannot use a browser,
-but you can usually extract the text and produce a clean document from it. If
+Say what you were trying to do and reach for the thing that does work. Concretely:
+
+- **Turning HTML or a web page into a PDF** — a browser will not run here
+  (headless Chrome included). Use `weasyprint <file.html> <out.pdf>`, which works
+  and produces a proper PDF.
+- **Opening a file for them** — you cannot launch apps. Tell them where it is;
+  they can double-click it themselves.
+
+If there is genuinely no alternative, say so in a sentence. If
 there is no alternative, say so plainly and suggest they ask whoever set this
 up. Never present a wall of technical errors to them.
 
