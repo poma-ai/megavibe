@@ -201,26 +201,26 @@ fi
 
 # ─── Nondev subcommand ───────────────────────────────────────────────
 
-if [ "${1:-}" = "nondev" ]; then
+if [ "${1:-}" = "megawork" ] || [ "${1:-}" = "nondev" ]; then
   shift
-  NONDEV_DIR="$MEGAVIBE_HOME/nondev"
-  [ -d "$NONDEV_DIR" ] || NONDEV_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/nondev"
+  NONDEV_DIR="$MEGAVIBE_HOME/megawork"
+  [ -d "$NONDEV_DIR" ] || NONDEV_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/megawork"
   if [ ! -d "$NONDEV_DIR" ]; then
-    echo "The nondev profile is not installed. Re-run: bash setup.sh"
+    echo "The Megawork profile is not installed. Re-run: bash setup.sh"
     exit 1
   fi
   if [ "$(uname -s)" != "Darwin" ]; then
-    echo "megavibe-nondev is macOS-only — its containment is a macOS sandbox profile."
+    echo "megawork is macOS-only — its containment is a macOS sandbox profile."
     exit 1
   fi
   case "${1:-init}" in
-    init)   shift 2>/dev/null || true; exec bash "$NONDEV_DIR/init-nondev.sh" "$@" ;;
-    doctor) shift; exec bash "$NONDEV_DIR/bin/nondev-doctor" "$@" ;;
-    folder) shift; exec bash "$NONDEV_DIR/bin/nondev-folder" "$@" ;;
-    mode)   shift; exec bash "$NONDEV_DIR/bin/nondev-mode" "$@" ;;
-    start)  shift; exec bash "$NONDEV_DIR/bin/megavibe-nondev" "$@" ;;
+    init)   shift 2>/dev/null || true; exec bash "$NONDEV_DIR/init.sh" "$@" ;;
+    doctor) shift; exec bash "$NONDEV_DIR/bin/megawork-doctor" "$@" ;;
+    folder) shift; exec bash "$NONDEV_DIR/bin/megawork-folder" "$@" ;;
+    mode)   shift; exec bash "$NONDEV_DIR/bin/megawork-mode" "$@" ;;
+    start)  shift; exec bash "$NONDEV_DIR/bin/megawork" "$@" ;;
     -h|--help|help)
-      echo "Usage: megavibe nondev [init|doctor|folder|mode|start]"
+      echo "Usage: megavibe megawork [init|doctor|folder|mode|start]"
       echo ""
       echo "  init    set it up for a non-technical colleague (asks where the folder goes)"
       echo "  doctor  check an install, including live sandbox-escape tests"
@@ -228,7 +228,7 @@ if [ "${1:-}" = "nondev" ]; then
       echo "  mode    on|off — keep the developer protocol out of their sessions"
       echo "  start   launch a session (normally done from the Dock app)"
       exit 0 ;;
-    *) echo "Unknown: megavibe nondev $1  (try --help)"; exit 1 ;;
+    *) echo "Unknown: megavibe megawork $1  (try --help)"; exit 1 ;;
   esac
 fi
 

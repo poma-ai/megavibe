@@ -1,4 +1,4 @@
-# megavibe-nondev — jail spike results
+# megawork — jail spike results
 
 Run: 2026-09-04T00:01:53Z · model `haiku` · Claude Code 2.1.260 (Claude Code)
 

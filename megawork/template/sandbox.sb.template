@@ -1,7 +1,7 @@
-; megavibe-nondev seatbelt profile — the REAL containment boundary.
+; megawork seatbelt profile — the REAL containment boundary.
 ;
 ; Claude Code's --restricted mode confines its own file tools but NOT Bash
-; (proven: nondev/spike/RESULTS-capable.md, B2/B3 — Bash both wrote and read
+; (proven: megawork/spike/RESULTS-capable.md, B2/B3 — Bash both wrote and read
 ; outside the folder). Rather than forbid Bash and cripple the assistant, the
 ; kernel enforces the boundary and Bash stays available.
 ;

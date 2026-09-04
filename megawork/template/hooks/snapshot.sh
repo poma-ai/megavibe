@@ -5,11 +5,11 @@ set -uo pipefail
 command -v jq &>/dev/null || exit 0
 IN=$(cat); F=$(printf '%s' "$IN" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
 [ -n "$F" ] && [ -f "$F" ] || exit 0
-DATA="${MEGAVIBE_NONDEV_DATA:-$PWD}"
+DATA="${MEGAWORK_DATA:-$PWD}"
 # Snapshots live in the ENGINE, not the data folder: when the folder is a
 # Google Drive / iCloud location, writing dozens of copies into it would sync
 # them to the cloud and clutter what the colleague sees.
-SNAPDIR="${MEGAVIBE_NONDEV_ENGINE:-$HOME/.megavibe-nondev}/snapshots"
+SNAPDIR="${MEGAWORK_ENGINE:-$HOME/.megawork}/snapshots"
 case "$F" in "$DATA"/*) ;; *) exit 0 ;; esac          # only our own folder
 case "$F" in *"/snapshots/"*) exit 0 ;; esac            # never snapshot snapshots
 STAMP=$(date +%Y%m%d-%H%M%S)

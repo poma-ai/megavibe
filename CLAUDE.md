@@ -28,7 +28,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
-| `nondev/` | Derived profile for non-technical users (sandbox, launcher, doctor) | Medium — see `nondev/README.md` |
+| `megawork/` | Derived profile Megawork — the profile for non-technical colleagues | Medium — see `megawork/README.md` |
 | `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Gemini key provisioning and model probing | Medium — touches credentials |
 | `README-watcher.md` | Context-watcher detail | Low |
 | `.agent/` | Live context for developing megavibe itself | Continuous |

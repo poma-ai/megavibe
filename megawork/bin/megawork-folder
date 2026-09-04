@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nondev-folder — show or change where the working folder lives.
+# megawork-folder — show or change where the working folder lives.
 #
 # "Actually, I'd rather work in my Drive 'Client work' folder" is a normal thing
 # to want, and it should not require an admin, a reinstall, or knowing what a
@@ -7,10 +7,10 @@
 # the policy so the sandbox follows.
 #
 # Usage:
-#   nondev-folder                 show the current folder
-#   nondev-folder --list          list places it could live (incl. Google Drive)
-#   nondev-folder <path>          move there (asks before moving any files)
-#   nondev-folder <path> --keep   re-point without moving existing files
+#   megawork-folder                 show the current folder
+#   megawork-folder --list          list places it could live (incl. Google Drive)
+#   megawork-folder <path>          move there (asks before moving any files)
+#   megawork-folder <path> --keep   re-point without moving existing files
 
 set -uo pipefail
 
@@ -22,8 +22,8 @@ while [ -L "$_self" ]; do
   _link=$(readlink "$_self")
   case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
 done
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
-[ -d "$ENGINE" ] || { echo "megavibe-nondev is not set up on this Mac."; exit 1; }
+ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
+[ -d "$ENGINE" ] || { echo "megawork is not set up on this Mac."; exit 1; }
 CUR=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
 
 gdrive_roots() {
@@ -40,15 +40,15 @@ case "${1:-}" in
       *) echo "  (on this Mac only)" ;;
     esac
     echo ""
-    echo "To move it:      nondev-folder \"<new path>\""
-    echo "To see options:  nondev-folder --list"
+    echo "To move it:      megawork-folder \"<new path>\""
+    echo "To see options:  megawork-folder --list"
     exit 0 ;;
   --list)
     echo "Places the folder could live:"
     echo "  $HOME/Megavibe    (this Mac only)"
     while IFS= read -r r; do [ -n "$r" ] && echo "  $r/Megavibe"; done < <(gdrive_roots)
     echo ""
-    echo "Then run:  nondev-folder \"<the path you want>\""
+    echo "Then run:  megawork-folder \"<the path you want>\""
     exit 0 ;;
 esac
 
@@ -104,7 +104,7 @@ printf '%s\n' "$NEW_REAL" > "$ENGINE/data-dir"
 
 # Prove the new profile loads before declaring success.
 if command -v sandbox-exec &>/dev/null && ! sandbox-exec -f "$ENGINE/policy/sandbox.sb" /usr/bin/true 2>/dev/null; then
-  echo "The new settings did not load correctly — ask your admin to run: nondev-doctor"; exit 1
+  echo "The new settings did not load correctly — ask your admin to run: megawork-doctor"; exit 1
 fi
 
 echo ""

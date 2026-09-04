@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Self-serve installer for megavibe-nondev.
+# Self-serve installer for megawork.
 #
-#   curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/nondev/install-nondev.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/megawork/install.sh | bash
 #
 # Written to be run by the person who will actually use it — no admin, no repo
 # checkout, no jargon in the output. It fetches a tarball (no git required, so
@@ -44,7 +44,7 @@ else
 fi
 
 # ── 2. The files ────────────────────────────────────────────────────
-SRC="${MEGAVIBE_NONDEV_SRC:-}"
+SRC="${MEGAWORK_SRC:-}"
 if [ -z "$SRC" ]; then
   say "  Downloading the assistant setup…"
   TMP=$(mktemp -d) || die "could not create a temporary folder."
@@ -53,15 +53,15 @@ if [ -z "$SRC" ]; then
   curl -fsSL https://codeload.github.com/poma-ai/megavibe/tar.gz/refs/heads/main \
     | tar -xz -C "$TMP" 2>/dev/null || die "the download failed. Check the internet connection and try again."
   SRC=$(find "$TMP" -maxdepth 1 -type d -name 'megavibe-*' | head -1)
-  [ -n "$SRC" ] && [ -d "$SRC/nondev" ] || die "the download looked wrong."
+  [ -n "$SRC" ] && [ -d "$SRC/megawork" ] || die "the download looked wrong."
   ok "Downloaded"
 fi
 
 # ── 3. Hand off to the real installer (it asks where the folder goes) ─
-MEGAVIBE_NONDEV_WRAPPED=1 bash "$SRC/nondev/init-nondev.sh" "$@" || die "setup did not finish."
+MEGAWORK_WRAPPED=1 bash "$SRC/megawork/init.sh" "$@" || die "setup did not finish."
 
 # ── 4. Sign in, if needed ───────────────────────────────────────────
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+ENGINE="${MEGAWORK_HOME:-$HOME/.megawork}"
 echo ""
 if [ -n "$TTY_IN" ] && ! (cd "$HOME" && perl -e 'alarm 60; exec @ARGV' claude --model haiku -p "ok" </dev/null 2>&1 | grep -qv "Not logged in"); then
   echo "${B}One thing left: signing in${R}"
@@ -80,5 +80,5 @@ echo ""
 echo "  Your folder is: $(cat "$ENGINE/data-dir" 2>/dev/null || echo "$HOME/Megavibe")"
 echo "  Put things you'd like help with into its ${B}Inbox${R}."
 echo ""
-echo "  If anything looks wrong later, run:  ${B}nondev-doctor${R}"
+echo "  If anything looks wrong later, run:  ${B}megawork-doctor${R}"
 echo ""

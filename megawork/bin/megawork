@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# megavibe-nondev launcher — starts a jailed, plain-language Claude session.
+# megawork launcher — starts a jailed, plain-language Claude session.
 #
-# Implements the launch contract proven by nondev/spike/jail-spike.sh (10/10):
+# Implements the launch contract proven by megawork/spike/jail-spike.sh (10/10):
 #   claude --restricted --strict-mcp-config --mcp-config <policy> \
 #          --settings <policy> --add-dir <data folder>
 #
@@ -27,14 +27,14 @@ while [ -L "$_self" ]; do
   _link=$(readlink "$_self")
   case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
 done
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
-DATA_DEFAULT="$HOME/megavibe-nondev"
+ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
+DATA_DEFAULT="$HOME/megawork"
 
-[ -d "$ENGINE" ] || { echo "megavibe-nondev is not set up on this Mac yet."; exit 1; }
+[ -d "$ENGINE" ] || { echo "megawork is not set up on this Mac yet."; exit 1; }
 
 DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "$DATA_DEFAULT")
 POLICY="$ENGINE/policy"
-PROTOCOL="$ENGINE/prompts/CLAUDE-nondev.md"
+PROTOCOL="$ENGINE/prompts/CLAUDE-megawork.md"
 
 for f in "$POLICY/settings.json" "$POLICY/mcp.json" "$PROTOCOL"; do
   [ -f "$f" ] || { echo "Something is missing from the setup ($(basename "$f")). Ask your admin to re-run the installer."; exit 1; }
@@ -54,15 +54,15 @@ cd "$DATA"
 STAMP="$ENGINE/logs/.update-checked"
 if [ ! -f "$STAMP" ] || [ -n "$(find "$STAMP" -mtime +7 2>/dev/null)" ]; then
   touch "$STAMP" 2>/dev/null
-  if [ -x "$ENGINE/bin/nondev-update" ] && "$ENGINE/bin/nondev-update" --check >/dev/null 2>&1; then
-    echo "  A newer version is available — run: nondev-update"
+  if [ -x "$ENGINE/bin/megawork-update" ] && "$ENGINE/bin/megawork-update" --check >/dev/null 2>&1; then
+    echo "  A newer version is available — run: megawork-update"
     echo ""
   fi
 fi
 
 # The containment boundary is the macOS sandbox, NOT Claude's own flags:
 # --restricted confines Claude's file tools but leaves Bash free to read and
-# write anywhere (proven in nondev/spike/RESULTS-capable.md). Enforcing in the
+# write anywhere (proven in megawork/spike/RESULTS-capable.md). Enforcing in the
 # kernel instead lets the assistant keep Bash, MCP servers and the colleague's
 # own claude.ai connectors — capability the colleague actually needs — while
 # writes stay inside their folder and secrets stay unreadable.
@@ -82,12 +82,12 @@ CLAUDE_ARGS=(
 # substitution, not removal: it left an empty argv element, mangled
 # --remote-control into -control, and corrupted any prompt containing the text.
 REMOTE=0
-case "${MEGAVIBE_NONDEV_REMOTE:-}" in 1|true|yes) REMOTE=1 ;; esac
+case "${MEGAWORK_REMOTE:-}" in 1|true|yes) REMOTE=1 ;; esac
 REST=()
 for a in "$@"; do
   if [ "$a" = "--remote" ]; then REMOTE=1; else REST+=( "$a" ); fi
 done
-[ "$REMOTE" -eq 1 ] && CLAUDE_ARGS+=( --remote-control "${MEGAVIBE_NONDEV_REMOTE_NAME:-Megavibe}" )
+[ "$REMOTE" -eq 1 ] && CLAUDE_ARGS+=( --remote-control "${MEGAWORK_REMOTE_NAME:-Megavibe}" )
 set -- ${REST+"${REST[@]}"}
 
 # Probe the profile: `-f exists` is not the same as `it loads`. A syntax error
@@ -108,7 +108,7 @@ finish_pending_connect() {
   echo ""
   # Re-run the same command out here, where there is a terminal and the
   # credential stores are writable. One code path, not two.
-  "$ENGINE/bin/nondev-connect" "$name" || echo "  Sign-in didn't finish — you can try again any time."
+  "$ENGINE/bin/megawork-connect" "$name" || echo "  Sign-in didn't finish — you can try again any time."
   echo ""
   return 0
 }

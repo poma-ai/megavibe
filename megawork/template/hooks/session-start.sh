@@ -2,7 +2,7 @@
 # SessionStart — hand the assistant a factual picture of the folder so it can
 # open with two or three concrete offers instead of "how can I help you?".
 set -uo pipefail
-DATA="${MEGAVIBE_NONDEV_DATA:-$PWD}"
+DATA="${MEGAWORK_DATA:-$PWD}"
 [ -d "$DATA" ] || exit 0
 # Filenames are UNTRUSTED: anyone who can drop a file in (Google Drive shares,
 # email attachments) controls this text, and it lands in the model's context
@@ -19,7 +19,7 @@ IN=$(list Inbox); WIP=$(list Workspace); DONE=$(list Delivered)
   if [ -n "$WIP" ]; then echo "In Workspace (unfinished):"; echo "$WIP"; fi
   if [ -n "$DONE" ]; then echo "Recently delivered:"; echo "$DONE"; fi
   echo "</untrusted-filenames>"
-  HIST="${MEGAVIBE_NONDEV_ENGINE:-$HOME/.megavibe-nondev}/agent/HISTORY.md"
+  HIST="${MEGAWORK_ENGINE:-$HOME/.megawork}/agent/HISTORY.md"
   if [ -s "$HIST" ]; then
     echo ""
     echo "Recently, with this person (your own notes, not theirs):"

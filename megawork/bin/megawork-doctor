@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# nondev-doctor — verify an installed megavibe-nondev, including that the
+# megawork-doctor — verify an installed megawork, including that the
 # sandbox actually contains a real write attempt. Safe to run any time; makes
 # no changes. Written to be readable over a screen share.
 #
-# Usage: nondev-doctor [--verbose]
+# Usage: megawork-doctor [--verbose]
 
 set -uo pipefail
 
@@ -15,7 +15,7 @@ while [ -L "$_self" ]; do
   _link=$(readlink "$_self")
   case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
 done
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
+ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 VERBOSE=0; [ "${1:-}" = "--verbose" ] && VERBOSE=1
 
 P=0; F=0; W=0
@@ -23,7 +23,7 @@ ok(){   P=$((P+1)); echo "  ✓ $*"; }
 bad(){  F=$((F+1)); echo "  ✗ $*"; }
 warn(){ W=$((W+1)); echo "  ! $*"; }
 
-echo "megavibe-nondev health check"
+echo "megawork health check"
 echo ""
 
 # ── install layout ──
@@ -33,14 +33,14 @@ DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
 for d in Inbox Workspace Delivered Library; do
   [ -d "$DATA/$d" ] || warn "missing subfolder: $d"
 done
-for f in policy/settings.json policy/mcp.json policy/sandbox.sb prompts/CLAUDE-nondev.md; do
+for f in policy/settings.json policy/mcp.json policy/sandbox.sb prompts/CLAUDE-megawork.md; do
   [ -f "$ENGINE/$f" ] && [ -s "$ENGINE/$f" ] || bad "missing or empty: $f"
 done
 # executables must actually be executable — a chmod -x hook fails silently
-for f in bin/megavibe-nondev bin/nondev-doctor bin/nondev-mode bin/nondev-connect bin/nondev-update hooks/snapshot.sh hooks/session-start.sh; do
+for f in bin/megawork bin/megawork-doctor bin/megawork-mode bin/megawork-connect bin/megawork-update hooks/snapshot.sh hooks/session-start.sh; do
   [ -x "$ENGINE/$f" ] || bad "missing or not executable: $f"
 done
-command -v megavibe-nondev &>/dev/null || warn "megavibe-nondev is not on PATH — start it with $ENGINE/bin/megavibe-nondev"
+command -v megawork &>/dev/null || warn "megawork is not on PATH — start it with $ENGINE/bin/megawork"
 # jq, not python3: on a Mac without Xcode CLT, /usr/bin/python3 is a stub that
 # pops a "install developer tools?" dialog and then fails, which would report a
 # perfectly good policy as broken.
@@ -68,7 +68,7 @@ fi
 
 # ── the important one: does the sandbox really contain a write? ──
 if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; then
-  CANARY="$HOME/.nondev-doctor-canary-$$"
+  CANARY="$HOME/.megawork-doctor-canary-$$"
   sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$CANARY'" 2>/dev/null
   if [ -f "$CANARY" ]; then
     bad "SANDBOX NOT CONTAINING WRITES — a session could write outside the folder"
@@ -107,7 +107,7 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
   rm -f "$HOME/.claude/hooks/.doctor-$$" 2>/dev/null
   [ "$CFG_LEAK" -eq 0 ] && ok "Claude's settings, protocol and hooks are protected from the sandbox"
 
-  IN_CANARY="$DATA/.doctor-canary-$$"
+  IN_CANARY="$DATA/.megawork-canary-$$"
   sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$IN_CANARY'" 2>/dev/null
   if [ -f "$IN_CANARY" ]; then ok "writes inside the folder work"; rm -f "$IN_CANARY"
   else bad "cannot write INSIDE the folder — the assistant will not be able to save anything"; fi
@@ -117,8 +117,8 @@ fi
 if command -v claude &>/dev/null; then
   # Probe through the REAL launcher (sandbox + policy + protocol), so a broken
   # combination fails here rather than at the Dock.
-  OUT=$(MEGAVIBE_NONDEV_HOME="$ENGINE" perl -e 'alarm 150; exec @ARGV' \
-        "$ENGINE/bin/megavibe-nondev" --model haiku -p "reply with exactly: DOCTOR-OK" </dev/null 2>&1 | tail -2)
+  OUT=$(MEGAWORK_HOME="$ENGINE" perl -e 'alarm 150; exec @ARGV' \
+        "$ENGINE/bin/megawork" --model haiku -p "reply with exactly: DOCTOR-OK" </dev/null 2>&1 | tail -2)
   case "$OUT" in
     *DOCTOR-OK*)      ok "a real session starts, signed in, under the full policy" ;;
     *"Not logged in"*|*login*) bad "not signed in — run 'claude' once and sign in" ;;
@@ -133,7 +133,7 @@ command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI —
 
 # ── one machine, one protocol ──
 if [ -f "$HOME/.claude/CLAUDE.md" ] && grep -q 'megavibe-v3' "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
-  warn "classic megavibe protocol is active — nondev sessions inherit developer rules (run: nondev-mode on)"
+  warn "classic megavibe protocol is active — Megawork sessions inherit developer rules (run: megawork-mode on)"
 else
   ok "no conflicting protocol (plain-language assistant only)"
 fi
@@ -151,7 +151,7 @@ if command -v claude &>/dev/null; then
   CONN=$(claude mcp list 2>/dev/null | grep -cE '^(gmail|slack|linear|hubspot|analytics)[: ]') || CONN=0
   CONN=${CONN//[^0-9]/}; CONN=${CONN:-0}
   grep -q "(subpath \"$HOME/Library/Mail\")" "$ENGINE/policy/sandbox.sb" 2>/dev/null || CONN=$((CONN+1))
-  [ "$CONN" -gt 0 ] && ok "$CONN service(s) connected (nondev-connect to review)" \
+  [ "$CONN" -gt 0 ] && ok "$CONN service(s) connected (megawork-connect to review)" \
                     || ok "no outside services connected (the default)"
 fi
 

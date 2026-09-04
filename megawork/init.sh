@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Provision megavibe-nondev. Normally reached via the self-serve one-liner
-# (nondev/install-nondev.sh), which downloads this and hands off to it.
+# Provision megawork. Normally reached via the self-serve one-liner
+# (megawork/install.sh), which downloads this and hands off to it.
 #
 # Creates:
-#   ~/.megavibe-nondev/      engine: policy, protocol, launcher   (control plane)
-#   ~/megavibe-nondev/       the colleague's four folders          (data plane)
+#   ~/.megawork/      engine: policy, protocol, launcher   (control plane)
+#   ~/megawork/       the colleague's four folders          (data plane)
 #   /Applications/…app       Dock-able launcher                    (optional)
 #
 # The two planes are separate on purpose: the session can write the data folder
 # but must never be able to rewrite its own guardrails. Kept out of
 # ~/Desktop and ~/Documents so iCloud sync cannot lock the folders mid-session.
 #
-# Usage: bash nondev/init-nondev.sh [--data DIR] [--gdrive [FolderName]]
+# Usage: bash megawork/init.sh [--data DIR] [--gdrive [FolderName]]
 #                                   [--folder-name NAME] [--name "App Name"] [--no-app]
 #
 # With no --data and a terminal, it asks where the folder should live and lists
@@ -20,9 +20,9 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
-DATA="$HOME/megavibe-nondev"
-APPNAME="Megavibe Nondev"
+ENGINE="${MEGAWORK_HOME:-$HOME/.megawork}"
+DATA="$HOME/megawork"
+APPNAME="Megawork"
 MAKE_APP=1
 USE_GDRIVE=0
 DATA_EXPLICIT=0
@@ -40,6 +40,25 @@ while [ $# -gt 0 ]; do
 done
 
 ok(){ echo "  ✓ $*"; }
+
+# This profile used to be called megavibe-nondev. Move an existing install
+# across rather than leaving someone with two half-configured copies.
+OLD_ENGINE="$HOME/.megavibe-nondev"
+if [ -d "$OLD_ENGINE" ] && [ ! -d "${MEGAWORK_HOME:-$HOME/.megawork}" ]; then
+  mv "$OLD_ENGINE" "${MEGAWORK_HOME:-$HOME/.megawork}" 2>/dev/null \
+    && echo "  ✓ moved your existing setup over from the old name"
+  rm -f "$HOME/.local/bin/megavibe-nondev" "$HOME/.local/bin/nondev-"* 2>/dev/null
+  rm -rf "/Applications/Megavibe Nondev.app" "/Applications/Megavibe.app" 2>/dev/null
+  # Bring their actual work across too — an engine without the folder it points
+  # at would leave someone staring at an empty assistant.
+  OLD_DATA=$(cat "${MEGAWORK_HOME:-$HOME/.megawork}/data-dir" 2>/dev/null || echo "")
+  if [ -n "$OLD_DATA" ] && [ -d "$OLD_DATA" ] && [ "$OLD_DATA" != "$DATA" ]; then
+    mkdir -p "$DATA"
+    if command -v rsync &>/dev/null; then rsync -a "$OLD_DATA"/ "$DATA"/ 2>/dev/null
+    else cp -R "$OLD_DATA"/. "$DATA"/ 2>/dev/null; fi
+    echo "  ✓ brought your files across (the old folder is left in place)"
+  fi
+fi
 
 # Ask the human, not stdin: piped installs (curl | bash) hand us the script on
 # stdin, so prompts must go to the controlling terminal.
@@ -129,19 +148,19 @@ chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || tru
 mkdir -p "$ENGINE/hooks"
 cp "$SRC/template/hooks/"*.sh "$ENGINE/hooks/" && chmod +x "$ENGINE/hooks/"*.sh
 # Keep the templates with the engine so the folder can be moved later on a
-# machine that has no copy of the repo (see bin/nondev-folder).
+# machine that has no copy of the repo (see bin/megawork-folder).
 mkdir -p "$ENGINE/templates/policy"
 cp "$SRC/template/sandbox.sb.template"          "$ENGINE/templates/"
 cp "$SRC/template/policy/settings.json.template" "$ENGINE/templates/policy/"
 cp "$SRC/template/policy/mcp.json"      "$ENGINE/policy/mcp.json"
-cp "$SRC/template/CLAUDE-nondev.md"     "$ENGINE/prompts/CLAUDE-nondev.md"
-cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
-cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
-cp "$SRC/bin/nondev-mode"               "$ENGINE/bin/nondev-mode"
-cp "$SRC/bin/nondev-folder"             "$ENGINE/bin/nondev-folder"
-cp "$SRC/bin/nondev-connect"            "$ENGINE/bin/nondev-connect"
-cp "$SRC/bin/nondev-update"             "$ENGINE/bin/nondev-update"
-chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode" "$ENGINE/bin/nondev-folder" "$ENGINE/bin/nondev-connect" "$ENGINE/bin/nondev-update"
+cp "$SRC/template/CLAUDE-megawork.md"     "$ENGINE/prompts/CLAUDE-megawork.md"
+cp "$SRC/bin/megawork"           "$ENGINE/bin/megawork"
+cp "$SRC/bin/megawork-doctor"             "$ENGINE/bin/megawork-doctor"
+cp "$SRC/bin/megawork-mode"               "$ENGINE/bin/megawork-mode"
+cp "$SRC/bin/megawork-folder"             "$ENGINE/bin/megawork-folder"
+cp "$SRC/bin/megawork-connect"            "$ENGINE/bin/megawork-connect"
+cp "$SRC/bin/megawork-update"             "$ENGINE/bin/megawork-update"
+chmod +x "$ENGINE/bin/megawork" "$ENGINE/bin/megawork-doctor" "$ENGINE/bin/megawork-mode" "$ENGINE/bin/megawork-folder" "$ENGINE/bin/megawork-connect" "$ENGINE/bin/megawork-update"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
 printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
@@ -176,7 +195,7 @@ in normal words. For example: "summarise the three PDFs I put in Inbox".
 Your assistant can only see and change things inside this folder.
 
 Want it somewhere else — a Google Drive folder, say? Open the app and just ask,
-or run: nondev-folder --list
+or run: megawork-folder --list
 TXT
 ok "folder ready at $DATA"
 
@@ -193,7 +212,7 @@ try:
 except Exception:
     sys.exit(0)                      # never damage an unreadable config
 cfg.setdefault("projects", {}).setdefault(sys.argv[1], {})["hasTrustDialogAccepted"] = True
-tmp = path + ".nondev-tmp"
+tmp = path + ".megawork-tmp"
 with open(tmp, "w") as fh:
     json.dump(cfg, fh, indent=2)
 os.replace(tmp, path)
@@ -203,27 +222,27 @@ fi
 
 # ─── CLI shortcut ───────────────────────────────────────────────────
 mkdir -p "$HOME/.local/bin"
-ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
-ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
-ln -sf "$ENGINE/bin/nondev-mode"    "$HOME/.local/bin/nondev-mode"
-ln -sf "$ENGINE/bin/nondev-folder"  "$HOME/.local/bin/nondev-folder"
-ln -sf "$ENGINE/bin/nondev-connect" "$HOME/.local/bin/nondev-connect"
-ln -sf "$ENGINE/bin/nondev-update"  "$HOME/.local/bin/nondev-update"
-# ~/.local/bin is NOT on a stock macOS PATH, so "just run megavibe-nondev"
+ln -sf "$ENGINE/bin/megawork" "$HOME/.local/bin/megawork"
+ln -sf "$ENGINE/bin/megawork-doctor"  "$HOME/.local/bin/megawork-doctor"
+ln -sf "$ENGINE/bin/megawork-mode"    "$HOME/.local/bin/megawork-mode"
+ln -sf "$ENGINE/bin/megawork-folder"  "$HOME/.local/bin/megawork-folder"
+ln -sf "$ENGINE/bin/megawork-connect" "$HOME/.local/bin/megawork-connect"
+ln -sf "$ENGINE/bin/megawork-update"  "$HOME/.local/bin/megawork-update"
+# ~/.local/bin is NOT on a stock macOS PATH, so "just run megawork"
 # would be a lie on a clean machine. Persist it, idempotently.
-if ! command -v megavibe-nondev &>/dev/null; then
+if ! command -v megawork &>/dev/null; then
   for _rc in "$HOME/.zprofile" "$HOME/.zshrc"; do
     if [ -f "$_rc" ] || [ "$_rc" = "$HOME/.zprofile" ]; then
-      grep -q 'megavibe-nondev PATH' "$_rc" 2>/dev/null || \
-        printf '\n# megavibe-nondev PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$_rc"
+      grep -q 'megawork PATH' "$_rc" 2>/dev/null || \
+        printf '\n# megawork PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$_rc"
       break
     fi
   done
   export PATH="$HOME/.local/bin:$PATH"
 fi
-ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-folder, nondev-connect, nondev-update"
+ok "commands installed: megawork, megawork-doctor, megawork-mode, megawork-folder, megawork-connect, megawork-update"
 
-# One machine, one protocol. A nondev session is not --restricted, so a
+# One machine, one protocol. A Megawork session is not --restricted, so a
 # user-level classic megavibe protocol would otherwise leak developer rules
 # (.agent writes, git discipline, spinouts) into the plain-language assistant.
 if [ -f "$HOME/.claude/CLAUDE.md" ]; then
@@ -232,15 +251,15 @@ if [ -f "$HOME/.claude/CLAUDE.md" ]; then
   echo "  Both can live here — the simple assistant is told to ignore the"
   echo "  developer rules, and it does. If you never use the developer version,"
   echo "  setting it aside makes the assistant a shade cleaner."
-  echo "  (Nothing is deleted either way; 'nondev-mode off' puts it back.)"
+  echo "  (Nothing is deleted either way; 'megawork-mode off' puts it back.)"
   if interactive; then
     ask "  Keep the developer version fully working? [Y/n] " _pk
     case "${_pk:-y}" in
-      [nN]*) bash "$ENGINE/bin/nondev-mode" on ;;
+      [nN]*) bash "$ENGINE/bin/megawork-mode" on ;;
       *)     echo "  ✓ keeping both — nothing changed" ;;
     esac
   else
-    echo "  → keeping both (run 'nondev-mode on' later if you prefer)"
+    echo "  → keeping both (run 'megawork-mode on' later if you prefer)"
   fi
 fi
 
@@ -248,14 +267,14 @@ fi
 if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
   APP="/Applications/${APPNAME}.app"
   if command -v osacompile &>/dev/null; then
-    TMP_SCPT=$(mktemp -t nondevapp).applescript
+    TMP_SCPT=$(mktemp -t megaworkapp).applescript
     # Open Terminal on the launcher. Terminal (not the Claude desktop app) is
     # deliberate: the desktop app does not honour these CLI flags, so it would
     # silently bypass the jail.
     cat > "$TMP_SCPT" <<APPLESCRIPT
 tell application "Terminal"
     activate
-    set w to do script "clear; '$ENGINE/bin/megavibe-nondev'"
+    set w to do script "clear; '$ENGINE/bin/megawork'"
     try
         set custom title of w to "$APPNAME"
     end try
@@ -269,8 +288,8 @@ APPLESCRIPT
     if osacompile -o "$STAGE" "$TMP_SCPT" 2>/dev/null && rm -rf "$APP" && mv "$STAGE" "$APP"; then
       # Branding comes from a private overlay, never from this repo: megavibe is
       # public and MIT, so company logos and named pilots do not belong in it.
-      # Point MEGAVIBE_NONDEV_OVERLAY at your own dir, or use the default below.
-      OVERLAY="${MEGAVIBE_NONDEV_OVERLAY:-$HOME/.megavibe/personal/nondev}"
+      # Point MEGAWORK_OVERLAY at your own dir, or use the default below.
+      OVERLAY="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}"
       if [ -f "$OVERLAY/icon.icns" ]; then
         # osacompile no longer ships a default applet.icns, so create the
         # Resources dir and register the icon rather than copying into thin air.
@@ -292,7 +311,7 @@ APPLESCRIPT
       ok "launcher created: $APP  (drag it to the Dock)"
     else
       echo "  ! could not create the launcher app (existing app left untouched)"
-      echo "    it can still be started by running: $ENGINE/bin/megavibe-nondev"
+      echo "    it can still be started by running: $ENGINE/bin/megawork"
     fi
     rm -rf "$STAGE_DIR"; rm -f "$TMP_SCPT" "${TMP_SCPT%.applescript}"
   fi
@@ -318,7 +337,7 @@ if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; 
   fi
 fi
 
-if [ -z "${MEGAVIBE_NONDEV_WRAPPED:-}" ]; then
+if [ -z "${MEGAWORK_WRAPPED:-}" ]; then
   echo ""
   echo "Done. Next:"
   echo "  1. run 'claude' once and sign in"

@@ -557,13 +557,13 @@ fi
 [ -n "${MEGAVIBE_HOME:-}" ] || { err "MEGAVIBE_HOME is empty — refusing to rm -rf"; exit 1; }
 rm -rf "$MEGAVIBE_HOME/template"
 cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
-# The nondev profile ships with the install too — the curl installer clones to a
-# temp dir and deletes it, so without this `megavibe nondev` would have nothing
+# The Megawork profile ships with the install too — the curl installer clones to a
+# temp dir and deletes it, so without this `megavibe megawork` would have nothing
 # to run and the documented setup path would be broken for every quickstart user.
-if [ -d "$SCRIPT_DIR/nondev" ]; then
-  rm -rf "$MEGAVIBE_HOME/nondev"
-  cp -R "$SCRIPT_DIR/nondev" "$MEGAVIBE_HOME/nondev"
-  chmod +x "$MEGAVIBE_HOME/nondev/init-nondev.sh" "$MEGAVIBE_HOME/nondev/bin/"* 2>/dev/null || true
+if [ -d "$SCRIPT_DIR/megawork" ]; then
+  rm -rf "$MEGAVIBE_HOME/megawork"
+  cp -R "$SCRIPT_DIR/megawork" "$MEGAVIBE_HOME/megawork"
+  chmod +x "$MEGAVIBE_HOME/megawork/init.sh" "$MEGAVIBE_HOME/megawork/bin/"* 2>/dev/null || true
 fi
 ok "~/.megavibe/ synced"
 

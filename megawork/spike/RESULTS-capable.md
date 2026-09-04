@@ -1,4 +1,4 @@
-# megavibe-nondev — capability spike (Phase 1b)
+# megawork — capability spike (Phase 1b)
 
 Question: contract A (jail-spike, 10/10) contains perfectly but removes Bash and
 every MCP server. Colleagues need to actually get work done, and should be able
@@ -32,7 +32,7 @@ means the boundary must move to the OS.
 ## Contract D — macOS seatbelt sandbox, no `--restricted` (ADOPTED)
 
 > **Provenance: manually verified, not scripted.** `capable-spike.sh` produces the
-> B and C tables above; the D results below were run by hand. `nondev-doctor` now
+> B and C tables above; the D results below were run by hand. `megawork-doctor` now
 > re-checks the three that matter (outside write, `open` escape, `~/.claude`
 > write) on every run, which is the reproducible form of this evidence.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# megavibe-nondev — Phase 1 jail-proving spike.
+# megawork — Phase 1 jail-proving spike.
 #
 # Proves (or disproves) the launch contract BEFORE any product work:
 #   claude --restricted --strict-mcp-config --mcp-config <policy> \
@@ -9,8 +9,8 @@
 # the verdict is taken from the FILESYSTEM wherever possible (did the write land
 # outside the jail?) rather than from what the model says about itself.
 #
-# Usage: bash nondev/spike/jail-spike.sh [--model haiku] [--keep]
-# Writes nondev/spike/RESULTS.md.
+# Usage: bash megawork/spike/jail-spike.sh [--model haiku] [--keep]
+# Writes megawork/spike/RESULTS.md.
 
 set -euo pipefail
 
@@ -27,8 +27,8 @@ done
 command -v claude &>/dev/null || { echo "claude CLI not found" >&2; exit 1; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT=$(mktemp -d "${TMPDIR:-/tmp}/nondev-spike.XXXXXX")
-DATA="$ROOT/megavibe-nondev"          # the only writable surface
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/megawork-spike.XXXXXX")
+DATA="$ROOT/megawork"          # the only writable surface
 OUTSIDE="$ROOT/outside"               # stands in for the rest of the machine
 POLICY="$ROOT/policy"
 mkdir -p "$DATA/Inbox" "$DATA/Workspace" "$OUTSIDE" "$POLICY"
@@ -167,7 +167,7 @@ else
 fi
 
 cat > "$HERE/RESULTS.md" <<MD
-# megavibe-nondev — jail spike results
+# megawork — jail spike results
 
 Run: $(date -u '+%Y-%m-%dT%H:%M:%SZ') · model \`$MODEL\` · Claude Code $(claude --version 2>/dev/null)
 

@@ -1,4 +1,4 @@
-# megavibe-nondev
+# megawork
 
 A megavibe profile for people who are not programmers: plain language, a single
 folder they own, and an OS-enforced boundary so nothing they ask for can wander
@@ -6,7 +6,7 @@ outside it. Same harness underneath — hooks, context files, subagents, backend
 
 Status: the *fallback* contract is scripted and passes 10/10 (`spike/RESULTS.md`);
 the adopted seatbelt contract is measured in `spike/RESULTS-capable.md` §D and
-re-checked live by `nondev-doctor` on every run. An adversarial review closed two
+re-checked live by `megawork-doctor` on every run. An adversarial review closed two
 sandbox escapes (see §D "Post-review hardening"). Installs, runs, and has been
 exercised end to end — but not yet piloted with a real non-technical user.
 
@@ -15,7 +15,7 @@ exercised end to end — but not yet piloted with a real non-technical user.
 **Self-serve — the person installs it themselves, one line, no admin:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/nondev/install-nondev.sh | bash
+curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/megawork/install.sh | bash
 ```
 
 It installs Claude Code if missing, downloads via tarball (no `git`, so macOS
@@ -26,9 +26,9 @@ the pipe does not eat the answers.
 From a checkout, or for a scripted install:
 
 ```bash
-bash nondev/init-nondev.sh                          # asks where the folder goes
-bash nondev/init-nondev.sh --gdrive "Client work"   # straight to Google Drive
-nondev-doctor                                       # verify, incl. escape canaries
+bash megawork/init.sh                          # asks where the folder goes
+bash megawork/init.sh --gdrive "Client work"   # straight to Google Drive
+megawork-doctor                                       # verify, incl. escape canaries
 ```
 
 Run interactively, the installer lists the locations that actually exist on the
@@ -40,9 +40,9 @@ Then, once: sign in with `claude`, and drag the app from `/Applications` to the 
 Afterwards the person can move it themselves, without an admin:
 
 ```bash
-nondev-folder            # where is my folder?
-nondev-folder --list     # where could it be?
-nondev-folder "/path"    # move it there (copies, never a bare move)
+megawork-folder            # where is my folder?
+megawork-folder --list     # where could it be?
+megawork-folder "/path"    # move it there (copies, never a bare move)
 ```
 
 They can also just *ask the assistant* to do it — the protocol tells it how.
@@ -71,12 +71,12 @@ capability, never reduced containment.
 Nothing is connected by default — not mail, not chat, not the CRM. Wiring all of
 that up at install time reads as creepy even when it is convenient, so consent is
 just-in-time instead: the assistant notices a task would be better with one, says
-so in a sentence, and offers. `nondev-connect` does the rest.
+so in a sentence, and offers. `megawork-connect` does the rest.
 
 ```bash
-nondev-connect                 # what is on, and what could be
-nondev-connect gmail           # opens a browser sign-in
-nondev-connect --off gmail     # reverse it
+megawork-connect                 # what is on, and what could be
+megawork-connect gmail           # opens a browser sign-in
+megawork-connect --off gmail     # reverse it
 ```
 
 | Name | What it is | How it connects |
@@ -99,7 +99,7 @@ command**, which is rather the point of the whole profile.
 keys at all — reports are authorised per GA4 property, so it needs a real
 identity. Either an admin drops a service account (granted Viewer on the
 property) at `$ENGINE/policy/ga4-service-account.json`, in which case the person
-signs in to nothing at all, or `nondev-connect analytics` runs
+signs in to nothing at all, or `megawork-connect analytics` runs
 `gcloud auth application-default login` for them and the Google window opens by
 itself. The service-account route is the right one for colleagues. Send, delete, archive and trash
 verbs stay denied by policy on every connector; drafting is allowed, since
@@ -119,36 +119,36 @@ carries the things that make megavibe worth using:
   notes. Kept in the engine, not the person's folder, so cloud sync never sees
   it and their folders stay exactly as tidy as they left them.
 - **Undo**, via pre-write snapshots (also engine-side).
-- **Updates.** `nondev-update` fetches the current release and re-runs the
+- **Updates.** `megawork-update` fetches the current release and re-runs the
   installer, keeping folder, history and connections. It backs the engine up
   first and rolls back automatically if the health check fails afterwards — a
   colleague must never be left with a broken assistant and no way back. The
   launcher mentions an available update at most once a week, as one quiet line,
   and never installs anything on its own.
-- **A health check**, `nondev-doctor`, readable over a screen share.
+- **A health check**, `megawork-doctor`, readable over a screen share.
 
 ## Coexisting with classic megavibe
 
-Both can live on one Mac. Because a nondev session is not `--restricted`, it does
+Both can live on one Mac. Because a Megawork session is not `--restricted`, it does
 read a user-level `~/.claude/CLAUDE.md`, so the plain-language protocol explicitly
 overrides any developer rules it finds — verified in practice across every test
 session, all of which ran with classic megavibe active.
 
 The installer therefore **leaves an existing classic install alone by default** —
 it will not silently degrade something the person chose to install. If they never
-use the developer version, `nondev-mode on` parks it for a marginally cleaner
-assistant, and `nondev-mode off` puts it back. Nothing is ever deleted.
+use the developer version, `megawork-mode on` parks it for a marginally cleaner
+assistant, and `megawork-mode off` puts it back. Nothing is ever deleted.
 
 ## One machine, one protocol
 
 Because the session is not `--restricted`, a user-level `~/.claude/CLAUDE.md` is read
 as usual — so on a machine that also runs classic megavibe, developer rules would leak
-into the plain-language assistant. `nondev-mode on|off|status` makes that an explicit
+into the plain-language assistant. `megawork-mode on|off|status` makes that an explicit
 choice instead of a blend (non-destructive; the doctor reports which mode is active).
 
 ## Using the Claude app as the interface
 
-Start the session with `--remote` (or `MEGAVIBE_NONDEV_REMOTE=1`) and attach from the
+Start the session with `--remote` (or `MEGAWORK_REMOTE=1`) and attach from the
 Claude app via Remote Control. The session still starts here — inside the sandbox, under
 the admin policy — and the app merely drives it. Starting a session *from inside* the app
 instead would bypass the sandbox and the policy entirely.
@@ -157,14 +157,14 @@ instead would bypass the sandbox and the policy entirely.
 
 | Path | What it is |
 |---|---|
-| `init-nondev.sh` | provisioning: engine, folder, launcher, policy |
-| `bin/megavibe-nondev` | the launcher (implements the contract above) |
-| `bin/nondev-doctor` | health check, readable over a screen share |
-| `bin/nondev-mode` | park/restore a conflicting user-level protocol |
-| `bin/nondev-folder` | show/move the working folder (Drive-aware), re-rendering policy |
+| `init.sh` | provisioning: engine, folder, launcher, policy |
+| `bin/megawork` | the launcher (implements the contract above) |
+| `bin/megawork-doctor` | health check, readable over a screen share |
+| `bin/megawork-mode` | park/restore a conflicting user-level protocol |
+| `bin/megawork-folder` | show/move the working folder (Drive-aware), re-rendering policy |
 | `template/sandbox.sb.template` | the seatbelt profile (rendered with real paths) |
 | `template/policy/*.template` | permissions + hook registrations |
-| `template/CLAUDE-nondev.md` | the plain-language protocol |
+| `template/CLAUDE-megawork.md` | the plain-language protocol |
 | `template/hooks/` | session-start orientation, pre-write snapshots (undo) |
 | `spike/` | the measurements the design rests on |
 
@@ -172,11 +172,11 @@ instead would bypass the sandbox and the policy entirely.
 
 **This repository is public (MIT).** Company branding, named pilot documents, customer
 data, org policy and credentialed analyst verbs must not be committed here. Keep them in
-a private overlay directory and point `MEGAVIBE_NONDEV_OVERLAY` at it (default
-`~/.megavibe/personal/nondev`):
+a private overlay directory and point `MEGAWORK_OVERLAY` at it (default
+`~/.megavibe/personal/megawork`):
 
 ```
-$MEGAVIBE_NONDEV_OVERLAY/
+$MEGAWORK_OVERLAY/
   icon.icns        ← your own Dock icon, applied at install if present
   PILOT-BRIEF.md   ← who is testing, what they report (names, emails)
 ```

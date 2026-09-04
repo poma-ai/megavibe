@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nondev-connect — turn individual services on, one at a time, when they are
+# megawork-connect — turn individual services on, one at a time, when they are
 # actually needed.
 #
 # Design note: nothing is connected by default, on purpose. Wiring up a person's
@@ -9,9 +9,9 @@
 # moment of use, about a specific thing, and it is reversible in one command.
 #
 # Usage:
-#   nondev-connect                 what is on, and what could be
-#   nondev-connect <name>          connect it (opens a browser sign-in)
-#   nondev-connect --off <name>    disconnect it
+#   megawork-connect                 what is on, and what could be
+#   megawork-connect <name>          connect it (opens a browser sign-in)
+#   megawork-connect --off <name>    disconnect it
 #
 # Sign-in is handled by Claude Code's own OAuth: no tokens to paste, and we
 # never see or store a credential.
@@ -26,7 +26,7 @@ while [ -L "$_self" ]; do
   _link=$(readlink "$_self")
   case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
 done
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
+ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 
 # name | claude-mcp target | what a non-technical person calls it | what it is for
@@ -48,11 +48,11 @@ is_registered(){ claude mcp list 2>/dev/null | grep -q "^$1[: ]"; }
 # Inside a session we are sandboxed: no terminal for OAuth, and the engine and
 # Google's credential store are read-only. Every connector therefore has the same
 # shape — queue it, and let the launcher finish it outside the sandbox.
-sandboxed(){ ! ( : > "$HOME/.nondev-sb-probe-$$" ) 2>/dev/null || { rm -f "$HOME/.nondev-sb-probe-$$"; false; }; }
+sandboxed(){ ! ( : > "$HOME/.megawork-sb-probe-$$" ) 2>/dev/null || { rm -f "$HOME/.megawork-sb-probe-$$"; false; }; }
 queue_and_explain(){ # $1=name $2=label
   mkdir -p "$ENGINE/logs" 2>/dev/null
   if ! printf '%s\n' "$1" > "$ENGINE/logs/pending-connect" 2>/dev/null; then
-    echo "  ${B}!${R} Couldn't set that up. Run ${B}nondev-doctor${R}."; exit 1
+    echo "  ${B}!${R} Couldn't set that up. Run ${B}megawork-doctor${R}."; exit 1
   fi
   echo ""
   echo "  ${B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
@@ -79,8 +79,8 @@ list_all(){
     printf '   [%b] %-22s %s\n' "$st" "$label" "$D$desc$R"
   done
   echo ""
-  echo "  Turn one on:   ${B}nondev-connect <name>${R}   (names: $(printf '%s\n' "$REGISTRY" | awk -F'|' 'NF{printf "%s ", $1}'))"
-  echo "  Turn one off:  ${B}nondev-connect --off <name>${R}"
+  echo "  Turn one on:   ${B}megawork-connect <name>${R}   (names: $(printf '%s\n' "$REGISTRY" | awk -F'|' 'NF{printf "%s ", $1}'))"
+  echo "  Turn one off:  ${B}megawork-connect --off <name>${R}"
   echo ""
   echo "  ${D}Nothing is connected unless you ask for it. Each one signs in through${R}"
   echo "  ${D}its own website, and your assistant can never send mail or delete things.${R}"
@@ -91,7 +91,7 @@ list_all(){
 # a sandbox read permission rather than a sign-in.
 set_mail(){ # $1 = on|off
   local sb="$ENGINE/policy/sandbox.sb"
-  [ -f "$sb" ] || { echo "  Setup looks incomplete — run: nondev-doctor"; exit 1; }
+  [ -f "$sb" ] || { echo "  Setup looks incomplete — run: megawork-doctor"; exit 1; }
   chmod u+w "$sb" 2>/dev/null || true
   if [ "$1" = "on" ]; then
     sed -i '' "\|(subpath \"$HOME/Library/Mail\")|d" "$sb"
@@ -102,13 +102,13 @@ set_mail(){ # $1 = on|off
       sed -i '' "s|  (subpath \"$HOME/Library/Messages\")|  (subpath \"$HOME/Library/Mail\")\n  (subpath \"$HOME/Library/Messages\")|" "$sb"
     echo "  ${G}✓${R} Apple Mail: closed off again."
   fi
-  sandbox-exec -f "$sb" /usr/bin/true 2>/dev/null || { echo "  ${B}!${R} that change broke the settings — run: nondev-doctor"; exit 1; }
+  sandbox-exec -f "$sb" /usr/bin/true 2>/dev/null || { echo "  ${B}!${R} that change broke the settings — run: megawork-doctor"; exit 1; }
 }
 
 case "${1:-}" in
   ""|--list|list) list_all; exit 0 ;;
   --off)
-    n="${2:-}"; r=$(row "$n"); [ -n "$r" ] || { echo "  Don't know '$n'. Try: nondev-connect"; exit 1; }
+    n="${2:-}"; r=$(row "$n"); [ -n "$r" ] || { echo "  Don't know '$n'. Try: megawork-connect"; exit 1; }
     if [ "$n" = "applemail" ]; then set_mail off; else
       claude mcp remove "$n" >/dev/null 2>&1 && echo "  ${G}✓${R} $(printf '%s' "$r" | cut -d'|' -f3): disconnected." \
         || echo "  It wasn't connected."
@@ -164,7 +164,7 @@ case "$KIND" in
       if ! printf '%s\n' "$NAME" > "$ENGINE/logs/pending-connect" 2>/dev/null; then
         echo ""
         echo "  ${B}!${R} $LABEL is set up, but I couldn't queue the sign-in"
-        echo "     (couldn't write to $ENGINE). Run ${B}nondev-doctor${R}."
+        echo "     (couldn't write to $ENGINE). Run ${B}megawork-doctor${R}."
         exit 1
       fi
       echo ""
@@ -194,7 +194,7 @@ case "$KIND" in
         "$(command -v uvx || command -v pipx)" google-analytics-mcp >/dev/null 2>&1 \
         && { echo "  ${G}✓${R} Google Analytics connected (read-only, using the account your admin set up)."; \
              echo "  ${D}Nothing to sign in to — it is already authorised.${R}"; } \
-        || echo "  ${B}!${R} Could not add it. Ask your admin to check nondev-doctor."
+        || echo "  ${B}!${R} Could not add it. Ask your admin to check megawork-doctor."
       echo ""; exit 0
     fi
 
@@ -225,5 +225,5 @@ esac
 
 echo ""
 echo "  Open your assistant and just ask — it will use it from now on."
-echo "  ${D}Changed your mind? nondev-connect --off $NAME${R}"
+echo "  ${D}Changed your mind? megawork-connect --off $NAME${R}"
 echo ""

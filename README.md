@@ -11,7 +11,7 @@ everything from a lossy summary.
 | | Who it is for | What it gives them |
 |---|---|---|
 | **megavibe** | developers using Claude Code | durable project context, workflow protocol, second opinions from Gemini/Codex |
-| **megavibe-nondev** | a non-technical colleague on a Mac | the same harness in plain language, confined to one folder by a macOS sandbox |
+| **megawork** | a non-technical colleague on a Mac | the same harness in plain language, confined to one folder by a macOS sandbox |
 
 **Before you paste the install command**, know what it does to your machine — it
 installs CLIs and MCP servers, and it launches Claude with permission prompts
@@ -19,7 +19,7 @@ disabled by default. See [Security and what gets installed](#security-and-what-g
 
 Requires a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 subscription. macOS and Linux (Windows via Git Bash/WSL, less tested); the
-context watcher needs `tmux`, and **megavibe-nondev is macOS-only** because its
+context watcher needs `tmux`, and **megawork is macOS-only** because its
 containment is a macOS sandbox profile.
 
 ## Security and what gets installed
@@ -43,8 +43,8 @@ Stated plainly, because you should decide before pasting:
   them — for Gemini, a key minted under a Google Workspace account gets
   paid-tier (no-training) treatment even on free quota.
 
-`megavibe-nondev` inverts these defaults: no bypassed permissions, and a kernel
-sandbox confining writes to one folder. See **`nondev/README.md`**.
+`megawork` inverts these defaults: no bypassed permissions, and a kernel
+sandbox confining writes to one folder. See **`megawork/README.md`**.
 
 ## Get Started
 
@@ -224,7 +224,7 @@ An optional Telegram bot adds a personal assistant and project launcher.
 
 Full detail: **`README-remote.md`**.
 
-## Tier 2 — megavibe-nondev, for a non-technical colleague
+## Tier 2 — megawork, for a non-technical colleague
 
 **macOS only.** A derived profile for someone who is not a programmer: plain
 language, one folder they own, and a macOS sandbox that confines writes to it
@@ -234,15 +234,15 @@ connectors all keep working — the boundary is the kernel, not a crippled agent
 The person can install it themselves — one line, no admin, nothing to clone:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/nondev/install-nondev.sh | bash
+curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/megawork/install.sh | bash
 ```
 
 Or, from an existing megavibe install:
 
 ```bash
-megavibe nondev init      # asks where the folder should live (Google Drive aware)
-megavibe nondev doctor    # verify, including live sandbox-escape tests
-megavibe nondev folder    # show or move the working folder
+megavibe megawork init      # asks where the folder should live (Google Drive aware)
+megavibe megawork doctor    # verify, including live sandbox-escape tests
+megavibe megawork folder    # show or move the working folder
 ```
 
 The person gets a Dock app, four folders (Inbox / Workspace / Delivered /
@@ -252,7 +252,7 @@ automatic. Nothing it does can write outside their folder.
 Status: containment is measured and re-checked on every `doctor` run, but it has
 not yet been piloted with a real non-technical user.
 
-Full detail: **`nondev/README.md`**.
+Full detail: **`megawork/README.md`**.
 
 ## Optional API Keys
 
