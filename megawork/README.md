@@ -183,3 +183,12 @@ $MEGAWORK_OVERLAY/
 
 The installer degrades gracefully when the overlay is absent: no icon, stock behaviour.
 `.gitignore` blocks the overlay paths so they cannot be committed here by accident.
+
+## Backends
+
+Gemini and Codex are part of the profile, not optional extras — the assistant
+uses them for long documents and second opinions, invisibly. The installer gets
+a Gemini key by itself (installing `gcloud` if needed, one Google sign-in, then
+minting a free key on a billing-less project). Codex is installed and used if
+the person has a ChatGPT account; if not, it stays quiet. Neither is ever
+presented to the person as a decision.

@@ -346,17 +346,32 @@ fi
 # an existing gemini setup) needs nothing from us — the session picks it up.
 # Tier 2: mint a free, billing-less Gemini key from their OWN Google identity.
 # Tier 3 (fallback): an admin hands over a key.
-# Only an admin machine can mint a key (it needs gcloud), and only an admin
-# would know what one is. On anyone else's Mac this stays silent — Gemini is a
-# bonus, not a missing part.
-if [ -z "${GEMINI_API_KEY:-}" ] && command -v gcloud &>/dev/null \
-   && [ -f "$SRC/../scripts/mint-gemini-key.sh" ] && interactive; then
-  echo ""
-  echo "  Optional: a Gemini key adds second opinions on long documents."
-  ask "  Mint a free one now from this Mac's Google login? [y/N] " _ans
-  case "${_ans:-n}" in
-    [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc || true ;;
-  esac
+# Gemini is part of the product, not an extra: the assistant leans on it for
+# long documents. So get a key automatically rather than asking anyone to
+# provision one — install gcloud if the Mac lacks it, sign in once in the
+# browser, and mint a free key on a billing-less project (which cannot bill and
+# carries no-training treatment under a Workspace account).
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ] && interactive; then
+  if ! command -v gcloud &>/dev/null; then
+    echo ""
+    echo "  Setting up the second-opinion helper (one Google sign-in)…"
+    if command -v brew &>/dev/null; then
+      brew install --cask --quiet google-cloud-sdk >/dev/null 2>&1 || true
+    fi
+  fi
+  if command -v gcloud &>/dev/null; then
+    gcloud projects list --limit=1 &>/dev/null || {
+      echo "  A Google sign-in will open — use your work account."
+      gcloud auth login --brief 2>/dev/null || true; }
+    if bash "$SRC/../scripts/mint-gemini-key.sh" 2>/dev/null | grep -q 'key written to'; then
+      KEYFILE=$(bash "$SRC/../scripts/mint-gemini-key.sh" 2>/dev/null | sed -n 's/.*key written to: \([^ ]*\).*/\1/p' | head -1)
+      [ -n "$KEYFILE" ] && [ -f "$KEYFILE" ] && {
+        cp "$KEYFILE" "$ENGINE/policy/gemini-key"; chmod 600 "$ENGINE/policy/gemini-key"
+        rm -f "$KEYFILE"; ok "second-opinion helper ready"; }
+    else
+      echo "  ${D:-}Skipped the second-opinion helper — everything else works.${R:-}"
+    fi
+  fi
 fi
 
 if [ -z "${MEGAWORK_WRAPPED:-}" ]; then
