@@ -150,7 +150,11 @@ case "$KIND" in
     # server exposes no tools at all, so "just ask and it'll prompt you" would
     # be wrong — and typing a slash command is not something to ask of someone
     # who was promised they would never need to.
-    if claude mcp login "$NAME" 2>&1 | tail -3; then
+    # Run it straight, with no pipe and no redirect: piping makes stdout a
+    # non-terminal, so the sign-in never opens a browser, `tail` swallows the
+    # progress messages, and the `if` would test tail's exit status instead of
+    # the sign-in's. That combination looked exactly like a hang.
+    if claude mcp login "$NAME"; then
       if claude mcp list 2>/dev/null | grep "^$NAME[: ]" | grep -qi 'needs authentication'; then
         echo "  ${B}!${R} Not signed in yet. Run this again when you have a moment."
       else
@@ -212,7 +216,9 @@ case "$KIND" in
     echo "  ${D}This is Google's own sign-in — read-only access to your reports.${R}"
     echo ""
     # Opens the browser itself; no command for anyone to remember.
-    if gcloud auth application-default login --quiet 2>&1 | tail -2; then
+    # Same rule as the sign-in above: no pipe. gcloud needs the real terminal to
+    # open a browser, and piping would silently turn this into a hang.
+    if gcloud auth application-default login; then
       RUNNER=$(command -v uvx || command -v pipx || true)
       [ -n "$RUNNER" ] || { echo "  ${B}!${R} Needs uvx or pipx installed first."; exit 1; }
       claude mcp add analytics -- "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
