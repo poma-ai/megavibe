@@ -123,7 +123,8 @@ if command -v claude &>/dev/null; then
     *DOCTOR-OK*)      ok "a real session starts, signed in, under the full policy" ;;
     *"Not logged in"*|*login*) bad "not signed in — run 'claude' once and sign in" ;;
     "")               warn "the launch probe produced no output (timed out?)" ;;
-    *)                warn "could not confirm a working session: $(printf '%s' "$OUT" | head -1 | cut -c1-70)" ;;
+    *)                _d=$(printf '%s' "$OUT" | tr -d '\n' | cut -c1-70)
+                      warn "could not confirm a working session${_d:+: $_d} — try again in a moment" ;;
   esac
 fi
 
