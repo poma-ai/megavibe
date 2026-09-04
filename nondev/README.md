@@ -89,7 +89,19 @@ nondev-connect --off gmail     # reverse it
 | `analytics` | GA4 reports (read-only, runs locally) | Google's own local server + `gcloud` login |
 
 Sign-in goes through each service's own OAuth, handled by Claude Code — no tokens
-are pasted and megavibe never sees a credential. Send, delete, archive and trash
+are pasted and megavibe never sees a credential. One wrinkle worth knowing: the
+OAuth handshake needs a real terminal, so it cannot complete from inside a
+session. `nondev-connect` registers the service, then tells the person to quit
+the assistant and run the same one line in the Terminal window they started it
+from; the browser opens by itself. One line, once per service.
+
+**Google Analytics is the exception.** The Analytics Data API does not accept API
+keys at all — reports are authorised per GA4 property, so it needs a real
+identity. Either an admin drops a service account (granted Viewer on the
+property) at `$ENGINE/policy/ga4-service-account.json`, in which case the person
+signs in to nothing at all, or `nondev-connect analytics` runs
+`gcloud auth application-default login` for them and the Google window opens by
+itself. The service-account route is the right one for colleagues. Send, delete, archive and trash
 verbs stay denied by policy on every connector; drafting is allowed, since
 "write me a reply" is the point. `applemail` is the odd one out: it is not a
 login but a sandbox read rule, so turning it on genuinely widens what the session

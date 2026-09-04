@@ -102,28 +102,81 @@ case "$KIND" in
     echo "  A browser window will open so you can sign in to $LABEL."
     echo "  ${D}You are signing in to $LABEL itself — no password is shared with us.${R}"
     echo ""
-    if claude mcp add --transport http "$NAME" "$TARGET" >/dev/null 2>&1; then
-      echo "  ${G}✓${R} $LABEL added. The first time you ask about it, you'll be"
-      echo "     asked to approve access — that is the sign-in."
+    claude mcp add --transport http "$NAME" "$TARGET" >/dev/null 2>&1 || {
+      echo "  ${B}!${R} Could not add $LABEL — it may already exist, or the"
+      echo "     service may be unreachable. Nothing was changed."; exit 1; }
+    # Sign in NOW, with the browser opening by itself. Until this completes the
+    # server exposes no tools at all, so "just ask and it'll prompt you" would
+    # be wrong — and typing a slash command is not something to ask of someone
+    # who was promised they would never need to.
+    if claude mcp login "$NAME" 2>&1 | tail -3; then
+      if claude mcp list 2>/dev/null | grep "^$NAME[: ]" | grep -qi 'needs authentication'; then
+        echo "  ${B}!${R} Not signed in yet. Run this again when you have a moment."
+      else
+        echo "  ${G}✓${R} $LABEL connected."
+      fi
     else
-      echo "  ${B}!${R} Could not add $LABEL. It may already exist, or the service"
-      echo "     may be unreachable. Nothing was changed."
-      exit 1
+      # The server is registered but not signed in, so it exposes no tools yet.
+      # Say that accurately rather than implying nothing happened.
+      echo ""
+      echo "  ${B}Almost there.${R} $LABEL is set up but not signed in yet, and the"
+      echo "  sign-in needs a real Terminal window (it opens your browser)."
+      echo ""
+      echo "  Quit the assistant with ${B}Ctrl-D${R}, then type this one line:"
+      echo ""
+      echo "      ${B}nondev-connect $NAME${R}"
+      echo ""
+      echo "  ${D}Then start the assistant again — $LABEL will be there.${R}"
     fi ;;
   local)
-    echo "  Google Analytics runs on this Mac and reads your reports only."
-    echo "  It needs a one-off Google sign-in in the terminal:"
+    # GA4 is different from the OAuth connectors on purpose. The Analytics Data
+    # API does not accept API keys at all — reports are authorised per GA4
+    # property, so it needs a real identity: either the person's Google login,
+    # or a service account an admin has granted Viewer on the property. That is
+    # why there is no "minted key" option the way there is for Gemini.
+    #
+    # Preferred: an admin-provisioned service account sitting in the engine, so
+    # the person never touches authentication at all.
+    SA="$ENGINE/policy/ga4-service-account.json"
+    if [ -f "$SA" ]; then
+      claude mcp add analytics -e "GOOGLE_APPLICATION_CREDENTIALS=$SA" -- \
+        "$(command -v uvx || command -v pipx)" google-analytics-mcp >/dev/null 2>&1 \
+        && { echo "  ${G}✓${R} Google Analytics connected (read-only, using the account your admin set up)."; \
+             echo "  ${D}Nothing to sign in to — it is already authorised.${R}"; } \
+        || echo "  ${B}!${R} Could not add it. Ask your admin to check nondev-doctor."
+      echo ""; exit 0
+    fi
+
+    command -v gcloud &>/dev/null || {
+      echo "  Google Analytics needs a little setup your admin has to do once."
+      echo "  ${D}Send them this: megavibe nondev connect analytics --admin-setup${R}"
+      echo ""; exit 1; }
+
+    # A session runs inside the sandbox and cannot write Google's credential
+    # store, so the sign-in has to happen in a normal terminal window.
+    if ! ( : > "$HOME/.config/gcloud/.nondev-write-probe" ) 2>/dev/null; then
+      echo "  This one needs a browser sign-in that cannot happen from inside"
+      echo "  the assistant. Open ${B}Terminal${R} and run this one line:"
+      echo ""
+      echo "      ${B}nondev-connect analytics${R}"
+      echo ""
+      echo "  ${D}A Google sign-in window will open by itself.${R}"
+      echo ""; exit 1
+    fi
+    rm -f "$HOME/.config/gcloud/.nondev-write-probe" 2>/dev/null
+
+    echo "  A Google sign-in window will open now. Choose your work account."
+    echo "  ${D}This is Google's own sign-in — read-only access to your reports.${R}"
     echo ""
-    echo "    ${B}gcloud auth application-default login${R}"
-    echo ""
-    if command -v uvx &>/dev/null || command -v pipx &>/dev/null; then
-      RUNNER=$(command -v uvx || command -v pipx)
+    # Opens the browser itself; no command for anyone to remember.
+    if gcloud auth application-default login --quiet 2>&1 | tail -2; then
+      RUNNER=$(command -v uvx || command -v pipx || true)
+      [ -n "$RUNNER" ] || { echo "  ${B}!${R} Needs uvx or pipx installed first."; exit 1; }
       claude mcp add analytics -- "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
-        && echo "  ${G}✓${R} Google Analytics added (read-only)." \
-        || echo "  ${B}!${R} Could not add it — is google-analytics-mcp available to $RUNNER?"
+        && echo "  ${G}✓${R} Google Analytics connected (read-only)." \
+        || echo "  ${B}!${R} Signed in, but the connector could not be added."
     else
-      echo "  ${B}!${R} Needs uvx or pipx installed first."
-      exit 1
+      echo "  ${B}!${R} Sign-in did not complete. Nothing was changed."; exit 1
     fi ;;
 esac
 

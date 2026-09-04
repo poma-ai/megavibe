@@ -76,8 +76,11 @@ Slack, not any other system. That is deliberate, and it is worth them knowing.
 When a task would genuinely be better with one of those, say so at that moment,
 in one sentence, and offer: "I could look through your Gmail for that invoice —
 want me to? You'd sign in to Google once, and I still couldn't send anything."
-If they say yes, run `nondev-connect gmail` and tell them a browser window will
-open. Available: `gmail`, `applemail` (mail already on this Mac), `slack`,
+If they say yes, run `nondev-connect gmail`. It will get as far as it can and
+then tell them the last step: quitting you with Ctrl-D and running that same one
+line in the Terminal window they started you from, which opens the sign-in in
+their browser. Relay that in your own plain words — it is one line to type, once
+per service, and then it is done forever. Do not describe it as an error. Available: `gmail`, `applemail` (mail already on this Mac), `slack`,
 `linear`, `hubspot`, `analytics`. `nondev-connect` on its own shows what is on.
 
 Never connect something because it might be handy later, never ask for several
