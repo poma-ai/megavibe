@@ -57,7 +57,21 @@ if [ -z "$SRC" ]; then
   ok "Downloaded"
 fi
 
-# ── 3. Hand off to the real installer (it asks where the folder goes) ─
+# ── 3. The harness ──────────────────────────────────────────────────
+# Megawork is not a stripped-down Claude: the whole point is that a colleague
+# gets the same machinery a developer does — second opinions from Gemini and
+# Codex, and POMA's own semantic memory over their documents — just wrapped so
+# they never see any of it. megavibe's installer already knows how to put those
+# on a Mac, so reuse it rather than reimplementing a lesser version.
+if [ -f "$SRC/setup.sh" ]; then
+  say "  Setting up the machinery (this is the longest part)…"
+  bash "$SRC/setup.sh" --harness-only </dev/null >/tmp/megawork-harness.log 2>&1 \
+    && ok "Machinery ready" \
+    || uhoh "Some optional parts did not install — it still works, just with fewer helpers"
+  echo "  ${DIM:-}$(grep -cE '^\s*(✓|ok)' /tmp/megawork-harness.log 2>/dev/null || echo 0) components installed${R}"
+fi
+
+# ── 4. Hand off to the real installer (it asks where the folder goes) ─
 MEGAWORK_WRAPPED=1 bash "$SRC/megawork/init.sh" "$@" || die "setup did not finish."
 
 # ── 4. Sign in, if needed ───────────────────────────────────────────

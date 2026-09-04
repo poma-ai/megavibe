@@ -172,8 +172,15 @@ fi
 # ─── 0. Define installation mode ────────────────────────────────────
 
 NONINTERACTIVE_AUTO=0
+HARNESS_ONLY=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
+    --harness-only)
+      # Everything Megawork needs — the CLIs, poma-memory, the MCP servers —
+      # without the developer surface: no protocol in ~/.claude/CLAUDE.md, no
+      # statusline, no Telegram bot, no megavibe CLI. Megawork brings its own
+      # protocol and launcher and would only fight those.
+      HARNESS_ONLY=1; NONINTERACTIVE_AUTO=1; shift; continue ;;
     --auto-install)
       NONINTERACTIVE_AUTO=1
       ;;
@@ -405,6 +412,9 @@ if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
 fi
 
 # ─── 3. Deploy megavibe to ~/.megavibe/ + install CLI ─────────────
+if [ "${HARNESS_ONLY:-0}" = "1" ]; then
+  info "Harness-only install: tools and MCP servers, no developer setup"
+else
 
 echo ""
 info "3) Deploying megavibe"
@@ -789,6 +799,8 @@ if [ -d "$LEGACY_HOOK_DIR" ]; then
     ok "removed legacy hook scripts (archive ${ARCHIVE_DIR}/ already exists)"
   fi
 fi
+
+fi   # end of the developer-only sections skipped by --harness-only
 
 # ─── 6. Register MCP servers ────────────────────────────────────────
 

@@ -199,6 +199,13 @@ or run: megawork-folder --list
 TXT
 ok "folder ready at $DATA"
 
+# POMA's own chunker indexes what they put in the folder, so the assistant can
+# find things by meaning rather than filename. Local, no cloud round-trip.
+if command -v poma-memory &>/dev/null; then
+  ( poma-memory index "$DATA" >/dev/null 2>&1 && \
+    ok "documents indexed for search (POMA semantic memory)" ) || true
+fi
+
 # Claude Code asks whether you trust the files in a new directory. For someone
 # non-technical, being asked to vouch for their own documents folder is both
 # confusing and meaningless — the admin already decided this by installing. Mark
