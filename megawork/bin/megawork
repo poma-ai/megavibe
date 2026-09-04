@@ -96,15 +96,20 @@ set -- ${REST+"${REST[@]}"}
 # terminal. That is what lets a service sign-in happen without anyone typing a
 # command: the assistant queues one, the person closes the session, the browser
 # opens here, and the session comes back with the service connected.
+CONNECTED_NAME=""
 finish_pending_connect() {
   local pend="$ENGINE/logs/pending-connect" name
   [ -f "$pend" ] || return 1
   name=$(head -1 "$pend" 2>/dev/null); rm -f "$pend"
+  CONNECTED_NAME="$name"
   [ -n "$name" ] || return 1
   echo ""
   echo ""
-  echo "  ${name}: opening the sign-in page in your browser now."
-  echo "  Approve it there, and we will pick up exactly where we left off."
+  case "$name" in
+    applemail) echo "  Finishing the ${name} connection…" ;;
+    *)         echo "  ${name}: opening the sign-in page in your browser now."
+               echo "  Approve it there, and we will pick up where we left off." ;;
+  esac
   echo ""
   # Re-run the same command out here, where there is a terminal and the
   # credential stores are writable. One code path, not two.
@@ -120,8 +125,11 @@ if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
     # Only loop when there is a sign-in to complete; otherwise the person
     # closing the assistant means they are done.
     finish_pending_connect || break
-    # Resume the same conversation rather than reopening blank.
-    set -- ; case " ${CLAUDE_ARGS[*]} " in *" --continue "*) ;; *) CLAUDE_ARGS+=( --continue ) ;; esac
+    # Resume the conversation AND tell it the connection landed. Resuming alone
+    # just reopens and waits, which meant the person had to repeat themselves —
+    # the exact thing this flow exists to avoid.
+    set -- "$CONNECTED_NAME is now connected. Carry on with what I asked you before, without asking me again."
+    case " ${CLAUDE_ARGS[*]} " in *" --continue "*) ;; *) CLAUDE_ARGS+=( --continue ) ;; esac
   done
   exit 0
 fi

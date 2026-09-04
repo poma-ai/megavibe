@@ -100,6 +100,23 @@ set_mail(){ # $1 = on|off
     sed -i '' "\|(subpath \"$HOME/Library/Mail\")|d" "$sb"
     echo "  ${G}✓${R} Apple Mail: your assistant can now read the mail on this Mac."
     echo "  ${D}It can read and search it. It cannot send, delete or change anything.${R}"
+    # macOS guards the mail store separately from our sandbox: the Terminal
+    # itself needs Full Disk Access, or every read fails with "authorization
+    # denied" no matter what we allow. Check now rather than let that surface
+    # later as a wall of errors.
+    if ! sqlite3 "file:$HOME/Library/Mail/V10/MailData/Envelope Index?mode=ro" \
+         "select 1 limit 1" >/dev/null 2>&1; then
+      echo ""
+      echo "  ${B}One more permission is needed — from macOS, not from us.${R}"
+      echo "  macOS keeps mail locked unless Terminal is allowed to read it."
+      echo ""
+      echo "  1. Open ${B}System Settings${R} → ${B}Privacy & Security${R} → ${B}Full Disk Access${R}"
+      echo "  2. Switch on ${B}Terminal${R}"
+      echo "  3. Quit Terminal completely and open the assistant again"
+      echo ""
+      open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
+      echo "  ${D}(the settings page should have opened for you)${R}"
+    fi
   else
     grep -q "(subpath \"$HOME/Library/Mail\")" "$sb" || \
       sed -i '' "s|  (subpath \"$HOME/Library/Messages\")|  (subpath \"$HOME/Library/Mail\")\n  (subpath \"$HOME/Library/Messages\")|" "$sb"
