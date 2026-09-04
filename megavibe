@@ -332,6 +332,108 @@ fi
 
 # ─── Remote subcommand ───────────────────────────────────────────────
 
+if [ "${1:-}" = "doctor" ]; then
+  echo -e "${BOLD}megavibe doctor${RESET}"
+  echo ""
+  echo -e "${BOLD}Claude memory slugs${RESET} — memory is keyed by the launch directory,"
+  echo -e "${DIM}so one project launched from two places keeps two separate stores.${RESET}"
+  echo ""
+  # The slug encodes / as -, which is lossy: poma-core and poma/core produce the
+  # same slug. Don't try to decode it — read the real cwd out of a transcript.
+  python3 - <<'PYDOC'
+import json, os, subprocess, collections, glob
+
+root = os.path.expanduser("~/.claude/projects")
+Y, R, D, B = "\033[0;33m", "\033[0m", "\033[2m", "\033[1m"
+
+def cwd_of(slug_dir):
+    for jf in sorted(glob.glob(os.path.join(slug_dir, "*.jsonl")))[:3]:
+        try:
+            with open(jf, encoding="utf-8", errors="replace") as fh:
+                for _ in range(40):
+                    line = fh.readline()
+                    if not line:
+                        break
+                    try:
+                        o = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(o, dict) and o.get("cwd"):
+                        return o["cwd"]
+        except OSError:
+            pass
+    return None
+
+def repo_root(path):
+    if not path or not os.path.isdir(path):
+        return None
+    try:
+        out = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None
+    except Exception:
+        return None
+
+entries = []
+for slug in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+    d = os.path.join(root, slug)
+    mem = os.path.join(d, "memory")
+    n = len([f for f in os.listdir(mem) if f.endswith(".md")]) if os.path.isdir(mem) else 0
+    if n == 0:
+        continue
+    cwd = cwd_of(d)
+    entries.append((slug, cwd, repo_root(cwd), n))
+
+groups = collections.defaultdict(list)
+for slug, cwd, root_, n in entries:
+    groups[root_ or cwd or slug].append((slug, cwd, n))
+
+split = {k: v for k, v in groups.items() if len(v) > 1}
+for k, v in sorted(split.items(), key=lambda kv: -sum(x[2] for x in kv[1])):
+    print(f"  {Y}SPLIT{R}  {k}  —  {len(v)} slugs, {sum(x[2] for x in v)} memories")
+    for slug, cwd, n in sorted(v, key=lambda x: -x[2]):
+        print(f"         {n:4d}  {cwd or slug}")
+if not split:
+    print("  no project is split across slugs")
+
+print()
+print(f"  {B}Multi-project slugs{R} — one memory store shared by unrelated repos:")
+flagged = False
+for slug, cwd, root_, n in sorted(entries, key=lambda e: -e[3]):
+    if root_ or not cwd or not os.path.isdir(cwd):
+        continue
+    try:
+        subs = sum(1 for e in os.scandir(cwd) if e.is_dir() and os.path.isdir(os.path.join(e.path, ".git")))
+    except OSError:
+        continue
+    if subs >= 2:
+        flagged = True
+        print(f"  {Y}!{R} {cwd} — {n} memories spanning {subs} repos")
+if not flagged:
+    print("    none")
+
+print()
+print(f"  {D}Nothing is merged automatically: folding a multi-project store into one{R}")
+print(f"  {D}project would poison that project's context. Review before moving anything.{R}")
+PYDOC
+  echo ""
+  SIDECAR_TOOL="$HOME/dev/git-icloud-sidecar/git_icloud_sidecar.py"
+  if [ -f "$SIDECAR_TOOL" ]; then
+    echo -e "${BOLD}Sidecar health${RESET} — synced files whose companion stayed local:"
+    python3 "$SIDECAR_TOOL" audit --root "$HOME/dev" 2>/dev/null | python3 -c "
+import json,sys
+try: rows=json.load(sys.stdin)
+except Exception: sys.exit(0)
+bad=[r for r in rows if r['problems']]
+if not bad: print('    all clear')
+for r in bad[:15]:
+    print('    %-22s %s' % (r['repo'], '; '.join(r['problems'])[:100]))
+" || true
+  fi
+  echo ""
+  exit 0
+fi
+
 if [ "${1:-}" = "remote" ]; then
   shift
   BOT_SCRIPT="$MEGAVIBE_HOME/telegram-bot.py"
@@ -814,6 +916,39 @@ INIT_SCRIPT="$MEGAVIBE_HOME/init.sh"
 if [ ! -f "$INIT_SCRIPT" ] && [ -f "$SCRIPT_DIR/init.sh" ]; then
   INIT_SCRIPT="$SCRIPT_DIR/init.sh"
 fi
+# ─── Launch root: one project, one memory slug ──────────────────────
+#
+# Claude Code keys its auto-memory by the launch directory
+# (~/.claude/projects/<cwd-slug>/memory/). So `cd repo && megavibe` and
+# `cd repo/sub && megavibe` are different projects as far as memory is
+# concerned, and the same work ends up split across slugs that never see each
+# other. Resolve to the repository root so a project has one slug for good.
+#
+# `--no-normalize` opts out for the rare case where a subdirectory really is
+# the project (a monorepo package with its own .agent/).
+NORMALIZE=1
+for _a in "$@"; do [ "$_a" = "--no-normalize" ] && NORMALIZE=0; done
+CLAUDE_ARGV=()
+for _a in "$@"; do [ "$_a" = "--no-normalize" ] || CLAUDE_ARGV+=("$_a"); done
+set -- ${CLAUDE_ARGV[@]+"${CLAUDE_ARGV[@]}"}
+
+if [ "$NORMALIZE" = "1" ]; then
+  GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$GIT_ROOT" ] && [ "$GIT_ROOT" != "$(pwd -P)" ]; then
+    echo -e "  ${DIM}Launching from the repo root (${GIT_ROOT##*/}) so this project keeps one memory store.${RESET}"
+    echo -e "  ${DIM}Stay here instead: megavibe --no-normalize${RESET}"
+    cd "$GIT_ROOT"
+  elif [ -z "$GIT_ROOT" ]; then
+    # Not a repo. If it *contains* several, memory here is a shared bucket for
+    # all of them — which is how the ~/dev slug ends up a mixed bag.
+    _sub=$(find . -maxdepth 2 -name .git -mindepth 2 2>/dev/null | head -4 | wc -l | tr -d ' ')
+    if [ "${_sub:-0}" -ge 3 ]; then
+      echo -e "  ${YELLOW}Heads up:${RESET} this directory is not a repo but holds several."
+      echo -e "  ${DIM}Claude's memory here is shared across all of them. Prefer launching inside one.${RESET}"
+    fi
+  fi
+fi
+
 bash "$INIT_SCRIPT" .
 
 # ─── Auth check: subscription required, API key causes rate limits ──
