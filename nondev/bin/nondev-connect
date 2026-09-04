@@ -18,7 +18,15 @@
 
 set -uo pipefail
 
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+# Find our own engine rather than assuming the default path: these commands are
+# symlinked into ~/.local/bin, and an install with a custom engine location would
+# otherwise operate on a directory that does not exist.
+_self="$0"
+while [ -L "$_self" ]; do
+  _link=$(readlink "$_self")
+  case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+done
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 
 # name | claude-mcp target | what a non-technical person calls it | what it is for
@@ -125,7 +133,12 @@ case "$KIND" in
       # We are inside a session: no terminal, so the OAuth handshake cannot run
       # here. Queue it — the launcher owns a real terminal and will finish it
       # the moment the session closes. Nobody has to type a command.
-      printf '%s\n' "$NAME" > "$ENGINE/pending-connect" 2>/dev/null
+      if ! printf '%s\n' "$NAME" > "$ENGINE/pending-connect" 2>/dev/null; then
+        echo ""
+        echo "  ${B}!${R} $LABEL is set up, but I couldn't queue the sign-in"
+        echo "     (couldn't write to $ENGINE). Run ${B}nondev-doctor${R}."
+        exit 1
+      fi
       echo ""
       echo "  ${B}One moment needed.${R} To finish signing in to $LABEL, close me"
       echo "  with ${B}Ctrl-D${R} — the sign-in page opens by itself, and I come"

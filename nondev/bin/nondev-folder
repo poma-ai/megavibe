@@ -14,7 +14,15 @@
 
 set -uo pipefail
 
-ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+# Find our own engine rather than assuming the default path: these commands are
+# symlinked into ~/.local/bin, and an install with a custom engine location would
+# otherwise operate on a directory that does not exist.
+_self="$0"
+while [ -L "$_self" ]; do
+  _link=$(readlink "$_self")
+  case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+done
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 [ -d "$ENGINE" ] || { echo "megavibe-nondev is not set up on this Mac."; exit 1; }
 CUR=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
 
