@@ -42,7 +42,10 @@ applemail|sandbox mail|Apple Mail (on this Mac)|search the mail already download
 row(){ printf '%s\n' "$REGISTRY" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
 # Registered is not the same as connected: an MCP server that has not completed
 # OAuth exposes no tools at all, so treat "needs authentication" as off.
-is_on(){ claude mcp list 2>/dev/null | grep "^$1[: ]" | grep -qiv 'needs authentication'; }
+# "Connected" means authenticated. A health check that times out reports neither,
+# so treat an unreadable answer as unknown rather than as off — telling someone a
+# service is off when they just connected it is worse than saying nothing.
+is_on(){ claude mcp list 2>/dev/null | grep "^$1[: ]" | grep -qiE 'connected|✔'; }
 is_registered(){ claude mcp list 2>/dev/null | grep -q "^$1[: ]"; }
 
 # Inside a session we are sandboxed: no terminal for OAuth, and the engine and
