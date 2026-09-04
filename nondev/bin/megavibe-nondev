@@ -48,6 +48,18 @@ unset CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS ANTHROPIC_API_KEY 2>/dev/null || 
 
 cd "$DATA"
 
+# Mention updates at most once a week, as one quiet line. Never interrupt, never
+# auto-install: a surprise change to someone's assistant is worse than being a
+# few days behind.
+STAMP="$ENGINE/logs/.update-checked"
+if [ ! -f "$STAMP" ] || [ -n "$(find "$STAMP" -mtime +7 2>/dev/null)" ]; then
+  touch "$STAMP" 2>/dev/null
+  if [ -x "$ENGINE/bin/nondev-update" ] && "$ENGINE/bin/nondev-update" --check >/dev/null 2>&1; then
+    echo "  A newer version is available — run: nondev-update"
+    echo ""
+  fi
+fi
+
 # The containment boundary is the macOS sandbox, NOT Claude's own flags:
 # --restricted confines Claude's file tools but leaves Bash free to read and
 # write anywhere (proven in nondev/spike/RESULTS-capable.md). Enforcing in the

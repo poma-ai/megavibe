@@ -121,7 +121,7 @@ case "$DATA" in
 esac
 
 # ─── Engine (control plane) ─────────────────────────────────────────
-mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs"
+mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs" "$ENGINE/agent" "$ENGINE/snapshots"
 # Policy files are left read-only (below) so a stray edit is obvious; make them
 # writable again first, or re-running the installer dies on the copy and leaves
 # a half-updated engine (found by running init twice).
@@ -140,7 +140,8 @@ cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
 cp "$SRC/bin/nondev-mode"               "$ENGINE/bin/nondev-mode"
 cp "$SRC/bin/nondev-folder"             "$ENGINE/bin/nondev-folder"
 cp "$SRC/bin/nondev-connect"            "$ENGINE/bin/nondev-connect"
-chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode" "$ENGINE/bin/nondev-folder" "$ENGINE/bin/nondev-connect"
+cp "$SRC/bin/nondev-update"             "$ENGINE/bin/nondev-update"
+chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode" "$ENGINE/bin/nondev-folder" "$ENGINE/bin/nondev-connect" "$ENGINE/bin/nondev-update"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
 printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
@@ -207,6 +208,7 @@ ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
 ln -sf "$ENGINE/bin/nondev-mode"    "$HOME/.local/bin/nondev-mode"
 ln -sf "$ENGINE/bin/nondev-folder"  "$HOME/.local/bin/nondev-folder"
 ln -sf "$ENGINE/bin/nondev-connect" "$HOME/.local/bin/nondev-connect"
+ln -sf "$ENGINE/bin/nondev-update"  "$HOME/.local/bin/nondev-update"
 # ~/.local/bin is NOT on a stock macOS PATH, so "just run megavibe-nondev"
 # would be a lie on a clean machine. Persist it, idempotently.
 if ! command -v megavibe-nondev &>/dev/null; then
@@ -219,7 +221,7 @@ if ! command -v megavibe-nondev &>/dev/null; then
   done
   export PATH="$HOME/.local/bin:$PATH"
 fi
-ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-folder, nondev-connect"
+ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-folder, nondev-connect, nondev-update"
 
 # One machine, one protocol. A nondev session is not --restricted, so a
 # user-level classic megavibe protocol would otherwise leak developer rules

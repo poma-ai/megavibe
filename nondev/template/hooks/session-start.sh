@@ -19,9 +19,18 @@ IN=$(list Inbox); WIP=$(list Workspace); DONE=$(list Delivered)
   if [ -n "$WIP" ]; then echo "In Workspace (unfinished):"; echo "$WIP"; fi
   if [ -n "$DONE" ]; then echo "Recently delivered:"; echo "$DONE"; fi
   echo "</untrusted-filenames>"
+  HIST="${MEGAVIBE_NONDEV_ENGINE:-$HOME/.megavibe-nondev}/agent/HISTORY.md"
+  if [ -s "$HIST" ]; then
+    echo ""
+    echo "Recently, with this person (your own notes, not theirs):"
+    tail -25 "$HIST"
+  fi
   echo ""
   echo "Open with a one-line greeting and two or three specific things you could do"
-  echo "next based on the above, phrased as outcomes in their words. If everything is"
-  echo "empty, just ask what they are working on. Keep it under five lines."
+  echo "next, phrased as outcomes in their words. Prefer continuing something from"
+  echo "your recent notes over restating what is sitting in the folders — picking up"
+  echo "a thread is what makes you feel like a colleague rather than a file browser."
+  echo "If they ask what you worked on before, answer from your notes, not the folder"
+  echo "listing. If everything is empty, just ask what they are working on. Under five lines."
 } | jq -Rs '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:.}}' 2>/dev/null || true
 exit 0

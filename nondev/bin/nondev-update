@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# nondev-update — bring this Mac's assistant up to date.
+#
+# A colleague's machine has no repo checkout and nobody to run git for them, so
+# updating fetches the current release as a tarball and re-runs the installer,
+# which is idempotent. Their folder, their history and their connections are
+# untouched — only the engine is replaced.
+#
+# Usage: nondev-update [--check]
+
+set -uo pipefail
+
+_self="$0"
+while [ -L "$_self" ]; do
+  _link=$(readlink "$_self")
+  case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
+done
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
+B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
+
+[ -d "$ENGINE" ] || { echo "megavibe-nondev is not set up on this Mac."; exit 1; }
+DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
+
+REMOTE_SHA=$(curl -fsSL --max-time 20 \
+  "https://api.github.com/repos/poma-ai/megavibe/commits/main?per_page=1" 2>/dev/null \
+  | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1)
+LOCAL_SHA=$(cat "$ENGINE/version" 2>/dev/null || echo "")
+
+if [ "${1:-}" = "--check" ]; then
+  if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$LOCAL_SHA" ]; then
+    echo "update available"; exit 0
+  fi
+  echo "up to date"; exit 1
+fi
+
+echo ""
+echo "  ${B}Updating your assistant${R}"
+if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" = "$LOCAL_SHA" ]; then
+  echo "  ${G}✓${R} Already up to date."; echo ""; exit 0
+fi
+
+TMP=$(mktemp -d) || { echo "  Couldn't prepare the download."; exit 1; }
+trap 'rm -rf "$TMP"' EXIT
+echo "  Downloading…"
+curl -fsSL --max-time 120 https://codeload.github.com/poma-ai/megavibe/tar.gz/refs/heads/main \
+  | tar -xz -C "$TMP" 2>/dev/null || { echo "  The download failed — nothing was changed."; exit 1; }
+SRC=$(find "$TMP" -maxdepth 1 -type d -name 'megavibe-*' | head -1)
+[ -n "$SRC" ] && [ -d "$SRC/nondev" ] || { echo "  The download looked wrong — nothing was changed."; exit 1; }
+
+# Keep a copy of the working engine: an update that breaks the launcher would
+# otherwise leave someone non-technical with no way back.
+BACKUP="$ENGINE.previous"
+rm -rf "$BACKUP"; cp -R "$ENGINE" "$BACKUP" 2>/dev/null
+
+if MEGAVIBE_NONDEV_HOME="$ENGINE" MEGAVIBE_NONDEV_WRAPPED=1 \
+   bash "$SRC/nondev/init-nondev.sh" --data "$DATA" </dev/null >/dev/null 2>&1; then
+  [ -n "$REMOTE_SHA" ] && printf '%s\n' "$REMOTE_SHA" > "$ENGINE/version"
+  # Prove it still works before declaring success.
+  if bash "$ENGINE/bin/nondev-doctor" >/dev/null 2>&1; then
+    rm -rf "$BACKUP"
+    echo "  ${G}✓${R} Updated. Your folder, history and connections are unchanged."
+  else
+    rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"
+    echo "  ${B}!${R} The update did not check out, so I put the working version back."
+    echo "  ${D}Nothing was lost. Tell whoever set this up.${R}"; exit 1
+  fi
+else
+  rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"
+  echo "  ${B}!${R} The update failed and the previous version was restored."; exit 1
+fi
+echo ""

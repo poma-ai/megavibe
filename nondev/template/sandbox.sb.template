@@ -32,6 +32,7 @@
   (subpath "@DATA@")                    ; the colleague's four folders
   (subpath "@ENGINE@/logs")             ; our own logs
   (subpath "@ENGINE@/snapshots")        ; undo history (kept out of synced folders)
+  (subpath "@ENGINE@/agent")            ; what happened, so tomorrow's session knows
   ; Claude Code writes state all over ~/.claude (projects, todos, session-env,
   ; shell-snapshots, …) and the list grows with each release, so allow the
   ; directory and deny back the parts that EXECUTE in later, unsandboxed

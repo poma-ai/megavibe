@@ -108,6 +108,25 @@ login but a sandbox read rule, so turning it on genuinely widens what the sessio
 can read — verified that `.ssh`, `gh` tokens and Slack's local store stay blocked
 either way, and that turning it off closes it again.
 
+## The harness it keeps
+
+Containment was the hard part, but it is not the valuable part. The profile also
+carries the things that make megavibe worth using:
+
+- **Memory across days.** The assistant appends what it did to
+  `$ENGINE/agent/HISTORY.md`, and gets the recent entries back at the start of
+  every session — so "what did we work on last time?" is answered from its own
+  notes. Kept in the engine, not the person's folder, so cloud sync never sees
+  it and their folders stay exactly as tidy as they left them.
+- **Undo**, via pre-write snapshots (also engine-side).
+- **Updates.** `nondev-update` fetches the current release and re-runs the
+  installer, keeping folder, history and connections. It backs the engine up
+  first and rolls back automatically if the health check fails afterwards — a
+  colleague must never be left with a broken assistant and no way back. The
+  launcher mentions an available update at most once a week, as one quiet line,
+  and never installs anything on its own.
+- **A health check**, `nondev-doctor`, readable over a screen share.
+
 ## Coexisting with classic megavibe
 
 Both can live on one Mac. Because a nondev session is not `--restricted`, it does

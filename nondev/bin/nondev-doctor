@@ -37,7 +37,7 @@ for f in policy/settings.json policy/mcp.json policy/sandbox.sb prompts/CLAUDE-n
   [ -f "$ENGINE/$f" ] && [ -s "$ENGINE/$f" ] || bad "missing or empty: $f"
 done
 # executables must actually be executable — a chmod -x hook fails silently
-for f in bin/megavibe-nondev bin/nondev-doctor bin/nondev-mode hooks/snapshot.sh hooks/session-start.sh; do
+for f in bin/megavibe-nondev bin/nondev-doctor bin/nondev-mode bin/nondev-connect bin/nondev-update hooks/snapshot.sh hooks/session-start.sh; do
   [ -x "$ENGINE/$f" ] || bad "missing or not executable: $f"
 done
 command -v megavibe-nondev &>/dev/null || warn "megavibe-nondev is not on PATH — start it with $ENGINE/bin/megavibe-nondev"
@@ -136,6 +136,14 @@ if [ -f "$HOME/.claude/CLAUDE.md" ] && grep -q 'megavibe-v3' "$HOME/.claude/CLAU
   warn "classic megavibe protocol is active — nondev sessions inherit developer rules (run: nondev-mode on)"
 else
   ok "no conflicting protocol (plain-language assistant only)"
+fi
+
+# ── memory that survives between sessions ──
+if [ -d "$ENGINE/agent" ]; then
+  H=$(wc -l < "$ENGINE/agent/HISTORY.md" 2>/dev/null | tr -d ' ') || H=0
+  ok "working memory present (${H:-0} lines of history)"
+else
+  warn "no memory directory — re-run the installer"
 fi
 
 # ── connected services (none is the correct default) ──
