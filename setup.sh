@@ -427,14 +427,107 @@ echo ""
 info "3) Deploying megavibe"
 
 MEGAVIBE_HOME="$HOME/.megavibe"
+
+# ─── Atomic file install ─────────────────────────────────────────────
+#
+# Never `cp` onto a path a live process may be executing or reading. `cp` opens
+# the destination O_TRUNC on the same inode, so a running bash — which reads
+# scripts lazily by byte offset — can resume mid-token, and a hook caught
+# mid-read sees a truncated file. Write to a temp beside the destination and
+# rename(): the swap is atomic and every open fd keeps the intact old inode.
+#
+# Symlinked destinations are resolved first, so the target is replaced and the
+# link survives — matching what plain `cp` did.
+
+# Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
+stat_mode() {
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
+# Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
+# Fails past 40 hops rather than returning a still-symlinked path, which the
+# caller would then replace instead of following.
+resolve_link() {
+  local p="$1" link n=0
+  while [ -L "$p" ]; do
+    if [ "$n" -ge 40 ]; then return 1; fi
+    link="$(readlink "$p")"
+    case "$link" in
+      /*) p="$link" ;;
+      *)  p="$(dirname "$p")/$link" ;;
+    esac
+    n=$((n + 1))
+  done
+  printf '%s\n' "$p"
+}
+
+# atomic_install SRC DST [MODE]
+#
+# MODE, when given, is forced. Pass it for anything that must be executable to
+# work — `cp` onto an existing file kept the *destination's* mode, so a
+# repo-side mode slip stayed invisible on upgrades and only broke fresh
+# installs. When MODE is omitted the destination's current mode is preserved
+# (falling back to the source's when creating), which is exactly what plain
+# `cp` did: user files never get silently widened.
+atomic_install() {
+  local src="$1" dst="$2" mode="${3:-}" tmp dstdir
+  if [ ! -f "$src" ]; then return 1; fi
+  dst="$(resolve_link "$dst")" || return 1
+  # `cp SRC DIR` copies into the directory; renaming would hide the temp inside
+  # it and leave the intended name untouched. Refuse rather than half-work.
+  if [ -d "$dst" ]; then return 1; fi
+  dstdir="$(dirname "$dst")"
+  if [ ! -d "$dstdir" ]; then return 1; fi
+  tmp="$(mktemp "$dstdir/.$(basename "$dst").XXXXXX")" || return 1
+  if ! cp "$src" "$tmp"; then rm -f "$tmp"; return 1; fi
+  if [ -z "$mode" ]; then
+    if [ -e "$dst" ]; then mode="$(stat_mode "$dst" || true)"; else mode="$(stat_mode "$src" || true)"; fi
+  fi
+  # A forced mode that cannot be applied is a failed install, not a warning:
+  # a 0644 hook is silently dead.
+  if [ -n "$mode" ] && ! chmod "$mode" "$tmp"; then rm -f "$tmp"; return 1; fi
+  if ! mv -f "$tmp" "$dst"; then rm -f "$tmp"; return 1; fi
+  return 0
+}
+
+# atomic_install_dir SRC DST
+#
+# Replaces a whole tree with two renames instead of `rm -rf` plus a
+# multi-second `cp -R`, which leaves the tree missing or half-populated for
+# anything reading it concurrently. NOT atomic — POSIX rename() cannot swap two
+# non-empty directories — so a reader can still catch a sub-millisecond window
+# where DST does not exist. That is strictly better than the old window, not a
+# guarantee of absence.
+atomic_install_dir() {
+  local src="$1" dst="$2" tmp old dstdir
+  if [ ! -d "$src" ]; then return 1; fi
+  dst="$(resolve_link "$dst")" || return 1
+  dstdir="$(dirname "$dst")"
+  if [ ! -d "$dstdir" ]; then return 1; fi
+  tmp="$(mktemp -d "$dstdir/.$(basename "$dst").XXXXXX")" || return 1
+  old="$tmp.old"
+  if ! cp -R "$src/." "$tmp/"; then rm -rf "$tmp"; return 1; fi
+  if [ -e "$dst" ] && ! mv "$dst" "$old"; then rm -rf "$tmp"; return 1; fi
+  if ! mv "$tmp" "$dst"; then
+    # Restoring is the last line of defence; if it fails the tree is gone and
+    # the user needs the path, not a silent return.
+    if [ -e "$old" ] && ! mv "$old" "$dst"; then
+      echo "ERROR: could not restore $dst — the previous tree is at $old" >&2
+    fi
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$old"
+  return 0
+}
 mkdir -p "$MEGAVIBE_HOME"
 
 # Copy core files to ~/.megavibe/ (always overwrite — infrastructure)
-cp "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh"
-cp "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh"
+atomic_install "$SCRIPT_DIR/setup.sh" "$MEGAVIBE_HOME/setup.sh" 755
+atomic_install "$SCRIPT_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" 755
 # Deploy session-status.sh (used by personal assistant for cross-project visibility)
 if [ -f "$SCRIPT_DIR/session-status.sh" ]; then
-  cp "$SCRIPT_DIR/session-status.sh" "$MEGAVIBE_HOME/session-status.sh"
+  atomic_install "$SCRIPT_DIR/session-status.sh" "$MEGAVIBE_HOME/session-status.sh" 755
   chmod +x "$MEGAVIBE_HOME/session-status.sh"
 fi
 
@@ -443,8 +536,12 @@ fi
 # (always overwrite) so updates propagate without a per-project init step.
 if [ -d "$SCRIPT_DIR/scripts" ]; then
   mkdir -p "$MEGAVIBE_HOME/scripts"
-  cp -f "$SCRIPT_DIR/scripts/"*.py "$MEGAVIBE_HOME/scripts/" 2>/dev/null || true
-  chmod +x "$MEGAVIBE_HOME/scripts/"*.py 2>/dev/null || true
+  for _py in "$SCRIPT_DIR/scripts/"*.py; do
+    [ -f "$_py" ] || continue
+    if ! atomic_install "$_py" "$MEGAVIBE_HOME/scripts/$(basename "$_py")" 755; then
+      warn "could not install scripts/$(basename "$_py")"
+    fi
+  done
 fi
 
 # Save detected Python command so hooks and MCP can use it
@@ -529,7 +626,7 @@ fi
 # Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
 telegram_bot_install() {
   if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then
-    cp "$SCRIPT_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
+    atomic_install "$SCRIPT_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
     ok "telegram-bot.py deployed"
 
     # Install python-telegram-bot if not already present (+ httpx for voice I/O)
@@ -572,14 +669,12 @@ fi
 # (set -u would already catch it, but this is cheap belt-and-suspenders
 # given the rm -rf that follows).
 [ -n "${MEGAVIBE_HOME:-}" ] || { err "MEGAVIBE_HOME is empty — refusing to rm -rf"; exit 1; }
-rm -rf "$MEGAVIBE_HOME/template"
-cp -R "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
+atomic_install_dir "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
 # The Megawork profile ships with the install too — the curl installer clones to a
 # temp dir and deletes it, so without this `megavibe megawork` would have nothing
 # to run and the documented setup path would be broken for every quickstart user.
 if [ -d "$SCRIPT_DIR/megawork" ]; then
-  rm -rf "$MEGAVIBE_HOME/megawork"
-  cp -R "$SCRIPT_DIR/megawork" "$MEGAVIBE_HOME/megawork"
+  atomic_install_dir "$SCRIPT_DIR/megawork" "$MEGAVIBE_HOME/megawork"
   chmod +x "$MEGAVIBE_HOME/megawork/init.sh" "$MEGAVIBE_HOME/megawork/bin/"* 2>/dev/null || true
 fi
 ok "~/.megavibe/ synced"
@@ -651,17 +746,9 @@ esac
 # Install CLI wrapper to ~/.local/bin/ (symlink to ~/.megavibe/ copy)
 CLI_DIR="$HOME/.local/bin"
 mkdir -p "$CLI_DIR"
-# Copy to ~/.megavibe/ first (already done above via setup.sh copy).
-# Write-then-rename, NOT a plain cp: `do_update` runs this setup.sh from inside
-# a live `megavibe` wrapper, and cp opens the destination O_TRUNC. Bash reads
-# scripts lazily by byte offset, so truncating the file it is still executing
-# makes it resume mid-token — "syntax error near unexpected token `then'" at a
-# line that is actually a comment. rename() swaps in a new inode instead and
-# leaves every running session's fd pointing at the intact old one.
-MV_TMP="$MEGAVIBE_HOME/.megavibe.$$.new"
-cp "$SCRIPT_DIR/megavibe" "$MV_TMP"
-chmod +x "$MV_TMP"
-mv -f "$MV_TMP" "$MEGAVIBE_HOME/megavibe"
+# `do_update` runs this setup.sh from inside a live `megavibe` wrapper, so the
+# destination below is a file bash is executing. Rename, never cp.
+atomic_install "$SCRIPT_DIR/megavibe" "$MEGAVIBE_HOME/megavibe" 755
 # Symlink from ~/.local/bin/ → ~/.megavibe/ so updates propagate automatically
 ln -sf "$MEGAVIBE_HOME/megavibe" "$CLI_DIR/megavibe"
 ok "megavibe CLI installed to $CLI_DIR/megavibe → ~/.megavibe/megavibe"
@@ -719,7 +806,7 @@ if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
   if grep -q "$END_MARKER" "$CLAUDE_MD"; then
     sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
     if [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
-      cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
+      atomic_install "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
     else
       echo "" >> "${CLAUDE_MD}.tmp"
       cat "$SCRIPT_DIR/template/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
@@ -738,7 +825,7 @@ elif [ -f "$CLAUDE_MD" ]; then
   ok "Megavibe protocol appended to existing ~/.claude/CLAUDE.md"
 else
   # ── No CLAUDE.md at all — create ──
-  cp "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
+  atomic_install "$SCRIPT_DIR/template/CLAUDE.md" "$CLAUDE_MD"
   ok "~/.claude/CLAUDE.md created"
 fi
 
@@ -757,8 +844,7 @@ info "5) Installing statusline"
 
 STATUSLINE_SCRIPT="$HOME/.claude/statusline.sh"
 
-cp "$SCRIPT_DIR/template/statusline.sh" "$STATUSLINE_SCRIPT"
-chmod +x "$STATUSLINE_SCRIPT"
+atomic_install "$SCRIPT_DIR/template/statusline.sh" "$STATUSLINE_SCRIPT" 755
 ok "~/.claude/statusline.sh"
 
 # Add statusLine + attribution config to user-level settings.json

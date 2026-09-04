@@ -48,6 +48,99 @@ mkdir -p "$PROJECT/.agent/sessions"
 mkdir -p "$PROJECT/.claude/hooks"
 mkdir -p "$PROJECT/.claude/rules"
 
+# ─── Atomic file install ─────────────────────────────────────────────
+#
+# Never `cp` onto a path a live process may be executing or reading. `cp` opens
+# the destination O_TRUNC on the same inode, so a running bash — which reads
+# scripts lazily by byte offset — can resume mid-token, and a hook caught
+# mid-read sees a truncated file. Write to a temp beside the destination and
+# rename(): the swap is atomic and every open fd keeps the intact old inode.
+#
+# Symlinked destinations are resolved first, so the target is replaced and the
+# link survives — matching what plain `cp` did.
+
+# Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
+stat_mode() {
+  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+}
+
+# Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
+# Fails past 40 hops rather than returning a still-symlinked path, which the
+# caller would then replace instead of following.
+resolve_link() {
+  local p="$1" link n=0
+  while [ -L "$p" ]; do
+    if [ "$n" -ge 40 ]; then return 1; fi
+    link="$(readlink "$p")"
+    case "$link" in
+      /*) p="$link" ;;
+      *)  p="$(dirname "$p")/$link" ;;
+    esac
+    n=$((n + 1))
+  done
+  printf '%s\n' "$p"
+}
+
+# atomic_install SRC DST [MODE]
+#
+# MODE, when given, is forced. Pass it for anything that must be executable to
+# work — `cp` onto an existing file kept the *destination's* mode, so a
+# repo-side mode slip stayed invisible on upgrades and only broke fresh
+# installs. When MODE is omitted the destination's current mode is preserved
+# (falling back to the source's when creating), which is exactly what plain
+# `cp` did: user files never get silently widened.
+atomic_install() {
+  local src="$1" dst="$2" mode="${3:-}" tmp dstdir
+  if [ ! -f "$src" ]; then return 1; fi
+  dst="$(resolve_link "$dst")" || return 1
+  # `cp SRC DIR` copies into the directory; renaming would hide the temp inside
+  # it and leave the intended name untouched. Refuse rather than half-work.
+  if [ -d "$dst" ]; then return 1; fi
+  dstdir="$(dirname "$dst")"
+  if [ ! -d "$dstdir" ]; then return 1; fi
+  tmp="$(mktemp "$dstdir/.$(basename "$dst").XXXXXX")" || return 1
+  if ! cp "$src" "$tmp"; then rm -f "$tmp"; return 1; fi
+  if [ -z "$mode" ]; then
+    if [ -e "$dst" ]; then mode="$(stat_mode "$dst" || true)"; else mode="$(stat_mode "$src" || true)"; fi
+  fi
+  # A forced mode that cannot be applied is a failed install, not a warning:
+  # a 0644 hook is silently dead.
+  if [ -n "$mode" ] && ! chmod "$mode" "$tmp"; then rm -f "$tmp"; return 1; fi
+  if ! mv -f "$tmp" "$dst"; then rm -f "$tmp"; return 1; fi
+  return 0
+}
+
+# atomic_install_dir SRC DST
+#
+# Replaces a whole tree with two renames instead of `rm -rf` plus a
+# multi-second `cp -R`, which leaves the tree missing or half-populated for
+# anything reading it concurrently. NOT atomic — POSIX rename() cannot swap two
+# non-empty directories — so a reader can still catch a sub-millisecond window
+# where DST does not exist. That is strictly better than the old window, not a
+# guarantee of absence.
+atomic_install_dir() {
+  local src="$1" dst="$2" tmp old dstdir
+  if [ ! -d "$src" ]; then return 1; fi
+  dst="$(resolve_link "$dst")" || return 1
+  dstdir="$(dirname "$dst")"
+  if [ ! -d "$dstdir" ]; then return 1; fi
+  tmp="$(mktemp -d "$dstdir/.$(basename "$dst").XXXXXX")" || return 1
+  old="$tmp.old"
+  if ! cp -R "$src/." "$tmp/"; then rm -rf "$tmp"; return 1; fi
+  if [ -e "$dst" ] && ! mv "$dst" "$old"; then rm -rf "$tmp"; return 1; fi
+  if ! mv "$tmp" "$dst"; then
+    # Restoring is the last line of defence; if it fails the tree is gone and
+    # the user needs the path, not a silent return.
+    if [ -e "$old" ] && ! mv "$old" "$dst"; then
+      echo "ERROR: could not restore $dst — the previous tree is at $old" >&2
+    fi
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$old"
+  return 0
+}
+
 # --- Helper: copy only if file doesn't exist (for user data) ---
 copy_if_missing() {
   local src="$1"
@@ -82,15 +175,18 @@ if [ -f "$SETTINGS" ]; then
     jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
       > "${SETTINGS}.tmp"
-    mv "${SETTINGS}.tmp" "$SETTINGS"
+    atomic_install "${SETTINGS}.tmp" "$SETTINGS"
+    rm -f "${SETTINGS}.tmp"
     echo "  synced: .claude/settings.json (hooks)"
   else
     echo "  warning: .claude/settings.json exists but jq is not available to sync hooks"
     echo "           Megavibe hooks saved to .claude/settings.megavibe.json for manual merge"
-    cp "$TEMPLATE_SETTINGS" "$PROJECT/.claude/settings.megavibe.json"
+    atomic_install "$TEMPLATE_SETTINGS" "$PROJECT/.claude/settings.megavibe.json"
   fi
 else
-  ABS_PROJECT=$(cd "$PROJECT" && pwd)
+  # `pwd -P` for the same reason as the sync branch above: a logical path
+  # bakes a symlink into settings.json and breaks every hook if it moves.
+  ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
   jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
     "$TEMPLATE_SETTINGS" > "$SETTINGS"
   echo "  created: $SETTINGS"
@@ -100,7 +196,7 @@ fi
 HOOKS_MISSING=0
 for hook in log-tool-event.sh block-dangerous-bash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh truncate-verbose-bash.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
-    cp "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook"
+    atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"
   else
     echo "  skip: .claude/hooks/$hook (missing from template)"
@@ -121,14 +217,13 @@ fi
 # --- Rule files (infrastructure — always overwrite) ---
 for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
   [ -f "$rule" ] || continue
-  cp "$rule" "$PROJECT/.claude/rules/$(basename "$rule")"
+  atomic_install "$rule" "$PROJECT/.claude/rules/$(basename "$rule")"
   echo "  synced: .claude/rules/$(basename "$rule")"
 done
 
 # --- verify.sh example (opt-in — inert until the user copies it into place) ---
 if [ -f "$TEMPLATE_DIR/.claude/verify.sh.example" ]; then
-  cp "$TEMPLATE_DIR/.claude/verify.sh.example" "$PROJECT/.claude/verify.sh.example"
-  chmod +x "$PROJECT/.claude/verify.sh.example"
+  atomic_install "$TEMPLATE_DIR/.claude/verify.sh.example" "$PROJECT/.claude/verify.sh.example" 755
   echo "  synced: .claude/verify.sh.example (opt-in; cp to verify.sh to enable)"
 fi
 
@@ -138,8 +233,17 @@ if [ -d "$TEMPLATE_DIR/.claude/skills" ]; then
     [ -d "$skill_dir" ] || continue
     skill_name="$(basename "$skill_dir")"
     mkdir -p "$PROJECT/.claude/skills/$skill_name"
-    cp "$skill_dir"* "$PROJECT/.claude/skills/$skill_name/" 2>/dev/null || true
-    echo "  synced: .claude/skills/$skill_name/"
+    skill_failed=0
+    for skill_file in "$skill_dir"*; do
+      [ -f "$skill_file" ] || continue
+      atomic_install "$skill_file" "$PROJECT/.claude/skills/$skill_name/$(basename "$skill_file")" \
+        || skill_failed=$((skill_failed + 1))
+    done
+    if [ "$skill_failed" -gt 0 ]; then
+      echo "  warning: .claude/skills/$skill_name/ — $skill_failed file(s) failed to install" >&2
+    else
+      echo "  synced: .claude/skills/$skill_name/"
+    fi
   done
 fi
 
@@ -148,14 +252,14 @@ if [ -d "$TEMPLATE_DIR/.claude/agents" ]; then
   mkdir -p "$PROJECT/.claude/agents"
   for agent in "$TEMPLATE_DIR/.claude/agents/"*.md; do
     [ -f "$agent" ] || continue
-    cp "$agent" "$PROJECT/.claude/agents/$(basename "$agent")"
+    atomic_install "$agent" "$PROJECT/.claude/agents/$(basename "$agent")"
     echo "  synced: .claude/agents/$(basename "$agent")"
   done
 fi
 
 # --- .agent starter files (user data — never overwrite) ---
 # .gitignore is infrastructure (like hooks) — always sync from template
-cp "$TEMPLATE_DIR/.agent/.gitignore" "$PROJECT/.agent/.gitignore"
+atomic_install "$TEMPLATE_DIR/.agent/.gitignore" "$PROJECT/.agent/.gitignore"
 echo "  synced: .agent/.gitignore"
 copy_if_missing "$TEMPLATE_DIR/.agent/FULL_CONTEXT.md" "$PROJECT/.agent/FULL_CONTEXT.md"
 copy_if_missing "$TEMPLATE_DIR/.agent/DECISIONS.md" "$PROJECT/.agent/DECISIONS.md"
