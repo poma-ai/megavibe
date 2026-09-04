@@ -119,6 +119,28 @@ case "${1:-}" in
     exit 0 ;;
 esac
 
+# A newly connected service must be pre-approved too, or its first tool call
+# prompts — which is exactly what this profile promises never to do.
+allow_tools(){
+  local sfile="$ENGINE/policy/settings.json" rule="mcp__$1__*"
+  [ -f "$sfile" ] || return 0
+  python3 - "$sfile" "$rule" <<'ALLOW' 2>/dev/null || true
+import json, os, sys
+path, rule = sys.argv[1], sys.argv[2]
+try: cfg = json.load(open(path))
+except Exception: sys.exit(0)
+allow = cfg.setdefault("permissions", {}).setdefault("allow", [])
+if rule not in allow:
+    allow.append(rule)
+    mode = os.stat(path).st_mode
+    os.chmod(path, 0o644)
+    tmp = path + ".tmp"
+    json.dump(cfg, open(tmp, "w"), indent=2)
+    os.replace(tmp, path)
+    os.chmod(path, mode)
+ALLOW
+}
+
 NAME="$1"; ROW=$(row "$NAME")
 [ -n "$ROW" ] || { echo "  Don't know '$NAME'."; list_all; exit 1; }
 LABEL=$(printf '%s' "$ROW" | cut -d'|' -f3)
@@ -161,6 +183,7 @@ case "$KIND" in
       if claude mcp list 2>/dev/null | grep "^$NAME[: ]" | grep -qi 'needs authentication'; then
         echo "  ${B}!${R} Not signed in yet. Run this again when you have a moment."
       else
+        allow_tools "$NAME"
         echo "  ${G}✓${R} $LABEL connected."
       fi
     else

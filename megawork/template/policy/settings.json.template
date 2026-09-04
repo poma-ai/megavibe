@@ -1,8 +1,13 @@
 {
   "permissions": {
     "defaultMode": "default",
+    "_comment_allow": "Allow rules must name the server — Claude Code rejects a bare mcp__* wildcard, though deny rules accept globs anywhere. These cover the services megawork-connect knows about plus the local ones; megawork-connect adds a rule when it connects anything new, so nobody is ever asked to approve tool calls one at a time.",
     "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch",
-              "mcp__*"],
+              "mcp__gmail__*", "mcp__slack__*", "mcp__linear__*", "mcp__hubspot__*", "mcp__analytics__*",
+              "mcp__poma-memory__*", "mcp__gemini-cli__*",
+              "mcp__claude_ai_Gmail__*", "mcp__claude_ai_Google_Drive__*",
+              "mcp__claude_ai_Google_Calendar__*", "mcp__claude_ai_HubSpot__*",
+              "mcp__claude_ai_Notion__*"],
     "deny": ["Bash(sudo:*)", "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
              "mcp__*__send*", "mcp__*__delete*", "mcp__*__archive*", "mcp__*__trash*",
              "mcp__*__share*", "mcp__*__upload*", "mcp__*__publish*", "mcp__*__post*"]
