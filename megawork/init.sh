@@ -327,24 +327,36 @@ LAUNCH
   rm -rf "$STAGE_DIR"
 fi
 
+# ─── Gemini key, if an admin left one ───────────────────────────────
+# Three places, in order: the environment the admin installed with, the private
+# overlay, or an existing engine key. Never a prompt — see setup.sh --harness-only.
+if [ -z "${GEMINI_API_KEY:-}" ]; then
+  for _src in "${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}/gemini-key" "$ENGINE/policy/gemini-key"; do
+    [ -f "$_src" ] && { GEMINI_API_KEY=$(tr -d '\n' < "$_src"); break; }
+  done
+fi
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  printf '%s\n' "$GEMINI_API_KEY" > "$ENGINE/policy/gemini-key"
+  chmod 600 "$ENGINE/policy/gemini-key"
+  ok "Gemini backend configured (second opinions on long documents)"
+fi
+
 # ─── Backends (optional, best effort) ───────────────────────────────
 # Tier 1: whatever they are already signed into (claude.ai connectors, codex,
 # an existing gemini setup) needs nothing from us — the session picks it up.
 # Tier 2: mint a free, billing-less Gemini key from their OWN Google identity.
 # Tier 3 (fallback): an admin hands over a key.
-if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; then
+# Only an admin machine can mint a key (it needs gcloud), and only an admin
+# would know what one is. On anyone else's Mac this stays silent — Gemini is a
+# bonus, not a missing part.
+if [ -z "${GEMINI_API_KEY:-}" ] && command -v gcloud &>/dev/null \
+   && [ -f "$SRC/../scripts/mint-gemini-key.sh" ] && interactive; then
   echo ""
-  echo "  Gemini backend: no key found."
-  if interactive && command -v gcloud &>/dev/null; then
-    ask "  Mint a free one from this Mac's Google login now? [y/N] " _ans
-    case "${_ans:-n}" in
-      [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc \
-               || echo "  ! minting failed — Claude-only for now (that is fine)" ;;
-      *) echo "  skipped — Claude-only for now (that is fine)" ;;
-    esac
-  else
-    echo "  skipped — Claude works on its own, so this is optional"
-  fi
+  echo "  Optional: a Gemini key adds second opinions on long documents."
+  ask "  Mint a free one now from this Mac's Google login? [y/N] " _ans
+  case "${_ans:-n}" in
+    [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc || true ;;
+  esac
 fi
 
 if [ -z "${MEGAWORK_WRAPPED:-}" ]; then

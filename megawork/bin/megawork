@@ -46,6 +46,13 @@ command -v claude &>/dev/null || { echo "Claude is not installed on this Mac. As
 # Never let a stray environment variable loosen the jail.
 unset CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS ANTHROPIC_API_KEY 2>/dev/null || true
 
+# Hand the Gemini key to the session if the admin provided one. Kept in the
+# engine at 0600 rather than in the person's shell profile, which they neither
+# own nor should have to think about.
+if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$ENGINE/policy/gemini-key" ]; then
+  GEMINI_API_KEY=$(tr -d '\n' < "$ENGINE/policy/gemini-key"); export GEMINI_API_KEY
+fi
+
 cd "$DATA"
 
 # Mention updates at most once a week, as one quiet line. Never interrupt, never

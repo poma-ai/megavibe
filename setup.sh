@@ -328,7 +328,9 @@ fi
 
 # ─── 2. First-time logins ───────────────────────────────────────────
 
-if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
+if [ "${HARNESS_ONLY:-0}" = "1" ]; then
+  : # Megawork handles the one sign-in that matters (Claude) in its own words.
+elif [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   info "2) First-time logins"
   echo ""
@@ -360,7 +362,12 @@ fi
 # accounts are pointed at the Antigravity CLI instead). API key auth still
 # works and is now the ONLY supported auth for megavibe's Gemini backend.
 
-if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+if [ "${HARNESS_ONLY:-0}" = "1" ]; then
+  # A colleague cannot be asked to mint an API key, and must certainly not have
+  # a browser thrown at them mid-install. The admin supplies one or Gemini is
+  # simply absent — Claude works alone and the fallback chain copes.
+  :
+elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo ""
   info "2b) Gemini API key"
   echo ""
