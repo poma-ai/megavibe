@@ -66,6 +66,36 @@ and `--restricted` are mutually exclusive, so the boundary has to live in the OS
 `--restricted` remains the automatic fallback where no sandbox exists: reduced
 capability, never reduced containment.
 
+## Connecting other services
+
+Nothing is connected by default — not mail, not chat, not the CRM. Wiring all of
+that up at install time reads as creepy even when it is convenient, so consent is
+just-in-time instead: the assistant notices a task would be better with one, says
+so in a sentence, and offers. `nondev-connect` does the rest.
+
+```bash
+nondev-connect                 # what is on, and what could be
+nondev-connect gmail           # opens a browser sign-in
+nondev-connect --off gmail     # reverse it
+```
+
+| Name | What it is | How it connects |
+|---|---|---|
+| `gmail` | Gmail — search, read threads, prepare drafts | official remote MCP, OAuth |
+| `applemail` | mail already downloaded to this Mac | a sandbox read permission, not a login |
+| `slack` | messages the person can already see | official remote MCP, OAuth |
+| `linear` | issues, projects, status | official remote MCP, OAuth |
+| `hubspot` | contacts, companies, deals | official remote MCP, OAuth |
+| `analytics` | GA4 reports (read-only, runs locally) | Google's own local server + `gcloud` login |
+
+Sign-in goes through each service's own OAuth, handled by Claude Code — no tokens
+are pasted and megavibe never sees a credential. Send, delete, archive and trash
+verbs stay denied by policy on every connector; drafting is allowed, since
+"write me a reply" is the point. `applemail` is the odd one out: it is not a
+login but a sandbox read rule, so turning it on genuinely widens what the session
+can read — verified that `.ssh`, `gh` tokens and Slack's local store stay blocked
+either way, and that turning it off closes it again.
+
 ## Coexisting with classic megavibe
 
 Both can live on one Mac. Because a nondev session is not `--restricted`, it does

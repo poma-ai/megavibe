@@ -3,7 +3,7 @@
     "defaultMode": "default",
     "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch"],
     "deny": ["Bash(sudo:*)", "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
-             "mcp__*__send*", "mcp__*__delete*", "mcp__*__create_draft*"]
+             "mcp__*__send*", "mcp__*__delete*", "mcp__*__archive*", "mcp__*__trash*"]
   },
   "env": { "MEGAVIBE_NONDEV_DATA": "@DATA@", "MEGAVIBE_NONDEV_ENGINE": "@ENGINE@" },
   "hooks": {

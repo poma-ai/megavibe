@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# nondev-connect — turn individual services on, one at a time, when they are
+# actually needed.
+#
+# Design note: nothing is connected by default, on purpose. Wiring up a person's
+# mail, chat and CRM the moment they install something reads as creepy even when
+# it is convenient. Instead the assistant notices it would need one, explains why
+# in plain words, and offers — then this runs the sign-in. Consent happens at the
+# moment of use, about a specific thing, and it is reversible in one command.
+#
+# Usage:
+#   nondev-connect                 what is on, and what could be
+#   nondev-connect <name>          connect it (opens a browser sign-in)
+#   nondev-connect --off <name>    disconnect it
+#
+# Sign-in is handled by Claude Code's own OAuth: no tokens to paste, and we
+# never see or store a credential.
+
+set -uo pipefail
+
+ENGINE="${MEGAVIBE_NONDEV_HOME:-$HOME/.megavibe-nondev}"
+B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
+
+# name | claude-mcp target | what a non-technical person calls it | what it is for
+REGISTRY='
+gmail|http https://gmailmcp.googleapis.com/mcp/v1|Gmail|search your mail, read threads, prepare drafts (never sends)
+slack|http https://mcp.slack.com/mcp|Slack|find messages and threads you already have access to
+linear|http https://mcp.linear.app/mcp|Linear|look up issues, projects and status
+hubspot|http https://mcp.hubspot.com|HubSpot|look up contacts, companies and deals
+analytics|local google-analytics|Google Analytics|read website traffic and conversion reports
+applemail|sandbox mail|Apple Mail (on this Mac)|search the mail already downloaded to this Mac
+'
+
+row(){ printf '%s\n' "$REGISTRY" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
+is_on(){ claude mcp list 2>/dev/null | grep -q "^$1[: ]"; }
+mail_on(){ ! grep -q '(subpath "'"$HOME"'/Library/Mail")' "$ENGINE/policy/sandbox.sb" 2>/dev/null; }
+
+list_all(){
+  echo ""
+  echo "  ${B}What your assistant can reach${R}"
+  echo ""
+  printf '%s\n' "$REGISTRY" | while IFS='|' read -r name target label desc; do
+    [ -n "${name:-}" ] || continue
+    if [ "$name" = "applemail" ]; then mail_on && st="${G}on${R} " || st="${D}off${R}"
+    else is_on "$name" && st="${G}on${R} " || st="${D}off${R}"; fi
+    printf '   [%b] %-22s %s\n' "$st" "$label" "$D$desc$R"
+  done
+  echo ""
+  echo "  Turn one on:   ${B}nondev-connect <name>${R}   (names: $(printf '%s\n' "$REGISTRY" | awk -F'|' 'NF{printf "%s ", $1}'))"
+  echo "  Turn one off:  ${B}nondev-connect --off <name>${R}"
+  echo ""
+  echo "  ${D}Nothing is connected unless you ask for it. Each one signs in through${R}"
+  echo "  ${D}its own website, and your assistant can never send mail or delete things.${R}"
+  echo ""
+}
+
+# Apple Mail is not an MCP server — it is the mail already on this Mac, so it is
+# a sandbox read permission rather than a sign-in.
+set_mail(){ # $1 = on|off
+  local sb="$ENGINE/policy/sandbox.sb"
+  [ -f "$sb" ] || { echo "  Setup looks incomplete — run: nondev-doctor"; exit 1; }
+  chmod u+w "$sb" 2>/dev/null || true
+  if [ "$1" = "on" ]; then
+    sed -i '' "\|(subpath \"$HOME/Library/Mail\")|d" "$sb"
+    echo "  ${G}✓${R} Apple Mail: your assistant can now read the mail on this Mac."
+    echo "  ${D}It can read and search it. It cannot send, delete or change anything.${R}"
+  else
+    grep -q "(subpath \"$HOME/Library/Mail\")" "$sb" || \
+      sed -i '' "s|  (subpath \"$HOME/Library/Messages\")|  (subpath \"$HOME/Library/Mail\")\n  (subpath \"$HOME/Library/Messages\")|" "$sb"
+    echo "  ${G}✓${R} Apple Mail: closed off again."
+  fi
+  sandbox-exec -f "$sb" /usr/bin/true 2>/dev/null || { echo "  ${B}!${R} that change broke the settings — run: nondev-doctor"; exit 1; }
+}
+
+case "${1:-}" in
+  ""|--list|list) list_all; exit 0 ;;
+  --off)
+    n="${2:-}"; r=$(row "$n"); [ -n "$r" ] || { echo "  Don't know '$n'. Try: nondev-connect"; exit 1; }
+    if [ "$n" = "applemail" ]; then set_mail off; else
+      claude mcp remove "$n" >/dev/null 2>&1 && echo "  ${G}✓${R} $(printf '%s' "$r" | cut -d'|' -f3): disconnected." \
+        || echo "  It wasn't connected."
+    fi
+    exit 0 ;;
+esac
+
+NAME="$1"; ROW=$(row "$NAME")
+[ -n "$ROW" ] || { echo "  Don't know '$NAME'."; list_all; exit 1; }
+LABEL=$(printf '%s' "$ROW" | cut -d'|' -f3)
+DESC=$(printf '%s' "$ROW" | cut -d'|' -f4)
+KIND=$(printf '%s' "$ROW" | cut -d'|' -f2 | cut -d' ' -f1)
+TARGET=$(printf '%s' "$ROW" | cut -d'|' -f2 | cut -d' ' -f2-)
+
+echo ""
+echo "  ${B}Connecting $LABEL${R}"
+echo "  ${D}So your assistant can $DESC.${R}"
+echo ""
+
+case "$KIND" in
+  sandbox) set_mail on ;;
+  http)
+    if is_on "$NAME"; then echo "  Already connected."; exit 0; fi
+    echo "  A browser window will open so you can sign in to $LABEL."
+    echo "  ${D}You are signing in to $LABEL itself — no password is shared with us.${R}"
+    echo ""
+    if claude mcp add --transport http "$NAME" "$TARGET" >/dev/null 2>&1; then
+      echo "  ${G}✓${R} $LABEL added. The first time you ask about it, you'll be"
+      echo "     asked to approve access — that is the sign-in."
+    else
+      echo "  ${B}!${R} Could not add $LABEL. It may already exist, or the service"
+      echo "     may be unreachable. Nothing was changed."
+      exit 1
+    fi ;;
+  local)
+    echo "  Google Analytics runs on this Mac and reads your reports only."
+    echo "  It needs a one-off Google sign-in in the terminal:"
+    echo ""
+    echo "    ${B}gcloud auth application-default login${R}"
+    echo ""
+    if command -v uvx &>/dev/null || command -v pipx &>/dev/null; then
+      RUNNER=$(command -v uvx || command -v pipx)
+      claude mcp add analytics -- "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
+        && echo "  ${G}✓${R} Google Analytics added (read-only)." \
+        || echo "  ${B}!${R} Could not add it — is google-analytics-mcp available to $RUNNER?"
+    else
+      echo "  ${B}!${R} Needs uvx or pipx installed first."
+      exit 1
+    fi ;;
+esac
+
+echo ""
+echo "  Open your assistant and just ask — it will use it from now on."
+echo "  ${D}Changed your mind? nondev-connect --off $NAME${R}"
+echo ""

@@ -139,7 +139,8 @@ cp "$SRC/bin/megavibe-nondev"           "$ENGINE/bin/megavibe-nondev"
 cp "$SRC/bin/nondev-doctor"             "$ENGINE/bin/nondev-doctor"
 cp "$SRC/bin/nondev-mode"               "$ENGINE/bin/nondev-mode"
 cp "$SRC/bin/nondev-folder"             "$ENGINE/bin/nondev-folder"
-chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode" "$ENGINE/bin/nondev-folder"
+cp "$SRC/bin/nondev-connect"            "$ENGINE/bin/nondev-connect"
+chmod +x "$ENGINE/bin/megavibe-nondev" "$ENGINE/bin/nondev-doctor" "$ENGINE/bin/nondev-mode" "$ENGINE/bin/nondev-folder" "$ENGINE/bin/nondev-connect"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
 printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
@@ -184,6 +185,7 @@ ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
 ln -sf "$ENGINE/bin/nondev-doctor"  "$HOME/.local/bin/nondev-doctor"
 ln -sf "$ENGINE/bin/nondev-mode"    "$HOME/.local/bin/nondev-mode"
 ln -sf "$ENGINE/bin/nondev-folder"  "$HOME/.local/bin/nondev-folder"
+ln -sf "$ENGINE/bin/nondev-connect" "$HOME/.local/bin/nondev-connect"
 # ~/.local/bin is NOT on a stock macOS PATH, so "just run megavibe-nondev"
 # would be a lie on a clean machine. Persist it, idempotently.
 if ! command -v megavibe-nondev &>/dev/null; then
@@ -196,7 +198,7 @@ if ! command -v megavibe-nondev &>/dev/null; then
   done
   export PATH="$HOME/.local/bin:$PATH"
 fi
-ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-folder"
+ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-folder, nondev-connect"
 
 # One machine, one protocol. A nondev session is not --restricted, so a
 # user-level classic megavibe protocol would otherwise leak developer rules
