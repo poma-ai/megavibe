@@ -72,9 +72,34 @@ set -- ${REST+"${REST[@]}"}
 
 # Probe the profile: `-f exists` is not the same as `it loads`. A syntax error
 # otherwise dumps a C-style seatbelt backtrace into the colleague's window.
+# The session runs sandboxed; this wrapper does not, and it owns a real
+# terminal. That is what lets a service sign-in happen without anyone typing a
+# command: the assistant queues one, the person closes the session, the browser
+# opens here, and the session comes back with the service connected.
+finish_pending_connect() {
+  local pend="$ENGINE/pending-connect" name
+  [ -f "$pend" ] || return 1
+  name=$(head -1 "$pend" 2>/dev/null); rm -f "$pend"
+  [ -n "$name" ] || return 1
+  echo ""
+  echo "  Opening the sign-in page for ${name}…"
+  echo "  (approve it in your browser, then we'll pick up where we left off)"
+  echo ""
+  claude mcp login "$name" || echo "  Sign-in didn't finish — you can try again any time."
+  echo ""
+  return 0
+}
+
 if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
    && sandbox-exec -f "$SANDBOX" /usr/bin/true 2>/dev/null; then
-  exec sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@"
+  while :; do
+    sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@"
+    # Only loop when there is a sign-in to complete; otherwise the person
+    # closing the assistant means they are done.
+    finish_pending_connect || break
+    set -- ; CLAUDE_ARGS+=( --continue )
+  done
+  exit 0
 fi
 
 # No sandbox available (non-macOS, or profile missing): fall back to Claude's

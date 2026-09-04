@@ -89,11 +89,11 @@ nondev-connect --off gmail     # reverse it
 | `analytics` | GA4 reports (read-only, runs locally) | Google's own local server + `gcloud` login |
 
 Sign-in goes through each service's own OAuth, handled by Claude Code — no tokens
-are pasted and megavibe never sees a credential. One wrinkle worth knowing: the
-OAuth handshake needs a real terminal, so it cannot complete from inside a
-session. `nondev-connect` registers the service, then tells the person to quit
-the assistant and run the same one line in the Terminal window they started it
-from; the browser opens by itself. One line, once per service.
+are pasted and megavibe never sees a credential. The OAuth handshake needs a real
+terminal, which a session is not — so the launcher does it. The assistant queues
+the sign-in, the person closes the session with Ctrl-D, the browser opens by
+itself, and the session reopens with the service connected. **Nobody types a
+command**, which is rather the point of the whole profile.
 
 **Google Analytics is the exception.** The Analytics Data API does not accept API
 keys at all — reports are authorised per GA4 property, so it needs a real

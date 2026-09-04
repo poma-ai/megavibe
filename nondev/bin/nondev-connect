@@ -32,7 +32,10 @@ applemail|sandbox mail|Apple Mail (on this Mac)|search the mail already download
 '
 
 row(){ printf '%s\n' "$REGISTRY" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
-is_on(){ claude mcp list 2>/dev/null | grep -q "^$1[: ]"; }
+# Registered is not the same as connected: an MCP server that has not completed
+# OAuth exposes no tools at all, so treat "needs authentication" as off.
+is_on(){ claude mcp list 2>/dev/null | grep "^$1[: ]" | grep -qiv 'needs authentication'; }
+is_registered(){ claude mcp list 2>/dev/null | grep -q "^$1[: ]"; }
 mail_on(){ ! grep -q '(subpath "'"$HOME"'/Library/Mail")' "$ENGINE/policy/sandbox.sb" 2>/dev/null; }
 
 list_all(){
@@ -102,9 +105,12 @@ case "$KIND" in
     echo "  A browser window will open so you can sign in to $LABEL."
     echo "  ${D}You are signing in to $LABEL itself — no password is shared with us.${R}"
     echo ""
-    claude mcp add --transport http "$NAME" "$TARGET" >/dev/null 2>&1 || {
-      echo "  ${B}!${R} Could not add $LABEL — it may already exist, or the"
-      echo "     service may be unreachable. Nothing was changed."; exit 1; }
+    # A half-finished attempt leaves the server registered but not signed in;
+    # in that case skip straight to the sign-in rather than failing on "exists".
+    if ! is_registered "$NAME"; then
+      claude mcp add --transport http "$NAME" "$TARGET" >/dev/null 2>&1 || {
+        echo "  ${B}!${R} Could not reach $LABEL. Nothing was changed."; exit 1; }
+    fi
     # Sign in NOW, with the browser opening by itself. Until this completes the
     # server exposes no tools at all, so "just ask and it'll prompt you" would
     # be wrong — and typing a slash command is not something to ask of someone
@@ -116,18 +122,16 @@ case "$KIND" in
         echo "  ${G}✓${R} $LABEL connected."
       fi
     else
-      # The server is registered but not signed in, so it exposes no tools yet.
-      # Say that accurately rather than implying nothing happened.
+      # We are inside a session: no terminal, so the OAuth handshake cannot run
+      # here. Queue it — the launcher owns a real terminal and will finish it
+      # the moment the session closes. Nobody has to type a command.
+      printf '%s\n' "$NAME" > "$ENGINE/pending-connect" 2>/dev/null
       echo ""
-      echo "  ${B}Almost there.${R} $LABEL is set up but not signed in yet, and the"
-      echo "  sign-in needs a real Terminal window (it opens your browser)."
-      echo ""
-      echo "  Quit the assistant with ${B}Ctrl-D${R}, then type this one line:"
-      echo ""
-      echo "      ${B}nondev-connect $NAME${R}"
-      echo ""
-      echo "  ${D}Then start the assistant again — $LABEL will be there.${R}"
+      echo "  ${B}One moment needed.${R} To finish signing in to $LABEL, close me"
+      echo "  with ${B}Ctrl-D${R} — the sign-in page opens by itself, and I come"
+      echo "  straight back with $LABEL connected."
     fi ;;
+
   local)
     # GA4 is different from the OAuth connectors on purpose. The Analytics Data
     # API does not accept API keys at all — reports are authorised per GA4
