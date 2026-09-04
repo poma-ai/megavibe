@@ -84,7 +84,7 @@ fi
 # Non-technical people mostly live in Google Drive, and "which Drive folder"
 # is the one setup question they have a real opinion about. Detect the actual
 # options on this Mac and let them point at one, rather than guessing.
-FOLDER_NAME="${FOLDER_NAME:-Megavibe}"
+FOLDER_NAME="${FOLDER_NAME:-$APPNAME}"   # renamed: the folder follows the app
 
 gdrive_roots() {   # every My Drive + every Shared drive, one per line
   local r
@@ -170,7 +170,20 @@ printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
 # resolved or the rules silently fail to match.
 ENGINE_REAL=$(cd "$ENGINE" && pwd -P)
 HOME_REAL=$(cd "$HOME" && pwd -P)
-render(){ sed -e "s|@DATA@|$DATA_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" "$1" > "$2"; }
+# Not sed: `&` in a replacement means "the whole match", so a shared drive
+# called "Kunden & Projekte" rendered a sandbox rule pointing at
+# "Kunden @DATA@ Projekte" — the assistant then could not write to its own
+# folder. `|` in a path would break the delimiter too. Bash substitution is
+# literal on both counts.
+render(){
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line//@DATA@/$DATA_REAL}
+    line=${line//@ENGINE@/$ENGINE_REAL}
+    line=${line//@HOME@/$HOME_REAL}
+    printf '%s\n' "$line"
+  done < "$1" > "$2"
+}
 render "$SRC/template/sandbox.sb.template"         "$ENGINE/policy/sandbox.sb"
 render "$SRC/template/policy/settings.json.template" "$ENGINE/policy/settings.json"
 ok "engine installed in $ENGINE"
