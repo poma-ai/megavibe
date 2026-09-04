@@ -38,10 +38,17 @@ CLAUDE.local.md
 .idea/
 events.jsonl
 
-# Org-specific nondev overlay (branding, named pilots) — this repo is PUBLIC.
-# Keep these in ~/.megavibe/personal/nondev/ instead.
-nondev/template/icon.*
-nondev/PILOT-BRIEF.md
-nondev/org/
+# Org-specific Megawork overlay (branding, named pilots) — this repo is PUBLIC.
+# Keep these in ~/.megavibe/personal/megawork/ instead.
+# (Paths said 'nondev/' until the rename, so they guarded nothing. An icon and a
+# named pilot brief have each landed here once and cost a history rewrite.)
+megawork/template/icon.*
+megawork/**/icon.*
+megawork/PILOT-BRIEF.md
+megawork/org/
+nondev/
 README-data-treatment.md
 scripts/gcp-token.sh
+
+# Runtime state — never belongs in the repo
+megawork/logs/

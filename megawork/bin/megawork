@@ -94,7 +94,7 @@ REST=()
 for a in "$@"; do
   if [ "$a" = "--remote" ]; then REMOTE=1; else REST+=( "$a" ); fi
 done
-[ "$REMOTE" -eq 1 ] && CLAUDE_ARGS+=( --remote-control "${MEGAWORK_REMOTE_NAME:-Megavibe}" )
+[ "$REMOTE" -eq 1 ] && CLAUDE_ARGS+=( --remote-control "${MEGAWORK_REMOTE_NAME:-Megawork}" )
 set -- ${REST+"${REST[@]}"}
 
 # Probe the profile: `-f exists` is not the same as `it loads`. A syntax error

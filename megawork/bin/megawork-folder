@@ -45,8 +45,8 @@ case "${1:-}" in
     exit 0 ;;
   --list)
     echo "Places the folder could live:"
-    echo "  $HOME/Megavibe    (this Mac only)"
-    while IFS= read -r r; do [ -n "$r" ] && echo "  $r/Megavibe"; done < <(gdrive_roots)
+    echo "  $HOME/Megawork    (this Mac only)"
+    while IFS= read -r r; do [ -n "$r" ] && echo "  $r/Megawork"; done < <(gdrive_roots)
     echo ""
     echo "Then run:  megawork-folder \"<the path you want>\""
     exit 0 ;;

@@ -27,20 +27,20 @@ PARKED="$HOME/.claude/CLAUDE.md.classic-megavibe"
 
 status() {
   if [ -f "$PARKED" ] && [ ! -f "$LIVE" ]; then
-    echo "nondev mode is ON — plain-language assistant only."
+    echo "Megawork mode is ON — plain-language assistant only."
     echo "  classic megavibe protocol parked at: $PARKED"
     echo "  classic 'megavibe' still runs, as ordinary Claude Code."
   elif [ -f "$LIVE" ]; then
     if grep -q 'megavibe-v3' "$LIVE" 2>/dev/null; then
-      echo "nondev mode is OFF — the classic megavibe protocol is active."
+      echo "Megawork mode is OFF — the classic megavibe protocol is active."
       echo "  Megawork sessions would also inherit its developer rules."
       echo "  run 'megawork-mode on' to keep the two apart."
     else
-      echo "nondev mode is OFF — a user-level CLAUDE.md exists (not megavibe's)."
+      echo "Megawork mode is OFF — a user-level CLAUDE.md exists (not megavibe's)."
       echo "  Megawork sessions inherit it. 'megawork-mode on' parks it."
     fi
   else
-    echo "nondev mode is ON — no user-level protocol is installed at all."
+    echo "Megawork mode is ON — no user-level protocol is installed at all."
   fi
 }
 
