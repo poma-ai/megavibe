@@ -566,8 +566,17 @@ fi
 if [ -n "$REPO_DIR" ]; then
   # Sync CLI wrapper
   if ! diff -q "$REPO_DIR/megavibe" "$MEGAVIBE_HOME/megavibe" &>/dev/null 2>&1; then
-    cp "$REPO_DIR/megavibe" "$MEGAVIBE_HOME/megavibe"
-    chmod +x "$MEGAVIBE_HOME/megavibe"
+    # Write-then-rename, never a plain cp: this file is the one bash is
+    # executing right now, and cp opens the destination O_TRUNC. Bash reads
+    # scripts lazily by byte offset, so truncating it under our own feet can
+    # make the parser resume mid-token before we reach the exec below.
+    # PID-suffixed temp: concurrent launches must not share one .new path.
+    MV_TMP="$MEGAVIBE_HOME/.megavibe.$$.new"
+    if cp "$REPO_DIR/megavibe" "$MV_TMP" && chmod +x "$MV_TMP"; then
+      mv -f "$MV_TMP" "$MEGAVIBE_HOME/megavibe"
+    else
+      rm -f "$MV_TMP"
+    fi
     # Re-exec from the updated copy so the rest of this script uses new logic
     exec "$MEGAVIBE_HOME/megavibe" "$@"
   fi

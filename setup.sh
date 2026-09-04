@@ -651,9 +651,17 @@ esac
 # Install CLI wrapper to ~/.local/bin/ (symlink to ~/.megavibe/ copy)
 CLI_DIR="$HOME/.local/bin"
 mkdir -p "$CLI_DIR"
-# Copy to ~/.megavibe/ first (already done above via setup.sh copy)
-cp "$SCRIPT_DIR/megavibe" "$MEGAVIBE_HOME/megavibe"
-chmod +x "$MEGAVIBE_HOME/megavibe"
+# Copy to ~/.megavibe/ first (already done above via setup.sh copy).
+# Write-then-rename, NOT a plain cp: `do_update` runs this setup.sh from inside
+# a live `megavibe` wrapper, and cp opens the destination O_TRUNC. Bash reads
+# scripts lazily by byte offset, so truncating the file it is still executing
+# makes it resume mid-token — "syntax error near unexpected token `then'" at a
+# line that is actually a comment. rename() swaps in a new inode instead and
+# leaves every running session's fd pointing at the intact old one.
+MV_TMP="$MEGAVIBE_HOME/.megavibe.$$.new"
+cp "$SCRIPT_DIR/megavibe" "$MV_TMP"
+chmod +x "$MV_TMP"
+mv -f "$MV_TMP" "$MEGAVIBE_HOME/megavibe"
 # Symlink from ~/.local/bin/ → ~/.megavibe/ so updates propagate automatically
 ln -sf "$MEGAVIBE_HOME/megavibe" "$CLI_DIR/megavibe"
 ok "megavibe CLI installed to $CLI_DIR/megavibe → ~/.megavibe/megavibe"
