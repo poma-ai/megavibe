@@ -41,6 +41,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# mktemp creates 0600, and renaming that into place would silently change the
+# mode of a file that already existed. Carry the destination's mode across.
+keep_mode() {
+  local src="$1" dst="$2" mode
+  if [ -e "$dst" ]; then
+    mode="$(stat -f '%Lp' "$dst" 2>/dev/null || stat -c '%a' "$dst" 2>/dev/null || true)"
+  fi
+  chmod "${mode:-644}" "$src" 2>/dev/null || true
+}
+
 AGENT_DIR="$PROJECT/.agent"
 LOG_DIR="$AGENT_DIR/events"
 SNAPSHOT="$AGENT_DIR/snapshot.md"
@@ -61,6 +71,7 @@ migrate_legacy() {
   if [ ! -e "$SNAPSHOT" ] && [ -s "$RENDERED" ] && [ -z "$(find "$LOG_DIR" -name '*.md' -print -quit 2>/dev/null)" ]; then
     tmp="$(mktemp "$AGENT_DIR/.snapshot.XXXXXX")" || return 1
     cat "$RENDERED" > "$tmp"
+    keep_mode "$tmp" "$SNAPSHOT"
     mv -f "$tmp" "$SNAPSHOT"
     echo "agent-log: adopted $(wc -l < "$SNAPSHOT" | tr -d ' ') existing lines as $SNAPSHOT" >&2
   fi
@@ -87,6 +98,7 @@ render() {
     echo "agent-log: render failed, left $RENDERED untouched" >&2
     return 1
   fi
+  keep_mode "$tmp" "$RENDERED"
   mv -f "$tmp" "$RENDERED"
 }
 
@@ -107,6 +119,7 @@ case "$CMD" in
     rand="$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo $RANDOM)"
     out="$LOG_DIR/${ts}-${host:-host}-${rand}.md"
     # A fresh unique path: no lock, nothing to race with, nothing to overwrite.
+    chmod 644 "$staged" 2>/dev/null || true
     mv -f "$staged" "$out"
     render
     echo "$out"
@@ -141,6 +154,7 @@ case "$CMD" in
     # interrupted fold lost those entries from the snapshot and the event log
     # both; this way the worst case is a duplicate, which a re-fold cannot cause
     # because the files are already gone.
+    keep_mode "$tmp" "$SNAPSHOT"
     mv -f "$tmp" "$SNAPSHOT"
     while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done < "$folded"
     rm -f "$folded"
