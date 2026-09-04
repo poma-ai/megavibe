@@ -12,10 +12,23 @@ exercised end to end — but not yet piloted with a real non-technical user.
 
 ## Install
 
+**Self-serve — the person installs it themselves, one line, no admin:**
+
 ```bash
-bash nondev/init-nondev.sh          # asks where the folder should live
+curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/nondev/install-nondev.sh | bash
+```
+
+It installs Claude Code if missing, downloads via tarball (no `git`, so macOS
+never pops the Xcode developer-tools dialog), asks where the folder should live,
+and walks them through signing in. Prompts read from the terminal, not stdin, so
+the pipe does not eat the answers.
+
+From a checkout, or for a scripted install:
+
+```bash
+bash nondev/init-nondev.sh                          # asks where the folder goes
 bash nondev/init-nondev.sh --gdrive "Client work"   # straight to Google Drive
-nondev-doctor                       # verify, incl. live sandbox escape canaries
+nondev-doctor                                       # verify, incl. escape canaries
 ```
 
 Run interactively, the installer lists the locations that actually exist on the
@@ -52,6 +65,18 @@ cannot admit MCP servers at all — measured, see `spike/RESULTS-capable.md`. Ca
 and `--restricted` are mutually exclusive, so the boundary has to live in the OS.
 `--restricted` remains the automatic fallback where no sandbox exists: reduced
 capability, never reduced containment.
+
+## Coexisting with classic megavibe
+
+Both can live on one Mac. Because a nondev session is not `--restricted`, it does
+read a user-level `~/.claude/CLAUDE.md`, so the plain-language protocol explicitly
+overrides any developer rules it finds — verified in practice across every test
+session, all of which ran with classic megavibe active.
+
+The installer therefore **leaves an existing classic install alone by default** —
+it will not silently degrade something the person chose to install. If they never
+use the developer version, `nondev-mode on` parks it for a marginally cleaner
+assistant, and `nondev-mode off` puts it back. Nothing is ever deleted.
 
 ## One machine, one protocol
 

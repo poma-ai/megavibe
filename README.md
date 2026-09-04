@@ -231,6 +231,14 @@ language, one folder they own, and a macOS sandbox that confines writes to it
 while leaving reads broad. Bash, MCP servers and the colleague's own claude.ai
 connectors all keep working — the boundary is the kernel, not a crippled agent.
 
+The person can install it themselves — one line, no admin, nothing to clone:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/nondev/install-nondev.sh | bash
+```
+
+Or, from an existing megavibe install:
+
 ```bash
 megavibe nondev init      # asks where the folder should live (Google Drive aware)
 megavibe nondev doctor    # verify, including live sandbox-escape tests

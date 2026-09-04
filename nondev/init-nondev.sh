@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Provision megavibe-nondev on a colleague's Mac. Run by an ADMIN, once.
+# Provision megavibe-nondev. Normally reached via the self-serve one-liner
+# (nondev/install-nondev.sh), which downloads this and hands off to it.
 #
 # Creates:
 #   ~/.megavibe-nondev/      engine: policy, protocol, launcher   (control plane)
@@ -40,6 +41,18 @@ done
 
 ok(){ echo "  ✓ $*"; }
 
+# Ask the human, not stdin: piped installs (curl | bash) hand us the script on
+# stdin, so prompts must go to the controlling terminal.
+TTY_IN=""
+[ -t 0 ] && TTY_IN="/dev/stdin"
+if [ -z "$TTY_IN" ] && ( : < /dev/tty ) 2>/dev/null; then TTY_IN="/dev/tty"; fi
+ask(){ # ask "prompt" varname ; leaves var empty when there is nobody to ask
+  local _p="$1" _v="$2" _a=""
+  if [ -n "$TTY_IN" ]; then read -r -p "$_p" _a < "$TTY_IN" || _a=""; fi
+  printf -v "$_v" '%s' "$_a"
+}
+interactive(){ [ -n "$TTY_IN" ]; }
+
 # Google Drive as the native home: many non-technical people already live there,
 # and it makes the folder reachable from their phone and shareable with others.
 # Snapshots deliberately live in the engine, so sync never sees them.
@@ -73,7 +86,7 @@ if [ "$USE_GDRIVE" -eq 1 ]; then
     echo "  ! Google Drive for Desktop not found — falling back to $DATA"
     echo "    (install Drive, sign in, then re-run with --gdrive)"
   fi
-elif [ "$DATA_EXPLICIT" -eq 0 ] && [ -t 0 ]; then
+elif [ "$DATA_EXPLICIT" -eq 0 ] && interactive; then
   # Interactive install with no location given: offer what actually exists.
   _opts=(); _labels=()
   _opts+=("$HOME/$FOLDER_NAME");  _labels+=("Home folder — simple, stays on this Mac")
@@ -91,10 +104,10 @@ elif [ "$DATA_EXPLICIT" -eq 0 ] && [ -t 0 ]; then
   for i in "${!_opts[@]}"; do printf '    %d) %s\n      %s\n' "$((i+1))" "${_opts[$i]}" "${_labels[$i]}"; done
   printf '    %d) somewhere else (type a path)\n' "$(( ${#_opts[@]} + 1 ))"
   echo ""
-  read -r -p "  Choose [1]: " _pick || _pick=""
+  ask "  Choose [1]: " _pick
   _pick="${_pick:-1}"
   if [ "$_pick" = "$(( ${#_opts[@]} + 1 ))" ]; then
-    read -r -p "  Full path to the folder: " _custom || _custom=""
+    ask "  Full path to the folder: " _custom
     [ -n "$_custom" ] && DATA="${_custom/#\~/$HOME}"
   elif [ "$_pick" -ge 1 ] 2>/dev/null && [ "$_pick" -le "${#_opts[@]}" ]; then
     DATA="${_opts[$((_pick-1))]}"
@@ -190,15 +203,19 @@ ok "commands installed: megavibe-nondev, nondev-doctor, nondev-mode, nondev-fold
 # (.agent writes, git discipline, spinouts) into the plain-language assistant.
 if [ -f "$HOME/.claude/CLAUDE.md" ]; then
   echo ""
-  echo "  This Mac has a user-level protocol (classic megavibe) that a nondev"
-  echo "  session would also inherit — developer rules in a non-technical"
-  echo "  assistant. Parking it keeps the two apart; classic 'megavibe' keeps"
-  echo "  working as ordinary Claude Code, and 'nondev-mode off' restores it."
-  if [ -t 0 ]; then
-    read -r -p "  Park the classic protocol now? [Y/n] " _pk || _pk=""
-    case "${_pk:-y}" in [yY]*|"") bash "$ENGINE/bin/nondev-mode" on ;; *) echo "  left in place — sessions will blend both protocols" ;; esac
+  echo "  You already have the developer version of megavibe on this Mac."
+  echo "  Both can live here — the simple assistant is told to ignore the"
+  echo "  developer rules, and it does. If you never use the developer version,"
+  echo "  setting it aside makes the assistant a shade cleaner."
+  echo "  (Nothing is deleted either way; 'nondev-mode off' puts it back.)"
+  if interactive; then
+    ask "  Keep the developer version fully working? [Y/n] " _pk
+    case "${_pk:-y}" in
+      [nN]*) bash "$ENGINE/bin/nondev-mode" on ;;
+      *)     echo "  ✓ keeping both — nothing changed" ;;
+    esac
   else
-    echo "  (non-interactive: left in place — run 'nondev-mode on' to separate them)"
+    echo "  → keeping both (run 'nondev-mode on' later if you prefer)"
   fi
 fi
 
@@ -248,8 +265,8 @@ fi
 if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; then
   echo ""
   echo "  Gemini backend: no key found."
-  if [ -t 0 ] && command -v gcloud &>/dev/null; then
-    read -r -p "  Mint a free one from this Mac's Google login now? [y/N] " _ans || _ans=""
+  if interactive && command -v gcloud &>/dev/null; then
+    ask "  Mint a free one from this Mac's Google login now? [y/N] " _ans
     case "${_ans:-n}" in
       [yY]*) bash "$SRC/../scripts/mint-gemini-key.sh" --write-rc \
                || echo "  ! minting failed — Claude-only for now (that is fine)" ;;
@@ -260,8 +277,10 @@ if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; 
   fi
 fi
 
-echo ""
-echo "Done. Next, with the colleague present:"
-echo "  1. run 'claude' once and sign them in"
-echo "  2. drag ${APPNAME} from /Applications to the Dock"
-echo "  3. open it and try: \"what can you help me with?\""
+if [ -z "${MEGAVIBE_NONDEV_WRAPPED:-}" ]; then
+  echo ""
+  echo "Done. Next:"
+  echo "  1. run 'claude' once and sign in"
+  echo "  2. drag ${APPNAME} from /Applications to the Dock"
+  echo "  3. open it and try: \"what can you help me with?\""
+fi
