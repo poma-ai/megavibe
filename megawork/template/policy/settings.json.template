@@ -8,6 +8,8 @@
              "mcp__*__share*", "mcp__*__upload*", "mcp__*__publish*", "mcp__*__post*"]
   },
   "env": { "MEGAWORK_DATA": "@DATA@", "MEGAWORK_ENGINE": "@ENGINE@" },
+  "_comment_disabled": "Browser automation cannot work in here — the sandbox denies the LaunchServices brokers Chrome needs (that deny is what closes the `open` escape) and blocks its cache. Left enabled it spawns a headless Chrome that fails on a loop, filling the session with errors nobody can act on. Megawork does document work; it does not drive a browser.",
+  "disabledMcpServers": ["playwright"],
   "hooks": {
     "PreToolUse": [
       { "matcher": "Write|Edit",
