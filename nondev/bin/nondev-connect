@@ -44,6 +44,28 @@ row(){ printf '%s\n' "$REGISTRY" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
 # OAuth exposes no tools at all, so treat "needs authentication" as off.
 is_on(){ claude mcp list 2>/dev/null | grep "^$1[: ]" | grep -qiv 'needs authentication'; }
 is_registered(){ claude mcp list 2>/dev/null | grep -q "^$1[: ]"; }
+
+# Inside a session we are sandboxed: no terminal for OAuth, and the engine and
+# Google's credential store are read-only. Every connector therefore has the same
+# shape — queue it, and let the launcher finish it outside the sandbox.
+sandboxed(){ ! ( : > "$HOME/.nondev-sb-probe-$$" ) 2>/dev/null || { rm -f "$HOME/.nondev-sb-probe-$$"; false; }; }
+queue_and_explain(){ # $1=name $2=label
+  mkdir -p "$ENGINE/logs" 2>/dev/null
+  if ! printf '%s\n' "$1" > "$ENGINE/logs/pending-connect" 2>/dev/null; then
+    echo "  ${B}!${R} Couldn't set that up. Run ${B}nondev-doctor${R}."; exit 1
+  fi
+  echo ""
+  echo "  ${B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
+  echo "  ${B}  Last step: press Ctrl-D TWICE to finish signing in${R}"
+  echo "  ${B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
+  echo ""
+  echo "  Hold ${B}Control${R} and tap ${B}D${R} — then do it once more."
+  echo "  ${D}(the first press leaves the message box, the second closes the chat)${R}"
+  echo ""
+  echo "  The $2 sign-in opens by itself, and we carry on where we left off."
+  echo ""
+  exit 0
+}
 mail_on(){ ! grep -q '(subpath "'"$HOME"'/Library/Mail")' "$ENGINE/policy/sandbox.sb" 2>/dev/null; }
 
 list_all(){
@@ -105,6 +127,11 @@ echo ""
 echo "  ${B}Connecting $LABEL${R}"
 echo "  ${D}So your assistant can $DESC.${R}"
 echo ""
+
+# Queue first, whatever the connector is: none of them can complete their work
+# from inside a session (no terminal for OAuth, engine and credential stores
+# read-only). This is what the launcher picks up.
+sandboxed && queue_and_explain "$NAME" "$LABEL"
 
 case "$KIND" in
   sandbox) set_mail on ;;
@@ -171,23 +198,15 @@ case "$KIND" in
       echo ""; exit 0
     fi
 
-    command -v gcloud &>/dev/null || {
-      echo "  Google Analytics needs a little setup your admin has to do once."
-      echo "  ${D}Send them this: megavibe nondev connect analytics --admin-setup${R}"
-      echo ""; exit 1; }
-
-    # A session runs inside the sandbox and cannot write Google's credential
-    # store, so the sign-in has to happen in a normal terminal window.
-    if ! ( : > "$HOME/.config/gcloud/.nondev-write-probe" ) 2>/dev/null; then
-      echo "  This one needs a browser sign-in that cannot happen from inside"
-      echo "  the assistant. Open ${B}Terminal${R} and run this one line:"
+    if ! command -v gcloud &>/dev/null || ! { command -v uvx &>/dev/null || command -v pipx &>/dev/null; }; then
+      echo "  Google Analytics is the one service that needs a piece of setup"
+      echo "  from whoever looks after this Mac — it cannot be self-served."
       echo ""
-      echo "      ${B}nondev-connect analytics${R}"
-      echo ""
-      echo "  ${D}A Google sign-in window will open by itself.${R}"
+      echo "  ${D}For them: install gcloud and uv, or drop a GA4 service-account${R}"
+      echo "  ${D}key at $ENGINE/policy/ga4-service-account.json — then this${R}"
+      echo "  ${D}connects with no sign-in at all.${R}"
       echo ""; exit 1
     fi
-    rm -f "$HOME/.config/gcloud/.nondev-write-probe" 2>/dev/null
 
     echo "  A Google sign-in window will open now. Choose your work account."
     echo "  ${D}This is Google's own sign-in — read-only access to your reports.${R}"

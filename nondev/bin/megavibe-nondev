@@ -106,7 +106,9 @@ finish_pending_connect() {
   echo "  ${name}: opening the sign-in page in your browser now."
   echo "  Approve it there, and we will pick up exactly where we left off."
   echo ""
-  claude mcp login "$name" || echo "  Sign-in didn't finish — you can try again any time."
+  # Re-run the same command out here, where there is a terminal and the
+  # credential stores are writable. One code path, not two.
+  "$ENGINE/bin/nondev-connect" "$name" || echo "  Sign-in didn't finish — you can try again any time."
   echo ""
   return 0
 }
