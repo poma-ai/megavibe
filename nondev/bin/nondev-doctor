@@ -135,7 +135,8 @@ fi
 
 # ── connected services (none is the correct default) ──
 if command -v claude &>/dev/null; then
-  CONN=$(claude mcp list 2>/dev/null | grep -cE '^(gmail|slack|linear|hubspot|analytics)[: ]' || echo 0)
+  CONN=$(claude mcp list 2>/dev/null | grep -cE '^(gmail|slack|linear|hubspot|analytics)[: ]') || CONN=0
+  CONN=${CONN//[^0-9]/}; CONN=${CONN:-0}
   grep -q "(subpath \"$HOME/Library/Mail\")" "$ENGINE/policy/sandbox.sb" 2>/dev/null || CONN=$((CONN+1))
   [ "$CONN" -gt 0 ] && ok "$CONN service(s) connected (nondev-connect to review)" \
                     || ok "no outside services connected (the default)"

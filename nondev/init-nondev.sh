@@ -240,15 +240,27 @@ end tell
 APPLESCRIPT
     # Stage first, swap only on success — otherwise a failed re-run leaves the
     # colleague with a dead Dock icon and no launcher.
-    STAGE_DIR=$(mktemp -d); STAGE="$STAGE_DIR/app"
+    # The staged path MUST end in .app: osacompile picks its output format from
+    # the extension, and without it you get a plain compiled script, not a bundle.
+    STAGE_DIR=$(mktemp -d); STAGE="$STAGE_DIR/${APPNAME}.app"
     if osacompile -o "$STAGE" "$TMP_SCPT" 2>/dev/null && rm -rf "$APP" && mv "$STAGE" "$APP"; then
       # Branding comes from a private overlay, never from this repo: megavibe is
       # public and MIT, so company logos and named pilots do not belong in it.
       # Point MEGAVIBE_NONDEV_OVERLAY at your own dir, or use the default below.
       OVERLAY="${MEGAVIBE_NONDEV_OVERLAY:-$HOME/.megavibe/personal/nondev}"
       if [ -f "$OVERLAY/icon.icns" ]; then
-        cp "$OVERLAY/icon.icns" "$APP/Contents/Resources/applet.icns" 2>/dev/null \
-          && touch "$APP" && ok "icon applied (from overlay)"
+        # osacompile no longer ships a default applet.icns, so create the
+        # Resources dir and register the icon rather than copying into thin air.
+        mkdir -p "$APP/Contents/Resources"
+        if cp "$OVERLAY/icon.icns" "$APP/Contents/Resources/applet.icns" 2>/dev/null; then
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string applet" \
+            "$APP/Contents/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile applet" \
+               "$APP/Contents/Info.plist" 2>/dev/null || true
+          touch "$APP"; ok "icon applied"
+        else
+          echo "  ! could not apply the icon (harmless)"
+        fi
       fi
       ok "launcher created: $APP  (drag it to the Dock)"
     else
