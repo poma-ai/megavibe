@@ -179,6 +179,27 @@ or run: nondev-folder --list
 TXT
 ok "folder ready at $DATA"
 
+# Claude Code asks whether you trust the files in a new directory. For someone
+# non-technical, being asked to vouch for their own documents folder is both
+# confusing and meaningless — the admin already decided this by installing. Mark
+# it accepted up front so the first launch is just the assistant saying hello.
+if command -v python3 &>/dev/null; then
+  python3 - "$DATA_REAL" <<'TRUST' 2>/dev/null || true
+import json, os, sys
+path = os.path.expanduser("~/.claude.json")
+try:
+    cfg = json.load(open(path)) if os.path.exists(path) else {}
+except Exception:
+    sys.exit(0)                      # never damage an unreadable config
+cfg.setdefault("projects", {}).setdefault(sys.argv[1], {})["hasTrustDialogAccepted"] = True
+tmp = path + ".nondev-tmp"
+with open(tmp, "w") as fh:
+    json.dump(cfg, fh, indent=2)
+os.replace(tmp, path)
+TRUST
+  ok "folder pre-approved (no trust question on first launch)"
+fi
+
 # ─── CLI shortcut ───────────────────────────────────────────────────
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ENGINE/bin/megavibe-nondev" "$HOME/.local/bin/megavibe-nondev"
@@ -257,7 +278,11 @@ APPLESCRIPT
             "$APP/Contents/Info.plist" 2>/dev/null \
             || /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile applet" \
                "$APP/Contents/Info.plist" 2>/dev/null || true
-          touch "$APP"; ok "icon applied"
+          touch "$APP"
+          # The Dock caches icons per bundle path; without a nudge it keeps
+          # showing the generic applet icon even though the icns is in place.
+          killall Dock 2>/dev/null || true
+          ok "icon applied"
         else
           echo "  ! could not apply the icon (harmless)"
         fi

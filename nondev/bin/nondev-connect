@@ -133,16 +133,23 @@ case "$KIND" in
       # We are inside a session: no terminal, so the OAuth handshake cannot run
       # here. Queue it — the launcher owns a real terminal and will finish it
       # the moment the session closes. Nobody has to type a command.
-      if ! printf '%s\n' "$NAME" > "$ENGINE/pending-connect" 2>/dev/null; then
+      mkdir -p "$ENGINE/logs" 2>/dev/null
+      if ! printf '%s\n' "$NAME" > "$ENGINE/logs/pending-connect" 2>/dev/null; then
         echo ""
         echo "  ${B}!${R} $LABEL is set up, but I couldn't queue the sign-in"
         echo "     (couldn't write to $ENGINE). Run ${B}nondev-doctor${R}."
         exit 1
       fi
       echo ""
-      echo "  ${B}One moment needed.${R} To finish signing in to $LABEL, close me"
-      echo "  with ${B}Ctrl-D${R} — the sign-in page opens by itself, and I come"
-      echo "  straight back with $LABEL connected."
+      echo "  ${B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
+      echo "  ${B}  Last step: press Ctrl-D TWICE to finish signing in${R}"
+      echo "  ${B}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
+      echo ""
+      echo "  Hold ${B}Control${R} and tap ${B}D${R} — then do it once more."
+      echo "  ${D}(the first press leaves the message box, the second closes the chat)${R}"
+      echo ""
+      echo "  The $LABEL sign-in page then opens by itself, and I come straight"
+      echo "  back once you have approved it. Nothing is lost."
     fi ;;
 
   local)

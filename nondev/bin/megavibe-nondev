@@ -85,13 +85,14 @@ set -- ${REST+"${REST[@]}"}
 # command: the assistant queues one, the person closes the session, the browser
 # opens here, and the session comes back with the service connected.
 finish_pending_connect() {
-  local pend="$ENGINE/pending-connect" name
+  local pend="$ENGINE/logs/pending-connect" name
   [ -f "$pend" ] || return 1
   name=$(head -1 "$pend" 2>/dev/null); rm -f "$pend"
   [ -n "$name" ] || return 1
   echo ""
-  echo "  Opening the sign-in page for ${name}…"
-  echo "  (approve it in your browser, then we'll pick up where we left off)"
+  echo ""
+  echo "  ${name}: opening the sign-in page in your browser now."
+  echo "  Approve it there, and we will pick up exactly where we left off."
   echo ""
   claude mcp login "$name" || echo "  Sign-in didn't finish — you can try again any time."
   echo ""
@@ -105,7 +106,8 @@ if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
     # Only loop when there is a sign-in to complete; otherwise the person
     # closing the assistant means they are done.
     finish_pending_connect || break
-    set -- ; CLAUDE_ARGS+=( --continue )
+    # Resume the same conversation rather than reopening blank.
+    set -- ; case " ${CLAUDE_ARGS[*]} " in *" --continue "*) ;; *) CLAUDE_ARGS+=( --continue ) ;; esac
   done
   exit 0
 fi

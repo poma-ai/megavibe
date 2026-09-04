@@ -32,20 +32,31 @@
   (subpath "@DATA@")                    ; the colleague's four folders
   (subpath "@ENGINE@/logs")             ; our own logs
   (subpath "@ENGINE@/snapshots")        ; undo history (kept out of synced folders)
-  ; NOT all of ~/.claude — it is executable configuration (settings.json,
-  ; hooks/, skills/, statusline.sh) that later UNSANDBOXED sessions run. Only
-  ; the inert state directories are writable. (A separate CLAUDE_CONFIG_DIR
-  ; would be cleaner, but relocating it breaks Claude Code's login.)
-  (subpath "@HOME@/.claude/projects")
-  (subpath "@HOME@/.claude/todos")
-  (subpath "@HOME@/.claude/file-history")
-  (subpath "@HOME@/.claude/statsig")
-  (subpath "@HOME@/.claude/cache")
+  ; Claude Code writes state all over ~/.claude (projects, todos, session-env,
+  ; shell-snapshots, …) and the list grows with each release, so allow the
+  ; directory and deny back the parts that EXECUTE in later, unsandboxed
+  ; sessions — see the deny block below. Enumerating the allowed subdirs
+  ; instead meant a new one broke startup with a raw EPERM in the user's face.
+  (subpath "@HOME@/.claude")
   (subpath "@HOME@/.cache")
   (subpath "/private/var/folders")      ; system temp (per-user, not shared)
   (subpath "/private/tmp")
   (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr")
   (literal "/dev/dtracehelper") (literal "/dev/tty"))
+
+; Executable configuration is denied back: these run in LATER sessions, some of
+; them unsandboxed, so a session must never be able to edit them. Seatbelt takes
+; the last matching rule, so this must stay after the allow above.
+(deny file-write*
+  (literal "@HOME@/.claude/settings.json")
+  (literal "@HOME@/.claude/settings.local.json")
+  (literal "@HOME@/.claude/CLAUDE.md")
+  (literal "@HOME@/.claude/statusline.sh")
+  (subpath "@HOME@/.claude/hooks")
+  (subpath "@HOME@/.claude/skills")
+  (subpath "@HOME@/.claude/agents")
+  (subpath "@HOME@/.claude/plugins")
+  (subpath "@HOME@/.claude/commands"))
 
 ; ── reads: broad by design, minus the things nobody should hoover up ──
 ; NOTE: ~/Library/Keychains is deliberately NOT denied — Claude Code stores its

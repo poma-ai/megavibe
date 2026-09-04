@@ -93,14 +93,19 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
   fi
   rm -rf "$APP_CANARY"
 
-  # Claude's own config is executable surface for LATER, unsandboxed sessions.
-  CFG_CANARY="$HOME/.claude/.doctor-canary-$$"
-  sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$CFG_CANARY'" 2>/dev/null
-  if [ -f "$CFG_CANARY" ]; then
-    bad "~/.claude is writable from the sandbox — a session could alter later sessions"; rm -f "$CFG_CANARY"
-  else
-    ok "Claude's own config is protected from the sandbox"
-  fi
+  # Claude's own EXECUTABLE config is what matters here: settings.json, hooks and
+  # the status line all run in later, unsandboxed sessions. State directories
+  # under ~/.claude are deliberately writable (Claude Code needs them), so
+  # testing an arbitrary file there would be testing the wrong thing.
+  CFG_LEAK=0
+  for target in "$HOME/.claude/settings.json" "$HOME/.claude/CLAUDE.md" "$HOME/.claude/hooks/.doctor-$$"; do
+    before=$(shasum "$target" 2>/dev/null | cut -d' ' -f1)
+    sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo '# doctor' >> '$target'" 2>/dev/null
+    after=$(shasum "$target" 2>/dev/null | cut -d' ' -f1)
+    [ "$before" != "$after" ] && { CFG_LEAK=1; bad "a session can modify $target"; }
+  done
+  rm -f "$HOME/.claude/hooks/.doctor-$$" 2>/dev/null
+  [ "$CFG_LEAK" -eq 0 ] && ok "Claude's settings, protocol and hooks are protected from the sandbox"
 
   IN_CANARY="$DATA/.doctor-canary-$$"
   sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$IN_CANARY'" 2>/dev/null
