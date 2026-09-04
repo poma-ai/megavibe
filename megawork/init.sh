@@ -266,55 +266,61 @@ fi
 # ─── Dock-able launcher app ─────────────────────────────────────────
 if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
   APP="/Applications/${APPNAME}.app"
-  if command -v osacompile &>/dev/null; then
-    TMP_SCPT=$(mktemp -t megaworkapp).applescript
-    # Open Terminal on the launcher. Terminal (not the Claude desktop app) is
-    # deliberate: the desktop app does not honour these CLI flags, so it would
-    # silently bypass the jail.
-    cat > "$TMP_SCPT" <<APPLESCRIPT
-tell application "Terminal"
+  # Build the bundle by hand instead of using osacompile. An .app is just a
+  # directory, and osacompile ad-hoc signs it — so writing our icon into
+  # Contents/Resources broke the seal and macOS then ignored the icon entirely.
+  # Owning the bundle means the icon is simply part of it from the start.
+  OVERLAY="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}"
+  STAGE_DIR=$(mktemp -d); STAGE="$STAGE_DIR/${APPNAME}.app"
+  mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
+
+  cat > "$STAGE/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>${APPNAME}</string>
+  <key>CFBundleDisplayName</key><string>${APPNAME}</string>
+  <key>CFBundleIdentifier</key><string>com.poma-ai.megawork</string>
+  <key>CFBundleVersion</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>appicon</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+
+  cat > "$STAGE/Contents/MacOS/launch" <<LAUNCH
+#!/bin/bash
+# Open a Terminal window on the assistant. Terminal, not the Claude desktop
+# app: the desktop app would not apply the sandbox or the policy.
+osascript -e 'tell application "Terminal"
     activate
-    set w to do script "clear; '$ENGINE/bin/megawork'"
+    set w to do script "clear; \"$ENGINE/bin/megawork\""
     try
-        set custom title of w to "$APPNAME"
+        set custom title of w to "${APPNAME}"
     end try
-end tell
-APPLESCRIPT
-    # Stage first, swap only on success — otherwise a failed re-run leaves the
-    # colleague with a dead Dock icon and no launcher.
-    # The staged path MUST end in .app: osacompile picks its output format from
-    # the extension, and without it you get a plain compiled script, not a bundle.
-    STAGE_DIR=$(mktemp -d); STAGE="$STAGE_DIR/${APPNAME}.app"
-    if osacompile -o "$STAGE" "$TMP_SCPT" 2>/dev/null && rm -rf "$APP" && mv "$STAGE" "$APP"; then
-      # Branding comes from a private overlay, never from this repo: megavibe is
-      # public and MIT, so company logos and named pilots do not belong in it.
-      # Point MEGAWORK_OVERLAY at your own dir, or use the default below.
-      OVERLAY="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}"
-      if [ -f "$OVERLAY/icon.icns" ]; then
-        # osacompile no longer ships a default applet.icns, so create the
-        # Resources dir and register the icon rather than copying into thin air.
-        mkdir -p "$APP/Contents/Resources"
-        if cp "$OVERLAY/icon.icns" "$APP/Contents/Resources/applet.icns" 2>/dev/null; then
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string applet" \
-            "$APP/Contents/Info.plist" 2>/dev/null \
-            || /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile applet" \
-               "$APP/Contents/Info.plist" 2>/dev/null || true
-          touch "$APP"
-          # The Dock caches icons per bundle path; without a nudge it keeps
-          # showing the generic applet icon even though the icns is in place.
-          killall Dock 2>/dev/null || true
-          ok "icon applied"
-        else
-          echo "  ! could not apply the icon (harmless)"
-        fi
-      fi
-      ok "launcher created: $APP  (drag it to the Dock)"
-    else
-      echo "  ! could not create the launcher app (existing app left untouched)"
-      echo "    it can still be started by running: $ENGINE/bin/megawork"
-    fi
-    rm -rf "$STAGE_DIR"; rm -f "$TMP_SCPT" "${TMP_SCPT%.applescript}"
+end tell'
+LAUNCH
+  chmod +x "$STAGE/Contents/MacOS/launch"
+
+  if [ -f "$OVERLAY/icon.icns" ]; then
+    cp "$OVERLAY/icon.icns" "$STAGE/Contents/Resources/appicon.icns"
   fi
+
+  if rm -rf "$APP" && mv "$STAGE" "$APP"; then
+    # Ad-hoc sign the finished bundle, so the seal matches what is inside it.
+    codesign --force --deep --sign - "$APP" 2>/dev/null || true
+    touch "$APP"; killall Dock 2>/dev/null || true
+    [ -f "$APP/Contents/Resources/appicon.icns" ] && ok "launcher created with its icon: $APP" \
+      || ok "launcher created: $APP (no icon in the overlay)"
+    echo "    drag it to the Dock"
+  else
+    echo "  ! could not create the launcher app (existing app left untouched)"
+    echo "    it can still be started by running: $ENGINE/bin/megawork"
+  fi
+  rm -rf "$STAGE_DIR"
 fi
 
 # ─── Backends (optional, best effort) ───────────────────────────────

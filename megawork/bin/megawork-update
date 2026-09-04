@@ -21,8 +21,10 @@ B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 [ -d "$ENGINE" ] || { echo "megawork is not set up on this Mac."; exit 1; }
 DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
 
+# Scoped to this subtree, not the whole repository: otherwise every commit to
+# megavibe would tell a colleague their assistant needs updating.
 REMOTE_SHA=$(curl -fsSL --max-time 20 \
-  "https://api.github.com/repos/poma-ai/megavibe/commits/main?per_page=1" 2>/dev/null \
+  "https://api.github.com/repos/poma-ai/megavibe/commits?path=megawork&per_page=1" 2>/dev/null \
   | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1)
 LOCAL_SHA=$(cat "$ENGINE/version" 2>/dev/null || echo "")
 
