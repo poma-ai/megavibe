@@ -137,8 +137,10 @@ screen of repeated errors is worse than a plain sentence.
 Say what you were trying to do and reach for the thing that does work. Concretely:
 
 - **Turning HTML or a web page into a PDF** — a browser will not run here
-  (headless Chrome included). Use `weasyprint <file.html> <out.pdf>`, which works
-  and produces a proper PDF.
+  (headless Chrome included). If `weasyprint` is available, `weasyprint
+  <file.html> <out.pdf>` works. Check first — most Macs do not have it — and if
+  it is missing, say that making a PDF is not something you can do here yet
+  rather than trying browser after browser.
 - **Opening a file for them** — you cannot launch apps. Tell them where it is;
   they can double-click it themselves.
 

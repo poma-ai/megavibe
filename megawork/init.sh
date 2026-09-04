@@ -203,20 +203,17 @@ ok "folder ready at $DATA"
 # non-technical, being asked to vouch for their own documents folder is both
 # confusing and meaningless — the admin already decided this by installing. Mark
 # it accepted up front so the first launch is just the assistant saying hello.
-if command -v python3 &>/dev/null; then
-  python3 - "$DATA_REAL" <<'TRUST' 2>/dev/null || true
-import json, os, sys
-path = os.path.expanduser("~/.claude.json")
-try:
-    cfg = json.load(open(path)) if os.path.exists(path) else {}
-except Exception:
-    sys.exit(0)                      # never damage an unreadable config
-cfg.setdefault("projects", {}).setdefault(sys.argv[1], {})["hasTrustDialogAccepted"] = True
-tmp = path + ".megawork-tmp"
-with open(tmp, "w") as fh:
-    json.dump(cfg, fh, indent=2)
-os.replace(tmp, path)
-TRUST
+# jq, not python3: /usr/bin/python3 on a Mac without Xcode command line tools
+# is a stub that pops an "install developer tools?" dialog and fails. jq ships
+# with macOS 15 and later, which this profile requires anyway.
+if command -v jq &>/dev/null; then
+  CLAUDE_JSON="$HOME/.claude.json"
+  [ -f "$CLAUDE_JSON" ] || echo '{}' > "$CLAUDE_JSON"
+  if jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
+    jq --arg d "$DATA_REAL" '.projects[$d].hasTrustDialogAccepted = true' "$CLAUDE_JSON" \
+      > "$CLAUDE_JSON.megawork-tmp" 2>/dev/null \
+      && mv "$CLAUDE_JSON.megawork-tmp" "$CLAUDE_JSON"
+  fi
   ok "folder pre-approved (no trust question on first launch)"
 fi
 
@@ -339,7 +336,7 @@ if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ]; 
       *) echo "  skipped — Claude-only for now (that is fine)" ;;
     esac
   else
-    echo "  skipped — Claude works on its own; add one later with scripts/mint-gemini-key.sh"
+    echo "  skipped — Claude works on its own, so this is optional"
   fi
 fi
 

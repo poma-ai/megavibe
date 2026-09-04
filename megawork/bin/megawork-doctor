@@ -128,7 +128,7 @@ if command -v claude &>/dev/null; then
 fi
 
 # ── backends (optional; absence is fine, the fallback chain copes) ──
-[ -n "${GEMINI_API_KEY:-}" ] && ok "Gemini backend configured" || warn "no Gemini key — Claude-only (fine; run mint-gemini-key.sh to add one)"
+[ -n "${GEMINI_API_KEY:-}" ] && ok "Gemini backend configured" || warn "no Gemini key — Claude-only, which is fine"
 command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — Claude-only (fine)"
 
 # ── one machine, one protocol ──
@@ -138,9 +138,15 @@ else
   ok "no conflicting protocol (plain-language assistant only)"
 fi
 
+# ── what this Mac can and cannot do (a fresh Mac has very little) ──
+command -v jq &>/dev/null || bad "jq is missing — undo and the opening summary will not work (needs macOS 15+)"
+sw_vers -productVersion 2>/dev/null | awk -F. '$1 < 15 {exit 1}' \
+  || warn "macOS 15 or later is recommended — older versions lack tools this relies on"
+command -v weasyprint &>/dev/null || warn "no weasyprint — turning HTML into PDF is unavailable (optional)"
+
 # ── memory that survives between sessions ──
 if [ -d "$ENGINE/agent" ]; then
-  H=$(wc -l < "$ENGINE/agent/HISTORY.md" 2>/dev/null | tr -d ' ') || H=0
+  H=0; [ -f "$ENGINE/agent/HISTORY.md" ] && H=$(wc -l < "$ENGINE/agent/HISTORY.md" 2>/dev/null | tr -d ' ')
   ok "working memory present (${H:-0} lines of history)"
 else
   warn "no memory directory — re-run the installer"
