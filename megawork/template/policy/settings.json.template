@@ -1,9 +1,11 @@
 {
   "permissions": {
     "defaultMode": "default",
-    "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch"],
+    "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch",
+              "mcp__*"],
     "deny": ["Bash(sudo:*)", "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
-             "mcp__*__send*", "mcp__*__delete*", "mcp__*__archive*", "mcp__*__trash*"]
+             "mcp__*__send*", "mcp__*__delete*", "mcp__*__archive*", "mcp__*__trash*",
+             "mcp__*__share*", "mcp__*__upload*", "mcp__*__publish*", "mcp__*__post*"]
   },
   "env": { "MEGAWORK_DATA": "@DATA@", "MEGAWORK_ENGINE": "@ENGINE@" },
   "hooks": {
