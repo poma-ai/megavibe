@@ -46,9 +46,11 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -397,11 +399,56 @@ def append_with_lock(target: Path, text: str) -> None:
             f.write(text)
 
 
+def append_event(agent_dir: Path, body: str) -> Path:
+    """Write one immutable entry. No lock, because there is nothing to contend.
+
+    The old path appended to a shared FULL_CONTEXT.md under an flock. That
+    serialises writers on one machine and does nothing across two: the file is
+    synced, the lock file is not, so a second Mac's appends were resolved away
+    whole-file with no conflict copy. A unique write-once path has no such
+    failure mode on any transport. FULL_CONTEXT.md is now rendered from these.
+    """
+    events = agent_dir / "events"
+    events.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    host = "".join(ch for ch in socket.gethostname() if ch.isalnum())[:12] or "host"
+    out = events / f"{ts}-{host}-{uuid.uuid4().hex[:6]}.md"
+    out.write_text(body, encoding="utf-8")
+    render_full_context(agent_dir)
+    return out
+
+
+def render_full_context(agent_dir: Path) -> None:
+    """Rebuild the derived view: snapshot, then every event in timestamp order.
+
+    Safe to clobber and safe to run concurrently — the content is reproducible
+    from the events, and the result is renamed into place so no reader ever
+    sees a partial file.
+    """
+    snapshot = agent_dir / "snapshot.md"
+    events = agent_dir / "events"
+    parts = []
+    if snapshot.exists():
+        parts.append(snapshot.read_text(encoding="utf-8", errors="replace"))
+    if events.is_dir():
+        for f in sorted(events.glob("*.md")):
+            try:
+                parts.append(f.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    tmp = agent_dir / f".FULL_CONTEXT.{os.getpid()}.tmp"
+    try:
+        tmp.write_text("".join(parts), encoding="utf-8")
+        os.replace(tmp, agent_dir / "FULL_CONTEXT.md")
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
 def apply_narrative(agent_dir: Path, narrative: str, slice_date: str) -> bool:
     if not narrative:
         return False
     block = f"\n## {slice_date} (auto-flushed by context-watcher)\n\n{narrative}\n"
-    append_with_lock(agent_dir / "FULL_CONTEXT.md", block)
+    append_event(agent_dir, block)
     return True
 
 

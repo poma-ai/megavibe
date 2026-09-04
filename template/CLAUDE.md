@@ -11,12 +11,16 @@ Claude Code is the executor and orchestrator. Gemini and Codex are subcontractor
 1. **Verification is mandatory.** Every task must specify verification commands and expected outcomes. Run verification before declaring done.
 
 2. **Continuous context writes.** Write to `.agent/` files **as you go**, not just at milestones. After every significant decision, completed subtask, or important discovery:
-   - Append a 2–3 line summary to `.agent/FULL_CONTEXT.md`
+   - Record a 2–3 line summary: `printf '...' | .claude/hooks/agent-log.sh append`
    - Update `.agent/DECISIONS.md` if a decision was made
    - Update `.agent/TASKS.md` if task status changed
    A hook counts tool calls since your last `.agent/` write and nudges you after 8 calls. Don't ignore it — stale context files mean broken re-hydration. But don't rely on the hook: follow this rule independently.
 
-3. **Full context log is durable.** `.agent/FULL_CONTEXT.md` is append-only with no length limit — let it grow. Store research in `.agent/RESEARCH/`. Store screenshots/HTML/PDFs in `.agent/ASSETS/`.
+3. **The context log is an event log — never edit it in place.** Write entries with `.claude/hooks/agent-log.sh append` (entry text on stdin). Each call creates one immutable file in `.agent/events/`; nothing ever rewrites an existing one. `.agent/FULL_CONTEXT.md` is the **rendered view** of `.agent/snapshot.md` plus every event in order — read it freely, never append to it, and expect it to be regenerated under you.
+
+   Why it works this way: a shared mutable file cannot be coordinated across machines. `flock` serialises writers on one Mac, and a file-level sync (iCloud, Dropbox, Drive) then resolves two Macs' versions by picking a whole-file winner — the other machine's entries vanish with no conflict copy and no error. Unique write-once files have nothing to reconcile on any transport. Compaction is `agent-log.sh fold`, which moves old entries into the snapshot; it never deletes.
+
+   Store research in `.agent/RESEARCH/`. Store screenshots/HTML/PDFs in `.agent/ASSETS/`.
 
 4. **Independent review by default.** Every important result, change, or product gets an independent review before it ships — without the user having to ask. Important = new/changed code beyond trivial mechanical edits, documents or plans the user will rely on, analyses that drive decisions, anything user-facing. Route it: code diffs → fresh-context Claude subagent review (or `/code-review`); prose, plans, analyses → second opinion from Codex and/or Gemini. If ambiguous, risky, or repeatedly corrected: escalate to BOTH Codex and Gemini, asking the reviewer to consider the neutral case, the devil's advocate case, and the optimistic case — then synthesize. Act on findings before declaring done. Exceptions: trivial/mechanical edits, deliverables that are themselves reviews (no recursion), and urgent hotfixes (ship, then review immediately after).
 
@@ -27,7 +31,8 @@ Claude Code is the executor and orchestrator. Gemini and Codex are subcontractor
 ## Session isolation
 
 Multiple Claude Code sessions can run in the same project simultaneously. To prevent races:
-- **Shared files** (append-only, project-level truth): `FULL_CONTEXT.md`, `DECISIONS.md`, `TASKS.md`, `LESSONS.md`, `RESEARCH/`
+- **Event log** (write-once, safe across sessions *and machines*): `.agent/events/` via `agent-log.sh append`. `FULL_CONTEXT.md` is rendered from it and is not a write target.
+- **Shared files** (still edited in place, so single-machine only): `DECISIONS.md`, `TASKS.md`, `LESSONS.md`, `RESEARCH/`. `flock` covers concurrent sessions here; it does not cover a second Mac.
 - **Session-scoped files**: `WORKING_CONTEXT.md` lives at `.agent/sessions/{session_id}/WORKING_CONTEXT.md`. Hook counters and flags are also per-session.
 
 The on-compact hook tells you your session ID and WORKING_CONTEXT path. Use the path it gives you.
@@ -72,20 +77,20 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 
 **Commit**
 - Descriptive message. Include what was verified.
-- After committing: append a summary to `.agent/FULL_CONTEXT.md`.
+- After committing: record a summary with `.claude/hooks/agent-log.sh append`.
 
 **Learn**
 - After ANY correction from the user, append a 1–2 line pattern to `.agent/LESSONS.md`: what went wrong, what to do instead.
 
 **Reflect** (periodic)
-- After completing a major feature or multi-task plan, take one turn to zoom out: Is the overall approach still sound? Are we solving the right problem? Is complexity growing faster than value? Write a 3–5 line assessment to `FULL_CONTEXT.md`. This catches strategic drift that task-level verification misses.
+- After completing a major feature or multi-task plan, take one turn to zoom out: Is the overall approach still sound? Are we solving the right problem? Is complexity growing faster than value? Record a 3–5 line assessment with `agent-log.sh append`. This catches strategic drift that task-level verification misses.
 
 ## Skills
 
 Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/rehydrate` — regenerate WORKING_CONTEXT.md from .agent/ files via Gemini/Codex
 - `/catchup` — orient yourself in a project at session start (reads .agent/ + git state)
-- `/prune-context` — selectively prune redundant lines from `.agent/FULL_CONTEXT.md` via AI (rare, when the log grows noisy). **Not the same as `/compact`** — see the decision table below.
+- `/prune-context` — **superseded.** Compaction is now `.claude/hooks/agent-log.sh fold`, which moves old entries into `.agent/snapshot.md` instead of asking an AI which lines to delete from a log nobody can reconstruct. **Not the same as `/compact`** — see the decision table below.
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 
 ### Which compaction do I need?
@@ -95,9 +100,9 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 | Live conversation is long, context pressure rising | `/compact` (built-in) | Summarizes the live conversation in place |
 | After any compaction (manual or auto) | `/rehydrate` | Rebuilds `WORKING_CONTEXT.md` from `.agent/` + git |
 | Session feels stale mid-work | `/rehydrate` | Same |
-| `.agent/FULL_CONTEXT.md` has grown large (500+ lines of redundant/superseded noise) | `/prune-context` | AI-selected line removal from the append-only log |
+| `.agent/events/` has accumulated a lot of old entries | `agent-log.sh fold` | Moves entries older than 30 days into `.agent/snapshot.md`. Nothing is deleted, and `FULL_CONTEXT.md` renders identically before and after. |
 
-`/prune-context` hints fire automatically from `on-pre-compact.sh` (appended to the pre-compact alert) and from proactive-compaction tier nudges in `log-tool-event.sh` when `FULL_CONTEXT.md` exceeds 500 lines, so you don't have to watch for it.
+Size hints still fire from `on-pre-compact.sh` and from the tier nudges in `log-tool-event.sh` when `FULL_CONTEXT.md` exceeds 500 lines. Treat them as a prompt to `fold`, not to prune.
 
 ## Doc hygiene (periodic)
 
