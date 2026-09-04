@@ -184,7 +184,7 @@ if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
   echo "  How do you want to install Megavibe?"
   echo "  1. Automatic (default) - all supported tools will be installed"
   echo "  2. Custom"
-  read -p "  Enter your choice: " NONINTERACTIVE_AUTO
+  read -p "  Enter your choice: " NONINTERACTIVE_AUTO || NONINTERACTIVE_AUTO=""
   case "${NONINTERACTIVE_AUTO:-1}" in
     1) NONINTERACTIVE_AUTO=1 ;;
     2) NONINTERACTIVE_AUTO=0 ;;
@@ -282,7 +282,7 @@ should_install_codex() {
   if [ ! -t 0 ]; then
     return 0
   fi
-  read -r -p "  Install Codex CLI? [Y/n] " _codex_ans
+  read -r -p "  Install Codex CLI? [Y/n] " _codex_ans || _codex_ans=""
   case "${_codex_ans:-y}" in
     [nN]|[nN][oO]) return 1 ;;
     *) return 0 ;;
@@ -296,7 +296,7 @@ should_install_gemini() {
   if [ ! -t 0 ]; then
     return 0
   fi
-  read -r -p "  Install Gemini CLI? [Y/n] " _gemini_ans
+  read -r -p "  Install Gemini CLI? [Y/n] " _gemini_ans || _gemini_ans=""
   case "${_gemini_ans:-y}" in
     [nN]|[nN][oO]) return 1 ;;
     *) return 0 ;;
@@ -342,7 +342,7 @@ if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   echo "  You can do this now or later — megavibe works with just Claude."
   echo ""
-  read -p "  Press Enter to continue... "
+  read -p "  Press Enter to continue... " || true
 else
   echo ""
   info "2) Logins — all tools already installed, skipping"
@@ -538,7 +538,7 @@ should_install_telegram() {
   if [ ! -t 0 ]; then
     return 0
   fi
-  read -r -p "  Install Telegram bot? [Y/n] " _telegram_ans
+  read -r -p "  Install Telegram bot? [Y/n] " _telegram_ans || _telegram_ans=""
   case "${_telegram_ans:-y}" in
     [nN]|[nN][oO]) return 1 ;;
     *) return 0 ;;
@@ -964,7 +964,7 @@ should_install_playwright() {
   if [ ! -t 0 ]; then
     return 0
   fi
-  read -r -p "  Install Playwright MCP server? [Y/n] " _playwright_ans
+  read -r -p "  Install Playwright MCP server? [Y/n] " _playwright_ans || _playwright_ans=""
   case "${_playwright_ans:-y}" in
     [nN]|[nN][oO]) return 1 ;;
     *) return 0 ;;
