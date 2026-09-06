@@ -107,7 +107,7 @@ set -- ${REST+"${REST[@]}"}
 # terminal. That is what lets a service sign-in happen without anyone typing a
 # command: the assistant queues one, the person closes the session, the browser
 # opens here, and the session comes back with the service connected.
-CONNECTED_NAME=""
+CONNECTED_NAME=""; SKIPPED_NAME=""
 finish_pending_connect() {
   local pend="$ENGINE/logs/pending-connect" name rc
   [ -f "$pend" ] || return 1
@@ -123,7 +123,7 @@ finish_pending_connect() {
   echo ""
   case "$name" in
     applemail) echo "  Finishing the Apple Mail connection…" ;;
-    gemini)    echo "  Setting up second opinions. This can take a few minutes." ;;
+    gemini)    echo "  Second opinions: you will be asked for the key from ${MEGAWORK_ADMIN_NAME:-your admin}." ;;
     *)         echo "  Opening the sign-in page in your browser now."
                echo "  Approve it there, and we will pick up where we left off." ;;
   esac
@@ -136,11 +136,14 @@ finish_pending_connect() {
   # sign-in makes Claude confidently use a service that is not there. Resume
   # either way (the person should not have to retype their request), but say
   # which of the two actually happened.
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -eq 3 ]; then
+    echo "  Skipped — you can set it up any time with: megawork-connect $name"
+    CONNECTED_NAME=""; SKIPPED_NAME="$name"
+  elif [ "$rc" -ne 0 ]; then
     echo "  Sign-in didn't finish — you can try again any time."
     CONNECTED_NAME=""
   elif [ "$name" = "gemini" ]; then
-    # Minted just now, after the key was read at startup: pick it up, or the
+    # Stored just now, after the key was read at startup: pick it up, or the
     # resumed session runs without the thing it was just told it has.
     [ -s "$ENGINE/policy/gemini-key" ] && \
       { GEMINI_API_KEY=$(tr -d '\n' < "$ENGINE/policy/gemini-key"); export GEMINI_API_KEY; }
@@ -150,16 +153,22 @@ finish_pending_connect() {
 
 if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
    && sandbox-exec -f "$SANDBOX" /usr/bin/true 2>/dev/null; then
+  _relaunch=0
   while :; do
-    sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@"
+    sandbox-exec -f "$SANDBOX" claude "${CLAUDE_ARGS[@]}" "$@" || true   # set -e: a Ctrl-C exit is still an exit
     # Only loop when there is a sign-in to complete; otherwise the person
-    # closing the assistant means they are done.
+    # closing the assistant means they are done. Capped: a connector that keeps
+    # re-queueing itself must not turn "quit" into a window that never closes.
+    [ "$_relaunch" -ge 3 ] && { rm -f "$ENGINE/logs/pending-connect"; break; }
     finish_pending_connect || break
+    _relaunch=$((_relaunch+1))
     # Resume the conversation AND tell it the connection landed. Resuming alone
     # just reopens and waits, which meant the person had to repeat themselves —
     # the exact thing this flow exists to avoid.
     if [ -n "$CONNECTED_NAME" ]; then
       set -- "$CONNECTED_NAME is now connected. Carry on with what I asked you before, without asking me again."
+    elif [ -n "$SKIPPED_NAME" ]; then
+      set -- "I chose not to set up $SKIPPED_NAME for now. Carry on with what I asked you before without it, and say plainly if something needs it."
     else
       set -- "That sign-in did not complete, so it is still not connected. Carry on with what I asked you before, and say plainly if you cannot do it without that connection."
     fi

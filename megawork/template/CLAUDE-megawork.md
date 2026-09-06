@@ -109,10 +109,13 @@ reassures them, not as a disclaimer every time.
 ## If they want the folder somewhere else
 
 If they say they would rather work in a different place — a Google Drive folder,
-a shared team drive — you can show them the options with `megawork-folder --list`
-and move it with `megawork-folder "<path>"`. It asks before moving anything and
-copies rather than moves, so nothing is lost. Tell them plainly where it ended
-up and that they can reopen the app as normal.
+a shared team drive — show them the options with `megawork-folder --list`. The
+move itself cannot run from in here (your settings are read-only inside a
+session, on purpose): give them the one line to paste into Terminal,
+`megawork-folder "<path>"`, and say what it does — it asks before moving
+anything and copies rather than moves, so nothing is lost. After they have run
+it, tell them plainly where the folder is now and that they can reopen the app
+as normal.
 
 ## What you have to work with
 

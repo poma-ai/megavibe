@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # megawork-doctor — verify an installed megawork, including that the
-# sandbox actually contains a real write attempt. Safe to run any time; makes
-# no changes. Written to be readable over a screen share.
+# sandbox actually contains a real write attempt. Safe to run any time; it
+# writes only its own canary files and removes them. Readable over a screen share.
 #
 # Usage: megawork-doctor [--verbose]
 
@@ -37,7 +37,7 @@ for f in policy/settings.json policy/mcp.json policy/sandbox.sb prompts/CLAUDE-m
   [ -f "$ENGINE/$f" ] && [ -s "$ENGINE/$f" ] || bad "missing or empty: $f"
 done
 # executables must actually be executable — a chmod -x hook fails silently
-for f in bin/megawork bin/megawork-doctor bin/megawork-mode bin/megawork-connect bin/megawork-update hooks/snapshot.sh hooks/session-start.sh; do
+for f in bin/megawork bin/megawork-doctor bin/megawork-mode bin/megawork-connect bin/megawork-update bin/megawork-folder hooks/snapshot.sh hooks/session-start.sh; do
   [ -x "$ENGINE/$f" ] || bad "missing or not executable: $f"
 done
 command -v megawork &>/dev/null || warn "megawork is not on PATH — start it with $ENGINE/bin/megawork"
@@ -78,6 +78,9 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
   fi
   # The escape that matters most: `open` hands the spawn to launchd, which runs
   # OUTSIDE the sandbox. Build a tiny .app in the data folder and try it.
+  # Only with a real data folder: with DATA empty the canary path would be
+  # "/.doctor-NNN.app" and the cleanup an rm -rf at the filesystem root.
+  if [ -n "$DATA" ] && [ -d "$DATA" ]; then
   APP_CANARY="$DATA/.doctor-$$.app"; ESCAPE_OUT="$HOME/.doctor-escaped-$$"
   mkdir -p "$APP_CANARY/Contents/MacOS" 2>/dev/null
   printf '#!/bin/sh\necho escaped > "%s"\n' "$ESCAPE_OUT" > "$APP_CANARY/Contents/MacOS/x" 2>/dev/null
@@ -92,6 +95,7 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
     ok "'open' cannot escape the sandbox (verified now)"
   fi
   rm -rf "$APP_CANARY"
+  fi
 
   # Claude's own EXECUTABLE config is what matters here: settings.json, hooks and
   # the status line all run in later, unsandboxed sessions. State directories
@@ -107,17 +111,22 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
   rm -f "$HOME/.claude/hooks/.doctor-$$" 2>/dev/null
   [ "$CFG_LEAK" -eq 0 ] && ok "Claude's settings, protocol and hooks are protected from the sandbox"
 
-  IN_CANARY="$DATA/.megawork-canary-$$"
-  sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$IN_CANARY'" 2>/dev/null
-  if [ -f "$IN_CANARY" ]; then ok "writes inside the folder work"; rm -f "$IN_CANARY"
-  else bad "cannot write INSIDE the folder — the assistant will not be able to save anything"; fi
+  if [ -n "$DATA" ] && [ -d "$DATA" ]; then
+    IN_CANARY="$DATA/.megawork-canary-$$"
+    sandbox-exec -f "$ENGINE/policy/sandbox.sb" /bin/sh -c "echo x > '$IN_CANARY'" 2>/dev/null
+    if [ -f "$IN_CANARY" ]; then ok "writes inside the folder work"; rm -f "$IN_CANARY"
+    else bad "cannot write INSIDE the folder — the assistant will not be able to save anything"; fi
+  fi
 fi
 
 # ── login state (the one thing the colleague must do) ──
 if command -v claude &>/dev/null; then
   # Probe through the REAL launcher (sandbox + policy + protocol), so a broken
   # combination fails here rather than at the Dock.
-  OUT=$(MEGAWORK_HOME="$ENGINE" perl -e 'alarm 150; exec @ARGV' \
+  # NONINTERACTIVE: the launcher would otherwise complete a queued service
+  # sign-in — a browser, from a "read-only" health check, with its output
+  # swallowed by tail. Update sets this too; a hand-run doctor did not.
+  OUT=$(MEGAWORK_HOME="$ENGINE" MEGAWORK_NONINTERACTIVE=1 perl -e 'alarm 150; exec @ARGV' \
         "$ENGINE/bin/megawork" --model haiku -p "reply with exactly: DOCTOR-OK" </dev/null 2>&1 | tail -2)
   case "$OUT" in
     *DOCTOR-OK*)      ok "a real session starts, signed in, under the full policy" ;;
@@ -128,15 +137,29 @@ if command -v claude &>/dev/null; then
   esac
 fi
 
-# ── backends (optional; absence is fine, the fallback chain copes) ──
-# The key normally lives in the engine and is exported by the launcher, so
-# checking only the environment reported "no key" on a correctly set-up Mac.
-if [ -n "${GEMINI_API_KEY:-}" ] || [ -s "$ENGINE/policy/gemini-key" ]; then
-  ok "Gemini backend configured"
+# ── backends (part of the profile — see README "Backends") ──
+# The key lives in the engine and is exported by the launcher; check the file,
+# and check that it actually answers, because a revoked key looks identical on
+# disk. One 2-token call, 20s cap. Reported as a note, not a failure: a missing
+# key must never make an update roll back a working install.
+GK=""; [ -s "$ENGINE/policy/gemini-key" ] && GK=$(tr -d '[:space:]' < "$ENGINE/policy/gemini-key"); GK="${GK:-${GEMINI_API_KEY:-}}"
+if [ -z "$GK" ]; then
+  warn "second opinions (Gemini) not set up — paste the key from your admin with: megawork-connect gemini"
 else
-  warn "no Gemini key — Claude-only, which is fine (add: megawork-connect gemini)"
+  GB=$(curl -s --max-time 20 -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"         -H "x-goog-api-key: $GK" -H 'Content-Type: application/json'         -d '{"contents":[{"parts":[{"text":"OK"}]}],"generationConfig":{"maxOutputTokens":2}}' 2>/dev/null || echo "")
+  if printf '%s' "$GB" | grep -q '"candidates"'; then
+    if command -v gemini &>/dev/null || claude mcp list 2>/dev/null | grep -q '^gemini-cli'; then
+      ok "second opinions (Gemini) answer — $(printf '%s' "$GB" | sed -n 's/.*"modelVersion": *"\([^"]*\)".*/\1/p' | head -1)"
+    else
+      warn "the Gemini key works, but the Gemini tool itself is not installed — re-run the installer"
+    fi
+  elif [ -z "$GB" ]; then
+    warn "second opinions (Gemini): key present, Google not reachable right now"
+  else
+    warn "second opinions (Gemini): the key no longer works — $(printf '%s' "$GB" | sed -n 's/.*"message": *"\([^"]*\)".*/\1/p' | head -1 | cut -c1-90)"
+  fi
 fi
-command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — Claude-only (fine)"
+command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — second opinions fall back to Claude"
 
 # ── one machine, one protocol ──
 if [ -f "$HOME/.claude/CLAUDE.md" ] && grep -q 'megavibe-v3' "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
@@ -161,7 +184,7 @@ fi
 
 # ── connected services (none is the correct default) ──
 if command -v claude &>/dev/null; then
-  CONN=$(claude mcp list 2>/dev/null | grep -cE '^(gmail|slack|linear|hubspot|analytics)[: ]') || CONN=0
+  CONN=$(claude mcp list 2>/dev/null | grep -E '^(gmail|slack|linear|hubspot|analytics)[: ]' | grep -ciE '✔|✓|(^|[^a-z])connected') || CONN=0
   CONN=${CONN//[^0-9]/}; CONN=${CONN:-0}
   grep -q "(subpath \"$HOME/Library/Mail\")" "$ENGINE/policy/sandbox.sb" 2>/dev/null || CONN=$((CONN+1))
   [ "$CONN" -gt 0 ] && ok "$CONN service(s) connected (megawork-connect to review)" \
@@ -170,11 +193,11 @@ fi
 
 # ── recent trouble the colleague may not have mentioned ──
 if [ -d "$ENGINE/logs" ]; then
-  N=$(find "$ENGINE/logs" -type f -mtime -7 2>/dev/null | wc -l | tr -d ' ')
+  N=$(find "$ENGINE/logs" -type f -name '*.log' -mtime -7 2>/dev/null | wc -l | tr -d ' ')
   [ "$N" -gt 0 ] && warn "$N log file(s) from the last week — worth a look" || ok "no recent error logs"
 fi
-[ -d "$ENGINE/snapshots" ] && ok "undo history present ($(ls -1 "$ENGINE/snapshots" 2>/dev/null | wc -l | tr -d ' ') snapshots)" \
-  || warn "no snapshots yet (normal before first use)"
+SN=$(ls -1 "$ENGINE/snapshots" 2>/dev/null | wc -l | tr -d ' ')
+[ "${SN:-0}" -gt 0 ] && ok "undo history present ($SN snapshots)" || ok "no snapshots yet (normal before first use)"
 
 # ── cloud-synced folder: supported, with two things worth knowing ──
 case "$DATA" in

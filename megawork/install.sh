@@ -13,11 +13,11 @@
 
 set -uo pipefail
 
-B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[0m'
+B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; DIM=$'\033[2m'; R=$'\033[0m'
 say(){ echo "$*"; }
 ok(){ echo "  ${G}✓${R} $*"; }
 uhoh(){ echo "  ${Y}!${R} $*"; }
-die(){ echo ""; echo "  Sorry — $*"; echo "  Nothing was changed. Send this message to whoever shared the link."; exit 1; }
+die(){ echo ""; echo "  Sorry — $*"; echo "  Setup did not complete. Anything already installed is harmless, and running"; echo "  this same command again is safe. Send this message to whoever shared the link."; exit 1; }
 
 # Prompts must come from the terminal: with `curl | bash`, stdin is the script.
 TTY_IN=""
@@ -69,18 +69,36 @@ if [ -f "$SRC/setup.sh" ]; then
   bash "$SRC/setup.sh" --harness-only </dev/null >"$HARNESS_LOG" 2>&1 \
     && ok "Machinery ready" \
     || uhoh "Some optional parts did not install — it still works, just with fewer helpers"
-  echo "  ${DIM:-}$(grep -cE '^\s*(✓|ok)' "$HARNESS_LOG" 2>/dev/null || echo 0) components installed${R}"
+  echo "  ${DIM:-}$(grep -cE '^\s*(✓|ok)' "$HARNESS_LOG" 2>/dev/null || true) components installed${R}"
 fi
 
 # ── 4. Hand off to the real installer (it asks where the folder goes) ─
-MEGAWORK_WRAPPED=1 bash "$SRC/megawork/init.sh" "$@" || die "setup did not finish."
+# Ctrl-C during an optional step inside init.sh (the key paste) must not kill
+# this script too — the closing instructions below are for the parts that DID
+# get set up. init.sh handles the interrupt itself and continues.
+trap 'echo' INT
+MEGAWORK_WRAPPED=1 bash "$SRC/megawork/init.sh" "$@" || {
+  trap - INT; echo ""
+  echo "  Sorry — setup stopped before it finished. Some parts may be in place;"
+  echo "  running this same command again is safe and picks up where it left off."
+  echo "  Send this message to whoever shared the link."; exit 1; }
+trap - INT
 
 # ── 4. Sign in, if needed ───────────────────────────────────────────
 ENGINE="${MEGAWORK_HOME:-$HOME/.megawork}"
 echo ""
-if [ -n "$TTY_IN" ] && ! (cd "$HOME" && perl -e 'alarm 60; exec @ARGV' claude --model haiku -p "ok" </dev/null 2>&1 | grep -qv "Not logged in"); then
+# Test for the SUCCESS token. The old `grep -qv "Not logged in"` was true for
+# any extra line claude printed, so the sign-in step was skipped almost always.
+# Signed in if the reply carries the token; ALSO signed in if the output says
+# nothing about logging in (a refusal or a wrapper line is not a login problem).
+# Only an explicit not-logged-in verdict earns the sign-in step — that step
+# launches a plain `claude`, which is an unsandboxed developer session.
+PROBE=$( (cd "$HOME" && perl -e 'alarm 60; exec @ARGV' claude --model haiku -p "reply with exactly: LOGIN-OK" </dev/null 2>&1) || true)
+if [ -n "$TTY_IN" ] && ! printf '%s' "$PROBE" | grep -q "LOGIN-OK" \
+   && printf '%s' "$PROBE" | grep -qiE 'not logged in|please log in|/login|invalid api key|authentication'; then
   echo "${B}One thing left: signing in${R}"
   echo "  A browser window will open. Sign in with your work Google account."
+  echo "  ${DIM:-}When the browser says you are signed in, come back here and press Ctrl-D.${R}"
   ask "  Press Enter when you're ready… " _
   claude < "$TTY_IN" || true
 fi
@@ -88,8 +106,12 @@ fi
 echo ""
 echo "${B}You're set.${R}"
 echo ""
-echo "  1. Open ${B}Megawork${R} from your Applications folder"
-echo "     (drag it to the Dock so it's always there)"
+if [ -d "/Applications/Megawork.app" ]; then
+  echo "  1. Open ${B}Megawork${R} from your Applications folder"
+  echo "     (drag it to the Dock so it's always there)"
+else
+  echo "  1. Open Terminal and type: ${B}megawork${R}"
+fi
 echo "  2. Say hello, and tell it what you're working on"
 echo ""
 echo "  Your folder is: $(cat "$ENGINE/data-dir" 2>/dev/null || echo "$HOME/Megawork")"

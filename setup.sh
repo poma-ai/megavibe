@@ -363,31 +363,23 @@ fi
 # works and is now the ONLY supported auth for megavibe's Gemini backend.
 
 if [ "${HARNESS_ONLY:-0}" = "1" ]; then
-  # A colleague cannot be asked to mint an API key, and must certainly not have
-  # a browser thrown at them mid-install. The admin supplies one or Gemini is
-  # simply absent — Claude works alone and the fallback chain copes.
+  # Megawork: the key is POMA's and is pasted once by megawork/init.sh (or read
+  # from the overlay), after this script has run. Nothing to ask here.
   :
 elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo ""
   info "2b) Gemini API key"
   echo ""
-  echo "  Google-account login for Gemini CLI was retired on June 18, 2026."
-  echo "  The Gemini backend now needs an API key (free tier available):"
-  echo "    → create one at https://aistudio.google.com/apikey"
+  echo "  Google-account login for Gemini CLI was retired on June 18, 2026, so the"
+  echo "  Gemini backend needs an API key — one from a project WITH billing:"
+  echo "    → ask your admin for one, minted with:"
+  echo "      scripts/mint-gemini-key.sh --project <billed-project> --billed --name <you>"
   echo ""
-  echo "  Tip: create it signed into your company Google Workspace account —"
-  echo "  Workspace enterprise accounts get Google's paid-tier data treatment"
-  echo "  (prompts are NOT used for training) even on free quota. Personal"
-  echo "  accounts: free-tier prompts MAY be used for training; enable billing"
-  echo "  on the key's project if that matters."
+  echo "  Not a free AI Studio key: the free tier is 20 requests/day on a new project,"
+  echo "  and Google's terms make the API a Paid Service (prompts NOT used for training)"
+  echo "  ONLY through a billed project — a Workspace login does not change that."
+  echo "  Measured cost on flash is about \$2/month per active Mac. Never pin Pro."
   echo ""
-  # Open the key page for them (best effort, interactive runs only)
-  if [ -t 0 ] || ( : < /dev/tty ) 2>/dev/null; then
-    case "$(uname -s)" in
-      Darwin) open "https://aistudio.google.com/apikey" 2>/dev/null || true ;;
-      Linux)  command -v xdg-open &>/dev/null && xdg-open "https://aistudio.google.com/apikey" 2>/dev/null || true ;;
-    esac
-  fi
   # curl|bash pipes stdin, so fall back to /dev/tty; -s hides the key.
   _gem_key=""
   if [ -t 0 ]; then
@@ -994,7 +986,7 @@ register_gemini_mcp() {
       fi
     fi
   else
-    warn "GEMINI_API_KEY not set — Gemini backend unavailable (Google-account login retired 2026-06-18; get a free key at https://aistudio.google.com/apikey)"
+    warn "GEMINI_API_KEY not set — Gemini backend unavailable (Google-account login retired 2026-06-18; use a key from a BILLED project: the free tier is 20 req/day and trains on your prompts)"
   fi
 
   # Default model: pin the newest flash-class model this key can actually call.
@@ -1012,7 +1004,7 @@ register_gemini_mcp() {
       if [ -n "$_model" ]; then
         jq --arg m "$_model" '.model.name = $m' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
         mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-        ok "Gemini CLI default model pinned to $_model (flash-class, free tier; override per call with -m)"
+        ok "Gemini CLI default model pinned to $_model (flash-class; never override to a Pro model — 3-16x the price)"
       else
         warn "Could not probe a working flash model — leaving Gemini CLI default unset (risk: Pro billing on postpay keys)"
       fi

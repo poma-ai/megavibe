@@ -35,7 +35,7 @@ Run interactively, the installer lists the locations that actually exist on the
 Mac — the home folder, every Google Drive account's *My Drive*, and every shared
 drive — so "which folder?" is a menu choice rather than a path to type.
 
-Then, once: sign in with `claude`, and drag the app from `/Applications` to the Dock.
+Then drag the app from `/Applications` to the Dock — the installer has already walked them through signing in.
 
 Afterwards the person can move it themselves, without an admin:
 
@@ -45,8 +45,11 @@ megawork-folder --list     # where could it be?
 megawork-folder "/path"    # move it there (copies, never a bare move)
 ```
 
-They can also just *ask the assistant* to do it — the protocol tells it how.
-Moving re-renders the sandbox profile so containment follows the folder.
+The assistant can show them the options and hand them the exact command, but
+the move itself runs in Terminal: inside a session the engine is read-only, on
+purpose. Moving re-renders the sandbox profile so containment follows the
+folder, keeps Apple Mail and connected services switched on, and pre-approves
+the new folder so Claude does not ask "do you trust this folder?".
 
 ## How containment works
 
@@ -157,13 +160,16 @@ instead would bypass the sandbox and the policy entirely.
 
 | Path | What it is |
 |---|---|
-| `init.sh` | provisioning: engine, folder, launcher, policy |
+| `install.sh` | the `curl \| bash` one-liner: Claude, tarball, harness, then `init.sh` |
+| `init.sh` | provisioning: engine, folder, launcher, policy, Gemini key |
 | `bin/megawork` | the launcher (implements the contract above) |
 | `bin/megawork-doctor` | health check, readable over a screen share |
+| `bin/megawork-connect` | switch services on/off, one at a time; also the Gemini key paste/repair path |
+| `bin/megawork-update` | fetch the current release, back up, re-run `init.sh`, verify, roll back if needed |
 | `bin/megawork-mode` | park/restore a conflicting user-level protocol |
 | `bin/megawork-folder` | show/move the working folder (Drive-aware), re-rendering policy |
 | `template/sandbox.sb.template` | the seatbelt profile (rendered with real paths) |
-| `template/policy/*.template` | permissions + hook registrations |
+| `template/policy/*.template`, `template/policy/mcp.json` | permissions + hook registrations; MCP config for the no-sandbox fallback |
 | `template/CLAUDE-megawork.md` | the plain-language protocol |
 | `template/hooks/` | session-start orientation, pre-write snapshots (undo) |
 | `spike/` | the measurements the design rests on |
@@ -187,8 +193,31 @@ The installer degrades gracefully when the overlay is absent: no icon, stock beh
 ## Backends
 
 Gemini and Codex are part of the profile, not optional extras — the assistant
-uses them for long documents and second opinions, invisibly. The installer gets
-a Gemini key by itself (installing `gcloud` if needed, one Google sign-in, then
-minting a free key on a billing-less project). Codex is installed and used if
-the person has a ChatGPT account; if not, it stays quiet. Neither is ever
-presented to the person as a decision.
+uses them for long documents and second opinions, invisibly. Neither is ever
+presented to the person as a decision to make.
+
+The Gemini key is POMA's, not the person's. It comes from a project **with
+billing attached**: that is the only way the Gemini API treats prompts as a
+"Paid Service" and keeps them out of Google's training data (a Workspace login
+does not change this for the API — only for AI Studio), and the free tier is
+20 requests a day on the one model a new project can still call, which is not
+a backend. The installer takes the key from `MEGAWORK_OVERLAY/gemini-key` or
+`GEMINI_API_KEY` if an admin left one; otherwise it asks the person to paste
+it once, checks it with a single call, and keeps it at `~/.megawork/policy/
+gemini-key` (0600; the file is unreadable from inside a session, but the
+launcher hands the key to the session as `GEMINI_API_KEY`, so treat it as
+visible to the assistant — it is a per-person key precisely so it can be
+revoked). Enter skips, and the closing message then says plainly that second
+opinions are not set up. Add or repair later: `megawork-connect gemini` (a dead
+key is replaced in one go; a working one is kept — `--off gemini` first to
+swap it). `megawork-doctor` reports whether the key answers.
+
+Cost: at POMA's measured load (about 50 calls a month, ~2M input tokens) a
+flash-class model is roughly $2 per active Mac per month. Never pin or override
+to a Pro model — it bills at 3-16x. The Gemini CLI default is pinned to
+`gemini-flash-latest` when the key is stored. Admins mint per-person keys on the
+billed project with `scripts/mint-gemini-key.sh --project <id> --billed`, so
+each colleague's key can be revoked on its own.
+
+Codex is installed and used if the person has a ChatGPT account; if not, it
+stays quiet.

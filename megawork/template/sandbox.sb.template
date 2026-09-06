@@ -79,8 +79,9 @@
   (subpath "@HOME@/.gemini") (subpath "@HOME@/.codex")
   (literal "@HOME@/.claude/.credentials.json")
   ; Our own key store. The launcher reads this OUTSIDE the jail and exports the
-  ; key into the session's environment, so nothing inside needs to open the
-  ; file — and a session that can read it could copy it into a document.
+  ; key into the session's environment (so the key IS visible to the session via
+  ; env; this rule only keeps the file itself, and any future keys placed next
+  ; to it, out of reach).
   (literal "@ENGINE@/policy/gemini-key")
   ; other people's mail, chat and password stores
   (subpath "@HOME@/Library/Mail")

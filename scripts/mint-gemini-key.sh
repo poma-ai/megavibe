@@ -1,39 +1,50 @@
 #!/usr/bin/env bash
 # Mint a Gemini API "auth key" programmatically — no AI Studio clicking.
 #
-# Why this exists:
-#   - Google retired Gemini CLI OAuth (2026-06-18) → megavibe needs an API key.
-#   - AI Studio's UI attaches keys to whatever project you pick; you cannot
-#     detach billing from a project that has it (e.g. a prod project), so an
-#     ambient key on a billing-enabled project silently BILLS every call.
-#   - Fix: a dedicated project with NO billing account → free tier only, which
-#     hard-429s instead of billing. megavibe's fallback chain absorbs the 429.
-#   - "Standard" API keys are rejected by the Gemini API from September 2026;
-#     keys bound to a service account ("auth keys") are the supported kind.
-#     `gcloud services api-keys create --service-account=...` mints exactly that.
+# What this is for (2026-09): an ADMIN minting keys for megavibe / Megawork
+# users on POMA's BILLED Gemini project — one key per person, so each can be
+# revoked on its own. Run it on your own Mac; never on a colleague's.
 #
-# Data treatment: run this while authed as a Google Workspace enterprise
-# account and the key inherits Paid-Service treatment per Google's Gemini API
-# terms (prompts NOT used for training) even on free quota.
+# Why billed, and why not the free tier any more:
+#   - The Gemini API is a "Paid Service" (prompts NOT used to improve Google's
+#     products) ONLY through a project with an active billing account. A
+#     Workspace enterprise login does not change that for the API — that clause
+#     in Google's terms covers AI Studio. A free key trains on our prompts.
+#   - The free tier is 20 requests/day (measured 2026-09-06, gemini-3.8-flash,
+#     project-wide), Pro has no free tier at all, and older Flash models return
+#     "not available to new users". Not a backend.
+#   - Google retired Gemini CLI OAuth (2026-06-18) → an API key is required.
+#   - "Standard" API keys are rejected from September 2026; keys bound to a
+#     service account ("auth keys") are the supported kind, which is what
+#     `gcloud services api-keys create --service-account=...` mints.
+#
+# Cost control: pin flash (`gemini-flash-latest`), never Pro; put a Cloud
+# Billing budget alert on the project. Measured load is ~$2/month per active Mac.
 #
 # Usage:
 #   gcloud auth login                       # once, interactively
-#   bash scripts/mint-gemini-key.sh [--project ID] [--write-rc] [--quiet-key]
+#   bash scripts/mint-gemini-key.sh --project <billed-project-id> --billed \
+#        [--name <person>] [--write-rc]
 #
-# Prints only a key prefix + length, never the whole key. --write-rc appends
-# the key to your shell profile; otherwise the key lands in a 0600 temp file
-# whose path is printed.
+# Without --billed the script REFUSES a billing-enabled project (the old
+# free-tier mode, kept for experiments). Prints only a key prefix + length,
+# never the whole key. --write-rc appends the key to your shell profile;
+# otherwise the key lands in a 0600 temp file whose path is printed.
 
 set -euo pipefail
 
 PROJECT=""
 WRITE_RC=0
+BILLED=0
 SA_NAME="megavibe-gemini"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project)   PROJECT="$2"; shift 2 ;;
     --write-rc)  WRITE_RC=1; shift ;;
-    -h|--help)   sed -n '2,30p' "$0"; exit 0 ;;
+    --billed)    BILLED=1; shift ;;
+    # Service-account ids: 6-30 chars, lowercase, no leading/trailing hyphen.
+    --name)      SA_NAME="megavibe-gemini-$(printf '%s' "$2" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-*//' | cut -c1-14 | sed 's/-*$//')"; shift 2 ;;
+    -h|--help)   sed -n '2,32p' "$0"; exit 0 ;;
     *)           echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -52,8 +63,9 @@ fi
 ACCOUNT=$(gcloud config get-value account 2>/dev/null || echo "")
 [ -n "$ACCOUNT" ] && note "account: $ACCOUNT"
 
-# ─── Project: dedicated, billing-less ───────────────────────────────
+# ─── Project ────────────────────────────────────────────────────────
 if [ -z "$PROJECT" ]; then
+  [ "$BILLED" -eq 1 ] && die "--billed needs --project <existing billed project id>; this script never creates billed projects"
   PROJECT="mv-gemini-$(date +%Y%m%d%H%M%S)"
 fi
 
@@ -70,11 +82,17 @@ fi
 BILLING=$(gcloud billing projects describe "$PROJECT" --format='value(billingEnabled)' 2>/dev/null || echo "unknown")
 case "$BILLING" in
   True|true)
-    die "project $PROJECT HAS billing enabled — refusing (every call would bill). Use a billing-less project." ;;
+    if [ "$BILLED" -eq 1 ]; then
+      note "billing: enabled — Paid Service treatment (no training on prompts); keep the model pinned to flash"
+    else
+      die "project $PROJECT HAS billing enabled — pass --billed if that is intended (it is, for POMA-issued keys)"
+    fi ;;
   unknown)
+    [ "$BILLED" -eq 1 ] && die "--billed given but billing status of $PROJECT cannot be verified — refusing to hand out a key that may train on prompts"
     note "billing status unverifiable (no billing API access) — continuing; verify manually" ;;
   *)
-    note "billing: not enabled (free tier only — calls 429 instead of billing)" ;;
+    [ "$BILLED" -eq 1 ] && die "--billed given but $PROJECT has NO billing account — that key would be free-tier (20 req/day, trains on prompts)"
+    note "billing: not enabled (free tier only — 20 req/day, prompts used for training)" ;;
 esac
 
 # ─── APIs ───────────────────────────────────────────────────────────
@@ -103,16 +121,19 @@ note "minting auth key (restricted to generativelanguage.googleapis.com)"
 # --billing-project is REQUIRED: without it the API Keys call is attributed to
 # the credential's own quota project (e.g. the Gemini CLI's), which fails with a
 # confusing SERVICE_DISABLED naming a project you never touched.
-gcloud services api-keys create \
+# Capture THIS key's resource name from the create call. Listing and taking the
+# first entry handed out whichever key already existed — the same credential to
+# several people, so revoking one person's key revoked another's.
+KEY_RESOURCE=$(gcloud services api-keys create \
   --project "$PROJECT" --billing-project "$PROJECT" \
-  --display-name="megavibe gemini auth key" \
+  --display-name="megavibe gemini auth key (${SA_NAME#megavibe-gemini-})" \
   --service-account="$SA_EMAIL" \
-  --api-target=service=generativelanguage.googleapis.com >/dev/null 2>&1 \
+  --api-target=service=generativelanguage.googleapis.com \
+  --format='value(response.name)' 2>/dev/null) \
   || die "key creation failed on $PROJECT (needs roles/serviceusage.apiKeysAdmin; re-run with the API Keys API enabled)"
-
-KEY_RESOURCE=$(gcloud services api-keys list --project "$PROJECT" --billing-project "$PROJECT" \
-  --format='value(name)' 2>/dev/null | head -1)
-[ -n "$KEY_RESOURCE" ] || die "key created but not listable on $PROJECT"
+[ -n "$KEY_RESOURCE" ] || KEY_RESOURCE=$(gcloud services api-keys list --project "$PROJECT" --billing-project "$PROJECT" \
+  --filter="serviceAccount.email=$SA_EMAIL" --sort-by=~createTime --format='value(name)' 2>/dev/null | head -1)
+[ -n "$KEY_RESOURCE" ] || die "key created but its resource name could not be read on $PROJECT"
 
 KEY_STRING=$(gcloud services api-keys get-key-string "$KEY_RESOURCE" --billing-project "$PROJECT" --format='value(keyString)')
 [ -n "$KEY_STRING" ] || die "key created but key string could not be read: $KEY_RESOURCE"
@@ -144,5 +165,6 @@ else
 fi
 
 echo ""
-echo "  Done. Project $PROJECT has no billing → free tier (Flash ~1,500 req/day)."
+if [ "$BILLED" -eq 1 ]; then echo "  Done. Billed project → no training on prompts; cost ~\$2/month per active Mac on flash."
+else echo "  Done. Project $PROJECT has no billing → free tier: ~20 req/day and prompts ARE used for training."; fi
 echo "  Revoke anytime:  gcloud services api-keys delete $KEY_RESOURCE"

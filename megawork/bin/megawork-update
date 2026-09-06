@@ -20,10 +20,16 @@ B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 
 [ -d "$ENGINE" ] || { echo "megawork is not set up on this Mac."; exit 1; }
 DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
-# An empty data-dir would pass --data "" to the installer, which treats it as an
-# explicit choice and then dies on `mkdir -p ""` — taking the whole update, and
-# the rollback, down with it. Fall back to the default location instead.
-[ -n "$DATA" ] && [ -d "$DATA" ] || DATA="$HOME/megawork"
+# Never substitute a different folder. A Drive folder that is offline for a
+# minute would otherwise be replaced by an empty ~/megawork, with "your folder
+# is unchanged" printed underneath. Wait for it, or stop.
+if [ -z "$DATA" ]; then
+  echo "  This setup does not say where your folder is — run megawork-doctor and tell whoever set it up."; exit 1
+fi
+if [ ! -d "$DATA" ]; then
+  echo "  Your folder is not reachable right now ($DATA)."
+  echo "  ${D}If it lives in Google Drive, wait for Drive to finish syncing, then try again. Nothing was changed.${R}"; exit 1
+fi
 
 # Scoped to this subtree, not the whole repository: otherwise every commit to
 # megavibe would tell a colleague their assistant needs updating.
@@ -33,7 +39,9 @@ REMOTE_SHA=$(curl -fsSL --max-time 20 \
 LOCAL_SHA=$(cat "$ENGINE/version" 2>/dev/null || echo "")
 
 if [ "${1:-}" = "--check" ]; then
-  if [ -n "$REMOTE_SHA" ] && [ "$REMOTE_SHA" != "$LOCAL_SHA" ]; then
+  # Unknown local version (older install, offline stamp) is not evidence of an
+  # update; claiming one sends people into a re-install that changes nothing.
+  if [ -n "$REMOTE_SHA" ] && [ -n "$LOCAL_SHA" ] && [ "$REMOTE_SHA" != "$LOCAL_SHA" ]; then
     echo "update available"; exit 0
   fi
   echo "up to date"; exit 1
@@ -58,41 +66,45 @@ SRC=$(find "$TMP" -maxdepth 1 -type d -name 'megavibe-*' | head -1)
 BACKUP="$ENGINE.previous"
 rm -rf "$BACKUP"
 # Skip $ENGINE/tools: a downloaded gcloud SDK plus a managed Python is hundreds
-# of megabytes, it is re-fetchable, and copying it is the most likely way for
-# this backup to fail — which is the one failure that must not happen here.
-if command -v rsync &>/dev/null; then
-  rsync -a --exclude 'tools/' "$ENGINE"/ "$BACKUP"/ 2>/dev/null
-else
-  mkdir -p "$BACKUP" && for _e in "$ENGINE"/*; do
-    [ "$(basename "$_e")" = "tools" ] || cp -R "$_e" "$BACKUP"/ 2>/dev/null
-  done
-fi
+# of megabytes and re-fetchable; copying it is the likeliest way for this backup
+# to fail. tar, not cp: it takes dotfiles, and with pipefail a short copy fails.
+mkdir -p "$BACKUP" \
+  && ( cd "$ENGINE" && tar -cf - --exclude './tools' . 2>/dev/null ) | ( cd "$BACKUP" && tar -xf - 2>/dev/null ) \
+  || { rm -rf "$BACKUP"; echo "  Couldn't safely back up the current setup, so nothing was changed."; echo "  ${D}Check there is free disk space, then try again.${R}"; exit 1; }
 # No usable backup means no safe rollback, so do not start something we cannot
-# undo. Without this guard a failed copy turns every rollback below into
-# `rm -rf "$ENGINE"` followed by a failing `mv` — a colleague left with no
-# launcher, no doctor, no update command and no repo to reinstall from.
-if [ ! -s "$BACKUP/bin/megawork" ]; then
-  echo "  Couldn't safely back up the current setup, so nothing was changed."
-  echo "  ${D}Check there is free disk space, then try again.${R}"; rm -rf "$BACKUP"; exit 1
-fi
-restore(){ rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"; }
+# undo. Verify the pieces a person cannot live without, not just one file.
+for _need in bin/megawork bin/megawork-doctor bin/megawork-update policy/settings.json policy/sandbox.sb data-dir; do
+  [ -s "$BACKUP/$_need" ] || { rm -rf "$BACKUP"; echo "  The backup came out incomplete ($_need), so nothing was changed. Try again."; exit 1; }
+done
+restore(){
+  [ -d "$ENGINE/tools" ] && [ ! -d "$BACKUP/tools" ] && mv "$ENGINE/tools" "$BACKUP/tools" 2>/dev/null
+  rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"
+}
 
 # NONINTERACTIVE, not just </dev/null: init.sh falls back to /dev/tty when
 # stdin is closed, so without this an update stops on a prompt (or a browser
 # sign-in) while its own output is going to /dev/null. Nobody sees why.
 if MEGAWORK_HOME="$ENGINE" MEGAWORK_WRAPPED=1 MEGAWORK_NONINTERACTIVE=1 \
    bash "$SRC/megawork/init.sh" --data "$DATA" </dev/null >/dev/null 2>&1; then
-  [ -n "$REMOTE_SHA" ] && printf '%s\n' "$REMOTE_SHA" > "$ENGINE/version"
+  # Stamp something even when GitHub's API was rate-limited, or the launcher
+  # nags "update available" every week and each run re-downloads to change nothing.
+  printf '%s\n' "${REMOTE_SHA:-installed-$(date +%Y%m%d)}" > "$ENGINE/version"
   # Prove it still works before declaring success. NONINTERACTIVE because the
   # doctor launches the real thing to probe it, and the real thing finishes any
   # queued service sign-in — a browser nobody asked for, in a run whose output
   # is going to /dev/null.
   DOC=$(MEGAWORK_HOME="$ENGINE" MEGAWORK_NONINTERACTIVE=1 \
         bash "$ENGINE/bin/megawork-doctor" 2>&1); DOC_RC=$?
-  # Being signed out makes the doctor fail, and rolling a good update back over
-  # that would be absurd: it is a state of the person's login, not of the
-  # update. Judge the install itself.
-  if [ "$DOC_RC" -eq 0 ] || ! printf '%s' "$DOC" | grep -q '✗ .*\(missing\|not executable\|not valid\|SANDBOX\|unrendered\)'; then
+  # Judge the INSTALL, not the person: being signed out of Claude is the one
+  # doctor failure that is theirs, not the update's. Every other ✗ is a reason
+  # to roll back — enumerate the allowed one, never the fatal ones (a list of
+  # fatal words accepted "cannot write inside the folder" and rolled back on a
+  # missing jq forever).
+  # Also allowed: conditions of the MACHINE that predate the update and that
+  # the old version suffered equally (no jq on macOS 14, Claude not installed).
+  OTHER_BAD=$(printf '%s\n' "$DOC" | grep '✗' \
+    | grep -Ev '^ *✗ (not signed in — run|jq is missing — undo|Claude Code is not installed$)' || true)
+  if [ "$DOC_RC" -eq 0 ] || [ -z "$OTHER_BAD" ]; then
     rm -rf "$BACKUP"
     echo "  ${G}✓${R} Updated. Your folder, history and connections are unchanged."
     printf '%s' "$DOC" | grep -q 'not signed in' && \

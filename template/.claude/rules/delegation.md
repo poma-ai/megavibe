@@ -18,6 +18,8 @@
 
 **Never retry a failed MCP call more than once.** Move to the next fallback immediately.
 
+**Never override the Gemini model to a Pro variant** (`-m gemini-*-pro*`, `model: gemini-*-pro*`). Pro has no free tier and bills at 3-16x flash on a paid key. The default (`gemini-flash-latest`) is pinned for a reason; if flash is not enough, fall through the chain to Codex.
+
 ## Tool routing
 
 | Need | Primary | Fallback 1 | Fallback 2 | Last resort | Output format |

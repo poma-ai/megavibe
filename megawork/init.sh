@@ -40,6 +40,7 @@ while [ $# -gt 0 ]; do
 done
 
 ok(){ echo "  ✓ $*"; }
+D=$'\033[2m'; R=$'\033[0m'
 
 # This profile used to be called megavibe-nondev. Move an existing install
 # across rather than leaving someone with two half-configured copies.
@@ -49,15 +50,8 @@ if [ -d "$OLD_ENGINE" ] && [ ! -d "${MEGAWORK_HOME:-$HOME/.megawork}" ]; then
     && echo "  ✓ moved your existing setup over from the old name"
   rm -f "$HOME/.local/bin/megavibe-nondev" "$HOME/.local/bin/nondev-"* 2>/dev/null
   rm -rf "/Applications/Megavibe Nondev.app" "/Applications/Megavibe.app" 2>/dev/null
-  # Bring their actual work across too — an engine without the folder it points
-  # at would leave someone staring at an empty assistant.
-  OLD_DATA=$(cat "${MEGAWORK_HOME:-$HOME/.megawork}/data-dir" 2>/dev/null || echo "")
-  if [ -n "$OLD_DATA" ] && [ -d "$OLD_DATA" ] && [ "$OLD_DATA" != "$DATA" ]; then
-    mkdir -p "$DATA"
-    if command -v rsync &>/dev/null; then rsync -a "$OLD_DATA"/ "$DATA"/ 2>/dev/null
-    else cp -R "$OLD_DATA"/. "$DATA"/ 2>/dev/null; fi
-    echo "  ✓ brought your files across (the old folder is left in place)"
-  fi
+  # Their folder comes along untouched: the moved engine still carries data-dir,
+  # and the "keeping your existing folder" step below points at it.
 fi
 
 # Ask the human, not stdin: piped installs (curl | bash) hand us the script on
@@ -183,15 +177,26 @@ cp "$SRC/bin/megawork-mode"               "$ENGINE/bin/megawork-mode"
 cp "$SRC/bin/megawork-folder"             "$ENGINE/bin/megawork-folder"
 cp "$SRC/bin/megawork-connect"            "$ENGINE/bin/megawork-connect"
 cp "$SRC/bin/megawork-update"             "$ENGINE/bin/megawork-update"
-# The minting script lives in the parent repo, but a colleague's Mac has no
-# checkout — megawork-connect needs it locally, long after the tarball is gone.
-[ -f "$SRC/../scripts/mint-gemini-key.sh" ] && \
-  cp "$SRC/../scripts/mint-gemini-key.sh"  "$ENGINE/bin/mint-gemini-key.sh"
-chmod +x "$ENGINE/bin/mint-gemini-key.sh" 2>/dev/null || true
+rm -f "$ENGINE/bin/mint-gemini-key.sh" 2>/dev/null || true   # shipped briefly in 9b587f2; minting is an admin task now
 chmod +x "$ENGINE/bin/megawork" "$ENGINE/bin/megawork-doctor" "$ENGINE/bin/megawork-mode" "$ENGINE/bin/megawork-folder" "$ENGINE/bin/megawork-connect" "$ENGINE/bin/megawork-update"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
 printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
+
+# Stamp the installed version, or every fresh install is told within a week
+# that "a newer version is available" and sent to megawork-update for nothing.
+# A checkout knows its own commit; a tarball has to ask GitHub (20s cap), and if
+# that fails the launcher treats "unknown" as "do not nag".
+# Only trust git when the checkout IS this repo — a tarball extracted under
+# someone's unrelated repo would otherwise inherit that repo's HEAD.
+_ver=""
+if [ "$(git -C "$SRC" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$SRC/.." && pwd -P)" ]; then
+  _ver=$(git -C "$SRC" rev-parse --short=7 HEAD 2>/dev/null || true)
+fi
+[ -n "$_ver" ] || _ver=$(curl -fsSL --max-time 20 \
+  "https://api.github.com/repos/poma-ai/megavibe/commits?path=megawork&per_page=1" 2>/dev/null \
+  | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1)
+[ -n "$_ver" ] && printf '%s\n' "$_ver" > "$ENGINE/version"
 
 # Render the seatbelt profile with resolved absolute paths. Seatbelt matches on
 # REAL paths, so a symlinked location (e.g. /tmp -> /private/tmp) must be
@@ -212,8 +217,30 @@ render(){
     printf '%s\n' "$line"
   done < "$1" > "$2"
 }
+# Connections the person switched on live in these rendered files, so carry
+# them across the re-render: Apple Mail is "the Mail deny line is absent".
+MAIL_WAS_ON=0
+if [ -f "$ENGINE/policy/sandbox.sb" ] && ! grep -q "(subpath \"$HOME_REAL/Library/Mail\")" "$ENGINE/policy/sandbox.sb"; then MAIL_WAS_ON=1; fi
+# ...and the tool pre-approvals megawork-connect added for services it connected.
+EXTRA_ALLOW="[]"
+if [ -f "$ENGINE/policy/settings.json" ] && command -v jq &>/dev/null; then
+  EXTRA_ALLOW=$(jq -c '.permissions.allow // []' "$ENGINE/policy/settings.json" 2>/dev/null || echo "[]")
+fi
 render "$SRC/template/sandbox.sb.template"         "$ENGINE/policy/sandbox.sb"
 render "$SRC/template/policy/settings.json.template" "$ENGINE/policy/settings.json"
+if [ "$MAIL_WAS_ON" -eq 1 ]; then
+  grep -v "(subpath \"$HOME_REAL/Library/Mail\")" "$ENGINE/policy/sandbox.sb" > "$ENGINE/policy/sandbox.sb.tmp" \
+    && mv "$ENGINE/policy/sandbox.sb.tmp" "$ENGINE/policy/sandbox.sb"
+fi
+if [ "$EXTRA_ALLOW" != "[]" ] && command -v jq &>/dev/null; then
+  # Only rewrite when something is actually missing: jq re-serialises the whole
+  # file, so an unconditional pass makes run 2 differ from run 1 in whitespace.
+  MISSING=$(jq -c --argjson extra "$EXTRA_ALLOW" '.permissions.allow as $a | $extra | map(select(startswith("mcp__") and (. as $x | $a | index($x) | not)))' "$ENGINE/policy/settings.json" 2>/dev/null || echo "[]")
+  if [ "$MISSING" != "[]" ] && [ -n "$MISSING" ]; then
+    jq --argjson m "$MISSING" '.permissions.allow += $m' "$ENGINE/policy/settings.json" > "$ENGINE/policy/settings.json.tmp" 2>/dev/null \
+      && mv "$ENGINE/policy/settings.json.tmp" "$ENGINE/policy/settings.json"
+  fi
+fi
 ok "engine installed in $ENGINE"
 
 # The colleague must not be able to edit the policy from their own session;
@@ -354,7 +381,9 @@ LAUNCH
     cp "$OVERLAY/icon.icns" "$STAGE/Contents/Resources/appicon.icns"
   fi
 
-  if rm -rf "$APP" && mv "$STAGE" "$APP"; then
+  # Move the old app aside first, not away: if the new one cannot land, put it back.
+  OLD_APP=""; [ -e "$APP" ] && { OLD_APP="$STAGE_DIR/previous.app"; mv "$APP" "$OLD_APP" 2>/dev/null || OLD_APP=""; }
+  if mv "$STAGE" "$APP" 2>/dev/null || { [ -n "$OLD_APP" ] && mv "$OLD_APP" "$APP" 2>/dev/null; false; }; then
     # Ad-hoc sign the finished bundle, so the seal matches what is inside it.
     codesign --force --deep --sign - "$APP" 2>/dev/null || true
     touch "$APP"; killall Dock 2>/dev/null || true
@@ -373,7 +402,7 @@ fi
 # overlay, or an existing engine key. Never a prompt — see setup.sh --harness-only.
 if [ -z "${GEMINI_API_KEY:-}" ]; then
   for _src in "${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}/gemini-key" "$ENGINE/policy/gemini-key"; do
-    [ -f "$_src" ] && { GEMINI_API_KEY=$(tr -d '\n' < "$_src"); break; }
+    [ -s "$_src" ] && { GEMINI_API_KEY=$(tr -d '[:space:]' < "$_src"); break; }
   done
 fi
 if [ -n "${GEMINI_API_KEY:-}" ]; then
@@ -383,33 +412,40 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
 fi
 
 # ─── Backends ───────────────────────────────────────────────────────
-# Gemini is part of the profile, not an optional extra (README.md "Backends"):
-# the assistant leans on it for long documents, and it is never presented to
-# the person as a decision. So the installer gets a key by itself — one Google
-# sign-in, then a free key on a project with no billing attached.
+# Gemini is part of the profile (README.md "Backends"): the assistant leans on
+# it for long documents. The key is POMA's — issued by an admin from a BILLED
+# project, because that is the only way prompts stay out of Google's training
+# data (a Workspace login does not do it for the API), and because the free
+# tier is 20 requests a day. Nothing is minted here and no browser opens: the
+# key is taken from the overlay or the environment above, or pasted once.
 #
-# Tier 1: an admin left a key (handled above) — no sign-in at all.
-# Tier 2: mint one from the person's own Google identity, here.
-#
-# UPDATES ARE NOT INSTALLS. megawork-update re-runs this file, and a browser
-# appearing during an update — with the update's output going to /dev/null —
-# is what left a colleague stranded in the Cloud console. An update that finds
-# no key leaves it alone; `megawork-connect gemini` is the repair path.
-if [ -z "${GEMINI_API_KEY:-}" ] && interactive && [ -x "$ENGINE/bin/megawork-connect" ]; then
-  echo ""
-  echo "  Setting up second opinions (one Google sign-in)…"
-  # One code path, not two: the same command handles a later repair, so its
-  # progress reporting and its error messages only have to be right once.
-  MEGAWORK_HOME="$ENGINE" "$ENGINE/bin/megawork-connect" gemini < "$TTY_IN" || {
+# UPDATES ARE NOT INSTALLS. megawork-update re-runs this file with
+# MEGAWORK_NONINTERACTIVE, so an update that finds no key leaves it alone;
+# `megawork-connect gemini` is the repair path and runs this same code.
+GEMINI_STATE="ok"
+if [ -z "${GEMINI_API_KEY:-}" ]; then
+  GEMINI_STATE="missing"
+  if interactive && [ -x "$ENGINE/bin/megawork-connect" ]; then
     echo ""
-    echo "  ${D:-}Everything else is set up and works. To try this part again${R:-}"
-    echo "  ${D:-}later, run: megawork-connect gemini${R:-}"; }
+    echo "  Second opinions (one key to paste — ${MEGAWORK_ADMIN_NAME:-your admin} has it)"
+    # Ctrl-C here must not take the whole install down with it: without the
+    # trap, SIGINT reaches this script and install.sh too, and the person never
+    # sees the closing instructions for the parts that DID get set up.
+    trap 'echo' INT
+    MEGAWORK_HOME="$ENGINE" "$ENGINE/bin/megawork-connect" gemini < "$TTY_IN" && GEMINI_STATE="ok" || GEMINI_STATE="missing"
+    trap - INT
+  fi
 fi
+[ "$GEMINI_STATE" = "ok" ] || echo "  ${D:-}(second opinions not set up — the rest works; add later with: megawork-connect gemini)${R:-}"
 
 if [ -z "${MEGAWORK_WRAPPED:-}" ]; then
   echo ""
   echo "Done. Next:"
   echo "  1. run 'claude' once and sign in"
-  echo "  2. drag ${APPNAME} from /Applications to the Dock"
+  if [ -d "/Applications/${APPNAME}.app" ]; then
+    echo "  2. drag ${APPNAME} from /Applications to the Dock"
+  else
+    echo "  2. start it with: $ENGINE/bin/megawork"
+  fi
   echo "  3. open it and try: \"what can you help me with?\""
 fi

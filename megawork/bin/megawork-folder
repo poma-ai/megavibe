@@ -25,6 +25,10 @@ done
 ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 [ -d "$ENGINE" ] || { echo "megawork is not set up on this Mac."; exit 1; }
 CUR=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
+# Inside a session the engine is read-only (the sandbox protects its own
+# guardrails), so a move cannot be completed from there. Say so up front rather
+# than failing halfway with a raw "Could not create".
+engine_writable(){ ( : >> "$ENGINE/data-dir" ) 2>/dev/null; }
 
 gdrive_roots() {
   local r
@@ -45,8 +49,9 @@ case "${1:-}" in
     exit 0 ;;
   --list)
     echo "Places the folder could live:"
-    echo "  $HOME/Megawork    (this Mac only)"
-    while IFS= read -r r; do [ -n "$r" ] && echo "  $r/Megawork"; done < <(gdrive_roots)
+    FN=$(basename "${CUR:-$HOME/Megawork}")
+    echo "  $HOME/$FN    (this Mac only)"
+    while IFS= read -r r; do [ -n "$r" ] && echo "  $r/$FN"; done < <(gdrive_roots)
     echo ""
     echo "Then run:  megawork-folder \"<the path you want>\""
     exit 0 ;;
@@ -63,6 +68,10 @@ case "$NEW" in
     read -r -p "Use it anyway? [y/N] " a || a=""; case "${a:-n}" in [yY]*) ;; *) exit 0 ;; esac ;;
 esac
 
+engine_writable || {
+  echo "This can't be done from inside a chat — the assistant's own settings are"
+  echo "read-only in there, on purpose. Open Terminal and run:"
+  echo "    megawork-folder \"$NEW\""; exit 1; }
 mkdir -p "$NEW" || { echo "Could not create $NEW"; exit 1; }
 NEW_REAL=$(cd "$NEW" && pwd -P)
 
@@ -90,14 +99,46 @@ T="$ENGINE/templates"
 if [ -f "$T/sandbox.sb.template" ] && [ -f "$T/policy/settings.json.template" ]; then
   ENGINE_REAL=$(cd "$ENGINE" && pwd -P); HOME_REAL=$(cd "$HOME" && pwd -P)
   chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || true
-  for pair in "$T/sandbox.sb.template:$ENGINE/policy/sandbox.sb" \
-              "$T/policy/settings.json.template:$ENGINE/policy/settings.json"; do
-    sed -e "s|@DATA@|$NEW_REAL|g" -e "s|@ENGINE@|$ENGINE_REAL|g" -e "s|@HOME@|$HOME_REAL|g" \
-      "${pair%%:*}" > "${pair##*:}"
-  done
+  # What the person switched on lives in these files — keep it across the render.
+  MAIL_WAS_ON=0
+  grep -q "(subpath \"$HOME_REAL/Library/Mail\")" "$ENGINE/policy/sandbox.sb" 2>/dev/null || MAIL_WAS_ON=1
+  EXTRA_ALLOW="[]"
+  command -v jq &>/dev/null && EXTRA_ALLOW=$(jq -c '.permissions.allow // []' "$ENGINE/policy/settings.json" 2>/dev/null || echo "[]")
+  # Not sed: `&` in a replacement means "the whole match", so a Drive folder
+  # called "Kunden & Projekte" rendered a rule the assistant could not write to;
+  # `|` in a path breaks the delimiter. Bash substitution is literal on both.
+  render(){
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=${line//@DATA@/$NEW_REAL}; line=${line//@ENGINE@/$ENGINE_REAL}; line=${line//@HOME@/$HOME_REAL}
+      printf '%s\n' "$line"
+    done < "$1" > "$2"
+  }
+  render "$T/sandbox.sb.template"          "$ENGINE/policy/sandbox.sb"
+  render "$T/policy/settings.json.template" "$ENGINE/policy/settings.json"
+  if [ "$MAIL_WAS_ON" -eq 1 ]; then
+    grep -v "(subpath \"$HOME_REAL/Library/Mail\")" "$ENGINE/policy/sandbox.sb" > "$ENGINE/policy/sandbox.sb.tmp" \
+      && mv "$ENGINE/policy/sandbox.sb.tmp" "$ENGINE/policy/sandbox.sb"
+  fi
+  if [ "$EXTRA_ALLOW" != "[]" ] && command -v jq &>/dev/null; then
+    # Only rewrite when something is actually missing: jq re-serialises the whole
+    # file, so an unconditional pass makes run 2 differ from run 1 in whitespace.
+    MISSING=$(jq -c --argjson extra "$EXTRA_ALLOW" '.permissions.allow as $a | $extra | map(select(startswith("mcp__") and (. as $x | $a | index($x) | not)))' "$ENGINE/policy/settings.json" 2>/dev/null || echo "[]")
+    if [ "$MISSING" != "[]" ] && [ -n "$MISSING" ]; then
+      jq --argjson m "$MISSING" '.permissions.allow += $m' "$ENGINE/policy/settings.json" > "$ENGINE/policy/settings.json.tmp" 2>/dev/null \
+        && mv "$ENGINE/policy/settings.json.tmp" "$ENGINE/policy/settings.json"
+    fi
+  fi
   chmod 444 "$ENGINE/policy/settings.json" "$ENGINE/policy/mcp.json" 2>/dev/null || true
 else
   echo "Could not find the policy templates — ask your admin to re-run the installer."; exit 1
+fi
+
+# The installer pre-approves the folder so Claude never asks "do you trust
+# this folder?"; a moved folder needs the same, or the question comes back.
+if command -v jq &>/dev/null && [ -f "$HOME/.claude.json" ] && jq -e . "$HOME/.claude.json" >/dev/null 2>&1; then
+  jq --arg d "$NEW_REAL" '.projects[$d].hasTrustDialogAccepted = true' "$HOME/.claude.json" \
+    > "$HOME/.claude.json.megawork-tmp" 2>/dev/null && mv "$HOME/.claude.json.megawork-tmp" "$HOME/.claude.json"
 fi
 
 printf '%s\n' "$NEW_REAL" > "$ENGINE/data-dir"
