@@ -164,7 +164,7 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 | What you add | How | What it unlocks |
 |-------------|-----|-----------------|
 | **Claude Code** (required) | Subscription | Core: editing, commands, memory, context recovery via built-in subagent |
-| **Gemini CLI** | Set `GEMINI_API_KEY` ([free key](https://aistudio.google.com/apikey)) | Better context recovery (1M token window), large file analysis |
+| **Gemini CLI** | Set `GEMINI_API_KEY` (a key from a **billed** project — the free tier is 20 req/day and trains on prompts) | Better context recovery (1M token window), large file analysis |
 | **ChatGPT/Codex CLI** | Run `codex` to log in | Research with web search, second opinions |
 | **Playwright** | Installed by setup | Browser automation, screenshots, UI testing |
 | **poma-memory** | Bundled (automatic) | Semantic search over project memory |
@@ -210,7 +210,7 @@ Inside a megavibe session:
 | `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook already inlines its output. |
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
 | `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
-| `/doc-review` | After material doc/code changes — dual-backend (Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
+| `/doc-review` | After material doc/code changes — three-reviewer (Claude `reviewer` subagent + Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply |
 | `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
@@ -260,7 +260,7 @@ Megavibe works without any API keys. Adding them unlocks extra capabilities:
 
 | Key | What it does | Cost | How to get it |
 |-----|-------------|------|---------------|
-| `GEMINI_API_KEY` | **Required for the Gemini backend** — Google-account OAuth was retired June 18, 2026 | Free tier available | [aistudio.google.com](https://aistudio.google.com/apikey) |
+| `GEMINI_API_KEY` | **Required for the Gemini backend** — Google-account OAuth was retired June 18, 2026 | Needs billing on the key's project (free tier: 20 req/day, prompts used for training) | [aistudio.google.com](https://aistudio.google.com/apikey) |
 | `OPENAI_API_KEY` | Better poma-memory search + voice transcription for Remote | ~$0.01/month search; ~$0.006/voice note | [platform.openai.com](https://platform.openai.com/api-keys) |
 
 ```bash

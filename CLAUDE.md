@@ -25,6 +25,8 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (17 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
+| `template/.claude/agents/reviewer.md` | The always-on independent reviewer (Opus, fresh context, runs things) — non-negotiable 4 | Medium — affects every review |
+| `scripts/gemini-review.sh` | Gemini via direct API with `thinkingLevel: low` — the only Gemini path that returns complete reviews on 3.x; installed to `~/.megavibe/scripts/` | Medium |
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
@@ -123,8 +125,8 @@ For hook changes, ask Gemini to review for edge cases (missing files, race condi
 
 | Scenario | Route | Why |
 |----------|-------|-----|
-| Reviewing protocol text changes | Gemini | Large context, assesses clarity |
-| Reviewing hook shell scripts | Gemini | Reasons about edge cases |
+| Reviewing protocol text changes | `reviewer` subagent + `gemini-review.sh --pro` + Codex | Three independent readers; Gemini for clarity/large context |
+| Reviewing hook shell scripts | `reviewer` subagent + `gemini-review.sh` + Codex | Reviewer runs them; Gemini/Codex reason about edge cases |
 | Researching CLAUDE.md best practices, Claude Code features | Web search / Codex | Needs current community info |
 | Comparing megavibe to alternatives | Gemini or Codex | Second opinion on architecture |
 | README edits, prose polish, small script fixes | Handle directly | Not worth delegation overhead |

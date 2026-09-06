@@ -178,7 +178,7 @@ allow_tools(){
   jq -e --arg r "$rule" 'any(.permissions.allow[]?; . == $r)' "$sfile" >/dev/null 2>&1 && return 0
   local mode; mode=$(stat -f '%Lp' "$sfile" 2>/dev/null || echo 444)
   chmod u+w "$sfile" 2>/dev/null
-  jq --arg r "$rule" '.permissions.allow += [$r]' "$sfile" > "$sfile.tmp" 2>/dev/null \
+  jq --arg r "$rule" '.permissions.allow = (.permissions.allow // []) + [$r]' "$sfile" > "$sfile.tmp" 2>/dev/null \
     && mv "$sfile.tmp" "$sfile"
   chmod "$mode" "$sfile" 2>/dev/null
 }

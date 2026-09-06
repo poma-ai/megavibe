@@ -1,12 +1,12 @@
 ---
 name: doc-review
-description: Independent dual-backend review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to Gemini AND Codex in parallel; synthesizes findings into a single report.
-allowed-tools: Bash, Read, Write
+description: Independent three-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the Claude `reviewer` subagent, Gemini and Codex in parallel; synthesizes findings into a single report.
+allowed-tools: Bash, Read, Write, Agent, mcp__codex__codex
 ---
 
 # Doc-review (periodic doc hygiene)
 
-Send the project's full markdown documentation surface to Gemini AND Codex in parallel for an independent challenge. Synthesize the two reviews into a single findings report. The user decides which findings to act on.
+Send the project's full markdown documentation surface to three independent readers in parallel — the Claude `reviewer` subagent (always), Gemini and Codex (when available) — for an independent challenge. Synthesize the reviews into a single findings report. The user decides which findings to act on.
 
 ## When to use
 
@@ -21,7 +21,7 @@ After significant docs or code edits that change the documentation surface — `
    ```
    Most projects: just `CLAUDE.md` plus zero or more `README*.md` at the root. Adapt if the project uses a `docs/` folder. If only `CLAUDE.md` exists, the review is still useful — focus on bloat and drift-vs-code.
 
-2. **Send to BOTH backends in PARALLEL** in a single tool-call batch — `mcp__gemini-cli__ask-gemini` and `mcp__codex__codex` with the SAME files and the SAME prompt:
+2. **Send to the reviewers in PARALLEL**, in a single tool-call batch, with the SAME files and the SAME prompt. The `reviewer` subagent always runs (Agent tool, `subagent_type: reviewer`, or `general-purpose` with `model: opus` and the text of `.claude/agents/reviewer.md` if the project has not synced agents yet). Add Gemini via Bash — `bash ~/.megavibe/scripts/gemini-review.sh --prompt "<prompt>" <files>  (add `--pro` only when CLAUDE.md or the protocol itself is in the set)` — only if `$GEMINI_API_KEY` is set (it exits 1 otherwise; that is a skipped reviewer, not a failed review). Add Codex via `mcp__codex__codex` (read-only sandbox) if the Codex MCP is listed. Never use `mcp__gemini-cli__ask-gemini` here: the CLI it wraps truncates or stalls on 3.x thinking. The prompt:
 
    > Review the attached project documentation set. For each finding, output `{category, file:line, what's wrong, suggested fix}`. Categories:
    >
@@ -33,10 +33,10 @@ After significant docs or code edits that change the documentation surface — `
    >
    > Be specific and concise. Do not propose stylistic rewrites — only substantive issues.
 
-3. **Backend fallback.** If a backend is unavailable per `.claude/rules/delegation.md`, run with whichever is available and note the missing one in the synthesis. If both Gemini and Codex are down, fall back to the Claude subagent (`summarizer`) — but flag clearly that this is a single-backend review, not the intended independent challenge.
+3. **Missing reviewers.** The `reviewer` subagent is never skipped. If Gemini or Codex is unavailable per `.claude/rules/delegation.md`, run with the rest and name the missing reviewer in the synthesis. Never substitute `summarizer` for `reviewer`. A single-reviewer round (reviewer only) is still a review — say so plainly.
 
-4. **Synthesize.** Merge both reports into a single output, grouped by category. For each finding:
-   - Note whether **both** backends flagged it (high-confidence) or **one** (consider the other's framing)
+4. **Synthesize.** Merge the reports into a single output, grouped by category. For each finding:
+   - Note how many reviewers flagged it — **all** or **two** (high-confidence) vs **one** (check it yourself before acting)
    - Preserve the file:line reference
    - Keep the suggested fix terse — one or two lines
 
@@ -47,4 +47,4 @@ After significant docs or code edits that change the documentation surface — `
 - **Parallel, not sequential.** Issue both backend calls in one message — half the wall time and avoids one backend's framing biasing the other.
 - The **synthesis** is the value. Don't dump raw outputs from each backend; the merged view is what the user reads.
 - Avoid stylistic noise. The review targets substantive drift/contradiction/bloat, not prose taste.
-- If both backends fail, say so and stop. Don't let the skill silently degrade to a self-review — the whole point is *independent* challenge.
+- If Gemini and Codex both fail, the `reviewer` subagent's report is the review — say so. Never let the skill degrade to a self-review by the session that wrote the docs; the whole point is *independent* challenge.

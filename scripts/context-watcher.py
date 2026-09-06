@@ -354,11 +354,43 @@ def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
 
 
 def _call_gemini(prompt: str, timeout: int) -> str:
-    r = subprocess.run(["gemini", "-p", prompt],
-                       capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f"gemini exit={r.returncode}: {r.stderr[:400]}")
-    return r.stdout
+    """Direct generateContent with thinkingLevel=low.
+
+    Not `gemini -p`: on Gemini 3.x Flash the CLI runs full thinking (15-40K
+    thought tokens on a prompt this size, measured 2026-09-06) and the call
+    times out — every watcher Gemini attempt in the logs failed that way. The
+    CLI is kept only as the fallback for a machine without a key in the env.
+    """
+    import json as _json
+    import urllib.request as _url
+    import urllib.error as _uerr
+    key = os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        r = subprocess.run(["gemini", "-p", prompt],
+                           capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            raise RuntimeError(f"gemini exit={r.returncode}: {r.stderr[:400]}")
+        return r.stdout
+    model = os.environ.get("MEGAVIBE_GEMINI_MODEL", "gemini-flash-latest")
+    body = _json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 8000, "temperature": 0.2,
+                             "thinkingConfig": {"thinkingLevel": "low"}},
+    }).encode()
+    req = _url.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        data=body, headers={"x-goog-api-key": key, "Content-Type": "application/json"})
+    try:
+        resp = _json.load(_url.urlopen(req, timeout=timeout))
+    except _uerr.HTTPError as e:
+        raise RuntimeError(f"gemini http {e.code}: {e.read()[:300]!r}")
+    cands = resp.get("candidates") or []
+    if not cands or "content" not in cands[0]:
+        raise RuntimeError(f"gemini: no answer ({_json.dumps(resp.get('promptFeedback') or resp)[:200]})")
+    text = "".join(p.get("text", "") for p in cands[0]["content"].get("parts", []) if not p.get("thought"))
+    if cands[0].get("finishReason") not in (None, "STOP"):
+        raise RuntimeError(f"gemini: cut off ({cands[0].get('finishReason')})")
+    return text
 
 
 def _call_codex(prompt: str, timeout: int) -> str:

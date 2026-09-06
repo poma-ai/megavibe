@@ -528,7 +528,7 @@ fi
 # (always overwrite) so updates propagate without a per-project init step.
 if [ -d "$SCRIPT_DIR/scripts" ]; then
   mkdir -p "$MEGAVIBE_HOME/scripts"
-  for _py in "$SCRIPT_DIR/scripts/"*.py; do
+  for _py in "$SCRIPT_DIR/scripts/"*.py "$SCRIPT_DIR/scripts/gemini-review.sh"; do
     [ -f "$_py" ] || continue
     if ! atomic_install "$_py" "$MEGAVIBE_HOME/scripts/$(basename "$_py")" 755; then
       warn "could not install scripts/$(basename "$_py")"

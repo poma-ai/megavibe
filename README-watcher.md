@@ -20,7 +20,7 @@ One `python3 ~/.megavibe/scripts/context-watcher.py` process per Claude session,
 
 1. Reads new turns from the transcript JSONL past the cursor at `.agent/LOGS/.flush-cursor.<sid>`.
 2. If fewer than `--min-new-turns` (default 10), skips.
-3. Sends slice + existing `.agent/` files to **Gemini → Codex** (fallback). All-backends-fail = cycle skipped, log entry written, no user impact.
+3. Sends slice + existing `.agent/` files to **Gemini → Codex** (fallback). Gemini is called through the direct API with `thinkingLevel: low` when `GEMINI_API_KEY` is set — `gemini -p` on 3.x Flash thinks for minutes and timed out on every watcher attempt in the logs (measured 2026-09-06). All-backends-fail = cycle skipped, log entry written, no user impact.
 4. Parses the JSON envelope. Drops any item whose `verbatim_evidence` (>=20 chars) isn't a substring of the slice. Lessons additionally require evidence from a **user-role** turn — so the assistant's self-reflection can't masquerade as a user-confirmed pattern.
 5. **Auto-applies** (low-stakes, easy to revert, under `flock`):
    - `narrative` → append to `FULL_CONTEXT.md` with the slice's actual date

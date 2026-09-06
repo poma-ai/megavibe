@@ -22,7 +22,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    - If the on-compact hook already told you, use that path.
    - Otherwise your session ID is in the hook stdin JSON (`session_id`); WORKING_CONTEXT lives at `.agent/sessions/{session_id}/WORKING_CONTEXT.md`.
 
-2. **Check backend availability** (standard fallback chain): `mcp__gemini-cli__ping` → `$GEMINI_API_KEY` curl → Codex MCP → Claude subagent (always works).
+2. **Check backend availability** (standard fallback chain): `$GEMINI_API_KEY` set (→ `gemini-review.sh`) → Codex MCP → Claude subagent (always works).
 
 3. **Assemble a BOUNDED input** via Bash (caps keep it well under any backend limit and fast):
 
@@ -45,15 +45,16 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
 
    ```bash
    OUT=".agent/sessions/${SID}/WORKING_CONTEXT.md"; mkdir -p "$(dirname "$OUT")"
-   PROMPT=$(printf '%s\n\n%s' \
-     "Read the project state below and write a WORKING_CONTEXT.md (max 400 lines) with sections: Goal; Constraints (must-not-break); What's Done (files touched); Open Tasks (+acceptance criteria); Risks/Unknowns; Next Actions (3 concrete). Output ONLY the markdown." \
-     "$(cat "$IN")")
-   perl -e 'alarm shift; exec @ARGV' 150 gemini -p "$PROMPT" > "$OUT" 2>/dev/null
+   INSTR="Read the project state below and write a WORKING_CONTEXT.md (max 400 lines) with sections: Goal; Constraints (must-not-break); What's Done (files touched); Open Tasks (+acceptance criteria); Risks/Unknowns; Next Actions (3 concrete). Output ONLY the markdown."
+   # Gemini via the direct API with thinkingLevel low (`gemini -p` on 3.x Flash thinks for
+   # minutes and stalls). The 150s alarm is the ceiling regardless of the script's own timeouts.
+   perl -e 'alarm shift; exec @ARGV' 150 bash ~/.megavibe/scripts/gemini-review.sh --max 12000 \
+     --out "$OUT" --prompt "$INSTR" "$IN" >/dev/null 2>"$OUT.err" || : > "$OUT"
+   rm -f "$OUT.raw.json"; [ -s "$OUT" ] && rm -f "$OUT.err"   # keep the .err only when it failed
    ```
 
    - Non-zero exit (incl. SIGALRM timeout) **or** an empty `$OUT` = that backend FAILED. Don't retry it — move down the chain.
-   - **Fallback order:** Gemini CLI → `$GEMINI_API_KEY` curl (`--max-time 150`) → Codex (`perl -e 'alarm shift; exec @ARGV' 150 codex exec "$PROMPT"`) → **Claude subagent** (Agent tool, model sonnet — internal, cannot hang, always finishes).
-   - You MAY use `mcp__gemini-cli__ask-gemini` instead, but it is NOT time-boundable from here. If it doesn't return within ~3 min, abandon it and use the Bash path above — do not keep waiting.
+   - **Fallback order:** Gemini direct API (above) → Codex (`perl -e 'alarm shift; exec @ARGV' 150 codex exec "$INSTR — the state is in the file $IN"`) → **Claude subagent** (Agent tool, model sonnet — internal, cannot hang, always finishes). Not the Gemini CLI and not `mcp__gemini-cli__ask-gemini` for this: both run the model with full thinking on a large input and stall.
 
 5. **Verify + load.** Confirm `$OUT` is non-empty and contains the requested sections, then Read it into your window. If every external backend failed AND the subagent is unavailable, hand-write a minimal WORKING_CONTEXT from TASKS.md + git state rather than leaving it empty.
 

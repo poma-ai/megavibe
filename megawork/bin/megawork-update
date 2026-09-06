@@ -104,7 +104,10 @@ if MEGAWORK_HOME="$ENGINE" MEGAWORK_WRAPPED=1 MEGAWORK_NONINTERACTIVE=1 \
   # the old version suffered equally (no jq on macOS 14, Claude not installed).
   OTHER_BAD=$(printf '%s\n' "$DOC" | grep '✗' \
     | grep -Ev '^ *✗ (not signed in — run|jq is missing — undo|Claude Code is not installed$)' || true)
-  if [ "$DOC_RC" -eq 0 ] || [ -z "$OTHER_BAD" ]; then
+  # A doctor that crashed (non-zero, but printed no ✗ at all) proved nothing —
+  # that is a rollback, not a pass.
+  DOC_RAN=0; printf '%s\n' "$DOC" | grep -qE '✓|✗' && DOC_RAN=1
+  if [ "$DOC_RC" -eq 0 ] || { [ "$DOC_RAN" -eq 1 ] && [ -z "$OTHER_BAD" ]; }; then
     rm -rf "$BACKUP"
     echo "  ${G}✓${R} Updated. Your folder, history and connections are unchanged."
     printf '%s' "$DOC" | grep -q 'not signed in' && \

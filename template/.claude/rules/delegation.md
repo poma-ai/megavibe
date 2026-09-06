@@ -5,20 +5,22 @@
 **Megavibe works with ONLY a Claude Code subscription.** External backends (Gemini, Codex) improve quality for specific tasks but are never required. Every task has a last-resort path through Claude itself (via the `summarizer` subagent at `.claude/agents/summarizer.md`).
 
 **Standard fallback chain** (Gemini-primary tasks):
-1. Gemini MCP (requires `$GEMINI_API_KEY` — Google-account OAuth was retired 2026-06-18; without the key, skip straight to Codex)
-2. `$GEMINI_API_KEY` via curl (direct REST fallback if the MCP server itself fails)
+1. Gemini direct API: `~/.megavibe/scripts/gemini-review.sh --prompt "..." FILE...` (requires `$GEMINI_API_KEY` from a **billed** project — Google-account OAuth was retired 2026-06-18, and the free tier is 20 req/day and trains on prompts; without a key, skip straight to Codex)
+2. Gemini MCP (`mcp__gemini-cli__ask-gemini`) — for short interactive questions only; the CLI it wraps hardcodes 3.x thinking, so long answers truncate or take minutes
 3. Codex MCP
 4. Claude subagent (always available — same subscription)
 
 **Reverse chain** (Codex-primary tasks):
 1. Codex MCP
-2. Gemini MCP
-3. `$GEMINI_API_KEY` via curl
+2. Gemini direct API (`gemini-review.sh`)
+3. Gemini MCP
 4. Claude subagent
+
+**Gemini thinking, measured 2026-09-06:** `gemini-3.8-flash` spends 15–40K thought tokens on a review prompt by default and returns almost no text under any output cap; `thinkingLevel: low` returns the complete answer in seconds. `gemini-review.sh` sets it. Keep `-m`/model overrides to flash except through `gemini-review.sh --pro` for reviews; the Pro line has no free tier and bills 3-16x flash.
 
 **Never retry a failed MCP call more than once.** Move to the next fallback immediately.
 
-**Never override the Gemini model to a Pro variant** (`-m gemini-*-pro*`, `model: gemini-*-pro*`). Pro has no free tier and bills at 3-16x flash on a paid key. The default (`gemini-flash-latest`) is pinned for a reason; if flash is not enough, fall through the chain to Codex.
+**Never override the Gemini model to a Pro variant** (`-m gemini-*-pro*`, `model: gemini-*-pro*`) in the MCP tool, the CLI, or the watcher. Pro has no free tier and bills at 3-16x flash on a paid key. The one sanctioned use is `gemini-review.sh --pro` for reviews of protocol/template changes and user-facing work (≈$0.15 a review); everything else stays on `gemini-flash-latest`, and if flash is not enough, fall through the chain to Codex.
 
 ## Tool routing
 
@@ -29,6 +31,7 @@
 | Summarize text (any length/target) | Gemini | Codex | — | Claude subagent | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | — | Claude subagent | Literal, high-recall, structured markdown |
 | Research memo (multi-source, citations) | Codex | Gemini | — | Claude subagent | `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
+| **Independent review before shipping** (non-negotiable 4) | `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Gemini `gemini-review.sh` **+** Codex, in parallel | reviewer + whichever backend is up | — | `reviewer` subagent alone | Ranked findings with file:line, failing input, outcome, fix; ship / do-not-ship verdict |
 | Fast second opinion / alternative plan | Codex | Gemini | — | Claude subagent | Patch plan + test plan |
 | Quick fact check / web search | Codex | Gemini | — | Claude subagent | Claims with sources |
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | — | Screenshots/HTML → `.agent/ASSETS/` |
@@ -38,7 +41,7 @@
 
 ## Gemini / Codex / Claude subagent delegation protocols
 
-These protocols apply to whichever backend is available. When Gemini is the primary, use Gemini MCP tools. When falling back to Codex, use Codex MCP tools with the same inputs and output requirements. When falling back to Claude subagent, use the Agent tool with `.claude/agents/summarizer.md`.
+These protocols apply to whichever backend is available. When Gemini is the primary, use `~/.megavibe/scripts/gemini-review.sh` (the MCP tool only for short questions). When falling back to Codex, use Codex MCP tools with the same inputs and output requirements. When falling back to Claude subagent, use the Agent tool with `.claude/agents/summarizer.md`.
 
 ### Re-hydration (regenerate working context)
 
@@ -90,7 +93,7 @@ This is a rare operation — most projects will never hit the limit. The Claude 
 
 Codex uses cached web search by default. Add `--search` for live results when freshness matters.
 
-If Codex is unavailable, fall back to Gemini MCP → `$GEMINI_API_KEY` curl → Claude subagent (reverse chain). The Claude subagent cannot do live web search but can analyze local files and produce structured research from available context.
+If Codex is unavailable, fall back to Gemini (`gemini-review.sh`) → Claude subagent (reverse chain). The Claude subagent cannot do live web search but can analyze local files and produce structured research from available context.
 
 ## Claude subagent protocols
 

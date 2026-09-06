@@ -22,7 +22,7 @@ Claude Code is the executor and orchestrator. Gemini and Codex are subcontractor
 
    Store research in `.agent/RESEARCH/`. Store screenshots/HTML/PDFs in `.agent/ASSETS/`.
 
-4. **Independent review by default.** Every important result, change, or product gets an independent review before it ships — without the user having to ask. Important = new/changed code beyond trivial mechanical edits, documents or plans the user will rely on, analyses that drive decisions, anything user-facing. Route it: code diffs → fresh-context Claude subagent review (or `/code-review`); prose, plans, analyses → second opinion from Codex and/or Gemini. If ambiguous, risky, or repeatedly corrected: escalate to BOTH Codex and Gemini, asking the reviewer to consider the neutral case, the devil's advocate case, and the optimistic case — then synthesize. Act on findings before declaring done. Exceptions: trivial/mechanical edits, deliverables that are themselves reviews (no recursion), and urgent hotfixes (ship, then review immediately after).
+4. **Independent review by default — three reviewers.** Every important result, change, or product gets independent review before it ships, without the user asking. Important = new/changed code beyond trivial mechanical edits, documents or plans the user will rely on, analyses that drive decisions, anything user-facing. Always: the **`reviewer` subagent** (`.claude/agents/reviewer.md`, Opus, fresh context, runs things — same Claude subscription). Agents register at session start, so in a session that was already open when the file landed `subagent_type: reviewer` is "not found": then use `general-purpose` with `model: opus` and paste the text of `.claude/agents/reviewer.md` as the brief — never skip it. `/megavibe-restart` registers it. Plus, whenever the backends are up: **Gemini** via `~/.megavibe/scripts/gemini-review.sh` (direct API with `thinkingLevel: low`; `--pro` for protocol/template/user-facing changes — never the MCP tool or `gemini -p` for reviews, they truncate or stall on 3.x thinking) and **Codex** (`mcp__codex__codex`, read-only sandbox). Run the three in parallel with the same files and the same prompt; synthesize; act on findings before declaring done. One round per shippable unit, plus at most one re-review round after fixes when any reviewer said "do not ship" — then ship and report what remains. If ambiguous, risky, or repeatedly corrected: ask each reviewer for the neutral, devil's-advocate and optimistic cases. Reviewers must be told to read the document that states the standard (README/CLAUDE.md) before the diff. Exceptions: trivial/mechanical edits, deliverables that are themselves reviews (no recursion), and urgent hotfixes (ship, then review immediately after).
 
 5. **Never drop uncommitted changes.** Before any git operation that could lose work (checkout, reset, pull, rebase, clean, restore, switch branches): run `git status`. If there are uncommitted changes, `git stash push -m "megavibe-auto: <reason>"` first, inform the user what was stashed, and ask before popping or discarding. Never silently overwrite dirty state.
 
@@ -73,7 +73,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 
 **Verify**
 - Run verification commands. For UI: Playwright screenshots + Gemini description.
-- Important results/changes/products: independent review per non-negotiable 4 (fresh-context subagent or external backend) — by default, not on request.
+- Important results/changes/products: independent review per non-negotiable 4 — the `reviewer` subagent plus Gemini and Codex when available — by default, not on request.
 
 **Commit**
 - Descriptive message. Include what was verified.
@@ -106,13 +106,13 @@ Size hints still fire from `on-pre-compact.sh` and from the tier nudges in `log-
 
 ## Doc hygiene (periodic)
 
-After significant docs or code edits that change the project's documentation surface, run **`/doc-review`** — sends the project MD set (`CLAUDE.md` + every `README*.md`) to Gemini AND Codex **in parallel** for an independent challenge: drift, contradictions, dead pointers, bloat. Synthesize the two reviews, then act on findings. Not every session — a regular exercise after material doc changes.
+After significant docs or code edits that change the project's documentation surface, run **`/doc-review`** — sends the project MD set (`CLAUDE.md` + every `README*.md`) to the three reviewers of non-negotiable 4 (Claude `reviewer` subagent, Gemini via `gemini-review.sh`, Codex) **in parallel** for an independent challenge: drift, contradictions, dead pointers, bloat. Synthesize, then act on findings. Not every session — a regular exercise after material doc changes.
 
 Keep CLAUDE.md a **rule index, not an encyclopedia.** When a section grows past ~30 lines or describes a system in detail, extract to `README-<topic>.md` and leave a short pointer. CLAUDE.md is loaded eagerly on every session — detail there is paid for forever; READMEs are lazy and free until referenced. See `.claude/rules/claude-md-authoring.md` for the full authoring convention.
 
 ## Backend availability check
 
-On every fresh session start, call `mcp__gemini-cli__ping` to test Gemini connectivity. If it fails or Gemini MCP tools are not listed, mark Gemini as **unavailable** for this session and use the Fallback column in the routing table in `.claude/rules/delegation.md`. Note: ping only proves the MCP server is up, not that Gemini auth works — Google-account OAuth was retired June 2026, so if `GEMINI_API_KEY` is not set in the environment, mark Gemini unavailable regardless of ping.
+On every fresh session start, decide backend availability. **Gemini is available iff `$GEMINI_API_KEY` is set** (a key from a billed project — Google-account OAuth was retired June 2026, and the free tier is 20 req/day and trains on prompts); reviews and summaries then go through `~/.megavibe/scripts/gemini-review.sh`. The `mcp__gemini-cli__ping` result only gates the `ask-gemini` MCP tool, which is for short interactive questions; a failed ping does not make Gemini unavailable.
 
 Do the same for Codex: attempt a simple Codex tool call. If it fails, mark Codex as unavailable.
 
