@@ -89,6 +89,20 @@ if [ "$USE_GDRIVE" -eq 1 ] && [ "$DATA_EXPLICIT" -eq 1 ]; then
   USE_GDRIVE=0
 fi
 
+# An install that already exists keeps the folder it already has. Re-running the
+# installer is how a colleague picks up a fix (their megawork-update may itself
+# be the broken thing), and asking "where should the folder live?" a second time
+# invites a different answer — which would repoint the engine at a new empty
+# folder and leave every document they have behind at the old path. Only an
+# explicit --data or --gdrive may move it.
+if [ "$DATA_EXPLICIT" -eq 0 ] && [ "$USE_GDRIVE" -eq 0 ]; then
+  EXISTING_DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
+  if [ -n "$EXISTING_DATA" ] && [ -d "$EXISTING_DATA" ]; then
+    DATA="$EXISTING_DATA"; DATA_EXPLICIT=1
+    ok "keeping your existing folder ($DATA)"
+  fi
+fi
+
 # ─── Where should the folder live? ──────────────────────────────────
 # Non-technical people mostly live in Google Drive, and "which Drive folder"
 # is the one setup question they have a real opinion about. Detect the actual
