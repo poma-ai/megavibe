@@ -300,6 +300,16 @@ if command -v jq &>/dev/null; then
 fi
 
 # ─── CLI shortcut ───────────────────────────────────────────────────
+# A non-default MEGAWORK_HOME is a scratch or side-by-side install: it must not
+# repoint the user's ~/.local/bin commands or the Dock app at itself (a test
+# install did exactly that to a developer's real setup — twice).
+DEFAULT_ENGINE=0; [ "$(cd "$ENGINE" && pwd -P)" = "$(cd "$HOME/.megawork" 2>/dev/null && pwd -P || echo /nonexistent)" ] && DEFAULT_ENGINE=1
+[ "${MEGAWORK_HOME:-}" = "" ] && DEFAULT_ENGINE=1
+if [ "$DEFAULT_ENGINE" -eq 0 ]; then
+  echo "  (engine at $ENGINE is not the default ~/.megawork — leaving ~/.local/bin and /Applications alone)"
+  MAKE_APP=0
+fi
+if [ "$DEFAULT_ENGINE" -eq 1 ]; then
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ENGINE/bin/megawork" "$HOME/.local/bin/megawork"
 ln -sf "$ENGINE/bin/megawork-doctor"  "$HOME/.local/bin/megawork-doctor"
@@ -320,6 +330,7 @@ if ! command -v megawork &>/dev/null; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 ok "commands installed: megawork, megawork-doctor, megawork-mode, megawork-folder, megawork-connect, megawork-update"
+fi
 
 # One machine, one protocol. A Megawork session is not --restricted, so a
 # user-level classic megavibe protocol would otherwise leak developer rules

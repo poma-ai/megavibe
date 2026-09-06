@@ -39,9 +39,10 @@ Stated plainly, because you should decide before pasting:
 - **Hooks run on every tool call** in projects you initialise — they write context
   files under `.agent/` and never send anything off your machine on their own.
 - **Backends see your content.** Delegating to Gemini or Codex sends the material
-  to those providers. Whether they train on it depends on your account type with
-  them — for Gemini, a key minted under a Google Workspace account gets
-  paid-tier (no-training) treatment even on free quota.
+  to those providers. Whether they train on it depends on your account with
+  them — for the Gemini API, only a key from a project **with billing attached**
+  is a "Paid Service" (prompts not used for training); a Workspace login does
+  not change that for the API, and the free tier trains on your prompts.
 
 `megawork` inverts these defaults: no bypassed permissions, and a kernel
 sandbox confining writes to one folder. See **`megawork/README.md`**.
@@ -172,14 +173,13 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 
 Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. You can skip any — megavibe adapts.
 
-> **Note (June 2026):** Google retired "Login with Google" for Gemini CLI on June 18, 2026, steering individual accounts to its Antigravity CLI successor. The Gemini CLI itself still works with an API key, which is now the only supported auth for megavibe's Gemini backend. Setup opens the key page and prompts for the key.
+> **Note (June 2026):** Google retired "Login with Google" for Gemini CLI on June 18, 2026, steering individual accounts to its Antigravity CLI successor. The Gemini CLI itself still works with an API key, which is the only supported auth for megavibe's Gemini backend. Setup prompts for the key.
 >
-> **Gemini auth options, ranked:**
-> 1. **API key from a Google Workspace enterprise account** (recommended) — per [Google's Gemini API terms](https://ai.google.dev/gemini-api/terms), Workspace enterprise accounts get *Paid Service* data treatment (prompts/responses NOT used for training) even on free quota. Enable billing on the key's project for unambiguous paid-tier treatment.
-> 2. **API key from a personal account** — works, but free-tier prompts may be used to improve Google products; enable billing to opt out.
-> 3. **Gemini Code Assist Standard/Enterprise license** (separate Google Cloud SKU) — the old `gemini` CLI OAuth still works under these licenses. Note that megavibe's own routing keys off `GEMINI_API_KEY`: without it the protocol marks Gemini unavailable and falls through to Codex, so set a key even if your OAuth works.
+> **Which key:** one from a Google Cloud project **with billing attached** — an admin mints it with `scripts/mint-gemini-key.sh --project <id> --billed --name <person>`. Per [Google's Gemini API terms](https://ai.google.dev/gemini-api/terms) that is the only way API prompts are excluded from training; the Workspace-account clause in those terms covers AI Studio, not the API. The free tier (measured 2026-09: 20 requests/day on the one model a new project can still call) is neither a backend nor private. Cost at a measured developer load is $2–6/month per Mac on flash; never pin a Pro model.
 >
-> **Antigravity CLI is deliberately not integrated:** closed-source, ~20 requests/day on the free tier, and it would replace `gemini-mcp-tool` with immature community wrappers. Revisit only if Google cuts API-key access to the legacy CLI.
+> **Reviews and summaries go through `~/.megavibe/scripts/gemini-review.sh`** (direct API, `thinkingLevel: low`): Gemini 3.x Flash thinks by default and the Gemini CLI — which the MCP tool wraps — cannot lower it, so long answers truncate or take minutes there.
+>
+> **Antigravity CLI (Google's successor) is deliberately not the backend:** it works headlessly on a Workspace login, but it is an agent harness — ~13K tokens of system prompt per call, 2–4 minutes and 3–5x the tokens for the same review the API answers in 7 s, a weekly per-account compute quota with lockouts, and Workspace access is a Gemini Enterprise add-on. Measured 2026-09-06; revisit if Google ships a harness-free headless mode.
 
 ### Structured workflow
 

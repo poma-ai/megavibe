@@ -10,7 +10,7 @@
 #   - The Gemini API is a "Paid Service" (prompts NOT used to improve Google's
 #     products) ONLY through a project with an active billing account. A
 #     Workspace enterprise login does not change that for the API — that clause
-#     in Google's terms covers AI Studio. A free key trains on our prompts.
+#     in Google's terms covers AI Studio. A free key trains on your prompts.
 #   - The free tier is 20 requests/day (measured 2026-09-06, gemini-3.8-flash,
 #     project-wide), Pro has no free tier at all, and older Flash models return
 #     "not available to new users". Not a backend.

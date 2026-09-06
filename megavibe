@@ -417,10 +417,12 @@ print(f"  {D}Nothing is merged automatically: folding a multi-project store into
 print(f"  {D}project would poison that project's context. Review before moving anything.{R}")
 PYDOC
   echo ""
-  SIDECAR_TOOL="$HOME/dev/git-icloud-sidecar/git_icloud_sidecar.py"
-  if [ -f "$SIDECAR_TOOL" ]; then
+  # Optional: a git-icloud-sidecar checkout, named explicitly. No default path —
+  # a public tool must not assume where anyone keeps their repos.
+  SIDECAR_TOOL="${MEGAVIBE_SIDECAR_TOOL:-}"
+  if [ -n "$SIDECAR_TOOL" ] && [ -f "$SIDECAR_TOOL" ]; then
     echo -e "${BOLD}Sidecar health${RESET} — synced files whose companion stayed local:"
-    python3 "$SIDECAR_TOOL" audit --root "$HOME/dev" 2>/dev/null | python3 -c "
+    python3 "$SIDECAR_TOOL" audit --root "${MEGAVIBE_REPO_ROOT:-$HOME}" 2>/dev/null | python3 -c "
 import json,sys
 try: rows=json.load(sys.stdin)
 except Exception: sys.exit(0)

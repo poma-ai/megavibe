@@ -40,6 +40,15 @@
   ; instead meant a new one broke startup with a raw EPERM in the user's face.
   (subpath "@HOME@/.claude")
   (subpath "@HOME@/.cache")
+  ; The Gemini CLI (which the gemini-cli MCP bridge drives) writes its state
+  ; here and aborts with EPERM on mkdir if it cannot — the backend never worked
+  ; in a session until this was allowed. The OAuth credential file stays denied
+  ; for reading below; the API key reaches the CLI as an env var.
+  (subpath "@HOME@/.gemini")
+  ; npm's cache is redirected into the engine (npm_config_cache in the launcher)
+  ; rather than allowing ~/.npm: a writable shared cache is a way to plant code
+  ; that a later UNsandboxed `npx` would run.
+  (subpath "@ENGINE@/logs/npm-cache")
   (subpath "/private/var/folders")      ; system temp (per-user, not shared)
   (subpath "/private/tmp")
   (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr")
@@ -57,7 +66,25 @@
   (subpath "@HOME@/.claude/skills")
   (subpath "@HOME@/.claude/agents")
   (subpath "@HOME@/.claude/plugins")
-  (subpath "@HOME@/.claude/commands"))
+  (subpath "@HOME@/.claude/commands")
+  ; The Gemini CLI's own executable configuration: settings.json carries
+  ; mcpServers/hooks that run a command at every start (and the flash model
+  ; pin), GEMINI.md/extensions steer every later session, oauth_creds.json must
+  ; not be replaceable. state/tmp/history stay writable — that is all it needs.
+  (literal "@HOME@/.gemini/settings.json")
+  (literal "@HOME@/.gemini/oauth_creds.json")
+  (literal "@HOME@/.gemini/google_accounts.json")
+  (literal "@HOME@/.gemini/trustedFolders.json")
+  (literal "@HOME@/.gemini/GEMINI.md")
+  (subpath "@HOME@/.gemini/extensions")
+  (subpath "@HOME@/.gemini/commands")
+  (subpath "@HOME@/.gemini/hooks"))
+
+; The working folder may be a SHARED Google Drive: anyone with write access to
+; it could drop a .gemini/settings.json whose mcpServers run on this Mac the
+; next time the assistant asks Gemini for a second opinion (the launcher has to
+; trust the workspace, or the CLI refuses to run at all). Do not read it.
+(deny file-read* (subpath "@DATA@/.gemini"))
 
 ; ── reads: broad by design, minus the things nobody should hoover up ──
 ; NOTE: ~/Library/Keychains is deliberately NOT denied — Claude Code stores its
@@ -76,7 +103,7 @@
   ; credentials a denylist must not miss
   (subpath "@HOME@/.config/gh") (literal "@HOME@/.netrc") (literal "@HOME@/.npmrc")
   (literal "@HOME@/.pypirc") (subpath "@HOME@/.kube") (subpath "@HOME@/.docker")
-  (subpath "@HOME@/.gemini") (subpath "@HOME@/.codex")
+  (literal "@HOME@/.gemini/oauth_creds.json") (literal "@HOME@/.gemini/google_accounts.json") (subpath "@HOME@/.codex")
   (literal "@HOME@/.claude/.credentials.json")
   ; Our own key store. The launcher reads this OUTSIDE the jail and exports the
   ; key into the session's environment (so the key IS visible to the session via

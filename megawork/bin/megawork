@@ -43,6 +43,18 @@ done
 
 command -v claude &>/dev/null || { echo "Claude is not installed on this Mac. Ask your admin."; exit 1; }
 
+# Helpers installed by the installer's own Node (a Mac with no Node of its own)
+# live here; the MCP bridge and CLIs must resolve in every session.
+[ -d "$ENGINE/tools/node/bin" ] && export PATH="$ENGINE/tools/node/bin:$PATH"
+# The Gemini CLI refuses to run in an untrusted folder, and inside a session
+# there is nobody to answer its question. Trusting the workspace is what lets a
+# .gemini/ dropped into a SHARED Drive folder execute, so the sandbox profile
+# denies reading @DATA@/.gemini — the trust is granted, the vector is closed.
+export GEMINI_CLI_TRUST_WORKSPACE=true
+# npx (the gemini-cli fallback registration) must not write the shared ~/.npm
+# cache from inside a session; give it a cache the sandbox allows.
+export npm_config_cache="$ENGINE/logs/npm-cache"
+
 # Never let a stray environment variable loosen the jail.
 unset CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS ANTHROPIC_API_KEY 2>/dev/null || true
 

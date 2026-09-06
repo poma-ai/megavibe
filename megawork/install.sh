@@ -57,6 +57,70 @@ if [ -z "$SRC" ]; then
   ok "Downloaded"
 fi
 
+# ── 2b. Node, if the Mac has none ───────────────────────────────────
+# The helpers (Gemini CLI, its MCP bridge, Codex) are npm packages, and
+# setup.sh assumes npm exists. A stock Mac has no Node at all, so on such a Mac
+# the whole harness step silently installed nothing ("0 components installed")
+# and the assistant had no Gemini tool even with a valid key. Fetch Node's
+# official LTS tarball into the engine — no Homebrew, no sudo, no Xcode dialog —
+# and put it on PATH for this install and for every later session (the launcher
+# adds the same directory).
+ENGINE_DIR="${MEGAWORK_HOME:-$HOME/.megawork}"
+NODE_DIR="$ENGINE_DIR/tools/node"
+# Rename an old-name engine BEFORE anything below creates ~/.megawork: init.sh
+# only migrates when the new path does not exist yet, and a stray mkdir here
+# would leave the person's history, folder pointer and key behind.
+[ -d "$HOME/.megavibe-nondev" ] && [ ! -e "$ENGINE_DIR" ] && mv "$HOME/.megavibe-nondev" "$ENGINE_DIR" 2>/dev/null
+if [ -x "$NODE_DIR/bin/npm" ]; then export PATH="$NODE_DIR/bin:$PATH"; fi
+# Not just "is there an npm": the Gemini CLI needs Node 20+, and an old Node
+# installs it with a warning and then dies with a SyntaxError at first use.
+NODE_MIN=20
+_node_major(){ node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+if ! command -v npm &>/dev/null || [ "$(_node_major)" -lt "$NODE_MIN" ]; then
+  say "  Downloading a component the helpers need (Node, ~240 MB; with the helpers the folder grows to ~600 MB) — a minute or two…"
+  # The real CPU, not the shell's: a Terminal running under Rosetta reports
+  # x86_64 from `uname -m` on an Apple Silicon Mac.
+  _arch=x64; [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] && _arch=arm64
+  # Newest LTS from Node's own index. jq ships with macOS 15+; the sed form is
+  # only a fallback for older Macs, and a pinned version backs both (v24.20.0
+  # was the LTS "Krypton" on 2026-09-06; tarball verified to exist).
+  _idx=$(curl -fsSL --max-time 20 https://nodejs.org/dist/index.json 2>/dev/null || true)
+  _ver=""
+  if [ -n "$_idx" ] && command -v jq &>/dev/null; then
+    _ver=$(printf '%s' "$_idx" | jq -r '[.[] | select(.lts != false)][0].version // empty' 2>/dev/null || true)
+  elif [ -n "$_idx" ]; then
+    # 60 lines back: the "files" array alone is ~25 comma-separated items.
+    _ver=$(printf '%s\n' "$_idx" | tr ',' '\n' | grep -m1 -B60 '"lts":"[A-Z]' | sed -n 's/.*"version":"\(v[0-9.]*\)".*/\1/p' | tail -1 || true)
+  fi
+  case "$_ver" in v[0-9]*.[0-9]*.[0-9]*) ;; *) _ver="v24.20.0" ;; esac
+  # An engine Node from an earlier install that is still on the current LTS
+  # major is fine; one that has fallen a major behind is refreshed.
+  if [ -x "$NODE_DIR/bin/node" ] && [ "$(_node_major)" -ge "$NODE_MIN" ] \
+     && [ "$(_node_major)" -ge "$(printf '%s' "$_ver" | sed 's/^v\([0-9]*\).*/\1/')" ]; then
+    export PATH="$NODE_DIR/bin:$PATH"; _skip_node=1
+  fi
+  # Download and unpack into a scratch dir, then swap into place: a Ctrl-C or a
+  # dropped connection must not leave a half-extracted node/ that a later run
+  # trusts. Leftovers from earlier failed runs are cleared first.
+  mkdir -p "$ENGINE_DIR/tools" 2>/dev/null; rm -rf "$ENGINE_DIR/tools"/node-v*-darwin-* "$ENGINE_DIR/tools/.node-stage" 2>/dev/null
+  _stage=""; [ "${_skip_node:-0}" = 1 ] || _stage=$(mktemp -d "$ENGINE_DIR/tools/.node-stage.XXXXXX" 2>/dev/null || echo "")
+  if [ "${_skip_node:-0}" = 1 ]; then :
+  elif [ -n "$_stage" ] \
+     && curl -fsSL --max-time 300 "https://nodejs.org/dist/$_ver/node-$_ver-darwin-$_arch.tar.gz" 2>/dev/null \
+          | tar -xz -C "$_stage" 2>/dev/null \
+     && [ -x "$_stage/node-$_ver-darwin-$_arch/bin/node" ] \
+     && "$_stage/node-$_ver-darwin-$_arch/bin/node" -v >/dev/null 2>&1 \
+     && rm -rf "$NODE_DIR" && mv "$_stage/node-$_ver-darwin-$_arch" "$NODE_DIR"; then
+    # Managed Macs (Jamf, Santa) can refuse binaries carrying a quarantine flag.
+    xattr -dr com.apple.quarantine "$NODE_DIR" 2>/dev/null || true
+    export PATH="$NODE_DIR/bin:$PATH"
+    ok "Node $_ver ready (kept in ${ENGINE_DIR/#$HOME/\~}/tools)"
+  else
+    uhoh "Could not fetch Node — the second-opinion helpers will be missing; everything else works"
+  fi
+  rm -rf "$_stage" 2>/dev/null
+fi
+
 # ── 3. The harness ──────────────────────────────────────────────────
 # Megawork is not a stripped-down Claude: the whole point is that a colleague
 # gets the same machinery a developer does — second opinions from Gemini and

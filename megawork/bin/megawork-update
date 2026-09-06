@@ -77,7 +77,9 @@ for _need in bin/megawork bin/megawork-doctor bin/megawork-update policy/setting
   [ -s "$BACKUP/$_need" ] || { rm -rf "$BACKUP"; echo "  The backup came out incomplete ($_need), so nothing was changed. Try again."; exit 1; }
 done
 restore(){
-  [ -d "$ENGINE/tools" ] && [ ! -d "$BACKUP/tools" ] && mv "$ENGINE/tools" "$BACKUP/tools" 2>/dev/null
+  if [ -d "$ENGINE/tools" ] && [ ! -d "$BACKUP/tools" ]; then
+    mv "$ENGINE/tools" "$BACKUP/tools" 2>/dev/null || { echo "  ${B}!${R} could not preserve $ENGINE/tools — leaving the engine as it is"; return 1; }
+  fi
   rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"
 }
 

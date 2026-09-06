@@ -221,3 +221,11 @@ each colleague's key can be revoked on its own.
 
 Codex is installed and used if the person has a ChatGPT account; if not, it
 stays quiet.
+
+Both helpers are npm packages. A stock Mac has no Node, so the installer fetches
+Node's official LTS tarball (~240 MB; ~600 MB once the helpers are installed under it) into `~/.megawork/tools/node` (no Homebrew,
+no sudo, no Xcode dialog). The launcher puts that directory first on `PATH` for
+every session whenever it exists, so the helpers installed under it resolve; a
+Mac that already had npm at install time gets no download. Without this step the harness silently
+installed nothing on a bare Mac and the assistant had no Gemini tool even with
+a valid key.

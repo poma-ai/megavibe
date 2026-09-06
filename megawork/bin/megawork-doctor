@@ -138,6 +138,11 @@ if command -v claude &>/dev/null; then
 fi
 
 # ── backends (part of the profile — see README "Backends") ──
+[ -d "$ENGINE/tools/node/bin" ] && export PATH="$ENGINE/tools/node/bin:$PATH"
+NODE_MAJ=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+if [ "${NODE_MAJ:-0}" -ge 20 ] && command -v npm &>/dev/null; then ok "Node present ($(node -v 2>/dev/null))"
+elif [ "${NODE_MAJ:-0}" -gt 0 ]; then warn "Node $(node -v 2>/dev/null) is too old for the Gemini helper (needs 20+) — re-run the installer"
+else warn "no Node — the Gemini and Codex helpers cannot be installed; re-run the installer"; fi
 # The key lives in the engine and is exported by the launcher; check the file,
 # and check that it actually answers, because a revoked key looks identical on
 # disk. One 2-token call, 20s cap. Reported as a note, not a failure: a missing
@@ -148,10 +153,29 @@ if [ -z "$GK" ]; then
 else
   GB=$(curl -s --max-time 20 -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent"         -H "x-goog-api-key: $GK" -H 'Content-Type: application/json'         -d '{"contents":[{"parts":[{"text":"OK"}]}],"generationConfig":{"maxOutputTokens":2}}' 2>/dev/null || echo "")
   if printf '%s' "$GB" | grep -q '"candidates"'; then
-    if command -v gemini &>/dev/null || claude mcp list 2>/dev/null | grep -q '^gemini-cli'; then
-      ok "second opinions (Gemini) answer — $(printf '%s' "$GB" | sed -n 's/.*"modelVersion": *"\([^"]*\)".*/\1/p' | head -1)"
-    else
+    # The key answering is not the same as the session having a working tool:
+    # probe the CLI the MCP bridge drives, INSIDE the sandbox, the way a session
+    # runs it (this is what caught an EPERM on ~/.gemini that no PATH check saw).
+    GMODEL=$(printf '%s' "$GB" | sed -n 's/.*"modelVersion": *"\([^"]*\)".*/\1/p' | head -1)
+    if ! command -v gemini-mcp &>/dev/null && ! command -v gemini &>/dev/null; then
       warn "the Gemini key works, but the Gemini tool itself is not installed — re-run the installer"
+    elif command -v sandbox-exec &>/dev/null && [ -f "$ENGINE/policy/sandbox.sb" ]; then
+      # From an engine-owned empty dir, not the person's folder: the probe must
+      # not load whatever GEMINI.md the folder holds, and must not cost a full
+      # agentic turn over their documents. A note, never a failure: a backend
+      # hiccup must not make megawork-update roll back a working install.
+      PD="$ENGINE/logs/doctor-cwd"; mkdir -p "$PD" 2>/dev/null
+      GS=$(cd "$PD" 2>/dev/null && GEMINI_API_KEY="$GK" GEMINI_CLI_TRUST_WORKSPACE=true npm_config_cache="$ENGINE/logs/npm-cache" \
+           perl -e 'alarm 90; exec @ARGV' sandbox-exec -f "$ENGINE/policy/sandbox.sb" gemini -p "reply with exactly: DOCTOR-GEMINI-OK" 2>&1 \
+           | grep -v '^ *at ' || true)
+      if printf '%s\n' "$GS" | grep -qx ' *DOCTOR-GEMINI-OK *'; then
+        ok "second opinions (Gemini) work inside a session — $GMODEL"
+      else
+        GWHY=$(printf '%s\n' "$GS" | grep -m1 -oE 'TerminalQuotaError[^.]*|Quota exceeded[^.]*|status: [0-9]+|EPERM[^,]*|not permitted[^,]*|ModelNotFound[^.]*' || true)
+        warn "second opinions: the key answers ($GMODEL) but the tool did not reply inside a session${GWHY:+ — $GWHY}"
+      fi
+    else
+      ok "second opinions (Gemini) answer — $GMODEL"
     fi
   elif [ -z "$GB" ]; then
     warn "second opinions (Gemini): key present, Google not reachable right now"
@@ -202,7 +226,7 @@ SN=$(ls -1 "$ENGINE/snapshots" 2>/dev/null | wc -l | tr -d ' ')
 # ── cloud-synced folder: supported, with two things worth knowing ──
 case "$DATA" in
   *CloudStorage/GoogleDrive*|*"Google Drive"*)
-    ok "folder lives in Google Drive (syncs across his devices)"
+    ok "folder lives in Google Drive (syncs across your devices)"
     if command -v mdls &>/dev/null && mdls -name kMDItemIsDownloaded "$DATA" 2>/dev/null | grep -q 0; then
       warn "Drive may be in stream-only mode — set the folder to 'Available offline' or files may not open"
     fi ;;

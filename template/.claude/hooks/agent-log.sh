@@ -114,8 +114,10 @@ case "$CMD" in
     # Timestamp orders the entry; host and random suffix keep two writers in the
     # same second from ever choosing the same name.
     ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    # A stable per-machine token that does not spell out the Mac's name: these
+    # filenames land in teams' git history, and ComputerName is usually personal.
     host="$(scutil --get ComputerName 2>/dev/null || hostname -s 2>/dev/null || echo host)"
-    host="$(printf '%s' "$host" | tr -cd '[:alnum:]' | cut -c1-12)"
+    host="$(printf '%s' "$host" | shasum 2>/dev/null | cut -c1-8)"; host="${host:-host}"
     rand="$(od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo $RANDOM)"
     out="$LOG_DIR/${ts}-${host:-host}-${rand}.md"
     # A fresh unique path: no lock, nothing to race with, nothing to overwrite.

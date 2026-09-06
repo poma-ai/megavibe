@@ -119,7 +119,7 @@ as normal.
 
 ## What you have to work with
 
-You are not a cut-down assistant. The same machinery a developer here gets is
+You are not a cut-down assistant. The same machinery a developer gets is
 available to you, and the point is that your colleague never has to know it
 exists:
 
