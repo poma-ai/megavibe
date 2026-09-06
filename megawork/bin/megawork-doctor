@@ -129,7 +129,13 @@ if command -v claude &>/dev/null; then
 fi
 
 # ── backends (optional; absence is fine, the fallback chain copes) ──
-[ -n "${GEMINI_API_KEY:-}" ] && ok "Gemini backend configured" || warn "no Gemini key — Claude-only, which is fine"
+# The key normally lives in the engine and is exported by the launcher, so
+# checking only the environment reported "no key" on a correctly set-up Mac.
+if [ -n "${GEMINI_API_KEY:-}" ] || [ -s "$ENGINE/policy/gemini-key" ]; then
+  ok "Gemini backend configured"
+else
+  warn "no Gemini key — Claude-only, which is fine (add: megawork-connect gemini)"
+fi
 command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — Claude-only (fine)"
 
 # ── one machine, one protocol ──

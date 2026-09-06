@@ -90,6 +90,10 @@ CLAUDE_ARGS=(
 # --remote-control into -control, and corrupted any prompt containing the text.
 REMOTE=0
 case "${MEGAWORK_REMOTE:-}" in 1|true|yes) REMOTE=1 ;; esac
+# Set by megawork-update (via megawork-doctor's launch probe): no prompts, no
+# browsers, nothing that waits for a person who is not watching.
+NONINTERACTIVE=0
+case "${MEGAWORK_NONINTERACTIVE:-}" in 1|true|yes) NONINTERACTIVE=1 ;; esac
 REST=()
 for a in "$@"; do
   if [ "$a" = "--remote" ]; then REMOTE=1; else REST+=( "$a" ); fi
@@ -105,23 +109,42 @@ set -- ${REST+"${REST[@]}"}
 # opens here, and the session comes back with the service connected.
 CONNECTED_NAME=""
 finish_pending_connect() {
-  local pend="$ENGINE/logs/pending-connect" name
+  local pend="$ENGINE/logs/pending-connect" name rc
   [ -f "$pend" ] || return 1
+  # An unattended caller (megawork-update runs the doctor, which launches this
+  # for real) must never open a browser: its output is going to /dev/null, so a
+  # Google consent page would appear with no explanation anywhere. Leave the
+  # queue file alone — the next launch by an actual person completes it.
+  [ "$NONINTERACTIVE" -eq 1 ] && return 1
   name=$(head -1 "$pend" 2>/dev/null); rm -f "$pend"
   CONNECTED_NAME="$name"
   [ -n "$name" ] || return 1
   echo ""
   echo ""
   case "$name" in
-    applemail) echo "  Finishing the ${name} connection…" ;;
-    *)         echo "  ${name}: opening the sign-in page in your browser now."
+    applemail) echo "  Finishing the Apple Mail connection…" ;;
+    gemini)    echo "  Setting up second opinions. This can take a few minutes." ;;
+    *)         echo "  Opening the sign-in page in your browser now."
                echo "  Approve it there, and we will pick up where we left off." ;;
   esac
   echo ""
   # Re-run the same command out here, where there is a terminal and the
   # credential stores are writable. One code path, not two.
-  "$ENGINE/bin/megawork-connect" "$name" || echo "  Sign-in didn't finish — you can try again any time."
+  rc=0; "$ENGINE/bin/megawork-connect" "$name" || rc=$?
   echo ""
+  # Telling the resumed session "it is connected, carry on" after a FAILED
+  # sign-in makes Claude confidently use a service that is not there. Resume
+  # either way (the person should not have to retype their request), but say
+  # which of the two actually happened.
+  if [ "$rc" -ne 0 ]; then
+    echo "  Sign-in didn't finish — you can try again any time."
+    CONNECTED_NAME=""
+  elif [ "$name" = "gemini" ]; then
+    # Minted just now, after the key was read at startup: pick it up, or the
+    # resumed session runs without the thing it was just told it has.
+    [ -s "$ENGINE/policy/gemini-key" ] && \
+      { GEMINI_API_KEY=$(tr -d '\n' < "$ENGINE/policy/gemini-key"); export GEMINI_API_KEY; }
+  fi
   return 0
 }
 
@@ -135,7 +158,11 @@ if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
     # Resume the conversation AND tell it the connection landed. Resuming alone
     # just reopens and waits, which meant the person had to repeat themselves —
     # the exact thing this flow exists to avoid.
-    set -- "$CONNECTED_NAME is now connected. Carry on with what I asked you before, without asking me again."
+    if [ -n "$CONNECTED_NAME" ]; then
+      set -- "$CONNECTED_NAME is now connected. Carry on with what I asked you before, without asking me again."
+    else
+      set -- "That sign-in did not complete, so it is still not connected. Carry on with what I asked you before, and say plainly if you cannot do it without that connection."
+    fi
     case " ${CLAUDE_ARGS[*]} " in *" --continue "*) ;; *) CLAUDE_ARGS+=( --continue ) ;; esac
   done
   exit 0

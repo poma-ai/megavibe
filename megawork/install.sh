@@ -65,10 +65,11 @@ fi
 # on a Mac, so reuse it rather than reimplementing a lesser version.
 if [ -f "$SRC/setup.sh" ]; then
   say "  Setting up the machinery (this is the longest part)…"
-  bash "$SRC/setup.sh" --harness-only </dev/null >/tmp/megawork-harness.log 2>&1 \
+  HARNESS_LOG=$(mktemp -t megawork-harness) || HARNESS_LOG=/tmp/megawork-harness.$$.log
+  bash "$SRC/setup.sh" --harness-only </dev/null >"$HARNESS_LOG" 2>&1 \
     && ok "Machinery ready" \
     || uhoh "Some optional parts did not install — it still works, just with fewer helpers"
-  echo "  ${DIM:-}$(grep -cE '^\s*(✓|ok)' /tmp/megawork-harness.log 2>/dev/null || echo 0) components installed${R}"
+  echo "  ${DIM:-}$(grep -cE '^\s*(✓|ok)' "$HARNESS_LOG" 2>/dev/null || echo 0) components installed${R}"
 fi
 
 # ── 4. Hand off to the real installer (it asks where the folder goes) ─

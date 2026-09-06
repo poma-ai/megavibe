@@ -62,9 +62,18 @@ fi
 
 # Ask the human, not stdin: piped installs (curl | bash) hand us the script on
 # stdin, so prompts must go to the controlling terminal.
+# MEGAWORK_NONINTERACTIVE is the only reliable way for a caller to say "ask
+# nobody anything". Redirecting stdin from /dev/null is NOT enough: the
+# /dev/tty fallback below re-opens the terminal, so an unattended re-run (e.g.
+# megawork-update) would still stop on a prompt — with its own stdout pointed
+# at /dev/null, leaving a person staring at a browser and a silent terminal.
 TTY_IN=""
-[ -t 0 ] && TTY_IN="/dev/stdin"
-if [ -z "$TTY_IN" ] && ( : < /dev/tty ) 2>/dev/null; then TTY_IN="/dev/tty"; fi
+NONINTERACTIVE=0
+case "${MEGAWORK_NONINTERACTIVE:-}" in 1|true|yes) NONINTERACTIVE=1 ;; esac
+if [ "$NONINTERACTIVE" -eq 0 ]; then
+  [ -t 0 ] && TTY_IN="/dev/stdin"
+  if [ -z "$TTY_IN" ] && ( : < /dev/tty ) 2>/dev/null; then TTY_IN="/dev/tty"; fi
+fi
 ask(){ # ask "prompt" varname ; leaves var empty when there is nobody to ask
   local _p="$1" _v="$2" _a=""
   if [ -n "$TTY_IN" ]; then read -r -p "$_p" _a < "$TTY_IN" || _a=""; fi
@@ -160,6 +169,11 @@ cp "$SRC/bin/megawork-mode"               "$ENGINE/bin/megawork-mode"
 cp "$SRC/bin/megawork-folder"             "$ENGINE/bin/megawork-folder"
 cp "$SRC/bin/megawork-connect"            "$ENGINE/bin/megawork-connect"
 cp "$SRC/bin/megawork-update"             "$ENGINE/bin/megawork-update"
+# The minting script lives in the parent repo, but a colleague's Mac has no
+# checkout — megawork-connect needs it locally, long after the tarball is gone.
+[ -f "$SRC/../scripts/mint-gemini-key.sh" ] && \
+  cp "$SRC/../scripts/mint-gemini-key.sh"  "$ENGINE/bin/mint-gemini-key.sh"
+chmod +x "$ENGINE/bin/mint-gemini-key.sh" 2>/dev/null || true
 chmod +x "$ENGINE/bin/megawork" "$ENGINE/bin/megawork-doctor" "$ENGINE/bin/megawork-mode" "$ENGINE/bin/megawork-folder" "$ENGINE/bin/megawork-connect" "$ENGINE/bin/megawork-update"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
@@ -357,83 +371,16 @@ fi
 # ─── Backends (optional, best effort) ───────────────────────────────
 # Tier 1: whatever they are already signed into (claude.ai connectors, codex,
 # an existing gemini setup) needs nothing from us — the session picks it up.
-# Tier 2: mint a free, billing-less Gemini key from their OWN Google identity.
-# Tier 3 (fallback): an admin hands over a key.
-# Gemini is part of the product, not an extra: the assistant leans on it for
-# long documents. So get a key automatically rather than asking anyone to
-# provision one — get gcloud if the Mac lacks it, sign in once in the browser,
-# and mint a free key on a billing-less project (which cannot bill and carries
-# no-training treatment under a Workspace account).
+# Tier 2: an admin hands over a key (handled above).
+# Tier 3: the person mints their own, later, via `megawork-connect gemini`.
 #
-# gcloud, on a Mac that has nothing: Google's tarball needs Python 3.10+, and a
-# stock Mac has only the Xcode-CLT stub (which pops a dialog) — measured, the
-# plain tarball fails with "running gcloud with Python 3.9". So when Homebrew
-# is absent we fetch uv (one static binary, no sudo, no CLT), let it provide a
-# Python, and point gcloud at it through a wrapper. Homebrew is used when it
-# happens to be there; it is never installed on a colleague's behalf.
-ensure_gcloud() {
-  command -v gcloud &>/dev/null && { GCLOUD=gcloud; return 0; }
-  local tools="$ENGINE/tools" wrap="$ENGINE/tools/bin/gcloud"
-  [ -x "$wrap" ] && { GCLOUD="$wrap"; PATH="$tools/bin:$PATH"; return 0; }
-  if command -v brew &>/dev/null; then
-    brew install --cask --quiet google-cloud-sdk >/dev/null 2>&1 || true
-    command -v gcloud &>/dev/null && { GCLOUD=gcloud; return 0; }
-  fi
-
-  local arch=arm; [ "$(uname -m)" = "x86_64" ] && arch=x86_64
-  mkdir -p "$tools/bin" || return 1
-  if [ ! -x "$tools/google-cloud-sdk/bin/gcloud" ]; then
-    curl -fsSL --max-time 300 \
-      "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-darwin-${arch}.tar.gz" \
-      2>/dev/null | tar xz -C "$tools" 2>/dev/null || return 1
-  fi
-  [ -x "$tools/google-cloud-sdk/bin/gcloud" ] || return 1
-
-  local py
-  py=$(command -v python3.12 || command -v python3.11 || true)
-  if [ -z "$py" ] || ! "$py" -c 'import sys;sys.exit(sys.version_info<(3,10))' 2>/dev/null; then
-    [ -x "$tools/uv/bin/uv" ] || {
-      curl -LsSf --max-time 180 https://astral.sh/uv/install.sh 2>/dev/null \
-        | env UV_UNMANAGED_INSTALL="$tools/uv/bin" sh >/dev/null 2>&1 || true; }
-    [ -x "$tools/uv/bin/uv" ] || return 1
-    UV_PYTHON_INSTALL_DIR="$tools/uv/pythons" "$tools/uv/bin/uv" python install 3.12 >/dev/null 2>&1 || true
-    py=$(UV_PYTHON_INSTALL_DIR="$tools/uv/pythons" "$tools/uv/bin/uv" python find 3.12 2>/dev/null || true)
-  fi
-  [ -n "$py" ] && [ -x "$py" ] || return 1
-
-  # A wrapper, not an exported variable: the GA4 connector reaches for gcloud
-  # long after this installer has exited.
-  printf '#!/bin/sh\nexport CLOUDSDK_PYTHON=%s\nexec %s "$@"\n' \
-    "$py" "$tools/google-cloud-sdk/bin/gcloud" > "$wrap"
-  chmod 755 "$wrap"
-  "$wrap" version >/dev/null 2>&1 || return 1
-  GCLOUD="$wrap"; PATH="$tools/bin:$PATH"
-}
-
-if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$SRC/../scripts/mint-gemini-key.sh" ] && interactive; then
-  echo ""
-  echo "  Setting up the second-opinion helper (one Google sign-in)…"
-  if ensure_gcloud; then
-    export PATH   # mint-gemini-key.sh calls `gcloud` by name
-    # Interactive by design: gcloud opens a browser and may ask a question, so
-    # it gets the real terminal. Never pipe it — that removes the TTY, the
-    # browser never opens, and the failure looks like a hang.
-    "$GCLOUD" projects list --limit=1 &>/dev/null || {
-      echo "  A Google sign-in will open — use your work account."
-      "$GCLOUD" auth login --brief <"$TTY_IN" >/dev/tty 2>&1 || true; }
-    # Once, not twice: every run of this script mints another API key.
-    MINT_OUT=$(bash "$SRC/../scripts/mint-gemini-key.sh" 2>/dev/null || true)
-    KEYFILE=$(printf '%s\n' "$MINT_OUT" | sed -n 's/.*key written to: \([^ ]*\).*/\1/p' | head -1)
-    if [ -n "$KEYFILE" ] && [ -f "$KEYFILE" ]; then
-      cp "$KEYFILE" "$ENGINE/policy/gemini-key"; chmod 600 "$ENGINE/policy/gemini-key"
-      rm -f "$KEYFILE"; ok "second-opinion helper ready"
-    else
-      echo "  ${D:-}Skipped the second-opinion helper — everything else works.${R:-}"
-    fi
-  else
-    echo "  ${D:-}Skipped the second-opinion helper — everything else works.${R:-}"
-  fi
-fi
+# Deliberately NOT here: minting a key during install or update. It needs a
+# Google sign-in in a browser, and installing something is the worst possible
+# moment to throw one at somebody — twice now a colleague has been left in the
+# Cloud console with a terminal that said nothing. Gemini is a bonus, not a
+# missing part: without a key the fallback chain simply uses Claude. Consent
+# for a sign-in belongs at the moment of use, which is what megawork-connect
+# is for.
 
 if [ -z "${MEGAWORK_WRAPPED:-}" ]; then
   echo ""

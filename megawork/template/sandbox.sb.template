@@ -78,6 +78,10 @@
   (literal "@HOME@/.pypirc") (subpath "@HOME@/.kube") (subpath "@HOME@/.docker")
   (subpath "@HOME@/.gemini") (subpath "@HOME@/.codex")
   (literal "@HOME@/.claude/.credentials.json")
+  ; Our own key store. The launcher reads this OUTSIDE the jail and exports the
+  ; key into the session's environment, so nothing inside needs to open the
+  ; file — and a session that can read it could copy it into a document.
+  (literal "@ENGINE@/policy/gemini-key")
   ; other people's mail, chat and password stores
   (subpath "@HOME@/Library/Mail")
   (subpath "@HOME@/Library/Containers/com.apple.Safari")

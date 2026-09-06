@@ -20,6 +20,10 @@ B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 
 [ -d "$ENGINE" ] || { echo "megawork is not set up on this Mac."; exit 1; }
 DATA=$(cat "$ENGINE/data-dir" 2>/dev/null || echo "")
+# An empty data-dir would pass --data "" to the installer, which treats it as an
+# explicit choice and then dies on `mkdir -p ""` — taking the whole update, and
+# the rollback, down with it. Fall back to the default location instead.
+[ -n "$DATA" ] && [ -d "$DATA" ] || DATA="$HOME/megawork"
 
 # Scoped to this subtree, not the whole repository: otherwise every commit to
 # megavibe would tell a colleague their assistant needs updating.
@@ -47,27 +51,59 @@ echo "  Downloading…"
 curl -fsSL --max-time 120 https://codeload.github.com/poma-ai/megavibe/tar.gz/refs/heads/main \
   | tar -xz -C "$TMP" 2>/dev/null || { echo "  The download failed — nothing was changed."; exit 1; }
 SRC=$(find "$TMP" -maxdepth 1 -type d -name 'megavibe-*' | head -1)
-[ -n "$SRC" ] && [ -d "$SRC/nondev" ] || { echo "  The download looked wrong — nothing was changed."; exit 1; }
+[ -n "$SRC" ] && [ -d "$SRC/megawork" ] || { echo "  The download looked wrong — nothing was changed."; exit 1; }
 
 # Keep a copy of the working engine: an update that breaks the launcher would
 # otherwise leave someone non-technical with no way back.
 BACKUP="$ENGINE.previous"
-rm -rf "$BACKUP"; cp -R "$ENGINE" "$BACKUP" 2>/dev/null
+rm -rf "$BACKUP"
+# Skip $ENGINE/tools: a downloaded gcloud SDK plus a managed Python is hundreds
+# of megabytes, it is re-fetchable, and copying it is the most likely way for
+# this backup to fail — which is the one failure that must not happen here.
+if command -v rsync &>/dev/null; then
+  rsync -a --exclude 'tools/' "$ENGINE"/ "$BACKUP"/ 2>/dev/null
+else
+  mkdir -p "$BACKUP" && for _e in "$ENGINE"/*; do
+    [ "$(basename "$_e")" = "tools" ] || cp -R "$_e" "$BACKUP"/ 2>/dev/null
+  done
+fi
+# No usable backup means no safe rollback, so do not start something we cannot
+# undo. Without this guard a failed copy turns every rollback below into
+# `rm -rf "$ENGINE"` followed by a failing `mv` — a colleague left with no
+# launcher, no doctor, no update command and no repo to reinstall from.
+if [ ! -s "$BACKUP/bin/megawork" ]; then
+  echo "  Couldn't safely back up the current setup, so nothing was changed."
+  echo "  ${D}Check there is free disk space, then try again.${R}"; rm -rf "$BACKUP"; exit 1
+fi
+restore(){ rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"; }
 
-if MEGAWORK_HOME="$ENGINE" MEGAWORK_WRAPPED=1 \
+# NONINTERACTIVE, not just </dev/null: init.sh falls back to /dev/tty when
+# stdin is closed, so without this an update stops on a prompt (or a browser
+# sign-in) while its own output is going to /dev/null. Nobody sees why.
+if MEGAWORK_HOME="$ENGINE" MEGAWORK_WRAPPED=1 MEGAWORK_NONINTERACTIVE=1 \
    bash "$SRC/megawork/init.sh" --data "$DATA" </dev/null >/dev/null 2>&1; then
   [ -n "$REMOTE_SHA" ] && printf '%s\n' "$REMOTE_SHA" > "$ENGINE/version"
-  # Prove it still works before declaring success.
-  if bash "$ENGINE/bin/megawork-doctor" >/dev/null 2>&1; then
+  # Prove it still works before declaring success. NONINTERACTIVE because the
+  # doctor launches the real thing to probe it, and the real thing finishes any
+  # queued service sign-in — a browser nobody asked for, in a run whose output
+  # is going to /dev/null.
+  DOC=$(MEGAWORK_HOME="$ENGINE" MEGAWORK_NONINTERACTIVE=1 \
+        bash "$ENGINE/bin/megawork-doctor" 2>&1); DOC_RC=$?
+  # Being signed out makes the doctor fail, and rolling a good update back over
+  # that would be absurd: it is a state of the person's login, not of the
+  # update. Judge the install itself.
+  if [ "$DOC_RC" -eq 0 ] || ! printf '%s' "$DOC" | grep -q '✗ .*\(missing\|not executable\|not valid\|SANDBOX\|unrendered\)'; then
     rm -rf "$BACKUP"
     echo "  ${G}✓${R} Updated. Your folder, history and connections are unchanged."
+    printf '%s' "$DOC" | grep -q 'not signed in' && \
+      echo "  ${D}You are signed out of Claude — run 'claude' once to sign back in.${R}"
   else
-    rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"
+    restore
     echo "  ${B}!${R} The update did not check out, so I put the working version back."
     echo "  ${D}Nothing was lost. Tell whoever set this up.${R}"; exit 1
   fi
 else
-  rm -rf "$ENGINE"; mv "$BACKUP" "$ENGINE"
+  restore
   echo "  ${B}!${R} The update failed and the previous version was restored."; exit 1
 fi
 echo ""
