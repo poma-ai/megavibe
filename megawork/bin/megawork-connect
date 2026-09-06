@@ -29,7 +29,10 @@ done
 ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 
-# name | claude-mcp target | what a non-technical person calls it | what it is for
+# name | claude-mcp target | what a non-technical person calls it | what it is for | hidden?
+# "hidden" means the installer owns it and the person is never asked — see
+# README.md "Backends". It is still addressable by name so install and repair
+# can run the same code path.
 REGISTRY='
 gmail|http https://gmailmcp.googleapis.com/mcp/v1|Gmail|search your mail, read threads, prepare drafts (never sends)
 slack|http https://mcp.slack.com/mcp|Slack|find messages and threads you already have access to
@@ -37,7 +40,7 @@ linear|http https://mcp.linear.app/mcp|Linear|look up issues, projects and statu
 hubspot|http https://mcp.hubspot.com|HubSpot|look up contacts, companies and deals
 analytics|local google-analytics|Google Analytics|read website traffic and conversion reports
 applemail|sandbox mail|Apple Mail (on this Mac)|search the mail already downloaded to this Mac
-gemini|mint gemini|Second opinions|have a second AI double-check long documents
+gemini|mint gemini|Second opinions|have a second AI double-check long documents|hidden
 '
 
 row(){ printf '%s\n' "$REGISTRY" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
@@ -79,8 +82,9 @@ list_all(){
   echo ""
   echo "  ${B}What your assistant can reach${R}"
   echo ""
-  printf '%s\n' "$REGISTRY" | while IFS='|' read -r name target label desc; do
+  printf '%s\n' "$REGISTRY" | while IFS='|' read -r name target label desc hidden; do
     [ -n "${name:-}" ] || continue
+    [ "${hidden:-}" = "hidden" ] && continue
     case "$name" in
       applemail) mail_on   && st="${G}on${R} " || st="${D}off${R}" ;;
       gemini)    gemini_on && st="${G}on${R} " || st="${D}off${R}" ;;
@@ -89,7 +93,7 @@ list_all(){
     printf '   [%b] %-22s %s\n' "$st" "$label" "$D$desc$R"
   done
   echo ""
-  echo "  Turn one on:   ${B}megawork-connect <name>${R}   (names: $(printf '%s\n' "$REGISTRY" | awk -F'|' 'NF{printf "%s ", $1}'))"
+  echo "  Turn one on:   ${B}megawork-connect <name>${R}   (names: $(printf '%s\n' "$REGISTRY" | awk -F'|' 'NF && $5!="hidden"{printf "%s ", $1}'))"
   echo "  Turn one off:  ${B}megawork-connect --off <name>${R}"
   echo ""
   echo "  ${D}Nothing is connected unless you ask for it. Each one signs in through${R}"

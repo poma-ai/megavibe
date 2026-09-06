@@ -382,19 +382,29 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
   ok "Gemini backend configured (second opinions on long documents)"
 fi
 
-# ─── Backends (optional, best effort) ───────────────────────────────
-# Tier 1: whatever they are already signed into (claude.ai connectors, codex,
-# an existing gemini setup) needs nothing from us — the session picks it up.
-# Tier 2: an admin hands over a key (handled above).
-# Tier 3: the person mints their own, later, via `megawork-connect gemini`.
+# ─── Backends ───────────────────────────────────────────────────────
+# Gemini is part of the profile, not an optional extra (README.md "Backends"):
+# the assistant leans on it for long documents, and it is never presented to
+# the person as a decision. So the installer gets a key by itself — one Google
+# sign-in, then a free key on a project with no billing attached.
 #
-# Deliberately NOT here: minting a key during install or update. It needs a
-# Google sign-in in a browser, and installing something is the worst possible
-# moment to throw one at somebody — twice now a colleague has been left in the
-# Cloud console with a terminal that said nothing. Gemini is a bonus, not a
-# missing part: without a key the fallback chain simply uses Claude. Consent
-# for a sign-in belongs at the moment of use, which is what megawork-connect
-# is for.
+# Tier 1: an admin left a key (handled above) — no sign-in at all.
+# Tier 2: mint one from the person's own Google identity, here.
+#
+# UPDATES ARE NOT INSTALLS. megawork-update re-runs this file, and a browser
+# appearing during an update — with the update's output going to /dev/null —
+# is what left a colleague stranded in the Cloud console. An update that finds
+# no key leaves it alone; `megawork-connect gemini` is the repair path.
+if [ -z "${GEMINI_API_KEY:-}" ] && interactive && [ -x "$ENGINE/bin/megawork-connect" ]; then
+  echo ""
+  echo "  Setting up second opinions (one Google sign-in)…"
+  # One code path, not two: the same command handles a later repair, so its
+  # progress reporting and its error messages only have to be right once.
+  MEGAWORK_HOME="$ENGINE" "$ENGINE/bin/megawork-connect" gemini < "$TTY_IN" || {
+    echo ""
+    echo "  ${D:-}Everything else is set up and works. To try this part again${R:-}"
+    echo "  ${D:-}later, run: megawork-connect gemini${R:-}"; }
+fi
 
 if [ -z "${MEGAWORK_WRAPPED:-}" ]; then
   echo ""
