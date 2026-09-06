@@ -193,10 +193,17 @@ _ver=""
 if [ "$(git -C "$SRC" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$SRC/.." && pwd -P)" ]; then
   _ver=$(git -C "$SRC" rev-parse --short=7 HEAD 2>/dev/null || true)
 fi
-[ -n "$_ver" ] || _ver=$(curl -fsSL --max-time 20 \
-  "https://api.github.com/repos/poma-ai/megavibe/commits?path=megawork&per_page=1" 2>/dev/null \
-  | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1)
-[ -n "$_ver" ] && printf '%s\n' "$_ver" > "$ENGINE/version"
+# `|| true` matters: GitHub rate-limits unauthenticated API calls per IP, and
+# under set -e a failing pipeline inside this assignment killed the whole
+# install right after "keeping your existing folder" (seen on a colleague's Mac).
+if [ -z "$_ver" ]; then
+  _ver=$( { curl -fsSL --max-time 20 \
+    "https://api.github.com/repos/poma-ai/megavibe/commits?path=megawork&per_page=1" 2>/dev/null \
+    | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1; } || true)
+fi
+# Unknown stays unknown: megawork-update treats a missing/odd stamp as "do not nag".
+if [ -n "$_ver" ]; then printf '%s\n' "$_ver" > "$ENGINE/version"
+elif [ ! -s "$ENGINE/version" ]; then printf 'installed-%s\n' "$(date +%Y%m%d)" > "$ENGINE/version"; fi
 
 # Render the seatbelt profile with resolved absolute paths. Seatbelt matches on
 # REAL paths, so a symlinked location (e.g. /tmp -> /private/tmp) must be

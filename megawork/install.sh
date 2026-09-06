@@ -65,10 +65,13 @@ fi
 # on a Mac, so reuse it rather than reimplementing a lesser version.
 if [ -f "$SRC/setup.sh" ]; then
   say "  Setting up the machinery (this is the longest part)…"
-  HARNESS_LOG=$(mktemp -t megawork-harness) || HARNESS_LOG=/tmp/megawork-harness.$$.log
+  # A stable log path, so "some optional parts did not install" can actually be
+  # looked at afterwards — a mktemp name is gone from everyone's memory by then.
+  mkdir -p "${MEGAWORK_HOME:-$HOME/.megawork}/logs" 2>/dev/null
+  HARNESS_LOG="${MEGAWORK_HOME:-$HOME/.megawork}/logs/harness-install.log"
   bash "$SRC/setup.sh" --harness-only </dev/null >"$HARNESS_LOG" 2>&1 \
     && ok "Machinery ready" \
-    || uhoh "Some optional parts did not install — it still works, just with fewer helpers"
+    || uhoh "Some optional parts did not install — it still works, just with fewer helpers (details: $HARNESS_LOG)"
   echo "  ${DIM:-}$(grep -cE '^\s*(✓|ok)' "$HARNESS_LOG" 2>/dev/null || true) components installed${R}"
 fi
 
