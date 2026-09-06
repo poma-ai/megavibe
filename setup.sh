@@ -363,7 +363,7 @@ fi
 # works and is now the ONLY supported auth for megavibe's Gemini backend.
 
 if [ "${HARNESS_ONLY:-0}" = "1" ]; then
-  # Megawork: the key is POMA's and is pasted once by megawork/init.sh (or read
+  # Megawork: the key is the organisation's and is pasted once by megawork/init.sh (or read
   # from the overlay), after this script has run. Nothing to ask here.
   :
 elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then

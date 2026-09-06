@@ -105,7 +105,7 @@ if [ -f "$T/sandbox.sb.template" ] && [ -f "$T/policy/settings.json.template" ];
   EXTRA_ALLOW="[]"
   command -v jq &>/dev/null && EXTRA_ALLOW=$(jq -c '.permissions.allow // []' "$ENGINE/policy/settings.json" 2>/dev/null || echo "[]")
   # Not sed: `&` in a replacement means "the whole match", so a Drive folder
-  # called "Kunden & Projekte" rendered a rule the assistant could not write to;
+  # called "Clients & Projects" rendered a rule the assistant could not write to;
   # `|` in a path breaks the delimiter. Bash substitution is literal on both.
   render(){
     local line

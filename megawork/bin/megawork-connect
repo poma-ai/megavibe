@@ -15,7 +15,7 @@
 #
 # Sign-in is handled by Claude Code's own OAuth: no tokens to paste, and we
 # never see or store a credential. The one exception is the Gemini key, which
-# POMA issues and this Mac keeps at $ENGINE/policy/gemini-key (0600).
+# the organisation's admin issues and this Mac keeps at $ENGINE/policy/gemini-key (0600).
 
 set -uo pipefail
 
@@ -200,7 +200,7 @@ echo ""
 # read-only). This is what the launcher picks up.
 sandboxed && queue_and_explain "$NAME" "$LABEL" "$KIND"
 
-# Gemini. The key is POMA's, not the person's: a billed project keeps prompts
+# Gemini. The key is the organisation's, not the person's: a billed project keeps prompts
 # out of Google's training data (the API is only a "Paid Service" with billing
 # attached — a Workspace login does NOT change that, only AI Studio's terms do),
 # and the free tier is 20 requests a day on the one model a new project can

@@ -211,8 +211,8 @@ elif [ ! -s "$ENGINE/version" ]; then printf 'installed-%s\n' "$(date +%Y%m%d)" 
 ENGINE_REAL=$(cd "$ENGINE" && pwd -P)
 HOME_REAL=$(cd "$HOME" && pwd -P)
 # Not sed: `&` in a replacement means "the whole match", so a shared drive
-# called "Kunden & Projekte" rendered a sandbox rule pointing at
-# "Kunden @DATA@ Projekte" — the assistant then could not write to its own
+# called "Clients & Projects" rendered a sandbox rule pointing at
+# "Clients @DATA@ Projects" — the assistant then could not write to its own
 # folder. `|` in a path would break the delimiter too. Bash substitution is
 # literal on both counts.
 render(){
@@ -420,7 +420,7 @@ fi
 
 # ─── Backends ───────────────────────────────────────────────────────
 # Gemini is part of the profile (README.md "Backends"): the assistant leans on
-# it for long documents. The key is POMA's — issued by an admin from a BILLED
+# it for long documents. The key is the organisation's — issued by an admin from a BILLED
 # project, because that is the only way prompts stay out of Google's training
 # data (a Workspace login does not do it for the API), and because the free
 # tier is 20 requests a day. Nothing is minted here and no browser opens: the

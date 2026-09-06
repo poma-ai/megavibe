@@ -2,7 +2,8 @@
 # Mint a Gemini API "auth key" programmatically — no AI Studio clicking.
 #
 # What this is for (2026-09): an ADMIN minting keys for megavibe / Megawork
-# users on POMA's BILLED Gemini project — one key per person, so each can be
+# users on the organisation's BILLED Gemini project — one key per person (or one
+# shared key for a small team), so each can be
 # revoked on its own. Run it on your own Mac; never on a colleague's.
 #
 # Why billed, and why not the free tier any more:
@@ -85,7 +86,7 @@ case "$BILLING" in
     if [ "$BILLED" -eq 1 ]; then
       note "billing: enabled — Paid Service treatment (no training on prompts); keep the model pinned to flash"
     else
-      die "project $PROJECT HAS billing enabled — pass --billed if that is intended (it is, for POMA-issued keys)"
+      die "project $PROJECT HAS billing enabled — pass --billed if that is intended (it is, for admin-issued keys)"
     fi ;;
   unknown)
     [ "$BILLED" -eq 1 ] && die "--billed given but billing status of $PROJECT cannot be verified — refusing to hand out a key that may train on prompts"

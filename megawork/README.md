@@ -196,7 +196,7 @@ Gemini and Codex are part of the profile, not optional extras — the assistant
 uses them for long documents and second opinions, invisibly. Neither is ever
 presented to the person as a decision to make.
 
-The Gemini key is POMA's, not the person's. It comes from a project **with
+The Gemini key is the organisation's, not the person's. It comes from a project **with
 billing attached**: that is the only way the Gemini API treats prompts as a
 "Paid Service" and keeps them out of Google's training data (a Workspace login
 does not change this for the API — only for AI Studio), and the free tier is
@@ -212,7 +212,7 @@ opinions are not set up. Add or repair later: `megawork-connect gemini` (a dead
 key is replaced in one go; a working one is kept — `--off gemini` first to
 swap it). `megawork-doctor` reports whether the key answers.
 
-Cost: at POMA's measured load (about 50 calls a month, ~2M input tokens) a
+Cost: at a measured developer load (about 50 calls a month, ~2M input tokens) a
 flash-class model is roughly $2 per active Mac per month. Never pin or override
 to a Pro model — it bills at 3-16x. The Gemini CLI default is pinned to
 `gemini-flash-latest` when the key is stored. Admins mint per-person keys on the
