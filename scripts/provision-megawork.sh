@@ -154,8 +154,22 @@ case "$CAP" in
     # config and credentials, imported with `megawork-connect --import <zip>`.
     # The zip is not encrypted — hand it over on a channel you trust (AirDrop,
     # a private Drive share), and delete it afterwards.
-    OUT="${FILE:-$PWD/megawork-bundle-$(date +%Y%m%d).zip}"; command -v zip >/dev/null || die "zip is required"
-    ( cd "$OVERLAY" && ls org.json tools.yaml gemini-key github-token grafana-token ga4-service-account.json *-password 2>/dev/null ) > /tmp/.mw-bundle-list.$$ || true
+    # Lands in the overlay (gitignored), never in a repo checkout.
+    OUT="${FILE:-$OVERLAY/megawork-bundle-$(date +%Y%m%d).zip}"; command -v zip >/dev/null || die "zip is required"
+    ( cd "$OVERLAY" && ls org.json tools.yaml gemini-key github-token grafana-token ga4-service-account.json *-password 2>/dev/null || true ) > /tmp/.mw-bundle-list.$$
+    # tools.yaml without every password it references would only produce a
+    # "reports need a password" message on the colleague's Mac — leave it out
+    # until the passwords are provisioned, and say so.
+    if grep -qx tools.yaml /tmp/.mw-bundle-list.$$; then
+      _miss=""
+      for v in $(grep -oE '\$\{MEGAWORK_PASSWORD_[A-Z0-9_]+\}' "$OVERLAY/tools.yaml" | tr -d '${}' | sort -u); do
+        n=$(printf '%s' "${v#MEGAWORK_PASSWORD_}" | tr 'A-Z_' 'a-z-'); [ -s "$OVERLAY/$n-password" ] || _miss="$_miss $n"
+      done
+      if [ -n "$_miss" ]; then
+        grep -vx tools.yaml /tmp/.mw-bundle-list.$$ > /tmp/.mw-bundle-list.$$.2 && mv /tmp/.mw-bundle-list.$$.2 /tmp/.mw-bundle-list.$$
+        note "tools.yaml left out: no password yet for:$_miss  (provision-megawork.sh db --name <n> --password -, then bundle again)"
+      fi
+    fi|| true
     [ -s /tmp/.mw-bundle-list.$$ ] || { rm -f /tmp/.mw-bundle-list.$$; die "nothing to bundle in $OVERLAY"; }
     rm -f "$OUT"; ( cd "$OVERLAY" && zip -q -j "$OUT" $(cat /tmp/.mw-bundle-list.$$) ) && chmod 600 "$OUT"
     note "bundle: $OUT  ($(tr '\n' ' ' < /tmp/.mw-bundle-list.$$))"; rm -f /tmp/.mw-bundle-list.$$
