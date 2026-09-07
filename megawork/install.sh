@@ -122,7 +122,7 @@ if ! command -v npm &>/dev/null || [ "$(_node_major)" -lt "$NODE_MIN" ]; then
 fi
 
 # ── 2c. uv, if the Mac has none ─────────────────────────────────────
-# The Google Analytics connector runs `uvx google-analytics-mcp`. uv is one
+# The Google Analytics connector runs `uvx analytics-mcp` (Google's own server; the similarly named `google-analytics-mcp` on PyPI is a third-party package). uv is one
 # static binary; kept in the engine like Node, no Homebrew, no sudo.
 UV_DIR="$ENGINE_DIR/tools/uv"; mkdir -p "$ENGINE_DIR/logs" 2>/dev/null
 [ -x "$UV_DIR/bin/uvx" ] && export PATH="$UV_DIR/bin:$PATH"

@@ -518,7 +518,7 @@ case "$KIND" in
     RUNNER=$(command -v uvx || command -v pipx || true)
     if [ -f "$SA" ] && [ -n "$RUNNER" ]; then
       claude mcp add --scope user analytics -e "GOOGLE_APPLICATION_CREDENTIALS=$SA" -- \
-        "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
+        "$RUNNER" analytics-mcp==0.7.0 >/dev/null 2>&1 \
         && { echo "  ${G}✓${R} Google Analytics connected (read-only, using the account your admin set up)."; \
              echo "  ${D}Nothing to sign in to — it is already authorised.${R}"; } \
         || { echo "  ${B}!${R} Could not add it. Ask your admin to check megawork-doctor."; exit 1; }
@@ -544,7 +544,7 @@ case "$KIND" in
     if gcloud auth application-default login; then
       RUNNER=$(command -v uvx || command -v pipx || true)
       [ -n "$RUNNER" ] || { echo "  ${B}!${R} Needs uvx or pipx installed first."; exit 1; }
-      claude mcp add --scope user analytics -- "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
+      claude mcp add --scope user analytics -- "$RUNNER" analytics-mcp==0.7.0 >/dev/null 2>&1 \
         && echo "  ${G}✓${R} Google Analytics connected (read-only)." \
         || { echo "  ${B}!${R} Signed in, but the connector could not be added."; exit 1; }
     else
