@@ -24,8 +24,9 @@
 #
 # Usage:
 #   gcloud auth login                       # once, interactively
-#   bash scripts/mint-gemini-key.sh --project <billed-project-id> --billed \
-#        [--name <person>] [--write-rc]
+#   bash scripts/mint-gemini-key.sh --billed [--project <id>] [--name <person>] [--write-rc]
+#   (--project may be omitted: it is taken from the project that owns the key in
+#    $GEMINI_API_KEY, or from the account's single billed project)
 #
 # Without --billed the script REFUSES a billing-enabled project (the old
 # free-tier mode, kept for experiments). Prints only a key prefix + length,
@@ -65,8 +66,28 @@ ACCOUNT=$(gcloud config get-value account 2>/dev/null || echo "")
 [ -n "$ACCOUNT" ] && note "account: $ACCOUNT"
 
 # ─── Project ────────────────────────────────────────────────────────
-if [ -z "$PROJECT" ]; then
-  [ "$BILLED" -eq 1 ] && die "--billed needs --project <existing billed project id>; this script never creates billed projects"
+if [ -z "$PROJECT" ] && [ "$BILLED" -eq 1 ]; then
+  # No project id hunting: derive the billed project from a key that already
+  # works (the one in the environment), else from the account's billed projects.
+  if [ -n "${GEMINI_API_KEY:-}" ]; then
+    _parent=$(gcloud services api-keys lookup "$GEMINI_API_KEY" --format='value(parent)' 2>/dev/null | sed -n 's|projects/\([^/]*\)/.*|\1|p')
+    [ -n "$_parent" ] && PROJECT=$(gcloud projects describe "$_parent" --format='value(projectId)' 2>/dev/null || true)
+    [ -n "$PROJECT" ] && note "project: $PROJECT (owns the key in GEMINI_API_KEY)"
+  fi
+  if [ -z "$PROJECT" ]; then
+    note "looking for projects with billing enabled…"
+    _billed=()
+    while IFS= read -r _p; do
+      [ -n "$_p" ] || continue
+      [ "$(gcloud billing projects describe "$_p" --format='value(billingEnabled)' 2>/dev/null)" = "True" ] && _billed+=("$_p")
+    done < <(gcloud projects list --format='value(projectId)' 2>/dev/null | grep -v '^sys-')
+    case "${#_billed[@]}" in
+      0) die "no billed project on this account — enable billing on one first" ;;
+      1) PROJECT="${_billed[0]}"; note "project: $PROJECT (the only billed project)" ;;
+      *) echo "  Several billed projects — pick one with --project:" >&2; printf '    %s\n' "${_billed[@]}" >&2; exit 2 ;;
+    esac
+  fi
+elif [ -z "$PROJECT" ]; then
   PROJECT="mv-gemini-$(date +%Y%m%d%H%M%S)"
 fi
 
