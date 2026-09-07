@@ -80,7 +80,28 @@ if [ -f "$ENGINE/policy/sandbox.sb" ] && command -v sandbox-exec &>/dev/null; th
   # OUTSIDE the sandbox. Build a tiny .app in the data folder and try it.
   # Only with a real data folder: with DATA empty the canary path would be
   # "/.doctor-NNN.app" and the cleanup an rm -rf at the filesystem root.
-  if [ -n "$DATA" ] && [ -d "$DATA" ]; then
+  # Not during an update (MEGAWORK_NONINTERACTIVE): that would launch a throwaway
+  # app through LaunchServices on someone's Mac while they are not looking. The
+  # rules themselves are still checked, so a regressed profile still fails the
+  # update gate.
+  case "${MEGAWORK_NONINTERACTIVE:-}" in
+    1|true|yes) _unattended=1 ;;
+    *)          _unattended=0 ;;
+  esac
+  if [ "$_unattended" -eq 1 ]; then
+    # Rule-level, not byte-exact (a reflowed template must not fail every
+    # update): the three deny rules of the closure must be present, and no
+    # allow rule may re-open "open". template/sandbox.sb.template notes this.
+    _sb="$ENGINE/policy/sandbox.sb"
+    if awk '/^\(deny mach-lookup/ && /lsd/ && /coreservices/ {f=1} END{exit !f}' "$_sb" \
+       && grep -qF '(deny appleevent-send)' "$_sb" \
+       && awk '/^\(deny process-exec/{f=1} f && /"\/usr\/bin\/open"/{h=1} f && /\)\)[[:space:]]*$/{f=0} END{exit !h}' "$_sb" \
+       && ! grep -Eq '^\(allow process-exec.*"/usr/bin/open"' "$_sb"; then
+      ok "'open' escape rules present in the sandbox (not launched in this unattended run)"
+    else
+      bad "the 'open' escape rules are missing from the sandbox profile"
+    fi
+  elif [ -n "$DATA" ] && [ -d "$DATA" ]; then
   APP_CANARY="$DATA/.doctor-$$.app"; ESCAPE_OUT="$HOME/.doctor-escaped-$$"
   mkdir -p "$APP_CANARY/Contents/MacOS" 2>/dev/null
   printf '#!/bin/sh\necho escaped > "%s"\n' "$ESCAPE_OUT" > "$APP_CANARY/Contents/MacOS/x" 2>/dev/null

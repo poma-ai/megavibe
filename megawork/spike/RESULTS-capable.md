@@ -34,7 +34,9 @@ means the boundary must move to the OS.
 > **Provenance: manually verified, not scripted.** `capable-spike.sh` produces the
 > B and C tables above; the D results below were run by hand. `megawork-doctor` now
 > re-checks the three that matter (outside write, `open` escape, `~/.claude`
-> write) on every run, which is the reproducible form of this evidence.
+> write) on every run, which is the reproducible form of this evidence. During an
+> unattended `megawork-update` the `open` check is static (rules present in the
+> profile) rather than a real launch.
 
 `sandbox-exec -f <profile> claude --settings <policy> --add-dir <data> --append-system-prompt <protocol>`
 

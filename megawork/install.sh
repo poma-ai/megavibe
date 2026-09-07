@@ -67,10 +67,7 @@ fi
 # adds the same directory).
 ENGINE_DIR="${MEGAWORK_HOME:-$HOME/.megawork}"
 NODE_DIR="$ENGINE_DIR/tools/node"
-# Rename an old-name engine BEFORE anything below creates ~/.megawork: init.sh
-# only migrates when the new path does not exist yet, and a stray mkdir here
-# would leave the person's history, folder pointer and key behind.
-[ -d "$HOME/.megavibe-nondev" ] && [ ! -e "$ENGINE_DIR" ] && mv "$HOME/.megavibe-nondev" "$ENGINE_DIR" 2>/dev/null
+# An old-name (megavibe-nondev) engine is not adopted: init.sh removes it.
 if [ -x "$NODE_DIR/bin/npm" ]; then export PATH="$NODE_DIR/bin:$PATH"; fi
 # Not just "is there an npm": the Gemini CLI needs Node 20+, and an old Node
 # installs it with a warning and then dies with a SyntaxError at first use.

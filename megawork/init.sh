@@ -42,16 +42,51 @@ done
 ok(){ echo "  ✓ $*"; }
 D=$'\033[2m'; R=$'\033[0m'
 
-# This profile used to be called megavibe-nondev. Move an existing install
-# across rather than leaving someone with two half-configured copies.
-OLD_ENGINE="$HOME/.megavibe-nondev"
-if [ -d "$OLD_ENGINE" ] && [ ! -d "${MEGAWORK_HOME:-$HOME/.megawork}" ]; then
-  mv "$OLD_ENGINE" "${MEGAWORK_HOME:-$HOME/.megawork}" 2>/dev/null \
-    && echo "  ✓ moved your existing setup over from the old name"
-  rm -f "$HOME/.local/bin/megavibe-nondev" "$HOME/.local/bin/nondev-"* 2>/dev/null
-  rm -rf "/Applications/Megavibe Nondev.app" "/Applications/Megavibe.app" 2>/dev/null
-  # Their folder comes along untouched: the moved engine still carries data-dir,
-  # and the "keeping your existing folder" step below points at it.
+# This profile used to be called megavibe-nondev. Nobody keeps such an install
+# any more (decided 2026-09-07), so its remnants are removed where we can — a Mac
+# must never carry two half-configured copies. Only artefacts that are provably
+# ours go: the old engine dir, the old command names, and an app bundle whose
+# compiled script launches the old engine (a stranger's app that happens to be
+# called Megavibe.app stays). Scratch installs (non-default MEGAWORK_HOME) never
+# touch the Mac, and an unattended update never deletes a neighbouring install.
+_mh=$(printf '%s' "${MEGAWORK_HOME:-}" | sed 's|/*$||')
+case "${MEGAWORK_NONINTERACTIVE:-}" in 1|true|yes) _unattended=1 ;; *) _unattended=0 ;; esac
+if [ "$_unattended" -eq 0 ] && { [ -z "${MEGAWORK_HOME:-}" ] || [ "$_mh" = "$HOME/.megawork" ]; }; then
+  _old_engine_gone=0
+  if [ -d "$HOME/.megavibe-nondev" ]; then
+    # The one thing worth carrying over: where their folder is. Nothing else.
+    if [ -f "$HOME/.megavibe-nondev/data-dir" ] && [ ! -f "$HOME/.megawork/data-dir" ]; then
+      mkdir -p "$HOME/.megawork" && cp "$HOME/.megavibe-nondev/data-dir" "$HOME/.megawork/data-dir"
+    fi
+    # Into the Trash when the Mac can (recoverable for a while), plain delete otherwise.
+    if command -v rmtrash >/dev/null 2>&1; then
+      rmtrash -rf "$HOME/.megavibe-nondev" 2>/dev/null && _old_engine_gone=1
+    elif [ -x /usr/bin/trash ]; then
+      /usr/bin/trash "$HOME/.megavibe-nondev" 2>/dev/null && _old_engine_gone=1
+    else
+      rm -rf "$HOME/.megavibe-nondev" 2>/dev/null && _old_engine_gone=1
+    fi
+    [ "$_old_engine_gone" -eq 1 ] || echo "  ! some files of the old megavibe-nondev install could not be removed (harmless)"
+  fi
+  # Exact historical names only — never a prefix glob over someone's ~/.local/bin.
+  for _n in megavibe-nondev nondev-connect nondev-doctor nondev-folder nondev-mode nondev-update; do
+    for _f in "$HOME/.local/bin/$_n" "$HOME/.megawork/bin/$_n"; do
+      [ -e "$_f" ] || [ -L "$_f" ] || continue
+      rm -f "$_f" 2>/dev/null || true
+    done
+  done
+  # An app bundle is ours only when it is the old osacompile applet whose compiled
+  # script launches the old engine. Names alone never decide a recursive delete.
+  # NOT the current bundle id: that is what this script builds, and an install
+  # made with --name Megavibe lives at exactly this path.
+  for _old in "/Applications/Megavibe Nondev.app" "/Applications/Megavibe.app"; do
+    [ -d "$_old" ] || continue
+    [ -f "$_old/Contents/MacOS/applet" ] && [ -f "$_old/Contents/Resources/Scripts/main.scpt" ] || continue
+    _dec=$(osadecompile "$_old/Contents/Resources/Scripts/main.scpt" 2>/dev/null || true)
+    case "$_dec" in *'/.megavibe-nondev/bin/megavibe-nondev'*) ;; *) continue ;; esac
+    rm -rf "$_old" 2>/dev/null || true
+  done
+  if [ "$_old_engine_gone" -eq 1 ]; then echo "  ✓ removed the old megavibe-nondev install"; fi
 fi
 
 # Ask the human, not stdin: piped installs (curl | bash) hand us the script on
