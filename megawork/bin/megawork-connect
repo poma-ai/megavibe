@@ -13,9 +13,11 @@
 #   megawork-connect <name>          connect it (a browser sign-in for online services; a key paste for gemini; a permission for applemail)
 #   megawork-connect --off <name>    disconnect it
 #
-# Sign-in is handled by Claude Code's own OAuth: no tokens to paste, and we
-# never see or store a credential. The one exception is the Gemini key, which
-# the organisation's admin issues and this Mac keeps at $ENGINE/policy/gemini-key (0600).
+# Online services sign in through Claude Code's own OAuth: nothing to paste, and
+# we never see or store a credential. Two kinds are admin-issued instead — the
+# Gemini key (`key`) and access tokens such as GitHub's read-only token
+# (`token`) — kept at $ENGINE/policy/ (0600, unreadable inside a session) and
+# handed to the session as environment variables by the launcher.
 
 set -uo pipefail
 
@@ -28,6 +30,10 @@ while [ -L "$_self" ]; do
   case "$_link" in /*) _self="$_link" ;; *) _self="$(dirname "$_self")/$_link" ;; esac
 done
 ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
+# Helpers the installer put inside the engine (Node for the MCP bridge, uv for
+# the Analytics server) are on no shell's PATH by design.
+[ -d "$ENGINE/tools/node/bin" ] && export PATH="$ENGINE/tools/node/bin:$PATH"
+[ -d "$ENGINE/tools/uv/bin" ] && export PATH="$ENGINE/tools/uv/bin:$PATH"
 B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 
 # name | claude-mcp target | what a non-technical person calls it | what it is for | hidden?
@@ -36,15 +42,19 @@ B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
 # can run the same code path.
 REGISTRY='
 gmail|http https://gmailmcp.googleapis.com/mcp/v1|Gmail|search your mail, read threads, prepare drafts (never sends)
-slack|http https://mcp.slack.com/mcp|Slack|find messages and threads you already have access to
-linear|http https://mcp.linear.app/mcp|Linear|look up issues, projects and status
-hubspot|http https://mcp.hubspot.com|HubSpot|look up contacts, companies and deals
+slack|http https://mcp.slack.com/mcp|Slack|find messages and threads you already have access to (never posts)
+linear|http https://mcp.linear.app/mcp|Linear|look up and update issues, projects and status
+hubspot|http https://mcp.hubspot.com|HubSpot|look up and update contacts, companies and deals
+github|token https://api.githubcopilot.com/mcp/readonly|GitHub|read code, issues and pull requests in the company repositories
 analytics|local google-analytics|Google Analytics|read website traffic and conversion reports
 applemail|sandbox mail|Apple Mail (on this Mac)|search the mail already downloaded to this Mac
 gemini|key gemini|Second opinions|have a second AI double-check long documents|hidden
 '
 
 row(){ printf '%s\n' "$REGISTRY" | awk -F'|' -v n="$1" '$1==n {print; exit}'; }
+# Operate from the working folder: `claude mcp list` is per current directory
+# for local-scope entries, and the session runs in that folder.
+_data=$(cat "$ENGINE/data-dir" 2>/dev/null || true); [ -n "$_data" ] && [ -d "$_data" ] && cd "$_data"
 # Registered is not the same as connected: an MCP server that has not completed
 # OAuth exposes no tools at all, so treat "needs authentication" as off.
 # "Connected" means authenticated. A health check that times out reports neither,
@@ -65,6 +75,7 @@ queue_and_explain(){ # $1=name $2=label $3=kind
   local what="finish signing in" then="The $2 sign-in opens by itself, and we carry on where we left off."
   case "${3:-}" in
     key)     what="finish setting this up"; then="You will be asked to paste the key from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens, nothing to sign in to." ;;
+    token)   what="finish setting this up"; then="You will be asked to paste the $2 access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens, nothing to sign in to." ;;
     sandbox) what="switch this on";         then="$2 is switched on, and we carry on where we left off." ;;
   esac
   echo ""
@@ -102,8 +113,10 @@ list_all(){
   echo "  Turn one on:   ${B}megawork-connect <name>${R}   (names: $(printf '%s\n' "$REGISTRY" | awk -F'|' 'NF && $5!="hidden"{printf "%s ", $1}'))"
   echo "  Turn one off:  ${B}megawork-connect --off <name>${R}"
   echo ""
-  echo "  ${D}Nothing here is connected unless you ask for it. Each one signs in through${R}"
-  echo "  ${D}its own website, and your assistant can never send mail or delete things.${R}"
+  echo "  ${D}Nothing here is connected unless you ask for it. Most sign in through${R}"
+  echo "  ${D}its own website (GitHub uses a read-only token from ${MEGAWORK_ADMIN_NAME:-your admin}).${R}"
+  echo "  ${D}Your assistant never sends mail or posts in chat; edits in your work tools${R}"
+  echo "  ${D}(Linear, HubSpot, …) are yours to make.${R}"
   echo ""
 }
 
@@ -163,8 +176,9 @@ case "${1:-}" in
         else
           echo "  ${G}✓${R} Second opinions: off."
         fi ;;
-      *) claude mcp remove "$n" >/dev/null 2>&1 && echo "  ${G}✓${R} $(printf '%s' "$r" | cut -d'|' -f3): disconnected." \
-           || echo "  It wasn't connected." ;;
+      *) { claude mcp remove --scope user "$n" >/dev/null 2>&1 || claude mcp remove "$n" >/dev/null 2>&1; } && echo "  ${G}✓${R} $(printf '%s' "$r" | cut -d'|' -f3): disconnected." \
+           || echo "  It wasn't connected."
+         [ -f "$ENGINE/policy/$n-token" ] && { rm -f "$ENGINE/policy/$n-token" 2>/dev/null && echo "  ${D}(the stored token was removed too)${R}" || echo "  ${B}!${R} the stored token could not be removed from in here — run this from Terminal"; } ;;
     esac
     exit 0 ;;
 esac
@@ -250,8 +264,56 @@ gemini_ask_key(){ # sets REPLY_KEY; empty = skipped
   REPLY_KEY=$(printf '%s' "$REPLY_KEY" | tr -d '[:space:]')
 }
 
+# Admin-issued access tokens (a read-only GitHub token today): kept in the
+# engine like the Gemini key, validated with one call, then registered as an
+# http MCP server with an Authorization header. Read-only is the TOKEN's
+# property (fine-grained, no write scopes) — nothing here has to guess tool names.
+token_file(){ printf '%s' "$ENGINE/policy/$1-token"; }
+token_probe(){ # $1=name $2=token → rc 0 + identity on stdout, rc 1 rejected, rc 2 unreachable
+  case "$1" in
+    github) local b; b=$(curl -s --max-time 20 -H "Authorization: Bearer $2" -H 'Accept: application/vnd.github+json' https://api.github.com/user 2>/dev/null) || return 2
+            [ -n "$b" ] || return 2
+            printf '%s' "$b" | jq -e '.login' >/dev/null 2>&1 && { printf '%s' "$b" | jq -r '.login'; return 0; }
+            printf '%s' "$b" | jq -r '.message // "rejected"' | cut -c1-120; return 1 ;;
+    *) return 2 ;;
+  esac
+}
+token_ask(){ REPLY_TOKEN=""; local tty=/dev/tty; [ -t 0 ] && tty=/dev/stdin; ( : < /dev/tty ) 2>/dev/null || [ -t 0 ] || return 1
+  printf '  Paste the %s access token from %s (Enter to skip): ' "$1" "${MEGAWORK_ADMIN_NAME:-your admin}"; IFS= read -r -s REPLY_TOKEN < "$tty" || REPLY_TOKEN=""; echo ""
+  REPLY_TOKEN=$(printf '%s' "$REPLY_TOKEN" | tr -d '[:space:]'); }
+
 case "$KIND" in
   sandbox) set_mail on ;;
+
+  token)
+    TF=$(token_file "$NAME")
+    if [ ! -s "$TF" ]; then
+      echo "  $LABEL needs an access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing to sign in to."
+      echo ""
+      token_ask "$LABEL" || { echo "  ${D}No terminal to paste into. Run this again from Terminal: megawork-connect $NAME${R}"; exit 1; }
+      [ -n "$REPLY_TOKEN" ] || { echo "  ${B}$LABEL is not set up.${R} To add it later: ${B}megawork-connect $NAME${R}"; echo ""; exit 3; }
+      WHO=$(token_probe "$NAME" "$REPLY_TOKEN"); rc=$?
+      case $rc in
+        0) mkdir -p "$ENGINE/policy"; chmod u+w "$TF" 2>/dev/null || true; printf '%s\n' "$REPLY_TOKEN" > "$TF" && chmod 600 "$TF" || { echo "  ${B}!${R} Could not save the token. Run megawork-doctor."; exit 1; } ;;
+        2) echo "  ${B}!${R} Could not reach $LABEL to check the token — is the internet on? Nothing was saved."; exit 1 ;;
+        *) echo "  ${B}!${R} That token was not accepted${WHO:+: $WHO}. Ask ${MEGAWORK_ADMIN_NAME:-your admin} for a fresh one."; exit 1 ;;
+      esac
+    fi
+    TOK=$(tr -d '[:space:]' < "$TF")
+    WHO=$(token_probe "$NAME" "$TOK"); rc=$?
+    [ "$rc" -eq 2 ] && { echo "  Could not reach $LABEL right now — is the internet on? Nothing was changed."; exit 1; }
+    [ "$rc" -eq 0 ] || { echo "  ${B}!${R} The stored $LABEL token no longer works${WHO:+ ($WHO)}. Remove it with --off $NAME and set it up again with a fresh one from ${MEGAWORK_ADMIN_NAME:-your admin}."; exit 1; }
+    # The registration carries a PLACEHOLDER, not the token: Claude Code expands
+    # ${VAR} in MCP headers at connect time, and the launcher exports the value
+    # from the 0600 file. So ~/.claude.json never holds the secret and `ps` never
+    # shows it. X-MCP-Readonly makes GitHub's server expose no write tools — the
+    # token is read-only by construction, this is the second belt.
+    is_registered "$NAME" && claude mcp remove --scope user "$NAME" >/dev/null 2>&1
+    VAR="MEGAWORK_TOKEN_$(printf '%s' "$NAME" | tr 'a-z-' 'A-Z_')"
+    claude mcp add --scope user --transport http "$NAME" "$TARGET" --header "Authorization: Bearer \${$VAR}" --header "X-MCP-Readonly: true" >/dev/null 2>&1 \
+      || { echo "  ${B}!${R} Could not register $LABEL. Nothing else was changed."; exit 1; }
+    allow_tools "$NAME"
+    echo "  ${G}✓${R} $LABEL connected ${D}(as $WHO; token issued read-only by ${MEGAWORK_ADMIN_NAME:-your admin})${R}." ;;
 
   key)
     # A key that is present but dead (revoked, project closed) must not read
@@ -304,7 +366,7 @@ case "$KIND" in
     # A half-finished attempt leaves the server registered but not signed in;
     # in that case skip straight to the sign-in rather than failing on "exists".
     if ! is_registered "$NAME"; then
-      claude mcp add --transport http "$NAME" "$TARGET" >/dev/null 2>&1 || {
+      claude mcp add --scope user --transport http "$NAME" "$TARGET" >/dev/null 2>&1 || {
         echo "  ${B}!${R} Could not reach $LABEL. Nothing was changed."; exit 1; }
     fi
     # Sign in NOW, with the browser opening by itself. Until this completes the
@@ -345,7 +407,7 @@ case "$KIND" in
     SA="$ENGINE/policy/ga4-service-account.json"
     RUNNER=$(command -v uvx || command -v pipx || true)
     if [ -f "$SA" ] && [ -n "$RUNNER" ]; then
-      claude mcp add analytics -e "GOOGLE_APPLICATION_CREDENTIALS=$SA" -- \
+      claude mcp add --scope user analytics -e "GOOGLE_APPLICATION_CREDENTIALS=$SA" -- \
         "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
         && { echo "  ${G}✓${R} Google Analytics connected (read-only, using the account your admin set up)."; \
              echo "  ${D}Nothing to sign in to — it is already authorised.${R}"; } \
@@ -372,7 +434,7 @@ case "$KIND" in
     if gcloud auth application-default login; then
       RUNNER=$(command -v uvx || command -v pipx || true)
       [ -n "$RUNNER" ] || { echo "  ${B}!${R} Needs uvx or pipx installed first."; exit 1; }
-      claude mcp add analytics -- "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
+      claude mcp add --scope user analytics -- "$RUNNER" google-analytics-mcp >/dev/null 2>&1 \
         && echo "  ${G}✓${R} Google Analytics connected (read-only)." \
         || { echo "  ${B}!${R} Signed in, but the connector could not be added."; exit 1; }
     else

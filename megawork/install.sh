@@ -121,6 +121,25 @@ if ! command -v npm &>/dev/null || [ "$(_node_major)" -lt "$NODE_MIN" ]; then
   rm -rf "$_stage" 2>/dev/null
 fi
 
+# ── 2c. uv, if the Mac has none ─────────────────────────────────────
+# The Google Analytics connector runs `uvx google-analytics-mcp`. uv is one
+# static binary; kept in the engine like Node, no Homebrew, no sudo.
+UV_DIR="$ENGINE_DIR/tools/uv"; mkdir -p "$ENGINE_DIR/logs" 2>/dev/null
+[ -x "$UV_DIR/bin/uvx" ] && export PATH="$UV_DIR/bin:$PATH"
+if ! command -v uvx &>/dev/null; then
+  say "  Downloading a small helper (uv)…"
+  # Pinned to the version tested (2026-09-07); https only; the installer's own
+  # errors go to the harness log rather than nowhere.
+  UV_VERSION="0.12.10"
+  if curl --proto '=https' --tlsv1.2 -LsSf --max-time 180 "https://astral.sh/uv/$UV_VERSION/install.sh" 2>/dev/null \
+       | env UV_UNMANAGED_INSTALL="$UV_DIR/bin" UV_NO_MODIFY_PATH=1 sh >>"${MEGAWORK_HOME:-$HOME/.megawork}/logs/harness-install.log" 2>&1 \
+     && [ -x "$UV_DIR/bin/uvx" ]; then
+    export PATH="$UV_DIR/bin:$PATH"; ok "uv ready"
+  else
+    uhoh "Could not fetch uv — the Google Analytics connector will be unavailable; everything else works"
+  fi
+fi
+
 # ── 3. The harness ──────────────────────────────────────────────────
 # Megawork is not a stripped-down Claude: the whole point is that a colleague
 # gets the same machinery a developer does — second opinions from Gemini and

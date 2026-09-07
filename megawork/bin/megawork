@@ -46,6 +46,7 @@ command -v claude &>/dev/null || { echo "Claude is not installed on this Mac. As
 # Helpers installed by the installer's own Node (a Mac with no Node of its own)
 # live here; the MCP bridge and CLIs must resolve in every session.
 [ -d "$ENGINE/tools/node/bin" ] && export PATH="$ENGINE/tools/node/bin:$PATH"
+[ -d "$ENGINE/tools/uv/bin" ] && export PATH="$ENGINE/tools/uv/bin:$PATH"
 # The Gemini CLI refuses to run in an untrusted folder, and inside a session
 # there is nobody to answer its question. Trusting the workspace is what lets a
 # .gemini/ dropped into a SHARED Drive folder execute, so the sandbox profile
@@ -55,12 +56,29 @@ export GEMINI_CLI_TRUST_WORKSPACE=true
 # cache from inside a session; give it a cache the sandbox allows.
 export npm_config_cache="$ENGINE/logs/npm-cache"
 
+# Admin-issued access tokens (megawork-connect's `token` kind) reach their MCP
+# servers through ${MEGAWORK_TOKEN_<NAME>} placeholders in the registration;
+# the values come from the engine, never from ~/.claude.json.
+export_tokens(){
+  local _tf _n
+  for _tf in "$ENGINE"/policy/*-token; do
+    [ -s "$_tf" ] || continue
+    _n=$(basename "$_tf" -token | tr 'a-z-' 'A-Z_'); export "MEGAWORK_TOKEN_$_n=$(tr -d '[:space:]' < "$_tf")"
+  done
+}
+export_tokens
+# uv (the Google Analytics MCP runs through uvx) writes its cache, tools and a
+# Python under ~/.local/share/uv, which the sandbox denies; keep all of it in
+# the engine's logs dir, which is allowed — same pattern as npm's cache.
+export UV_CACHE_DIR="$ENGINE/logs/uv/cache" UV_TOOL_DIR="$ENGINE/logs/uv/tools" UV_PYTHON_INSTALL_DIR="$ENGINE/logs/uv/python"
+
 # Never let a stray environment variable loosen the jail.
 unset CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS ANTHROPIC_API_KEY 2>/dev/null || true
 
 # Hand the Gemini key to the session if the admin provided one. Kept in the
 # engine at 0600 rather than in the person's shell profile, which they neither
 # own nor should have to think about.
+GEMINI_FROM_ENV=0; [ -n "${GEMINI_API_KEY:-}" ] && GEMINI_FROM_ENV=1
 if [ -z "${GEMINI_API_KEY:-}" ] && [ -f "$ENGINE/policy/gemini-key" ]; then
   GEMINI_API_KEY=$(tr -d '\n' < "$ENGINE/policy/gemini-key"); export GEMINI_API_KEY
 fi
@@ -136,6 +154,7 @@ finish_pending_connect() {
   case "$name" in
     applemail) echo "  Finishing the Apple Mail connection…" ;;
     gemini)    echo "  Second opinions: you will be asked for the key from ${MEGAWORK_ADMIN_NAME:-your admin}." ;;
+    github)    echo "  GitHub: you will be asked for the access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens." ;;
     *)         echo "  Opening the sign-in page in your browser now."
                echo "  Approve it there, and we will pick up where we left off." ;;
   esac
@@ -154,11 +173,12 @@ finish_pending_connect() {
   elif [ "$rc" -ne 0 ]; then
     echo "  Sign-in didn't finish — you can try again any time."
     CONNECTED_NAME=""
-  elif [ "$name" = "gemini" ]; then
-    # Stored just now, after the key was read at startup: pick it up, or the
+  else
+    # Stored just now, after the env was built at startup: pick it up, or the
     # resumed session runs without the thing it was just told it has.
-    [ -s "$ENGINE/policy/gemini-key" ] && \
+    [ "$GEMINI_FROM_ENV" -eq 0 ] && [ -s "$ENGINE/policy/gemini-key" ] && \
       { GEMINI_API_KEY=$(tr -d '\n' < "$ENGINE/policy/gemini-key"); export GEMINI_API_KEY; }
+    export_tokens
   fi
   return 0
 }

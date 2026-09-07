@@ -52,3 +52,8 @@ scripts/gcp-token.sh
 
 # Runtime state — never belongs in the repo
 megawork/logs/
+
+# Admin-issued Megawork credentials — these live in the private overlay, never here.
+**/gemini-key
+**/*-token
+**/*-service-account.json

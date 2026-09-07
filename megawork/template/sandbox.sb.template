@@ -108,11 +108,13 @@
   ; otherwise, which the MCP bridge reports as a failed call. It is write-denied.
   (literal "@HOME@/.gemini/oauth_creds.json") (subpath "@HOME@/.codex")
   (literal "@HOME@/.claude/.credentials.json")
-  ; Our own key store. The launcher reads this OUTSIDE the jail and exports the
-  ; key into the session's environment (so the key IS visible to the session via
-  ; env; this rule only keeps the file itself, and any future keys placed next
-  ; to it, out of reach).
-  (literal "@ENGINE@/policy/gemini-key")
+  ; Our own credential store under policy/: secrets the launcher hands to the
+  ; session as env vars are unreadable in here (the Gemini key, access tokens).
+  ; NOT the GA4 service-account JSON: the Analytics MCP server is spawned inside
+  ; the session and opens that file by path — it is a Viewer-only identity, and
+  ; readable is the price of that connector. settings.json / mcp.json /
+  ; sandbox.sb stay readable (Claude reads them in here).
+  (regex #"^@ENGINE@/policy/(gemini-key|.*-token)$")
   ; other people's mail, chat and password stores
   (subpath "@HOME@/Library/Mail")
   (subpath "@HOME@/Library/Containers/com.apple.Safari")

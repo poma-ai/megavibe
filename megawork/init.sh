@@ -415,6 +415,21 @@ LAUNCH
   rm -rf "$STAGE_DIR"
 fi
 
+# ─── Admin-provisioned credentials from the overlay ─────────────────
+# One mechanism for every capability: any credential file the admin put in the
+# private overlay lands in the engine at 0600. Names are the connector's:
+# gemini-key, github-token, ga4-service-account.json.
+for _cred in github-token ga4-service-account.json; do
+  _src="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}/$_cred"
+  # Only when the engine has none, or the overlay's is newer: a token the person
+  # pasted after the admin's overlay was written must not be clobbered by an update.
+  if [ -s "$_src" ] && { [ ! -s "$ENGINE/policy/$_cred" ] || [ "$_src" -nt "$ENGINE/policy/$_cred" ]; }; then
+    chmod u+w "$ENGINE/policy/$_cred" 2>/dev/null || true
+    if cp "$_src" "$ENGINE/policy/$_cred" && chmod 600 "$ENGINE/policy/$_cred"; then ok "credential in place: $_cred"
+    else echo "  ! could not place $_cred into $ENGINE/policy"; fi
+  fi
+done
+
 # ─── Gemini key, if an admin left one ───────────────────────────────
 # Three places, in order: the environment the admin installed with, the private
 # overlay, or an existing engine key. Never a prompt — see setup.sh --harness-only.
@@ -423,9 +438,15 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
     [ -s "$_src" ] && { GEMINI_API_KEY=$(tr -d '[:space:]' < "$_src"); break; }
   done
 fi
+# Same newer-only rule as the other credentials: a key the person pasted after
+# the admin's overlay was written must survive the next update.
+_ovk="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}/gemini-key"
 if [ -n "${GEMINI_API_KEY:-}" ]; then
-  printf '%s\n' "$GEMINI_API_KEY" > "$ENGINE/policy/gemini-key"
-  chmod 600 "$ENGINE/policy/gemini-key"
+  if [ ! -s "$ENGINE/policy/gemini-key" ] || { [ -s "$_ovk" ] && [ "$_ovk" -nt "$ENGINE/policy/gemini-key" ]; }; then
+    chmod u+w "$ENGINE/policy/gemini-key" 2>/dev/null || true
+    printf '%s\n' "$GEMINI_API_KEY" > "$ENGINE/policy/gemini-key"
+    chmod 600 "$ENGINE/policy/gemini-key"
+  fi
   ok "Gemini backend configured (second opinions on long documents)"
 fi
 

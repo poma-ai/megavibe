@@ -139,6 +139,7 @@ fi
 
 # ── backends (part of the profile — see README "Backends") ──
 [ -d "$ENGINE/tools/node/bin" ] && export PATH="$ENGINE/tools/node/bin:$PATH"
+[ -d "$ENGINE/tools/uv/bin" ] && export PATH="$ENGINE/tools/uv/bin:$PATH"
 NODE_MAJ=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
 if [ "${NODE_MAJ:-0}" -ge 20 ] && command -v npm &>/dev/null; then ok "Node present ($(node -v 2>/dev/null))"
 elif [ "${NODE_MAJ:-0}" -gt 0 ]; then warn "Node $(node -v 2>/dev/null) is too old for the Gemini helper (needs 20+) — re-run the installer"
@@ -208,7 +209,7 @@ fi
 
 # ── connected services (none is the correct default) ──
 if command -v claude &>/dev/null; then
-  CONN=$(claude mcp list 2>/dev/null | grep -E '^(gmail|slack|linear|hubspot|analytics)[: ]' | grep -ciE '✔|✓|(^|[^a-z])connected') || CONN=0
+  CONN=$( (cd "${DATA:-.}" 2>/dev/null || true; claude mcp list 2>/dev/null) | grep -E '^(gmail|slack|linear|hubspot|analytics|github)[: ]' | grep -ciE '✔|✓|(^|[^a-z])connected') || CONN=0
   CONN=${CONN//[^0-9]/}; CONN=${CONN:-0}
   grep -q "(subpath \"$HOME/Library/Mail\")" "$ENGINE/policy/sandbox.sb" 2>/dev/null || CONN=$((CONN+1))
   [ "$CONN" -gt 0 ] && ok "$CONN service(s) connected (megawork-connect to review)" \

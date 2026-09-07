@@ -89,14 +89,23 @@ megawork-connect --off gmail     # reverse it
 | `slack` | messages the person can already see | official remote MCP, OAuth |
 | `linear` | issues, projects, status | official remote MCP, OAuth |
 | `hubspot` | contacts, companies, deals | official remote MCP, OAuth |
-| `analytics` | GA4 reports (read-only, runs locally) | Google's own local server + `gcloud` login |
+| `github` | code, issues and pull requests in the company repositories | GitHub's remote MCP at its `/readonly` endpoint with `X-MCP-Readonly`, using an admin-issued fine-grained token (`policy/github-token`) created with read-only permissions |
+| `analytics` | GA4 reports (read-only) | Google's local MCP with an admin-provisioned service account (Viewer on the property) |
 
-Sign-in goes through each service's own OAuth, handled by Claude Code — no tokens
-are pasted and megavibe never sees a credential. The OAuth handshake needs a real
-terminal, which a session is not — so the launcher does it. The assistant queues
+Online services sign in through their own OAuth, handled by Claude Code — nothing
+is pasted and megavibe never sees a credential. The OAuth handshake needs a real
+terminal, which a session is not — so the launcher does it: the assistant queues
 the sign-in, the person closes the session with Ctrl-D, the browser opens by
-itself, and the session reopens with the service connected. **Nobody types a
-command**, which is rather the point of the whole profile.
+itself, and the session reopens with the service connected. Two kinds are
+admin-issued instead of signed in: the Gemini key and access tokens such as
+GitHub's. Those are pasted once (or arrive via the admin's overlay), kept at
+`~/.megawork/policy/` (0600, unreadable from inside a session) and handed to the
+session as environment variables — the MCP registration holds a `${…}`
+placeholder, never the value. Read-only for GitHub rests on how the admin created
+the token (GitHub has no API to verify a fine-grained token's permissions) plus
+the server's own read-only mode; `scripts/provision-megawork.sh github` refuses
+classic tokens. **Nobody types a command** for the online services; the pasted
+kinds need exactly one paste.
 
 **Google Analytics is the exception.** The Analytics Data API does not accept API
 keys at all — reports are authorised per GA4 property, so it needs a real
@@ -104,9 +113,13 @@ identity. Either an admin drops a service account (granted Viewer on the
 property) at `$ENGINE/policy/ga4-service-account.json`, in which case the person
 signs in to nothing at all, or `megawork-connect analytics` runs
 `gcloud auth application-default login` for them and the Google window opens by
-itself. The service-account route is the right one for colleagues. Send, delete, archive and trash
-verbs stay denied by policy on every connector; drafting is allowed, since
-"write me a reply" is the point. `applemail` is the odd one out: it is not a
+itself. The service-account route is the right one for colleagues. Work tools are theirs
+to edit — Linear, HubSpot, Notion, Drive: that is how they already use them and
+the blast radius is small. What policy denies is outward-facing messaging:
+sending mail, posting or replying in Slack, trashing or archiving mail. Drafting
+is allowed, since "write me a reply" is the point. Where read-only matters it is
+enforced at the source — the GitHub token is issued read-only and the server runs
+in read-only mode, the GA4 identity is a Viewer — not by guessing tool names. `applemail` is the odd one out: it is not a
 login but a sandbox read rule, so turning it on genuinely widens what the session
 can read — verified that `.ssh`, `gh` tokens and Slack's local store stay blocked
 either way, and that turning it off closes it again.
@@ -183,9 +196,18 @@ a private overlay directory and point `MEGAWORK_OVERLAY` at it (default
 
 ```
 $MEGAWORK_OVERLAY/
-  icon.icns        ← your own Dock icon, applied at install if present
-  PILOT-BRIEF.md   ← who is testing, what they report (names, emails)
+  icon.icns                   ← your own Dock icon, applied at install if present
+  PILOT-BRIEF.md              ← who is testing, what they report (names, emails)
+  gemini-key                  ← admin-issued credentials: picked up by every install
+  github-token                   the admin runs, copied to ~/.megawork/policy/ (0600,
+  ga4-service-account.json       newer-only, so a token pasted later is not clobbered)
 ```
+
+The overlay is also the credential store. `scripts/provision-megawork.sh <gemini|ga4|github>`
+creates each credential as its own narrow identity in one Google Cloud project
+(`megawork-<capability>-<team>`, Viewer/read-only roles, one budget) and writes it
+here; `provision-megawork.sh list` shows what exists. Colleagues who install on
+their own paste the single-string kinds (Gemini key, GitHub token) when asked.
 
 The installer degrades gracefully when the overlay is absent: no icon, stock behaviour.
 `.gitignore` blocks the overlay paths so they cannot be committed here by accident.
