@@ -240,8 +240,14 @@ if [ -z "$RESULTS" ] || [[ "$RESULTS" == *"No results found"* ]]; then
   exit 0
 fi
 
-# Inject as systemMessage — Claude treats this as authoritative system-level context
-jq -n --arg msg "Related project context from poma-memory (semantic search on .agent/):
-$RESULTS" '{
+# The matches go to the MODEL as additionalContext; the human gets one line.
+# Putting the whole payload in systemMessage rendered every line of it in the
+# user's transcript — on mobile/remote as a wall of "PreToolUse:Bash says:" —
+# which is decoration for the reader and, where the client also feeds
+# systemMessage to the model, the same tokens paid twice.
+N=$(printf '%s\n' "$RESULTS" | grep -c '^- \|^\[' 2>/dev/null || true); N=${N:-0}
+jq -n --arg ctx "Related project context from poma-memory (semantic search on .agent/):
+$RESULTS" --arg msg "megavibe: ${N:-some} .agent matches injected as context" '{
+  hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: $ctx },
   systemMessage: $msg
 }'
