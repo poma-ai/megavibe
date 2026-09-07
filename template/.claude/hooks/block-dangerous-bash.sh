@@ -29,7 +29,8 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # three tests combine across unrelated fragments of a long command line — a heredoc
 # that merely mentions rm in one line and a glob in another would trip all three and
 # block a completely safe command.
-_RM_INVOKED='(^|[[:space:]])rm([[:space:]]+-{1,2}[[:alnum:]-]+)*[[:space:]]'
+# rmtrash too: moving / or ~ into the Trash is not a recoverable mistake either.
+_RM_INVOKED='(^|[[:space:]])(rm|rmtrash)([[:space:]]+-{1,2}[[:alnum:]-]+)*[[:space:]]'
 _RM_DESTRUCTIVE_FLAG='[[:space:]]-{1,2}[[:alnum:]]*[rRf]'
 _RM_TOPLEVEL_TARGET='(^|[[:space:]])(\*|\.|\.\*|\.\/\*?|\/\*?|~\/?\*?|\$HOME\/?\*?|\.\[[^]]*\]\*?)([[:space:]]|$)'
 

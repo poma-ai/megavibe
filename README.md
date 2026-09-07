@@ -154,6 +154,8 @@ Automatically blocks dangerous commands before they execute:
 - `git reset --hard`
 - `DROP TABLE`
 
+**Deletions go to the Trash.** On a Mac with `rmtrash` installed (`setup.sh` installs it where Homebrew exists), the `rm-to-trash.sh` hook rewrites every `rm …` Claude runs into `rmtrash …` before it executes — same flags, but the files land in `~/.Trash` instead of disappearing. A wrong delete becomes a drag out of the Trash. Only `rm` in command position is touched — including inside `$( )`, `find -exec`, `xargs {}` and after a plain `sudo`; never text inside quotes, heredoc bodies, comments, `case` patterns or a `rm()` definition, so a quoted `bash -c "rm …"` body stays as written. (A leader carrying its own option-argument, like `sudo -u bob rm`, is left as real `rm` — the safe direction.) It rewrites the command line Claude runs, not the inside of a script it invokes. Targets all under the temp dirs or `node_modules` keep real `rm`, as do `rm -P`/`rm -W` (which `rmtrash` cannot do). A shell alias only covers interactive shells; the hook covers the command line Claude runs directly. To force a real unlink, write `\rm` or `/bin/rm`. Note the tradeoff: a large `rm -rf dist` now fills `~/.Trash` rather than freeing the space — empty the Trash (or `\rm -rf`) to reclaim it. Deleted files land in the boot disk's `~/.Trash`, or the volume's own `.Trashes` off other disks.
+
 ### Phone access (built-in)
 
 Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remote-control) enabled by default. Type `/rc` in your terminal session to get a QR code — scan it with your phone and continue the same session in the Claude app. Walk away from your desk, keep working from the couch.
@@ -288,7 +290,7 @@ export OPENAI_API_KEY="your-key-here"
 
 | What | Where |
 |------|-------|
-| Hooks (17 scripts) | `.claude/hooks/` |
+| Hooks (19 scripts) | `.claude/hooks/` |
 | Rules (4 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (6 commands) | `.claude/skills/` |

@@ -313,6 +313,21 @@ should_install_gemini() {
 claude_install
 jq_install
 
+# rmtrash (macOS): the rm-to-trash hook moves deletions into the Trash instead of
+# unlinking them. Optional — without it the hook stays silent and rm runs as rm.
+rmtrash_install() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  if command -v rmtrash &>/dev/null; then
+    skip "rmtrash"
+  elif command -v brew &>/dev/null; then
+    echo "  Installing rmtrash (deletions go to the Trash)..."
+    brew install rmtrash && ok "rmtrash" || warn "rmtrash did not install — rm will run as rm (brew install rmtrash)"
+  else
+    warn "rmtrash not installed (needs Homebrew) — rm will run as rm"
+  fi
+}
+rmtrash_install
+
 # Install Codex CLI when it is missing (unless non-interactive --auto-install or no TTY)
 if command -v codex &>/dev/null || should_install_codex; then
   codex_install

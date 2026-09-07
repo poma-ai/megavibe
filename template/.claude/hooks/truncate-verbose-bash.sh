@@ -75,9 +75,11 @@ case "$STRATEGY" in
     ;;
 esac
 
-# Emit updatedInput (rewrites tool_input.command for the actual exec)
-# plus additionalContext so Claude knows the rewrite happened and how to opt out.
-jq -nc --arg cmd "$NEW_CMD" --arg ctx "$REASON" \
-  '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: {command: $cmd}, additionalContext: $ctx}}'
+# Emit updatedInput (rewrites tool_input.command for the actual exec) plus
+# additionalContext so Claude knows the rewrite happened and how to opt out.
+# Merge into the existing tool_input — replacing it would drop timeout,
+# run_in_background and description from the call.
+printf '%s' "$INPUT" | jq -c --arg cmd "$NEW_CMD" --arg ctx "$REASON" \
+  '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $cmd}), additionalContext: $ctx}}'
 
 exit 0
