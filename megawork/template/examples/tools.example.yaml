@@ -1,0 +1,35 @@
+# Report definitions for Megawork's "Reports & figures" connector (MCP Toolbox
+# for Databases). This file is ORGANISATION-SPECIFIC: keep the real one in your
+# private overlay (provision-megawork.sh toolbox --file …), never in a public
+# repo. Passwords are never written here — reference ${MEGAWORK_PASSWORD_<NAME>}
+# and store the value with `provision-megawork.sh db --name <name> --password -`.
+# Read-only is enforced by the DATABASE ROLE the source connects as; the named
+# statements below are what the assistant can ask, nothing else.
+sources:
+  reporting:
+    kind: postgres
+    host: db.example.com
+    port: 5432
+    database: app
+    user: reporting_ro
+    password: ${MEGAWORK_PASSWORD_REPORTING_RO}
+
+tools:
+  usage_last_days:
+    kind: postgres-sql
+    source: reporting
+    description: Daily usage totals for the last N days (default 30).
+    parameters:
+      - name: days
+        type: integer
+        description: How many days back to look.
+        default: 30
+    statement: |
+      SELECT usage_date, SUM(request_count) AS requests
+      FROM reporting.usage_daily
+      WHERE usage_date >= CURRENT_DATE - ($1::int)
+      GROUP BY usage_date ORDER BY usage_date;
+
+toolsets:
+  reports:
+    - usage_last_days

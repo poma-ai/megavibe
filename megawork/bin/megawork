@@ -65,7 +65,16 @@ export_tokens(){
     [ -s "$_tf" ] || continue
     _n=$(basename "$_tf" -token | tr 'a-z-' 'A-Z_'); export "MEGAWORK_TOKEN_$_n=$(tr -d '[:space:]' < "$_tf")"
   done
+  # Database passwords for the reports helper (policy/tools.yaml references them
+  # as ${MEGAWORK_PASSWORD_<NAME>}); the files themselves are unreadable in-session.
+  for _tf in "$ENGINE"/policy/*-password; do
+    [ -s "$_tf" ] || continue
+    _n=$(basename "$_tf" -password | tr 'a-z-' 'A-Z_'); export "MEGAWORK_PASSWORD_$_n=$(tr -d '[:space:]' < "$_tf")"
+  done
 }
+# Organisation values (admin name, addresses) come from one local file.
+[ -s "$ENGINE/policy/org.json" ] && command -v jq >/dev/null 2>&1 && \
+  export MEGAWORK_ADMIN_NAME="${MEGAWORK_ADMIN_NAME:-$(jq -r '.admin_name // empty' "$ENGINE/policy/org.json" 2>/dev/null)}"
 export_tokens
 # uv (the Google Analytics MCP runs through uvx) writes its cache, tools and a
 # Python under ~/.local/share/uv, which the sandbox denies; keep all of it in
@@ -137,7 +146,7 @@ set -- ${REST+"${REST[@]}"}
 # terminal. That is what lets a service sign-in happen without anyone typing a
 # command: the assistant queues one, the person closes the session, the browser
 # opens here, and the session comes back with the service connected.
-CONNECTED_NAME=""; SKIPPED_NAME=""
+CONNECTED_NAME=""; SKIPPED_NAME=""; FAILED_NAME=""
 finish_pending_connect() {
   local pend="$ENGINE/logs/pending-connect" name rc
   [ -f "$pend" ] || return 1
@@ -154,7 +163,8 @@ finish_pending_connect() {
   case "$name" in
     applemail) echo "  Finishing the Apple Mail connection…" ;;
     gemini)    echo "  Second opinions: you will be asked for the key from ${MEGAWORK_ADMIN_NAME:-your admin}." ;;
-    github)    echo "  GitHub: you will be asked for the access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens." ;;
+    github|grafana) echo "  ${name}: you will be asked for the access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens." ;;
+    reports)   echo "  Reports: setting up the helper from ${MEGAWORK_ADMIN_NAME:-your admin}'s definitions — nothing to do." ;;
     *)         echo "  Opening the sign-in page in your browser now."
                echo "  Approve it there, and we will pick up where we left off." ;;
   esac
@@ -171,8 +181,11 @@ finish_pending_connect() {
     echo "  Skipped — you can set it up any time with: megawork-connect $name"
     CONNECTED_NAME=""; SKIPPED_NAME="$name"
   elif [ "$rc" -ne 0 ]; then
-    echo "  Sign-in didn't finish — you can try again any time."
-    CONNECTED_NAME=""
+    case "$name" in
+      reports|grafana|github|gemini) echo "  Setting that up didn't finish — you can try again any time with: megawork-connect $name" ;;
+      *) echo "  Sign-in didn't finish — you can try again any time." ;;
+    esac
+    CONNECTED_NAME=""; FAILED_NAME="$name"
   else
     # Stored just now, after the env was built at startup: pick it up, or the
     # resumed session runs without the thing it was just told it has.
@@ -202,7 +215,10 @@ if [ -f "$SANDBOX" ] && command -v sandbox-exec &>/dev/null \
     elif [ -n "$SKIPPED_NAME" ]; then
       set -- "I chose not to set up $SKIPPED_NAME for now. Carry on with what I asked you before without it, and say plainly if something needs it."
     else
-      set -- "That sign-in did not complete, so it is still not connected. Carry on with what I asked you before, and say plainly if you cannot do it without that connection."
+      case "$FAILED_NAME" in
+        reports|grafana|github|gemini) set -- "Setting up $FAILED_NAME did not complete, so it is still not connected. Carry on with what I asked you before, and say plainly if you cannot do it without it." ;;
+        *) set -- "That sign-in did not complete, so it is still not connected. Carry on with what I asked you before, and say plainly if you cannot do it without that connection." ;;
+      esac
     fi
     case " ${CLAUDE_ARGS[*]} " in *" --continue "*) ;; *) CLAUDE_ARGS+=( --continue ) ;; esac
   done

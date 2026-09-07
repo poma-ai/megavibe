@@ -91,6 +91,8 @@ megawork-connect --off gmail     # reverse it
 | `hubspot` | contacts, companies, deals | official remote MCP, OAuth |
 | `github` | code, issues and pull requests in the company repositories | GitHub's remote MCP at its `/readonly` endpoint with `X-MCP-Readonly`, using an admin-issued fine-grained token (`policy/github-token`) created with read-only permissions |
 | `analytics` | GA4 reports (read-only) | Google's local MCP with an admin-provisioned service account (Viewer on the property) |
+| `reports` | usage and billing figures, as named questions | MCP Toolbox for Databases with the organisation's `policy/tools.yaml` (named SQL over read-only views); passwords via `policy/<name>-password`, never in the file |
+| `grafana` | dashboards, metrics and service logs | `mcp-grafana --disable-write` with a Viewer service-account token; address from `policy/org.json` |
 
 Online services sign in through their own OAuth, handled by Claude Code — nothing
 is pasted and megavibe never sees a credential. The OAuth handshake needs a real
@@ -101,7 +103,10 @@ admin-issued instead of signed in: the Gemini key and access tokens such as
 GitHub's. Those are pasted once (or arrive via the admin's overlay), kept at
 `~/.megawork/policy/` (0600, unreadable from inside a session) and handed to the
 session as environment variables — the MCP registration holds a `${…}`
-placeholder, never the value. Read-only for GitHub rests on how the admin created
+placeholder, never the value. That applies to every pasted secret (Gemini key,
+tokens, database passwords): the file is protected, the value is in the
+session's environment and therefore visible to the assistant, which is why each
+is a narrow, revocable credential. Read-only for GitHub rests on how the admin created
 the token (GitHub has no API to verify a fine-grained token's permissions) plus
 the server's own read-only mode; `scripts/provision-megawork.sh github` refuses
 classic tokens. **Nobody types a command** for the online services; the pasted
@@ -201,9 +206,19 @@ $MEGAWORK_OVERLAY/
   gemini-key                  ← admin-issued credentials: picked up by every install
   github-token                   the admin runs, copied to ~/.megawork/policy/ (0600,
   ga4-service-account.json       newer-only, so a token pasted later is not clobbered)
+  grafana-token, <db>-password   ← more of the same
+  org.json, tools.yaml           ← organisation values and report definitions (not secrets)
 ```
 
-The overlay is also the credential store. `scripts/provision-megawork.sh <gemini|ga4|github>`
+**Local configuration, not repository configuration.** Everything that names the
+organisation lives in the overlay and is copied into `~/.megawork/policy/`:
+`org.json` (admin name, Grafana address — every connector reads it with a
+neutral default, so the file is optional), `tools.yaml` (the named SQL
+the reports connector may run — written by the organisation's developers next
+to their schema), and the credentials. This public repo ships only the
+mechanism plus `template/examples/org.example.json` and `tools.example.yaml`.
+
+The overlay is also the credential store. `scripts/provision-megawork.sh <gemini|ga4|github|grafana|db|toolbox|org>`
 creates each credential as its own narrow identity in one Google Cloud project
 (`megawork-<capability>-<team>`, Viewer/read-only roles, one budget) and writes it
 here; `provision-megawork.sh list` shows what exists. Colleagues who install on

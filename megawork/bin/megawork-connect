@@ -10,14 +10,16 @@
 #
 # Usage:
 #   megawork-connect                 what is on, and what could be
-#   megawork-connect <name>          connect it (a browser sign-in for online services; a key paste for gemini; a permission for applemail)
+#   megawork-connect <name>          connect it (online services: a browser sign-in; gemini/github/grafana: a
+#                                    value from the admin, pasted once; reports: set up from the admin's
+#                                    definitions; applemail: a permission on this Mac)
 #   megawork-connect --off <name>    disconnect it
 #
 # Online services sign in through Claude Code's own OAuth: nothing to paste, and
-# we never see or store a credential. Two kinds are admin-issued instead — the
-# Gemini key (`key`) and access tokens such as GitHub's read-only token
-# (`token`) — kept at $ENGINE/policy/ (0600, unreadable inside a session) and
-# handed to the session as environment variables by the launcher.
+# we never see or store a credential. The admin-issued kinds — the Gemini key
+# (`key`), access tokens (`token`, `grafana`) and database passwords for the
+# reports helper (`toolbox`) — are kept at $ENGINE/policy/ (0600, unreadable
+# inside a session) and handed to the session as environment variables.
 
 set -uo pipefail
 
@@ -35,6 +37,12 @@ ENGINE="${MEGAWORK_HOME:-$(cd "$(dirname "$_self")/.." && pwd -P)}"
 [ -d "$ENGINE/tools/node/bin" ] && export PATH="$ENGINE/tools/node/bin:$PATH"
 [ -d "$ENGINE/tools/uv/bin" ] && export PATH="$ENGINE/tools/uv/bin:$PATH"
 B=$'\033[1m'; G=$'\033[32m'; D=$'\033[2m'; R=$'\033[0m'
+# Organisation-specific values live in ONE local file, never in this public
+# script: $ENGINE/policy/org.json (from the admin's overlay). Everything reads
+# it through org(); every key has a neutral default so the file is optional.
+ORG_JSON="$ENGINE/policy/org.json"
+org(){ local v=""; [ -s "$ORG_JSON" ] && command -v jq >/dev/null 2>&1 && v=$(jq -r --arg k "$1" '.[$k] // empty' "$ORG_JSON" 2>/dev/null); printf '%s' "${v:-${2:-}}"; }
+MEGAWORK_ADMIN_NAME="${MEGAWORK_ADMIN_NAME:-$(org admin_name "your admin")}"
 
 # name | claude-mcp target | what a non-technical person calls it | what it is for | hidden?
 # "hidden" means the installer owns it and the person is never asked — see
@@ -48,6 +56,8 @@ hubspot|http https://mcp.hubspot.com|HubSpot|look up and update contacts, compan
 github|token https://api.githubcopilot.com/mcp/readonly|GitHub|read code, issues and pull requests in the company repositories
 analytics|local google-analytics|Google Analytics|read website traffic and conversion reports
 applemail|sandbox mail|Apple Mail (on this Mac)|search the mail already downloaded to this Mac
+reports|toolbox reports|Reports & figures|answer questions from usage and billing figures (read-only)
+grafana|grafana grafana|Dashboards & logs|read the team dashboards, metrics and service logs (read-only)
 gemini|key gemini|Second opinions|have a second AI double-check long documents|hidden
 '
 
@@ -75,7 +85,8 @@ queue_and_explain(){ # $1=name $2=label $3=kind
   local what="finish signing in" then="The $2 sign-in opens by itself, and we carry on where we left off."
   case "${3:-}" in
     key)     what="finish setting this up"; then="You will be asked to paste the key from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens, nothing to sign in to." ;;
-    token)   what="finish setting this up"; then="You will be asked to paste the $2 access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens, nothing to sign in to." ;;
+    token|grafana) what="finish setting this up"; then="You will be asked to paste the $2 access token from ${MEGAWORK_ADMIN_NAME:-your admin} — nothing opens, nothing to sign in to." ;;
+    toolbox) what="finish setting this up"; then="The reports helper is set up from the definitions ${MEGAWORK_ADMIN_NAME:-your admin} provided — nothing opens, nothing to paste." ;;
     sandbox) what="switch this on";         then="$2 is switched on, and we carry on where we left off." ;;
   esac
   echo ""
@@ -178,7 +189,15 @@ case "${1:-}" in
         fi ;;
       *) { claude mcp remove --scope user "$n" >/dev/null 2>&1 || claude mcp remove "$n" >/dev/null 2>&1; } && echo "  ${G}✓${R} $(printf '%s' "$r" | cut -d'|' -f3): disconnected." \
            || echo "  It wasn't connected."
-         [ -f "$ENGINE/policy/$n-token" ] && { rm -f "$ENGINE/policy/$n-token" 2>/dev/null && echo "  ${D}(the stored token was removed too)${R}" || echo "  ${B}!${R} the stored token could not be removed from in here — run this from Terminal"; } ;;
+         [ -f "$ENGINE/policy/$n-token" ] && { rm -f "$ENGINE/policy/$n-token" 2>/dev/null && echo "  ${D}(the stored token was removed too)${R}" || echo "  ${B}!${R} the stored token could not be removed from in here — run this from Terminal"; }
+         # The reports helper's passwords go with it: otherwise the launcher keeps
+         # exporting them into every session after the person believes it is off.
+         if [ "$n" = "reports" ] && [ -s "$ENGINE/policy/tools.yaml" ]; then
+           for v in $(grep -oE '\$\{MEGAWORK_PASSWORD_[A-Z0-9_]+\}' "$ENGINE/policy/tools.yaml" | tr -d '${}' | sort -u); do
+             pf="$ENGINE/policy/$(printf '%s' "${v#MEGAWORK_PASSWORD_}" | tr 'A-Z_' 'a-z-')-password"
+             [ -f "$pf" ] && { rm -f "$pf" 2>/dev/null && echo "  ${D}(the stored database password $(basename "$pf") was removed too)${R}" || echo "  ${B}!${R} $(basename "$pf") could not be removed from in here — run this from Terminal"; }
+           done
+         fi ;;
     esac
     exit 0 ;;
 esac
@@ -208,6 +227,16 @@ echo ""
 echo "  ${B}Connecting $LABEL${R}"
 echo "  ${D}So your assistant can $DESC.${R}"
 echo ""
+
+# Things that must be true before it is worth asking the person to close the
+# session: the reports helper needs the admin's definitions and passwords first.
+if [ "$KIND" = "toolbox" ]; then
+  TOOLS_YAML="$ENGINE/policy/tools.yaml"
+  [ -s "$TOOLS_YAML" ] || { echo "  Reports need a definitions file from ${MEGAWORK_ADMIN_NAME}: policy/tools.yaml is missing."; echo "  ${D}(for them: provision-megawork.sh toolbox --file <tools.yaml>)${R}"; exit 1; }
+  MISSING=""; for v in $(grep -oE '\$\{MEGAWORK_PASSWORD_[A-Z0-9_]+\}' "$TOOLS_YAML" | tr -d '${}' | sort -u); do
+    n=$(printf '%s' "${v#MEGAWORK_PASSWORD_}" | tr 'A-Z_' 'a-z-'); [ -s "$ENGINE/policy/$n-password" ] || MISSING="$MISSING $n"; done
+  [ -z "$MISSING" ] || { echo "  Reports need a database password from ${MEGAWORK_ADMIN_NAME} for:$MISSING"; for n in $MISSING; do echo "  ${D}(for them: provision-megawork.sh db --name $n --password -)${R}"; done; exit 1; }
+fi
 
 # Queue first, whatever the connector is: none of them can complete their work
 # from inside a session (no terminal for OAuth, engine and credential stores
@@ -358,6 +387,66 @@ case "$KIND" in
     done
     echo "  ${D}Ask ${MEGAWORK_ADMIN_NAME:-your admin} for a fresh key — nothing was saved.${R}"
     exit 1 ;;
+  # MCP Toolbox for Databases: one binary, one policy/tools.yaml of NAMED SQL
+  # tools (written by the organisation's developers, delivered through the
+  # overlay — never in this repo). Passwords reach it as ${MEGAWORK_PASSWORD_<X>}
+  # from policy/<x>-password files the launcher exports; the yaml itself holds
+  # no secret and stays readable inside the session, where the server runs.
+  toolbox)
+    TB_VER="${MEGAWORK_TOOLBOX_VERSION:-1.1.0}"   # last version published as a plain binary (2026-04-13); verified with --version
+    TB_BIN="$ENGINE/tools/toolbox/toolbox"   # (prerequisites were checked above, before the queue)
+    if ! [ -x "$TB_BIN" ] || ! "$TB_BIN" --version 2>/dev/null | grep -qF -- "$TB_VER"; then
+      echo "  ${D}Downloading the reports helper (~150 MB) — a minute or two…${R}"
+      _arch=amd64; [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ] && _arch=arm64
+      mkdir -p "$(dirname "$TB_BIN")"; _tmp="$TB_BIN.tmp.$$"
+      if curl -fsSL --max-time 600 -o "$_tmp" "https://storage.googleapis.com/genai-toolbox/v$TB_VER/darwin/$_arch/toolbox" 2>/dev/null \
+         && chmod 755 "$_tmp" && "$_tmp" --version 2>/dev/null | grep -qF -- "$TB_VER" && mv -f "$_tmp" "$TB_BIN"; then :
+      else rm -f "$_tmp"; echo "  ${B}!${R} Could not fetch the reports helper. Nothing was changed."; exit 1; fi
+      xattr -d com.apple.quarantine "$TB_BIN" 2>/dev/null || true
+    fi
+    # Prove it before registering: a real MCP handshake + tools/list, with the
+    # launcher's export of the password files, through stdio — what a session does.
+    _env=(); for f in "$ENGINE"/policy/*-password; do [ -s "$f" ] || continue; _n=$(basename "$f" -password | tr 'a-z-' 'A-Z_'); _env+=("MEGAWORK_PASSWORD_$_n=$(tr -d '[:space:]' < "$f")"); done
+    TL=$( { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"megawork","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 4; } \
+          | env ${_env[@]+"${_env[@]}"} perl -e 'alarm 40; exec @ARGV' "$TB_BIN" --config "$TOOLS_YAML" --stdio 2>"$ENGINE/logs/toolbox-connect.log" | jq -r 'select(.id==2) | .result.tools[].name' 2>/dev/null | tr '\n' ' ')
+    [ -n "$TL" ] || { echo "  ${B}!${R} The reports helper did not start with these definitions. Details: $ENGINE/logs/toolbox-connect.log"; exit 1; }
+    is_registered "$NAME" && claude mcp remove --scope user "$NAME" >/dev/null 2>&1
+    claude mcp add --scope user "$NAME" -- "$TB_BIN" --config "$TOOLS_YAML" --stdio >/dev/null 2>&1 \
+      || { echo "  ${B}!${R} Could not register the reports helper."; exit 1; }
+    allow_tools "$NAME"
+    echo "  ${G}✓${R} $LABEL connected ${D}(questions it can answer: $TL)${R}" ;;
+
+  # Grafana through mcp-grafana in read-only mode, with a Viewer service-account
+  # token from the admin. URL from org.json; token via ${MEGAWORK_TOKEN_GRAFANA}.
+  grafana)
+    GURL=$(org grafana_url ""); [ -n "$GURL" ] || { echo "  Dashboards need the Grafana address in policy/org.json (grafana_url) — ask ${MEGAWORK_ADMIN_NAME}."; exit 1; }
+    command -v uvx >/dev/null 2>&1 || { echo "  ${B}!${R} The helper runner (uv) is missing — re-run the installer."; exit 1; }
+    TF=$(token_file "$NAME")
+    if [ ! -s "$TF" ]; then
+      echo "  $LABEL needs an access token from ${MEGAWORK_ADMIN_NAME} — nothing to sign in to."; echo ""
+      token_ask "$LABEL" || { echo "  ${D}No terminal to paste into. Run this again from Terminal: megawork-connect $NAME${R}"; exit 1; }
+      [ -n "$REPLY_TOKEN" ] || { echo "  ${B}$LABEL is not set up.${R} To add it later: ${B}megawork-connect $NAME${R}"; echo ""; exit 3; }
+      GB=$(curl -s --max-time 20 -H "Authorization: Bearer $REPLY_TOKEN" "${GURL%/}/api/user" 2>/dev/null || true)
+      printf '%s' "$GB" | jq -e '.login' >/dev/null 2>&1 || { echo "  ${B}!${R} Grafana did not accept that token (or could not be reached). Nothing was saved."; exit 1; }
+      mkdir -p "$ENGINE/policy"; chmod u+w "$TF" 2>/dev/null || true; printf '%s\n' "$REPLY_TOKEN" > "$TF" && chmod 600 "$TF" || { echo "  ${B}!${R} Could not save the token."; exit 1; }
+    fi
+    TOK=$(tr -d '[:space:]' < "$TF"); GB=$(curl -s --max-time 20 -H "Authorization: Bearer $TOK" "${GURL%/}/api/user" 2>/dev/null || true)
+    [ -n "$GB" ] || { echo "  Could not reach Grafana right now — nothing was changed."; exit 1; }
+    WHO=$(printf '%s' "$GB" | jq -r '.login // empty' 2>/dev/null); [ -n "$WHO" ] || { echo "  ${B}!${R} The stored Grafana token no longer works. Remove it with --off $NAME and set it up again."; exit 1; }
+    # Prove the server starts before registering it — the token alone proves
+    # nothing about uv resolving the package. Pinned: an unpinned uvx would run
+    # whatever release is current with the Grafana token in its environment.
+    MG_PKG="mcp-grafana==${MEGAWORK_MCP_GRAFANA_VERSION:-1.3.0}"; UVX=$(command -v uvx)
+    GL=$( { printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"megawork","version":"0"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 4; } \
+          | GRAFANA_URL="$GURL" GRAFANA_SERVICE_ACCOUNT_TOKEN="$TOK" perl -e 'alarm 120; exec @ARGV' "$UVX" "$MG_PKG" -t stdio -disable-write 2>"$ENGINE/logs/grafana-connect.log" | jq -r 'select(.id==2) | .result.tools | length' 2>/dev/null | head -1)
+    [ -n "$GL" ] && [ "$GL" -gt 0 ] 2>/dev/null || { echo "  ${B}!${R} The dashboards helper did not start. Details: $ENGINE/logs/grafana-connect.log"; exit 1; }
+    is_registered "$NAME" && claude mcp remove --scope user "$NAME" >/dev/null 2>&1
+    claude mcp add --scope user "$NAME" -e "GRAFANA_URL=$GURL" -e 'GRAFANA_SERVICE_ACCOUNT_TOKEN=${MEGAWORK_TOKEN_GRAFANA}' \
+      -- "$UVX" "$MG_PKG" -t stdio -disable-write >/dev/null 2>&1 \
+      || { echo "  ${B}!${R} Could not register $LABEL."; exit 1; }
+    allow_tools "$NAME"
+    echo "  ${G}✓${R} $LABEL connected ${D}(as $WHO; read-only; $GL tools)${R}." ;;
+
   http)
     if is_on "$NAME"; then echo "  Already connected."; exit 0; fi
     echo "  A browser window will open so you can sign in to $LABEL."

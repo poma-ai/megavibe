@@ -114,7 +114,7 @@
   ; the session and opens that file by path — it is a Viewer-only identity, and
   ; readable is the price of that connector. settings.json / mcp.json /
   ; sandbox.sb stay readable (Claude reads them in here).
-  (regex #"^@ENGINE@/policy/(gemini-key|.*-token)$")
+  (regex #"^@ENGINE@/policy/(gemini-key|.*-token|.*-password)$")
   ; other people's mail, chat and password stores
   (subpath "@HOME@/Library/Mail")
   (subpath "@HOME@/Library/Containers/com.apple.Safari")

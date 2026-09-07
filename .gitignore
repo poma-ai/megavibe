@@ -56,4 +56,8 @@ megawork/logs/
 # Admin-issued Megawork credentials — these live in the private overlay, never here.
 **/gemini-key
 **/*-token
+**/*-password
 **/*-service-account.json
+# Organisation-local config (the shipped examples are org.example.json / tools.example.yaml)
+**/org.json
+**/tools.yaml

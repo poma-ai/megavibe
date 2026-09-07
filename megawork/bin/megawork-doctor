@@ -185,6 +185,12 @@ else
   fi
 fi
 command -v codex &>/dev/null && ok "Codex CLI present" || warn "no Codex CLI — second opinions fall back to Claude"
+OK_KEYS=$(jq -r 'keys|join(", ")' "$ENGINE/policy/org.json" 2>/dev/null || true)
+if [ -n "$OK_KEYS" ]; then ok "organisation settings present (policy/org.json: $OK_KEYS)"
+else warn "no organisation settings — connectors use neutral defaults (admin: provision-megawork.sh org --admin-name …)"; fi
+if [ -s "$ENGINE/policy/tools.yaml" ]; then
+  [ -x "$ENGINE/tools/toolbox/toolbox" ] && ok "reports helper present ($("$ENGINE/tools/toolbox/toolbox" --version 2>/dev/null | cut -d' ' -f3 | cut -d+ -f1))" || warn "report definitions present but the helper is not — run: megawork-connect reports"
+fi
 
 # ── one machine, one protocol ──
 if [ -f "$HOME/.claude/CLAUDE.md" ] && grep -q 'megavibe-v3' "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
@@ -209,7 +215,7 @@ fi
 
 # ── connected services (none is the correct default) ──
 if command -v claude &>/dev/null; then
-  CONN=$( (cd "${DATA:-.}" 2>/dev/null || true; claude mcp list 2>/dev/null) | grep -E '^(gmail|slack|linear|hubspot|analytics|github)[: ]' | grep -ciE '✔|✓|(^|[^a-z])connected') || CONN=0
+  CONN=$( (cd "${DATA:-.}" 2>/dev/null || true; claude mcp list 2>/dev/null) | grep -E '^(gmail|slack|linear|hubspot|analytics|github|reports|grafana)[: ]' | grep -ciE '✔|✓|(^|[^a-z])connected') || CONN=0
   CONN=${CONN//[^0-9]/}; CONN=${CONN:-0}
   grep -q "(subpath \"$HOME/Library/Mail\")" "$ENGINE/policy/sandbox.sb" 2>/dev/null || CONN=$((CONN+1))
   [ "$CONN" -gt 0 ] && ok "$CONN service(s) connected (megawork-connect to review)" \

@@ -96,7 +96,7 @@ them press it instead of answering, and nothing gets connected.
 Once they say yes, run `megawork-connect <name>` immediately. That command prints
 its own closing instructions; relay them briefly if it helps, but never invent
 your own version of the steps. Available: `gmail`, `applemail` (mail already on this Mac), `slack`,
-`linear`, `hubspot`, `analytics`, `github` (code, issues and pull requests, read-only — needs an access token from the admin rather than a sign-in). `megawork-connect` on its own shows what is on.
+`linear`, `hubspot`, `analytics`, `github` (code, issues and pull requests, read-only — needs an access token from the admin rather than a sign-in), `reports` (usage and billing figures as ready-made questions, read-only — set up from the admin's definitions), `grafana` (dashboards, metrics and service logs, read-only — needs a token from the admin). `megawork-connect` on its own shows what is on.
 
 Never connect something because it might be handy later, never ask for several
 at once, and never imply a task is impossible without one — offer the connection

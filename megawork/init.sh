@@ -418,9 +418,13 @@ fi
 # ─── Admin-provisioned credentials from the overlay ─────────────────
 # One mechanism for every capability: any credential file the admin put in the
 # private overlay lands in the engine at 0600. Names are the connector's:
-# gemini-key, github-token, ga4-service-account.json.
-for _cred in github-token ga4-service-account.json; do
-  _src="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}/$_cred"
+# org.json (organisation values — the one place they live), tools.yaml (report
+# definitions), github-token, grafana-token, ga4-service-account.json, *-password.
+_ovl="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}"
+_creds=(org.json tools.yaml github-token grafana-token ga4-service-account.json)
+for _f in "$_ovl"/*-password; do [ -e "$_f" ] && _creds+=("$(basename "$_f")"); done
+for _cred in "${_creds[@]}"; do
+  _src="$_ovl/$_cred"
   # Only when the engine has none, or the overlay's is newer: a token the person
   # pasted after the admin's overlay was written must not be clobbered by an update.
   if [ -s "$_src" ] && { [ ! -s "$ENGINE/policy/$_cred" ] || [ "$_src" -nt "$ENGINE/policy/$_cred" ]; }; then
@@ -466,6 +470,7 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
   GEMINI_STATE="missing"
   if interactive && [ -x "$ENGINE/bin/megawork-connect" ]; then
     echo ""
+    [ -z "${MEGAWORK_ADMIN_NAME:-}" ] && [ -s "$ENGINE/policy/org.json" ] && command -v jq &>/dev/null && MEGAWORK_ADMIN_NAME=$(jq -r '.admin_name // empty' "$ENGINE/policy/org.json" 2>/dev/null); export MEGAWORK_ADMIN_NAME
     echo "  Second opinions (one key to paste — ${MEGAWORK_ADMIN_NAME:-your admin} has it)"
     # Ctrl-C here must not take the whole install down with it: without the
     # trap, SIGINT reaches this script and install.sh too, and the person never

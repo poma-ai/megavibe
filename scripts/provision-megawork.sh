@@ -13,6 +13,10 @@
 #   scripts/provision-megawork.sh gemini  [--team T] [--project P]   # Gemini API key (via mint-gemini-key.sh)
 #   scripts/provision-megawork.sh ga4     [--team T] [--project P]   # GA4 read-only service account + key JSON
 #   scripts/provision-megawork.sh github  --token <fine-grained read-only PAT>   # validates + stores  (--token - to paste)
+#   scripts/provision-megawork.sh org     --admin-name "…" [--grafana-url URL]   # policy/org.json (local org values)
+#   scripts/provision-megawork.sh db      --name <x> --password -   # policy/<x>-password for the reports helper
+#   scripts/provision-megawork.sh grafana --token -                 # Viewer service-account token (create it in Grafana)
+#   scripts/provision-megawork.sh toolbox --file <tools.yaml>       # the report definitions (from your services repo)
 #   scripts/provision-megawork.sh list    [--project P]              # what exists
 #
 # Output: files in $MEGAWORK_OVERLAY (default ~/.megavibe/personal/megawork/),
@@ -26,8 +30,8 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OVERLAY="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}"
-TEAM="team"; PROJECT=""; TOKEN=""
-case "${1:-}" in -h|--help|"") sed -n '2,25p' "$0"; exit 0 ;; esac
+TEAM="team"; PROJECT=""; TOKEN=""; NAME=""; PASSWORD=""; FILE=""; ADMIN_NAME=""; GRAFANA_URL=""
+case "${1:-}" in -h|--help|"") sed -n '2,30p' "$0"; exit 0 ;; esac
 CAP="$1"; shift
 die(){ echo "error: $*" >&2; exit 1; }
 note(){ echo "  $*"; }
@@ -37,7 +41,12 @@ while [ $# -gt 0 ]; do
     --team)    need "$@"; TEAM="$2"; shift 2 ;;
     --project) need "$@"; PROJECT="$2"; shift 2 ;;
     --token)   need "$@"; TOKEN="$2"; shift 2 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    --name)    need "$@"; NAME="$2"; shift 2 ;;
+    --password) need "$@"; PASSWORD="$2"; shift 2 ;;
+    --file)    need "$@"; FILE="$2"; shift 2 ;;
+    --admin-name) need "$@"; ADMIN_NAME="$2"; shift 2 ;;
+    --grafana-url) need "$@"; GRAFANA_URL="$2"; shift 2 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -98,11 +107,52 @@ case "$CAP" in
     note "colleagues paste it via: megawork-connect github   (or it rides your overlay)"
     note "revoke: https://github.com/settings/personal-access-tokens" ;;
 
+  org)
+    # One local file for organisation values; every connector reads it with a
+    # neutral default, so this repo never carries a company name or address.
+    O="$OVERLAY/org.json"; command -v jq >/dev/null || die "jq is required"
+    [ -s "$O" ] || echo '{}' > "$O"
+    [ -n "$ADMIN_NAME$GRAFANA_URL" ] || die "org needs at least one of --admin-name, --grafana-url"
+    jq --arg a "$ADMIN_NAME" --arg g "$GRAFANA_URL" \
+       '(if $a != "" then .admin_name=$a else . end) | (if $g != "" then .grafana_url=$g else . end)' "$O" > "$O.tmp" && mv "$O.tmp" "$O"
+    chmod 600 "$O"; note "org.json:"; jq . "$O" | sed 's/^/    /' ;;
+
+  db)
+    # Names are canonical lowercase-with-hyphens; the env var is the same name in
+    # UPPER_CASE with underscores (reporting-ro ↔ MEGAWORK_PASSWORD_REPORTING_RO). Both
+    # spellings are accepted here and normalised.
+    [ -n "$NAME" ] || die "db needs --name <source> (the name the report definitions use, e.g. reporting-ro)"
+    N=$(printf '%s' "$NAME" | tr 'A-Z_' 'a-z-' | tr -c 'a-z0-9-\n' '-' | sed 's/--*/-/g; s/^-*//; s/-*$//'); [ -n "$N" ] || die "--name must contain letters or digits"
+    if [ "$PASSWORD" = "-" ] || [ -z "$PASSWORD" ]; then printf '  Paste the password for %s: ' "$N"; IFS= read -r -s PASSWORD < /dev/tty; echo ""; fi
+    [ -n "$PASSWORD" ] || die "empty password"
+    printf '%s\n' "$PASSWORD" > "$OVERLAY/$N-password"; chmod 600 "$OVERLAY/$N-password"
+    note "stored $OVERLAY/$N-password (0600) — tools.yaml references it as \${MEGAWORK_PASSWORD_$(printf '%s' "$N" | tr 'a-z-' 'A-Z_')}" ;;
+
+  grafana)
+    GURL=$(jq -r '.grafana_url // empty' "$OVERLAY/org.json" 2>/dev/null || true); [ -n "$GURL" ] || die "set the address first: provision-megawork.sh org --grafana-url https://…"
+    if [ "$TOKEN" = "-" ] || [ -z "$TOKEN" ]; then printf '  Paste the Grafana service-account token (role: Viewer): '; IFS= read -r -s TOKEN < /dev/tty; echo ""; fi
+    [ -n "$TOKEN" ] || die "empty token. Create one in Grafana → Administration → Users and access → Service accounts → New (role Viewer) → Add token"
+    WHO=$(curl -s --max-time 20 -H "Authorization: Bearer $TOKEN" "${GURL%/}/api/user" 2>/dev/null | jq -r '.login // empty' 2>/dev/null || true)
+    [ -n "$WHO" ] || die "Grafana did not accept that token (or $GURL could not be reached)"
+    ROLE=$(curl -s --max-time 20 -H "Authorization: Bearer $TOKEN" "${GURL%/}/api/org" 2>/dev/null | jq -r '.name // empty' 2>/dev/null || true)
+    printf '%s\n' "$TOKEN" > "$OVERLAY/grafana-token"; chmod 600 "$OVERLAY/grafana-token"
+    note "token for $WHO${ROLE:+ (org: $ROLE)} stored at $OVERLAY/grafana-token (0600); make sure the service account's role is Viewer" ;;
+
+  toolbox)
+    [ -n "$FILE" ] && [ -s "$FILE" ] || die "toolbox needs --file <tools.yaml> (the named-SQL definitions your developers maintain in the services repo)"
+    grep -qE '^\s*sources:' "$FILE" && grep -qE '^\s*tools:' "$FILE" || die "$FILE does not look like an MCP Toolbox tools.yaml (needs sources: and tools:)"
+    # A literal password is one that is neither a ${…} placeholder nor a comment.
+    if grep -vE '^[[:space:]]*#' "$FILE" | grep -qE 'password:[[:space:]]*["'"'"']?[^$"'"'"'[:space:]]'; then die "$FILE contains a literal password — reference \${MEGAWORK_PASSWORD_<NAME>} instead and store it with: provision-megawork.sh db --name <name> --password -"; fi
+    cp "$FILE" "$OVERLAY/tools.yaml"; chmod 600 "$OVERLAY/tools.yaml"
+    note "stored $OVERLAY/tools.yaml — tools: $(awk '/^tools:/{f=1;next} /^[a-z]/{f=0} f && /^  [a-z0-9_]+:$/{gsub(/[ :]/,""); printf "%s ", $0}' "$FILE")"
+    for v in $(grep -oE '\$\{MEGAWORK_PASSWORD_[A-Z0-9_]+\}' "$FILE" | tr -d '${}' | sort -u); do
+      f="$OVERLAY/$(printf '%s' "${v#MEGAWORK_PASSWORD_}" | tr 'A-Z_' 'a-z-')-password"; [ -s "$f" ] && note "password present: $(basename "$f")" || note "still needed: provision-megawork.sh db --name $(basename "$f" -password) --password -"; done ;;
+
   list)
     P=$(project); echo "Megawork identities in $P:"
     gcloud iam service-accounts list --project "$P" --filter='email:megawork- OR email:megavibe-gemini-' --format='table(email,displayName,disabled)' 2>/dev/null || true
     echo ""; echo "API keys:"; gcloud services api-keys list --project "$P" --format='table(displayName,createTime.date(),restrictions.apiTargets[0].service)' 2>/dev/null || true
     echo ""; echo "overlay:"; ls -l "$OVERLAY" 2>/dev/null | awk 'NR>1{print "  "$NF"  ("$5" bytes)"}' ;;
 
-  *) sed -n '2,25p' "$0"; exit 2 ;;
+  *) sed -n '2,30p' "$0"; exit 2 ;;
 esac
