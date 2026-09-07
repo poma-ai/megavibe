@@ -222,7 +222,11 @@ The overlay is also the credential store. `scripts/provision-megawork.sh <gemini
 creates each credential as its own narrow identity in one Google Cloud project
 (`megawork-<capability>-<team>`, Viewer/read-only roles, one budget) and writes it
 here; `provision-megawork.sh list` shows what exists. Colleagues who install on
-their own paste the single-string kinds (Gemini key, GitHub token) when asked.
+their own paste the single-string kinds (Gemini key, GitHub token) when asked;
+for everything at once, `provision-megawork.sh bundle` zips the overlay's config
+and credentials and the colleague runs `megawork-connect --import <zip>` (only
+known file names are taken, all land at 0600, each capability is connected;
+the zip is not encrypted — hand it over on a channel you trust and delete it).
 
 The installer degrades gracefully when the overlay is absent: no icon, stock behaviour.
 `.gitignore` blocks the overlay paths so they cannot be committed here by accident.

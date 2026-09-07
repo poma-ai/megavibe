@@ -14,6 +14,7 @@
 #                                    value from the admin, pasted once; reports: set up from the admin's
 #                                    definitions; applemail: a permission on this Mac)
 #   megawork-connect --off <name>    disconnect it
+#   megawork-connect --import <zip>  take over a bundle from the admin (provision-megawork.sh bundle)
 #
 # Online services sign in through Claude Code's own OAuth: nothing to paste, and
 # we never see or store a credential. The admin-issued kinds — the Gemini key
@@ -168,6 +169,26 @@ set_mail(){ # $1 = on|off
 
 case "${1:-}" in
   ""|--list|list) list_all; exit 0 ;;
+  --import)
+    # A bundle from the admin (provision-megawork.sh bundle): the overlay's
+    # config and credentials for a Mac the admin did not install personally.
+    # Only known file names are taken; everything lands at 0600; then each
+    # capability the bundle covers is connected the normal way.
+    Z="${2:-}"; [ -s "$Z" ] || { echo "  Usage: megawork-connect --import <bundle.zip>"; exit 2; }
+    ( : >> "$ENGINE/data-dir" ) 2>/dev/null || { echo "  This can't be done from inside a chat — open Terminal and run: megawork-connect --import \"$Z\""; exit 1; }
+    command -v unzip >/dev/null || { echo "  ${B}!${R} unzip is missing."; exit 1; }
+    T=$(mktemp -d); unzip -q -j "$Z" -d "$T" 2>/dev/null || { rm -rf "$T"; echo "  ${B}!${R} That file is not a bundle I can read."; exit 1; }
+    GOT=""; for f in "$T"/*; do
+      b=$(basename "$f"); case "$b" in org.json|tools.yaml|gemini-key|*-token|*-password|ga4-service-account.json) ;; *) echo "  ${D}skipped $b (not a Megawork file)${R}"; continue ;; esac
+      chmod u+w "$ENGINE/policy/$b" 2>/dev/null || true; cp "$f" "$ENGINE/policy/$b" && chmod 600 "$ENGINE/policy/$b" && GOT="$GOT $b"
+    done; rm -rf "$T"
+    [ -n "$GOT" ] || { echo "  Nothing usable in that bundle."; exit 1; }
+    echo "  ${G}✓${R} Took over:$GOT"
+    echo "  ${D}Delete the zip now — it holds the same secrets in the clear.${R}"
+    for c in gemini github grafana reports; do
+      case "$c" in gemini) [ -s "$ENGINE/policy/gemini-key" ] || continue ;; github) [ -s "$ENGINE/policy/github-token" ] || continue ;; grafana) [ -s "$ENGINE/policy/grafana-token" ] || continue ;; reports) [ -s "$ENGINE/policy/tools.yaml" ] || continue ;; esac
+      echo ""; echo "  ${B}$c${R}"; "$0" "$c" </dev/null 2>&1 | grep -E '✓|!|need|Already' | head -3
+    done; exit 0 ;;
   --off)
     n="${2:-}"; r=$(row "$n"); [ -n "$r" ] || { echo "  Don't know '$n'. Try: megawork-connect"; exit 1; }
     case "$n" in

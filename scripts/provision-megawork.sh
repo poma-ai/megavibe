@@ -17,6 +17,7 @@
 #   scripts/provision-megawork.sh db      --name <x> --password -   # policy/<x>-password for the reports helper
 #   scripts/provision-megawork.sh grafana --token -                 # Viewer service-account token (create it in Grafana)
 #   scripts/provision-megawork.sh toolbox --file <tools.yaml>       # the report definitions (from your services repo)
+#   scripts/provision-megawork.sh bundle  [--file out.zip]           # everything above, zipped for a colleague's own install
 #   scripts/provision-megawork.sh list    [--project P]              # what exists
 #
 # Output: files in $MEGAWORK_OVERLAY (default ~/.megavibe/personal/megawork/),
@@ -147,6 +148,18 @@ case "$CAP" in
     note "stored $OVERLAY/tools.yaml — tools: $(awk '/^tools:/{f=1;next} /^[a-z]/{f=0} f && /^  [a-z0-9_]+:$/{gsub(/[ :]/,""); printf "%s ", $0}' "$FILE")"
     for v in $(grep -oE '\$\{MEGAWORK_PASSWORD_[A-Z0-9_]+\}' "$FILE" | tr -d '${}' | sort -u); do
       f="$OVERLAY/$(printf '%s' "${v#MEGAWORK_PASSWORD_}" | tr 'A-Z_' 'a-z-')-password"; [ -s "$f" ] && note "password present: $(basename "$f")" || note "still needed: provision-megawork.sh db --name $(basename "$f" -password) --password -"; done ;;
+
+  bundle)
+    # For a colleague who installs on their own Mac: one zip of the overlay's
+    # config and credentials, imported with `megawork-connect --import <zip>`.
+    # The zip is not encrypted — hand it over on a channel you trust (AirDrop,
+    # a private Drive share), and delete it afterwards.
+    OUT="${FILE:-$PWD/megawork-bundle-$(date +%Y%m%d).zip}"; command -v zip >/dev/null || die "zip is required"
+    ( cd "$OVERLAY" && ls org.json tools.yaml gemini-key github-token grafana-token ga4-service-account.json *-password 2>/dev/null ) > /tmp/.mw-bundle-list.$$ || true
+    [ -s /tmp/.mw-bundle-list.$$ ] || { rm -f /tmp/.mw-bundle-list.$$; die "nothing to bundle in $OVERLAY"; }
+    rm -f "$OUT"; ( cd "$OVERLAY" && zip -q -j "$OUT" $(cat /tmp/.mw-bundle-list.$$) ) && chmod 600 "$OUT"
+    note "bundle: $OUT  ($(tr '\n' ' ' < /tmp/.mw-bundle-list.$$))"; rm -f /tmp/.mw-bundle-list.$$
+    note "colleague: megawork-connect --import \"$(basename "$OUT")\"   (then delete the zip)" ;;
 
   list)
     P=$(project); echo "Megawork identities in $P:"
