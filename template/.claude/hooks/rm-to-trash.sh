@@ -20,8 +20,12 @@ set -u
 # Only `rm` in command position — never inside quotes, heredoc bodies, comments,
 # case patterns, `=`/`==` comparisons, or a `rm()` function definition. Targets
 # all under the temp dirs / node_modules / a volume's Trash keep real `rm`, as
-# does any `rm` carrying an option rmtrash can't do (`-P`, `-W`). To force a real
-# unlink, write `\rm` or `/bin/rm` (both are left untouched).
+# does any `rm` carrying an option rmtrash can't do (`-P`, `-W`).
+#
+# There is NO escape hatch: `\rm`, `/bin/rm` and `/usr/bin/rm` are rewritten too.
+# Bypassing the Trash to delete something "for real" is precisely the mistake this
+# hook exists to prevent (it cost a credential file on 2026-09-08). If a file must
+# be unrecoverable, delete it and empty the Trash, or use `shred`/`srm` explicitly.
 #
 # Runs in every project, not only megavibe ones — same reasoning as
 # block-dangerous-bash.sh (a recoverable delete is always good); documented as
@@ -39,9 +43,9 @@ TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
 [ "$TOOL" = "Bash" ] || exit 0
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -n "$COMMAND" ] || exit 0
-# Cheap gate before spawning python: a bare `rm` token (not terraform/confirm/
-# xterm, and not /bin/rm — the leading / excludes it, keeping the escape hatch).
-printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_/])rm([^[:alnum:]_]|$)' || exit 0
+# Cheap gate before spawning python: an `rm` token in any spelling — bare,
+# \rm, /bin/rm, /usr/bin/rm (not terraform/confirm/xterm).
+printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_])rm([^[:alnum:]_]|$)' || exit 0
 
 TMPOUT=$(mktemp -t mv-rmtrash) || exit 0
 trap 'rm -f "$TMPOUT" 2>/dev/null' EXIT
@@ -60,6 +64,9 @@ CMD_LEADERS = {"sudo", "exec", "time", "nice", "nohup", "xargs", "command", "bui
                "env", "then", "else", "do", "if", "elif", "while", "until", "!",
                "-exec", "-execdir", "{", "}"}
 BOUNDARY = " \t\n;|&("
+# Every spelling of rm. There is deliberately NO escape hatch: a delete that
+# bypasses the Trash is exactly the mistake this hook exists to prevent.
+RM_WORDS = ("rm", "\\rm", "/bin/rm", "/usr/bin/rm")
 n = len(src)
 
 def skip_target(word):
@@ -135,7 +142,7 @@ while i < n:
             k += 1
         out.append(src[i:min(k+1, n)]); i = k + 1; at_cmd = False; continue
     k = word_end(i); word = src[i:k]
-    if word == "rm" and at_cmd:
+    if word in RM_WORDS and at_cmd:
         p = k
         while p < n and src[p] in " \t":
             p += 1

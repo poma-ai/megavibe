@@ -36,6 +36,23 @@ case "${1:-}" in -h|--help|"") sed -n '2,30p' "$0"; exit 0 ;; esac
 CAP="$1"; shift
 die(){ echo "error: $*" >&2; exit 1; }
 note(){ echo "  $*"; }
+
+# Read a secret. `-` means STDIN when stdin is a pipe or file (so
+# `pbpaste | … --token -` and `… --password - < file` work unattended); only
+# when stdin is a terminal do we prompt on it. Reading /dev/tty unconditionally
+# used to abort every non-interactive call with "Device not configured".
+# The prompt goes to stderr so command substitution captures only the secret.
+read_secret(){
+  _v=""
+  if [ ! -t 0 ]; then
+    IFS= read -r _v || true
+  elif [ -r /dev/tty ]; then
+    printf '  %s' "$1" >&2
+    IFS= read -r -s _v < /dev/tty
+    printf '\n' >&2
+  fi
+  printf '%s' "$_v"
+}
 need(){ [ $# -ge 2 ] || die "$1 needs a value"; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -90,7 +107,7 @@ case "$CAP" in
     echo "  Revoke: gcloud iam service-accounts delete $EMAIL --project $P" ;;
 
   github)
-    if [ "$TOKEN" = "-" ]; then printf '  Paste the fine-grained token: '; IFS= read -r -s TOKEN < /dev/tty; echo ""; fi
+    if [ "$TOKEN" = "-" ]; then TOKEN=$(read_secret "Paste the fine-grained token: "); fi
     [ -n "$TOKEN" ] || die "github needs --token <fine-grained PAT> (or --token - to paste it without it landing in shell history). Create it at
   https://github.com/settings/personal-access-tokens/new  (resource owner: the org;
   repository access: All repositories; permissions READ-ONLY: Contents, Issues,
@@ -124,14 +141,14 @@ case "$CAP" in
     # spellings are accepted here and normalised.
     [ -n "$NAME" ] || die "db needs --name <source> (the name the report definitions use, e.g. reporting-ro)"
     N=$(printf '%s' "$NAME" | tr 'A-Z_' 'a-z-' | tr -c 'a-z0-9-\n' '-' | sed 's/--*/-/g; s/^-*//; s/-*$//'); [ -n "$N" ] || die "--name must contain letters or digits"
-    if [ "$PASSWORD" = "-" ] || [ -z "$PASSWORD" ]; then printf '  Paste the password for %s: ' "$N"; IFS= read -r -s PASSWORD < /dev/tty; echo ""; fi
+    if [ "$PASSWORD" = "-" ] || [ -z "$PASSWORD" ]; then PASSWORD=$(read_secret "Paste the password for $N: "); fi
     [ -n "$PASSWORD" ] || die "empty password"
     printf '%s\n' "$PASSWORD" > "$OVERLAY/$N-password"; chmod 600 "$OVERLAY/$N-password"
     note "stored $OVERLAY/$N-password (0600) — tools.yaml references it as \${MEGAWORK_PASSWORD_$(printf '%s' "$N" | tr 'a-z-' 'A-Z_')}" ;;
 
   grafana)
     GURL=$(jq -r '.grafana_url // empty' "$OVERLAY/org.json" 2>/dev/null || true); [ -n "$GURL" ] || die "set the address first: provision-megawork.sh org --grafana-url https://…"
-    if [ "$TOKEN" = "-" ] || [ -z "$TOKEN" ]; then printf '  Paste the Grafana service-account token (role: Viewer): '; IFS= read -r -s TOKEN < /dev/tty; echo ""; fi
+    if [ "$TOKEN" = "-" ] || [ -z "$TOKEN" ]; then TOKEN=$(read_secret "Paste the Grafana service-account token (role: Viewer): "); fi
     [ -n "$TOKEN" ] || die "empty token. Create one in Grafana → Administration → Users and access → Service accounts → New (role Viewer) → Add token"
     WHO=$(curl -s --max-time 20 -H "Authorization: Bearer $TOKEN" "${GURL%/}/api/user" 2>/dev/null | jq -r '.login // empty' 2>/dev/null || true)
     [ -n "$WHO" ] || die "Grafana did not accept that token (or $GURL could not be reached)"
