@@ -185,8 +185,8 @@ case "${1:-}" in
     [ -n "$GOT" ] || { echo "  Nothing usable in that bundle."; exit 1; }
     echo "  ${G}✓${R} Took over:$GOT"
     echo "  ${D}Delete the zip now — it holds the same secrets in the clear.${R}"
-    for c in gemini github grafana reports; do
-      case "$c" in gemini) [ -s "$ENGINE/policy/gemini-key" ] || continue ;; github) [ -s "$ENGINE/policy/github-token" ] || continue ;; grafana) [ -s "$ENGINE/policy/grafana-token" ] || continue ;; reports) [ -s "$ENGINE/policy/tools.yaml" ] || continue ;; esac
+    for c in gemini github grafana reports analytics; do
+      case "$c" in gemini) [ -s "$ENGINE/policy/gemini-key" ] || continue ;; github) [ -s "$ENGINE/policy/github-token" ] || continue ;; grafana) [ -s "$ENGINE/policy/grafana-token" ] || continue ;; reports) [ -s "$ENGINE/policy/tools.yaml" ] || continue ;; analytics) [ -s "$ENGINE/policy/ga4-service-account.json" ] || continue ;; esac
       echo ""; echo "  ${B}$c${R}"; "$0" "$c" </dev/null 2>&1 | grep -E '✓|!|need|Already' | head -3
     done; exit 0 ;;
   --off)
