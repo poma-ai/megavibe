@@ -92,6 +92,16 @@
 ; own login credentials there, and denying it leaves the session permanently
 ; "Not logged in". Keychain ITEMS remain protected by macOS's own per-item ACLs
 ; (reading the raw database yields ciphertext), so this is not a soft spot.
+;
+; ~/.claude/.credentials.json is NOT denied either, for the same reason and by
+; measurement: current Claude Code keeps the session token in that file, not only
+; in the Keychain. Denying the read while allowing the write (it sits under the
+; ~/.claude subpath allowed above) produced an unbreakable loop — /login reports
+; success, the next check cannot read the token back, "Login expired", forever.
+; The trade is unavoidable rather than comfortable: the process we are confining
+; is the one that holds the token, so no rule can let Claude Code read it and
+; stop `cat` from doing the same. It is the token for the account whose session
+; this already is.
 (deny file-read*
   (subpath "@HOME@/.ssh")
   (subpath "@HOME@/.gnupg")
@@ -108,7 +118,6 @@
   ; address) must stay READABLE — the CLI opens it at exit and fails with EPERM
   ; otherwise, which the MCP bridge reports as a failed call. It is write-denied.
   (literal "@HOME@/.gemini/oauth_creds.json") (subpath "@HOME@/.codex")
-  (literal "@HOME@/.claude/.credentials.json")
   ; Our own credential store under policy/: secrets the launcher hands to the
   ; session as env vars are unreadable in here (the Gemini key, access tokens).
   ; NOT the GA4 service-account JSON: the Analytics MCP server is spawned inside

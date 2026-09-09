@@ -420,9 +420,25 @@ PLIST
 #!/bin/bash
 # Open a Terminal window on the assistant. Terminal, not the Claude desktop
 # app: the desktop app would not apply the sandbox or the policy.
+# NOTE: this block is inside an UNQUOTED heredoc, so backticks would run as
+# command substitution at build time. Do not use them here.
+# "activate" on a Terminal that is not running opens a default window, and a
+# bare "do script" then opens a SECOND one - two windows on every cold start,
+# which is every start from the Dock icon. Reuse the window the launch made.
 osascript -e 'tell application "Terminal"
+    if it is not running then
+        run
+        repeat 50 times
+            if (count of windows) > 0 then exit repeat
+            delay 0.1
+        end repeat
+    end if
+    if (count of windows) > 0 and (busy of front window) is false then
+        set w to do script "clear; \"$ENGINE/bin/megawork\"" in front window
+    else
+        set w to do script "clear; \"$ENGINE/bin/megawork\""
+    end if
     activate
-    set w to do script "clear; \"$ENGINE/bin/megawork\""
     try
         set custom title of w to "${APPNAME}"
     end try
