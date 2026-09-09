@@ -77,7 +77,13 @@ if [ -n "${MEGAVIBE_EXTRA_AGENT_DIRS:-}" ]; then
   IFS=':' read -r -a _roots <<< "$MEGAVIBE_EXTRA_AGENT_DIRS"
   for _r in "${_roots[@]}"; do
     _r="${_r%/}"
-    [ -n "$_r" ] && [ -d "$_r" ] && poma-memory index "$_r/" >/dev/null 2>&1 || true
+    # Only ever index a directory that IS an .agent root. A typo or an
+    # over-broad entry ($HOME) would otherwise sweep an entire tree into the
+    # index — the contamination this file already carries a 6-hour self-heal for.
+    case "$_r" in
+      */.agent) [ -d "$_r" ] && poma-memory index "$_r/" >/dev/null 2>&1 || true ;;
+      *) : ;;
+    esac
   done
 fi
 

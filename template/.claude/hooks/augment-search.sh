@@ -172,7 +172,12 @@ fi
 # ("--- Result N" numbering restarts per root; the filters below split on the
 # marker, not the number). File: paths come back absolute, so the ephemeral-path
 # and self-write filters apply unchanged.
-for _r in "${EXTRA_ROOTS[@]}"; do
+# ${arr[@]+"${arr[@]}"}, not "${arr[@]}": macOS ships bash 3.2, where an EMPTY
+# array under `set -u` is an unbound variable. That aborts the shell outright —
+# before the ERR trap runs, so memory recall would die silently on every search
+# in every project, in the default configuration. Same idiom as the megavibe
+# wrapper's ${STYLE_ARGS[@]+...}.
+for _r in ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"}; do
   _extra=$($POMA_CMD search "$PATTERN" --path "$_r/" --top-k "$TOPK" --min-score "$MIN_SCORE" 2>/dev/null || echo "")
   case "$_extra" in ""|"No results found."*) : ;; *) RAW_RESULTS="${RAW_RESULTS}
 ${_extra}" ;; esac
@@ -223,6 +228,14 @@ import sys, re, os, hashlib
 inj_path = os.environ["INJ_LEDGER"]; writes_path = os.environ["WRITES_LEDGER"]
 maxn = int(os.environ["MAXN"]); raw = os.environ.get("RAW_RESULTS", "")
 blocks = [b for b in re.split(r'(?m)(?=^--- Result )', raw) if b.strip().startswith('--- Result')]
+# Each root is sorted within itself, but the roots are concatenated — so without
+# this the cap takes the cwd's first three survivors and a better-scoring hit
+# from another root never appears, which is exactly what MEGAVIBE_EXTRA_AGENT_DIRS
+# exists to surface. No-op for a single root, where poma already returns sorted.
+def _score(b):
+    m = re.search(r'\(score: ([0-9.]+)\)', b)
+    return float(m.group(1)) if m else 0.0
+blocks.sort(key=_score, reverse=True)
 def load(p):
     try:
         return set(l.strip() for l in open(p) if l.strip())
