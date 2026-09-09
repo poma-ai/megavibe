@@ -52,6 +52,13 @@ command -v claude &>/dev/null || { echo "Claude is not installed on this Mac. As
 # .gemini/ dropped into a SHARED Drive folder execute, so the sandbox profile
 # denies reading @DATA@/.gemini — the trust is granted, the vector is closed.
 export GEMINI_CLI_TRUST_WORKSPACE=true
+# Claude Code's auto-updater writes ~/.local/share/claude/versions, which the
+# sandbox does not allow — so every session ended with "Auto-update failed · Run
+# claude doctor" and no way to act on it. Allowing that write is NOT the fix: a
+# session that can replace the claude binary can rewrite the thing that runs
+# UNSANDBOXED next time, which is the same escape the ~/.npm and ~/.claude/hooks
+# denials exist to close. Updates happen out here instead, via megawork-update.
+export DISABLE_AUTOUPDATER=1
 # npx (the gemini-cli fallback registration) must not write the shared ~/.npm
 # cache from inside a session; give it a cache the sandbox allows.
 export npm_config_cache="$ENGINE/logs/npm-cache"
@@ -94,9 +101,13 @@ fi
 
 cd "$DATA"
 
-# Mention updates at most once a week, as one quiet line. Never interrupt, never
-# auto-install: a surprise change to someone's assistant is worse than being a
-# few days behind.
+# The app icon updates before the session starts (see the boot script in
+# init.sh), so this notice is only for someone who typed `megawork` in a
+# terminal. Once a week, one quiet line, never mid-session: a surprise change
+# while somebody is working is worse than being a few days behind. Being a few
+# days behind is NOT harmless though — a quiet line is what left a pilot Mac
+# sitting in a login loop for days, which is why the icon no longer waits to be
+# asked.
 STAMP="$ENGINE/logs/.update-checked"
 if [ ! -f "$STAMP" ] || [ -n "$(find "$STAMP" -mtime +7 2>/dev/null)" ]; then
   touch "$STAMP" 2>/dev/null

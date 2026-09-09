@@ -41,6 +41,15 @@
   ; instead meant a new one broke startup with a raw EPERM in the user's face.
   (subpath "@HOME@/.claude")
   (subpath "@HOME@/.cache")
+  ; Claude Code keeps its session token in the login keychain, and the file-based
+  ; Keychain API writes that database directly from the calling process — it is
+  ; not brokered through securityd. Denying the write let a sign-in succeed and
+  ; then lose itself seconds later, when the short-lived access token refreshed
+  ; and could not be stored: "Login expired" on a loop that /login could not
+  ; break. Measured: `security add-generic-password` inside this profile fails
+  ; with SecKeychainItemCreateFromContent: UNIX[Operation not permitted].
+  ; This is a real grant, not a formality — see the read note below.
+  (subpath "@HOME@/Library/Keychains")
   ; The Gemini CLI (which the gemini-cli MCP bridge drives) writes its state
   ; here and aborts with EPERM on mkdir if it cannot — the backend never worked
   ; in a session until this was allowed. The OAuth credential file stays denied
@@ -90,8 +99,30 @@
 ; ── reads: broad by design, minus the things nobody should hoover up ──
 ; NOTE: ~/Library/Keychains is deliberately NOT denied — Claude Code stores its
 ; own login credentials there, and denying it leaves the session permanently
-; "Not logged in". Keychain ITEMS remain protected by macOS's own per-item ACLs
-; (reading the raw database yields ciphertext), so this is not a soft spot.
+; "Not logged in".
+;
+; This IS a soft spot, and an earlier version of this comment was wrong about
+; why it is not. The claim was that items stay protected by per-item ACLs and
+; that reading the database yields ciphertext. True of the raw file — irrelevant
+; in practice: the session runs as the logged-in user against an unlocked
+; keychain and uses the Keychain API, not the file. Measured inside this
+; profile, `security find-generic-password -s "Claude Code-credentials" -w`
+; returns the secret. Any item whose ACL admits /usr/bin/security is readable
+; the same way.
+;
+; It stays because there is no scoping available: one database, one rule, and
+; the process that must read its own token is the process being confined.
+; Anyone deploying this should know the session can read the login keychain.
+;
+; ~/.claude/.credentials.json is NOT denied either, for the same reason and by
+; measurement: current Claude Code keeps the session token in that file, not only
+; in the Keychain. Denying the read while allowing the write (it sits under the
+; ~/.claude subpath allowed above) produced an unbreakable loop — /login reports
+; success, the next check cannot read the token back, "Login expired", forever.
+; The trade is unavoidable rather than comfortable: the process we are confining
+; is the one that holds the token, so no rule can let Claude Code read it and
+; stop `cat` from doing the same. It is the token for the account whose session
+; this already is.
 (deny file-read*
   (subpath "@HOME@/.ssh")
   (subpath "@HOME@/.gnupg")
@@ -108,7 +139,6 @@
   ; address) must stay READABLE — the CLI opens it at exit and fails with EPERM
   ; otherwise, which the MCP bridge reports as a failed call. It is write-denied.
   (literal "@HOME@/.gemini/oauth_creds.json") (subpath "@HOME@/.codex")
-  (literal "@HOME@/.claude/.credentials.json")
   ; Our own credential store under policy/: secrets the launcher hands to the
   ; session as env vars are unreadable in here (the Gemini key, access tokens).
   ; NOT the GA4 service-account JSON: the Analytics MCP server is spawned inside

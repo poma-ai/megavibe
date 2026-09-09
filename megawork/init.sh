@@ -416,13 +416,50 @@ if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
 </dict></plist>
 PLIST
 
+  # The boot script lives in the .app, NOT in the engine, on purpose: it updates
+  # the engine, and a shell cannot safely go on reading a script whose file is
+  # being replaced underneath it. It also runs megawork-update from a copy in
+  # /tmp for the same reason - the updater replaces itself otherwise. After the
+  # update it execs the engine launcher, so the session always starts from the
+  # version that was just installed.
+  cat > "$STAGE/Contents/MacOS/boot" <<BOOT
+#!/bin/bash
+ENGINE="$ENGINE"
+if [ -x "\$ENGINE/bin/megawork-update" ]; then
+  U=\$(mktemp -t megawork-update 2>/dev/null) || U=""
+  if [ -n "\$U" ] && cp "\$ENGINE/bin/megawork-update" "\$U" 2>/dev/null; then
+    chmod +x "\$U" 2>/dev/null
+    "\$U" --if-due || true       # offline, or a failed update: start anyway
+    rm -f "\$U"
+  fi
+fi
+exec "\$ENGINE/bin/megawork"
+BOOT
+  chmod +x "$STAGE/Contents/MacOS/boot"
+
   cat > "$STAGE/Contents/MacOS/launch" <<LAUNCH
 #!/bin/bash
 # Open a Terminal window on the assistant. Terminal, not the Claude desktop
 # app: the desktop app would not apply the sandbox or the policy.
+# NOTE: this block is inside an UNQUOTED heredoc, so backticks would run as
+# command substitution at build time. Do not use them here.
+# "activate" on a Terminal that is not running opens a default window, and a
+# bare "do script" then opens a SECOND one - two windows on every cold start,
+# which is every start from the Dock icon. Reuse the window the launch made.
 osascript -e 'tell application "Terminal"
+    if it is not running then
+        run
+        repeat 50 times
+            if (count of windows) > 0 then exit repeat
+            delay 0.1
+        end repeat
+    end if
+    if (count of windows) > 0 and (busy of front window) is false then
+        set w to do script "clear; \"$APP/Contents/MacOS/boot\"" in front window
+    else
+        set w to do script "clear; \"$APP/Contents/MacOS/boot\""
+    end if
     activate
-    set w to do script "clear; \"$ENGINE/bin/megawork\""
     try
         set custom title of w to "${APPNAME}"
     end try
