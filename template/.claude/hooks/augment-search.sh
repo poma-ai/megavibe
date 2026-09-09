@@ -36,8 +36,22 @@ set -u
 command -v poma-memory &>/dev/null || exit 0
 POMA_CMD="poma-memory"
 
-# Check index exists (no point searching an empty index)
-[ -f ".agent/.poma-memory.db" ] || exit 0
+# Extra .agent roots (umbrella sessions): MEGAVIBE_EXTRA_AGENT_DIRS is a
+# colon-separated list of OTHER projects' .agent directories to search alongside
+# this one — e.g. a /Coding umbrella that also recalls poma-core/.agent. Each root
+# keeps its own .poma-memory.db (indexed by reindex-agent.sh); roots without a db
+# are skipped silently. Off by default (empty = today's single-root behaviour).
+EXTRA_ROOTS=()
+if [ -n "${MEGAVIBE_EXTRA_AGENT_DIRS:-}" ]; then
+  IFS=':' read -r -a _roots <<< "$MEGAVIBE_EXTRA_AGENT_DIRS"
+  for _r in "${_roots[@]}"; do
+    _r="${_r%/}"
+    [ -n "$_r" ] && [ -f "$_r/.poma-memory.db" ] && EXTRA_ROOTS+=("$_r")
+  done
+fi
+
+# Check an index exists (no point searching an empty index)
+[ -f ".agent/.poma-memory.db" ] || [ "${#EXTRA_ROOTS[@]}" -gt 0 ] || exit 0
 
 # Require jq
 command -v jq &>/dev/null || exit 0
@@ -150,7 +164,24 @@ MAX_RESULTS="${MEGAVIBE_POMA_MAX_RESULTS:-3}"
 # a non-numeric MAX_RESULTS would crash the python int() and force the awk fallback.
 case "$TOPK" in ''|*[!0-9]*) TOPK=8 ;; esac; [ "$TOPK" -ge 1 ] 2>/dev/null || TOPK=1
 case "$MAX_RESULTS" in ''|*[!0-9]*) MAX_RESULTS=3 ;; esac   # 0 is valid = inject nothing
-RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k "$TOPK" --min-score "$MIN_SCORE" 2>/dev/null || echo "")
+RAW_RESULTS=""
+if [ -f ".agent/.poma-memory.db" ]; then
+  RAW_RESULTS=$($POMA_CMD search "$PATTERN" --path .agent/ --top-k "$TOPK" --min-score "$MIN_SCORE" 2>/dev/null || echo "")
+fi
+# Extra roots: same query, same knobs, each against its own db. Blocks concatenate
+# ("--- Result N" numbering restarts per root; the filters below split on the
+# marker, not the number). File: paths come back absolute, so the ephemeral-path
+# and self-write filters apply unchanged.
+# ${arr[@]+"${arr[@]}"}, not "${arr[@]}": macOS ships bash 3.2, where an EMPTY
+# array under `set -u` is an unbound variable. That aborts the shell outright —
+# before the ERR trap runs, so memory recall would die silently on every search
+# in every project, in the default configuration. Same idiom as the megavibe
+# wrapper's ${STYLE_ARGS[@]+...}.
+for _r in ${EXTRA_ROOTS[@]+"${EXTRA_ROOTS[@]}"}; do
+  _extra=$($POMA_CMD search "$PATTERN" --path "$_r/" --top-k "$TOPK" --min-score "$MIN_SCORE" 2>/dev/null || echo "")
+  case "$_extra" in ""|"No results found."*) : ;; *) RAW_RESULTS="${RAW_RESULTS}
+${_extra}" ;; esac
+done
 
 # Per-session ledgers (see the python filter for full rationale):
 #   injected.<sid>.log       — content-keys of blocks already injected this session
@@ -197,6 +228,14 @@ import sys, re, os, hashlib
 inj_path = os.environ["INJ_LEDGER"]; writes_path = os.environ["WRITES_LEDGER"]
 maxn = int(os.environ["MAXN"]); raw = os.environ.get("RAW_RESULTS", "")
 blocks = [b for b in re.split(r'(?m)(?=^--- Result )', raw) if b.strip().startswith('--- Result')]
+# Each root is sorted within itself, but the roots are concatenated — so without
+# this the cap takes the cwd's first three survivors and a better-scoring hit
+# from another root never appears, which is exactly what MEGAVIBE_EXTRA_AGENT_DIRS
+# exists to surface. No-op for a single root, where poma already returns sorted.
+def _score(b):
+    m = re.search(r'\(score: ([0-9.]+)\)', b)
+    return float(m.group(1)) if m else 0.0
+blocks.sort(key=_score, reverse=True)
 def load(p):
     try:
         return set(l.strip() for l in open(p) if l.strip())
