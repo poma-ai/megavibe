@@ -195,7 +195,7 @@ fi
 
 # --- Hook scripts (infrastructure — always overwrite) ---
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh truncate-verbose-bash.sh nudge-restart.sh agent-log.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh truncate-verbose-bash.sh nudge-restart.sh codex-approval-never.sh agent-log.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"

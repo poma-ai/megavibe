@@ -169,6 +169,15 @@
             "command": ".claude/hooks/augment-search.sh"
           }
         ]
+      },
+      {
+        "matcher": "mcp__codex__codex",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/codex-approval-never.sh"
+          }
+        ]
       }
     ],
     "Stop": [
