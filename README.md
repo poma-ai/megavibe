@@ -154,6 +154,8 @@ Automatically blocks dangerous commands before they execute:
 - `git reset --hard`
 - `DROP TABLE`
 
+**Credentials never reach the logs.** `.agent/LOGS/tool-events.*.jsonl` records every tool input and response verbatim, and `.agent/events/` is committed to git — so one `env` in a Bash call used to write every exported API key to disk permanently. The `redact-secrets.sh` helper now filters all three write paths (the tool-event log, `agent-log.sh` entries, and the context watcher's own event writes): it replaces the values of environment variables that look like credentials, plus well-known token shapes (`sk-`, `ghp_`, `AIza`, `xox*-`, `glpat-`, `AKIA`, `Bearer …`), and strips the password out of any inline `user:pass@host` URL while leaving the host readable. A variable carrying a secret under a name no heuristic can recognise goes in `~/.megavibe/redact-vars`, one per line. It fails open by design — if perl is missing or the helper is not found, the log is still written unfiltered and a line lands in `~/.megavibe/hook-errors.log`, because losing a log entry is worse than failing to redact one. It is defence in depth, not a guarantee: base64, url-encoded and `\u`-escaped copies are not matched.
+
 **Deletions go to the Trash.** On a Mac with `rmtrash` installed (`setup.sh` installs it where Homebrew exists), the `rm-to-trash.sh` hook rewrites every `rm …` Claude runs into `rmtrash …` before it executes — same flags, but the files land in `~/.Trash` instead of disappearing. A wrong delete becomes a drag out of the Trash. Only `rm` in command position is touched — including inside `$( )`, `find -exec`, `xargs {}` and after a plain `sudo`; never text inside quotes, heredoc bodies, comments, `case` patterns or a `rm()` definition, so a quoted `bash -c "rm …"` body stays as written. (A leader carrying its own option-argument, like `sudo -u bob rm`, is left as real `rm` — the safe direction.) It rewrites the command line Claude runs, not the inside of a script it invokes. Targets all under the temp dirs or `node_modules` keep real `rm`, as do `rm -P`/`rm -W` (which `rmtrash` cannot do). A shell alias only covers interactive shells; the hook covers the command line Claude runs directly. There is no escape hatch: `\rm`, `/bin/rm` and `/usr/bin/rm` are rewritten too, deliberately. To make something unrecoverable, delete it and empty the Trash, or use `shred`/`srm`. Note the tradeoff: a large `rm -rf dist` now fills `~/.Trash` rather than freeing the space — empty the Trash (or `\rm -rf`) to reclaim it. Deleted files land in the boot disk's `~/.Trash`, or the volume's own `.Trashes` off other disks.
 
 ### Phone access (built-in)
@@ -290,7 +292,7 @@ export OPENAI_API_KEY="your-key-here"
 
 | What | Where |
 |------|-------|
-| Hooks (21 scripts) | `.claude/hooks/` |
+| Hooks (22 scripts) | `.claude/hooks/` |
 | Rules (4 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (6 commands) | `.claude/skills/` |

@@ -114,7 +114,13 @@ case "$CMD" in
     cat > "$staged"
     _redactor="$(dirname "$0")/redact-secrets.sh"
     if [ -x "$_redactor" ]; then
-      if "$_redactor" < "$staged" > "${staged}.red" 2>/dev/null && [ -s "${staged}.red" ]; then
+      # Size floor, not just non-empty: a redactor that truncates must not be
+      # mistaken for one that redacted a lot. Redaction only ever shortens by
+      # the length of the secrets it replaced.
+      _sz_in=$(wc -c < "$staged" 2>/dev/null || echo 0)
+      if "$_redactor" < "$staged" > "${staged}.red" 2>/dev/null \
+         && [ "$(wc -c < "${staged}.red" 2>/dev/null || echo 0)" -ge $(( _sz_in / 2 )) ] \
+         && [ -s "${staged}.red" ]; then
         mv -f "${staged}.red" "$staged"
       else
         rm -f "${staged}.red"

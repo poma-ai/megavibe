@@ -431,6 +431,28 @@ def append_with_lock(target: Path, text: str) -> None:
             f.write(text)
 
 
+def _redact(agent_dir: Path, body: str) -> str:
+    """Run the body through .claude/hooks/redact-secrets.sh, if it is there.
+
+    The watcher's input is the session transcript — the same place environment
+    dumps live — and its output lands in .agent/events/, which is committed to
+    git. The shell write paths are filtered; this one has to be too. Any failure
+    returns the original text: losing an entry would be worse than failing to
+    redact one, and the shell callers make the same trade.
+    """
+    hook = agent_dir.parent / ".claude" / "hooks" / "redact-secrets.sh"
+    if not os.access(hook, os.X_OK):
+        return body
+    try:
+        r = subprocess.run([str(hook)], input=body.encode("utf-8"),
+                           capture_output=True, timeout=20)
+        if r.returncode == 0 and r.stdout:
+            return r.stdout.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return body
+
+
 def append_event(agent_dir: Path, body: str) -> Path:
     """Write one immutable entry. No lock, because there is nothing to contend.
 
@@ -445,7 +467,7 @@ def append_event(agent_dir: Path, body: str) -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     host = "".join(ch for ch in socket.gethostname() if ch.isalnum())[:12] or "host"
     out = events / f"{ts}-{host}-{uuid.uuid4().hex[:6]}.md"
-    out.write_text(body, encoding="utf-8")
+    out.write_text(_redact(agent_dir, body), encoding="utf-8")
     render_full_context(agent_dir)
     return out
 

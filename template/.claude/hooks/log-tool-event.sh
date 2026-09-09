@@ -69,9 +69,32 @@ REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "unknown")
 REDACTOR="$(dirname "$0")/redact-secrets.sh"
 if [ -x "$REDACTOR" ]; then
-  echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' 2>/dev/null \
-    | "$REDACTOR" >> "$LOGFILE" 2>/dev/null || true
+  # Buffer the one JSONL line rather than piping straight to the file: if the
+  # redactor emits nothing (a broken helper exits before printing, which its own
+  # in-process fallback cannot catch), the line would vanish silently. It is a
+  # single line of jq output — no NULs, no trailing-newline subtleties — so a
+  # command substitution is safe here in a way it is not for arbitrary payloads.
+  RAW_LINE=$(echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' 2>/dev/null)
+  RED_LINE=$(printf '%s' "$RAW_LINE" | "$REDACTOR" 2>/dev/null)
+  if [ -n "$RED_LINE" ]; then
+    printf '%s\n' "$RED_LINE" >> "$LOGFILE" 2>/dev/null || true
+  elif [ -n "$RAW_LINE" ]; then
+    # Redactor produced nothing: keep the log line, and say the control is off.
+    if [ ! -f "${LOGDIR}/.redaction-off.${SID}" ]; then
+      : > "${LOGDIR}/.redaction-off.${SID}" 2>/dev/null
+      echo "$(date -u +%FT%TZ) log-tool-event.sh: ${REDACTOR} produced no output — log redaction is OFF" \
+        >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+    fi
+    printf '%s\n' "$RAW_LINE" >> "$LOGFILE" 2>/dev/null || true
+  fi
 else
+  # No redactor next to $0: the log still gets written, but unfiltered. A
+  # disabled control must not look like a working one.
+  if [ ! -f "${LOGDIR}/.redaction-off.${SID}" ]; then
+    : > "${LOGDIR}/.redaction-off.${SID}" 2>/dev/null
+    echo "$(date -u +%FT%TZ) log-tool-event.sh: redact-secrets.sh not found at ${REDACTOR} — log redaction is OFF" \
+      >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+  fi
   echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' >> "$LOGFILE" 2>/dev/null || true
 fi
 
