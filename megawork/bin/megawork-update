@@ -38,6 +38,22 @@ REMOTE_SHA=$(curl -fsSL --max-time 20 \
   | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1)
 LOCAL_SHA=$(cat "$ENGINE/version" 2>/dev/null || echo "")
 
+# --if-due: what the app icon runs at every launch. Silent and instant unless
+# there is genuinely something to install, so it can sit in the startup path.
+if [ "${1:-}" = "--if-due" ]; then
+  STAMP="$ENGINE/logs/.update-checked"
+  mkdir -p "$ENGINE/logs" 2>/dev/null || true
+  # Checked today already: say nothing, cost nothing.
+  if [ -f "$STAMP" ] && [ -z "$(find "$STAMP" -mtime +1 2>/dev/null)" ]; then
+    exit 0
+  fi
+  touch "$STAMP" 2>/dev/null || true
+  if [ -z "$REMOTE_SHA" ] || [ -z "$LOCAL_SHA" ] || [ "$REMOTE_SHA" = "$LOCAL_SHA" ]; then
+    exit 0                      # offline, unknown, or current — start the session
+  fi
+  set --                        # due and available: fall through and install it
+fi
+
 if [ "${1:-}" = "--check" ]; then
   # Unknown local version (older install, offline stamp) is not evidence of an
   # update; claiming one sends people into a re-install that changes nothing.

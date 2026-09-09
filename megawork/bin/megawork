@@ -101,9 +101,13 @@ fi
 
 cd "$DATA"
 
-# Mention updates at most once a week, as one quiet line. Never interrupt, never
-# auto-install: a surprise change to someone's assistant is worse than being a
-# few days behind.
+# The app icon updates before the session starts (see the boot script in
+# init.sh), so this notice is only for someone who typed `megawork` in a
+# terminal. Once a week, one quiet line, never mid-session: a surprise change
+# while somebody is working is worse than being a few days behind. Being a few
+# days behind is NOT harmless though — a quiet line is what left a pilot Mac
+# sitting in a login loop for days, which is why the icon no longer waits to be
+# asked.
 STAMP="$ENGINE/logs/.update-checked"
 if [ ! -f "$STAMP" ] || [ -n "$(find "$STAMP" -mtime +7 2>/dev/null)" ]; then
   touch "$STAMP" 2>/dev/null
