@@ -106,7 +106,20 @@ case "$CMD" in
   append)
     migrate_legacy
     staged="$(mktemp "$AGENT_DIR/.entry.XXXXXX")" || exit 1
+    # Stage the raw entry FIRST, then redact into a sibling and swap only on
+    # success. .agent/events/ is committed to git, so a secret pasted into an
+    # entry would be pushed — but this script runs under `set -e`, and a
+    # redactor that exists yet exits nonzero must not abort the append and lose
+    # the entry. Guarding the call in an `if` keeps `set -e` out of it.
     cat > "$staged"
+    _redactor="$(dirname "$0")/redact-secrets.sh"
+    if [ -x "$_redactor" ]; then
+      if "$_redactor" < "$staged" > "${staged}.red" 2>/dev/null && [ -s "${staged}.red" ]; then
+        mv -f "${staged}.red" "$staged"
+      else
+        rm -f "${staged}.red"
+      fi
+    fi
     if [ ! -s "$staged" ] || [ -z "$(tr -d '[:space:]' < "$staged")" ]; then
       rm -f "$staged"
       exit 0

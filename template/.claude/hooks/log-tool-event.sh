@@ -62,8 +62,18 @@ COUNTER_FILE="${LOGDIR}/.tool-call-counter.${SID}"
 REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
 
 # --- Best-effort JSONL logging (must NOT abort the nudge path) ---
+# Piped through redact-secrets.sh: this file records tool inputs and responses
+# verbatim, so `env`, `printenv` or a curl echoing its headers would otherwise
+# write live credentials to disk permanently. Falls through to a direct write if
+# the redactor is missing, so logging never depends on it.
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || echo "unknown")
-echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' >> "$LOGFILE" 2>/dev/null || true
+REDACTOR="$(dirname "$0")/redact-secrets.sh"
+if [ -x "$REDACTOR" ]; then
+  echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' 2>/dev/null \
+    | "$REDACTOR" >> "$LOGFILE" 2>/dev/null || true
+else
+  echo "$INPUT" | jq -c --arg ts "$TIMESTAMP" '. + {logged_at: $ts}' >> "$LOGFILE" 2>/dev/null || true
+fi
 
 # --- Cross-tool rehydrate-flag clear (defense in depth) ---
 # The Edit/Write branch below clears the flag when Claude writes the canonical
