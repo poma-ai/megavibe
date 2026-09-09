@@ -70,6 +70,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/start-context-watcher.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/start-poma-serve.sh"
           }
         ]
       }

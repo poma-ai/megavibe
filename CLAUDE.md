@@ -23,7 +23,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (22 hooks; canonical list in init.sh) | Medium |
+| `template/.claude/hooks/*.sh` | Hook scripts template (23 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The always-on independent reviewer (Opus, fresh context, runs things) — non-negotiable 4 | Medium — affects every review |
 | `scripts/provision-megawork.sh` | Admin: Megawork credentials and local config (gemini, ga4, github, grafana, db, toolbox, org) into the private overlay; identities in one project | Medium — touches IAM |
