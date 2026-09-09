@@ -70,6 +70,17 @@ echo "$NOW" > "$STAMP" 2>/dev/null || true
 # (e.g. a transient SQLite lock from a concurrent run resolves next window).
 poma-memory index .agent/ >/dev/null 2>&1 || true
 
+# Extra .agent roots (umbrella sessions, see augment-search.sh): index each root
+# into ITS OWN db so the per-project contamination check below stays valid and a
+# root's index is shared with sessions started inside that project. Same debounce.
+if [ -n "${MEGAVIBE_EXTRA_AGENT_DIRS:-}" ]; then
+  IFS=':' read -r -a _roots <<< "$MEGAVIBE_EXTRA_AGENT_DIRS"
+  for _r in "${_roots[@]}"; do
+    _r="${_r%/}"
+    [ -n "$_r" ] && [ -d "$_r" ] && poma-memory index "$_r/" >/dev/null 2>&1 || true
+  done
+fi
+
 # Contamination self-heal (gated ~6h). `poma-memory index` is additive — it never
 # prunes rows for files that left scope, so a db polluted by a past parent-dir sweep
 # stays polluted even after the one-shot init.sh heal (whose marker would otherwise

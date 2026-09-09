@@ -142,6 +142,13 @@ Every time Claude searches your code (Grep), a hook automatically searches your 
 
 Powered by [poma-memory](https://github.com/poma-ai/poma-memory) (pip-installed): hybrid BM25 + local vector search (model2vec) over your `.agent/` files. Works locally, no API calls. A `reindex-agent.sh` hook keeps the index fresh — it re-indexes changed `.agent/*.md` after edits and Bash appends (debounced, mtime-gated), so semantic recall stays close to the current state.
 
+**Umbrella sessions (several repos under one parent dir):** set
+`MEGAVIBE_EXTRA_AGENT_DIRS` to a colon-separated list of other projects' `.agent/`
+directories (e.g. in the parent's `.claude/settings.json` under `"env"`). The search
+hook then recalls from those indexes too, and the reindex hook keeps each of them
+fresh — every root keeps its own `.poma-memory.db`, so nothing is mixed. Empty
+(the default) = single-root behaviour.
+
 ### Self-improvement
 
 When you correct Claude, it records the pattern in `LESSONS.md`. Before every plan, it checks its lessons to avoid repeating mistakes. Your Claude gets better at YOUR project over time.
