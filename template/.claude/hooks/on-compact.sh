@@ -62,6 +62,14 @@ mkdir -p "$SESSION_DIR"
 # summary just shed. (See augment-search.sh / reindex-agent.sh.)
 rm -f ".agent/LOGS/injected.${SID}.log" ".agent/LOGS/session-writes.${SID}.log" 2>/dev/null || true
 
+# Re-arm the compaction autopilot. Its flags are per-SESSION but the thing they
+# describe is per-FILL-CYCLE: after a compaction the window is nearly empty and
+# will fill again, so a .closeout-done left over from the previous cycle would
+# silence the hook for the rest of the session — the exact failure it exists to
+# prevent, reintroduced by its own success. Cleared here because this is the one
+# hook that runs at the cycle boundary.
+rm -f ".agent/LOGS/.closeout-done.${SID}"       ".agent/LOGS/.closeout-blocked.${SID}"       ".agent/LOGS/.closeout-count.${SID}"       ".agent/LOGS/.rehydrate-nudge.${SID}"       ".agent/LOGS/.rehydrate-blocked.${SID}" 2>/dev/null || true
+
 WC_PATH="${SESSION_DIR}/WORKING_CONTEXT.md"
 INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 
