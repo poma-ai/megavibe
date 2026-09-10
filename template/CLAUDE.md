@@ -37,6 +37,14 @@ Multiple Claude Code sessions can run in the same project simultaneously. To pre
 
 The on-compact hook tells you your session ID and WORKING_CONTEXT path. Use the path it gives you.
 
+**Sessions share a checkout, and that is a real hazard.** One session switching
+branch changes it for every other session in that directory — a commit can land
+on a branch nobody meant, which is how it was found. `megavibe worktree <name>`
+gives a session its own directory and branch while symlinking `.agent/` and
+`.claude/` back to the main checkout, so the code is isolated and the project's
+memory stays shared. Before committing, check you are on the branch you think
+you are.
+
 ## Compaction lifecycle (automatic)
 
 Compaction has three phases, all hook-driven:
