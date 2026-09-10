@@ -37,6 +37,14 @@ Multiple Claude Code sessions can run in the same project simultaneously. To pre
 
 The on-compact hook tells you your session ID and WORKING_CONTEXT path. Use the path it gives you.
 
+**Sessions share a checkout, and that is a real hazard.** One session switching
+branch changes it for every other session in that directory — a commit can land
+on a branch nobody meant, which is how it was found. `megavibe worktree <name>`
+gives a session its own directory and branch while symlinking `.agent/` and
+`.claude/` back to the main checkout, so the code is isolated and the project's
+memory stays shared. Before committing, check you are on the branch you think
+you are.
+
 ## Compaction lifecycle (automatic)
 
 Compaction has three phases, all hook-driven:
@@ -137,6 +145,10 @@ Standard schemas:
 **Bash: quiet by default.** For shell you author, don't `echo` progress, banners, or "step complete" chatter, and don't comment-restate the command — you wrote the script, so narrating your plan back to yourself pays tokens twice (authoring + re-ingest) and tells the next turn nothing new. Emit only what that turn can't predict: errors, computed values, and an **explicit** verification verdict (quiet ≠ correct — print the check, don't infer success from silence). If a long/parallel/destructive run truly needs breadcrumbs, keep them sparse (phase boundaries) and gate them behind `VERBOSE=1` or stderr/log-on-failure. The `nudge-quiet-bash.sh` hook flags self-narrating shell once per session — advisory, never blocks.
 
 **Deletions go to the Trash — never bypass it.** On a Mac with `rmtrash`, the `rm-to-trash.sh` hook rewrites `rm` to `rmtrash` so a wrong delete is recoverable. Do NOT defeat it: never write `\rm`, `/bin/rm`, `/usr/bin/rm`, or any other spelling chosen to get a real unlink — the hook rewrites those too, and reaching for one is the exact move that destroyed a credential file on 2026-09-08. If something genuinely must be unrecoverable, delete it normally and empty the Trash, or use `shred`/`srm` and say so. Before deleting any file you did not create, confirm the destination copy exists first.
+
+**`kubectl exec` is a write, not a read.** `kubectl exec`, `attach`, `cp`, `debug`, `port-forward` (and `oc` equivalents) are **writes** — they start a process inside a live production container, and in a zero-headroom pod (`request.mem == limit.mem`) the OOM killer then takes the *server*, not your shell. Wanting to print an env var feels like reading; the mechanism decides the category, not the intent. Get it from the manifest instead — `get`/`describe`, image tag, env block, sealed secret, repo — and never spend production risk to *confirm* something you already have evidence for. `block-dangerous-bash.sh` blocks this class fail-closed unless the namespace/context visibly names non-prod (`MEGAVIBE_ALLOW_PROD_EXEC=1` to override). Note too that editing a Deployment's pod template — **including one env var** — rolls every pod, so a GitOps sync of a manifest PR *is* a production restart. Full rules: **`.claude/rules/prod-access-discipline.md`**.
+
+**Blamed for an incident? Check the timeline before agreeing.** Reconstruct from artifacts — ReplicaSet timestamps, sync history, deploy-PR merge times, your own tool calls — then say what you did and did not do, with evidence, and name the cause you think is real. Own the boundary you crossed; correct the causal claim that is not yours. A confident false confession is worse than a wrong answer: it is built to be believed, so it ends the investigation in the wrong place while the real cause stays live. Full rules: **`.claude/rules/prod-access-discipline.md`**.
 
 **Long-running processes.** Don't disown servers, watchers, or polling loops to launchd — no `nohup`, no bare `&` from a shell that's about to exit, no `disown`. Use Bash `run_in_background`, foreground in a terminal the user is watching, or a named tmux session. Anything else and the user finds the process parented to PID 1 a week later. Bind dev servers to `127.0.0.1` by default — uvicorn, `python -m http.server`, vite, next dev all default to `0.0.0.0`, exposing internal services on the LAN; change it explicitly. Polling loops against authenticated APIs (kubectl, gcloud, GitHub, k8s) **must exit on auth failure** rather than retry — one watchdog with no fail-fast generated 1.2M gcloud log files in 14 days. When you start a long-running process, report PID/session, port, how to find it, and how to kill it. Full rules: **`.claude/rules/process-discipline.md`**.
 

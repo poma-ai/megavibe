@@ -131,6 +131,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/augment-search.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/kube-token.sh"
           }
         ]
       },

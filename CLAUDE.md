@@ -18,12 +18,12 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `init.sh` | Per-project bootstrapper (.agent/, hooks, skills, settings) | High — affects all projects |
 | `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
 | `template/CLAUDE.md` | Core protocol — installed to `~/.claude/CLAUDE.md` | Critical — review required |
-| `template/.claude/rules/*.md` | 4 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline) | Medium — review recommended |
+| `template/.claude/rules/*.md` | 5 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline, prod-access-discipline) | Medium — review recommended |
 | `template/.claude/skills/*/SKILL.md` | 6 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy) | Low — workflow shortcuts |
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (24 hooks; canonical list in init.sh) | Medium |
+| `template/.claude/hooks/*.sh` | Hook scripts template (25 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The always-on independent reviewer (Opus, fresh context, runs things) — non-negotiable 4 | Medium — affects every review |
 | `scripts/provision-megawork.sh` | Admin: Megawork credentials and local config (gemini, ga4, github, grafana, db, toolbox, org) into the private overlay; identities in one project | Medium — touches IAM |
@@ -32,7 +32,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
 | `megawork/` | Derived profile Megawork — the profile for non-technical colleagues | Medium — see `megawork/README.md` |
-| `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the BILLED project (`--billed`), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
+| `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
 | `README-watcher.md` | Context-watcher detail | Low |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
