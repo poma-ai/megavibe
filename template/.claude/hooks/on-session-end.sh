@@ -32,4 +32,34 @@ TMUX_SESSION="mvw-${SID}"
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
 fi
+
+# The poma-memory search daemon is machine-wide, not per-session, so it is only
+# reapable once NOBODY is left to serve. Otherwise this hook would kill the warm
+# index out from under three other sessions.
+#
+# Observed, not counted. A reference count incremented at SessionStart and
+# decremented here leaks upward every time this hook does not run — a crash, a
+# kill -9, a laptop shutdown — and a leaked count means the daemon never exits,
+# which is worse than the 30-minute idle timer it would be replacing. Counting
+# live processes re-derives the truth every time and cannot drift.
+#
+# The idle timeout stays as the backstop for the case where this hook never
+# fires at all.
+if tmux has-session -t poma-serve 2>/dev/null; then
+  MY_PID="${PPID:-0}"
+  OTHERS=0
+  # Every claude process except our own parent; alive AND sitting in a directory
+  # that has a .agent, i.e. a megavibe project that would want the daemon.
+  for _p in $(pgrep -x claude 2>/dev/null); do
+    [ "$_p" = "$MY_PID" ] && continue
+    _cwd=$(lsof -a -p "$_p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    [ -n "$_cwd" ] && [ -d "$_cwd/.agent" ] && OTHERS=$((OTHERS+1))
+  done
+  if [ "$OTHERS" -eq 0 ]; then
+    tmux kill-session -t poma-serve 2>/dev/null || true
+    echo "$(date -u +%FT%TZ) poma-serve stopped: last megavibe session ended" \
+      >> .agent/LOGS/poma-serve-spawn.log 2>/dev/null || true
+  fi
+fi
+
 exit 0
