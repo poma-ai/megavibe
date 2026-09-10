@@ -23,7 +23,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (23 hooks; canonical list in init.sh) | Medium |
+| `template/.claude/hooks/*.sh` | Hook scripts template (25 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The always-on independent reviewer (Opus, fresh context, runs things) — non-negotiable 4 | Medium — affects every review |
 | `scripts/provision-megawork.sh` | Admin: Megawork credentials and local config (gemini, ga4, github, grafana, db, toolbox, org) into the private overlay; identities in one project | Medium — touches IAM |
@@ -62,7 +62,7 @@ Two gotchas:
    - `[ -d ".agent" ] || exit 0` — no-op outside megavibe projects
    - `command -v jq &>/dev/null || exit 0` — graceful without jq
    - Never block Claude over infra issues (exit 0, not exit 2)
-   - Exception: `block-dangerous-bash.sh` exits 2 intentionally
+   - Exception: `block-dangerous-bash.sh` and `enforce-pr-format.sh` exit 2 intentionally
    - Exception: `block-dangerous-bash.sh` and `rm-to-trash.sh` intentionally run in every project (safety is universal), so they skip the `.agent` guard
 
 4. **Template/live parity.** `template/.claude/` and the repo's own `.claude/` should stay in sync. After editing a template hook, run `bash init.sh .` to sync the live copy.

@@ -86,6 +86,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 **Commit**
 - Descriptive message. Include what was verified.
 - After committing: record a summary with `.claude/hooks/agent-log.sh append`.
+- **PR bodies have a required shape.** A feature or change needs a `## Summary` section (what and why, 2–3 sentences). A bug fix needs `## Bug` (what broke, observed behaviour, repro) **and** `## Fix` (what changed, why it is correct) — one without the other is rejected. Something that is both gets `## Summary`, then `## Bug`, then `## Fix`. Headings must be exactly level 2. `enforce-pr-format.sh` blocks `gh pr create`/`gh pr edit` that miss this, and blocks `--fill` (a body built from commit messages cannot satisfy it). The footgun: an example invocation inside a doc, heredoc or commit message reads as a real command unless you **indent it** — one leading space is the escape hatch.
 
 **Learn**
 - After ANY correction from the user, append a 1–2 line pattern to `.agent/LESSONS.md`: what went wrong, what to do instead.
