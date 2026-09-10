@@ -101,6 +101,47 @@ fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
 
+# --- REHYDRATE comes first, always -----------------------------------------
+# Sequencing, deliberate: right after a compaction the window is nearly empty,
+# so the close-out thresholds cannot be met and these two can never contend for
+# the same Stop. The precedence is stated anyway, because "they cannot collide"
+# is exactly the assumption that stops being true after someone tunes a
+# threshold. Rehydrate wins; if it fires, this hook does nothing else.
+#
+# on-compact.sh sets .needs-rehydration when the working context is stale;
+# log-tool-event.sh clears it the moment WORKING_CONTEXT.md is written. So the
+# flag being gone is proof the work happened, not a promise that it will.
+REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
+R_NUDGE="${LOGDIR}/.rehydrate-nudge.${SID}"
+R_BLOCKED="${LOGDIR}/.rehydrate-blocked.${SID}"
+REHYDRATE_TASK='Run /rehydrate NOW, before anything else. The last compaction
+left the working context stale, and every answer until it is rebuilt is guesswork
+dressed as recall.'
+
+if [ -f "$REHYDRATE_FLAG" ]; then
+  if [ "$EVENT" = "PostToolUse" ]; then
+    if [ ! -f "$R_NUDGE" ]; then
+      : > "$R_NUDGE" 2>/dev/null || true
+      jq -n --arg c "$REHYDRATE_TASK" \
+        '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
+    fi
+    exit 0
+  fi
+  if [ "$EVENT" = "Stop" ]; then
+    ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
+    [ "$ACTIVE" = "true" ] && exit 0
+    # Only escalate once the soft nudge has actually been delivered. Blocking on
+    # the first Stop after a compaction would fire before /rehydrate has had a
+    # single turn to run — and it spawns Gemini or Codex, which takes one.
+    [ -f "$R_NUDGE" ] || exit 0
+    [ -f "$R_BLOCKED" ] && exit 0
+    : > "$R_BLOCKED" 2>/dev/null || true
+    jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
+    exit 0
+  fi
+  exit 0
+fi
+
 CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
 1. Append the decisions of this session to .agent/DECISIONS.md — each with the
    reasoning, so nobody re-derives it. Not a list of what changed.
