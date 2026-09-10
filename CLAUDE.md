@@ -32,7 +32,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
 | `megawork/` | Derived profile Megawork — the profile for non-technical colleagues | Medium — see `megawork/README.md` |
-| `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the BILLED project (`--billed`), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
+| `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
 | `README-watcher.md` | Context-watcher detail | Low |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
