@@ -12,6 +12,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/revive-watcher.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/compaction-autopilot.sh"
           }
         ]
       },
@@ -199,6 +203,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/nudge-restart.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/compaction-autopilot.sh"
           }
         ]
       }
