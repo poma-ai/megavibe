@@ -34,6 +34,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `megawork/` | Derived profile Megawork — the profile for non-technical colleagues | Medium — see `megawork/README.md` |
 | `scripts/google-oauth-mint.sh` | Per-user Google OAuth refresh token for scopes a gcloud login does not carry (Ads, Workspace Admin, GA4 Admin). Loopback consent, token 0600 in ~/.config. `groupwrite` is a WRITE scope — see the header | Medium — touches credentials |
 | `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
+| `scripts/leak-scan.sh` | Pre-push check that this PUBLIC repo publishes no secrets/internal identifiers, and nothing that only works inside one company | Low — read-only |
 | `README-watcher.md` | Context-watcher detail | Low |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
@@ -69,6 +70,22 @@ Two gotchas:
 4. **Template/live parity.** `template/.claude/` and the repo's own `.claude/` should stay in sync. After editing a template hook, run `bash init.sh .` to sync the live copy.
 
 5. **No project CLAUDE.md in template.** `init.sh` never touches a project's `CLAUDE.md`. The protocol lives user-level. Project CLAUDE.md is the user's domain.
+
+## This repo is PUBLIC — check before you push
+
+Two questions, every time, and the second one is the one that gets skipped:
+
+1. **Is anything published that should not be?** Credentials, internal hostnames, GCP projects, colleagues' names, customer or property IDs, binaries. This repo ships credential-touching scripts and is written inside a company that has all of those lying around.
+2. **Does any of it only make sense to us?** Hardcoded org defaults, internal tool names, workflows that assume our cluster. These are not leaks — they are what makes a published tool useless to the strangers it was published for. A stranger with a Claude subscription and nothing else must be able to `curl | bash` this and get a working setup.
+
+Run `scripts/leak-scan.sh` before pushing anything that touches `scripts/`, `megawork/`, `install.sh`, `setup.sh`, or docs. It fails the run on findings and prints `file:line` only — never the matched value, since a scanner that echoes a secret into a terminal or an agent transcript has moved the leak rather than found it.
+
+Two gotchas worth holding even without reading the script:
+
+- **History counts as published.** A secret deleted in a later commit is still served by GitHub at its blob URL, forever, and a force-push does not revoke it. Rotation is not optional at that point. The default scan reads all history; `--fast` skips it and is for tight loops only.
+- **The org-coupling check is a REVIEW, not a verdict.** Legitimate `poma-ai` references exist — the repo URL, the licence, the poma-memory dependency — so it never fails the run. Read the lines it prints rather than trusting the exit code for that axis.
+
+An icon and a named pilot brief have each landed here once, and each cost a history rewrite. `.gitignore` carries the guards that came out of those; the paths in it said `nondev/` until the rename, so for a while they guarded nothing.
 
 ## Verification protocol
 
