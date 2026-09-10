@@ -332,6 +332,82 @@ fi
 
 # ─── Remote subcommand ───────────────────────────────────────────────
 
+# ─── Worktree subcommand ────────────────────────────────────────────
+#
+# Several sessions in ONE checkout fight over the branch: session A switches to
+# a feature branch, session B commits onto it without noticing, and the commit
+# lands somewhere nobody meant. Measured on this repo with eight live sessions.
+#
+# A worktree gives each session its own directory and its own branch, sharing
+# one .git. What it must NOT do is fragment .agent/ — the event log, TASKS,
+# DECISIONS and the memory index are deliberately shared across sessions in a
+# project, and a per-worktree copy would quietly split the project's memory in
+# half. So the code is isolated and the context is symlinked back to the main
+# checkout. Same for .claude/, so every session runs identical hooks.
+
+if [ "${1:-}" = "worktree" ]; then
+  shift
+  git rev-parse --git-dir >/dev/null 2>&1 || { echo "Not a git repository."; exit 1; }
+  # --show-toplevel, not the git dir's parent and not `git worktree list`.
+  # Both of those lie when .git is a SYMLINK into a separate store (this repo:
+  # .git -> ~/.gitstores/megavibe.git), because git resolves the link and then
+  # reports the store as the worktree. show-toplevel stays correct.
+  MAIN=$(git rev-parse --show-toplevel)
+  [ -n "$MAIN" ] || { echo "Could not determine the working tree."; exit 1; }
+  REPO=$(basename "$MAIN")
+
+  case "${1:-list}" in
+    list|"")
+      echo -e "${BOLD}Worktrees for $REPO${RESET}"
+      git worktree list
+      ;;
+
+    remove)
+      NAME="${2:-}"; [ -n "$NAME" ] || { echo "usage: megavibe worktree remove <name>"; exit 2; }
+      WT="$(dirname "$MAIN")/${REPO}-${NAME}"
+      [ -d "$WT" ] || { echo "No worktree at $WT"; exit 1; }
+      # The symlinks point at the main checkout's real .agent/.claude. Removing
+      # the worktree must not follow them — git does not, but say so plainly
+      # because "rm -rf a directory containing a symlink to my project memory"
+      # is exactly the sentence that should make someone check.
+      rm -f "$WT/.agent" "$WT/.claude" 2>/dev/null || true
+      git worktree remove "$WT" --force && echo "  Removed $WT (branch kept)"
+      ;;
+
+    *)
+      NAME="$1"; BRANCH="${2:-wt/$NAME}"
+      case "$NAME" in */*|.*|"") echo "Pick a simple name, e.g. 'review' or 'hotfix'."; exit 2 ;; esac
+      WT="$(dirname "$MAIN")/${REPO}-${NAME}"
+      [ -e "$WT" ] && { echo "$WT already exists."; exit 1; }
+      [ -d "$MAIN/.agent" ] || { echo "No .agent/ in $MAIN — run 'megavibe' there once first."; exit 1; }
+
+      if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git worktree add "$WT" "$BRANCH" || exit 1
+      else
+        git worktree add -b "$BRANCH" "$WT" || exit 1
+      fi
+
+      # Shared context, isolated code. Link to the RESOLVED directories: run
+      # from an existing worktree these are already symlinks, and a link to a
+      # link breaks the moment the middle one goes away.
+      AGENT_REAL=$(cd "$MAIN/.agent" && pwd -P)
+      ln -s "$AGENT_REAL" "$WT/.agent"
+      if [ -d "$MAIN/.claude" ]; then
+        ln -s "$(cd "$MAIN/.claude" && pwd -P)" "$WT/.claude"
+      fi
+
+      echo ""
+      echo -e "  ${GREEN}✓${RESET} ${BOLD}$WT${RESET}  on branch ${BOLD}$BRANCH${RESET}"
+      echo -e "    .agent/ and .claude/ are symlinks to $REPO — context and hooks stay shared."
+      echo ""
+      echo -e "    Start a session:  ${BOLD}cd $WT && megavibe${RESET}"
+      echo -e "    Remove it later:  ${BOLD}megavibe worktree remove $NAME${RESET}"
+      echo ""
+      ;;
+  esac
+  exit 0
+fi
+
 if [ "${1:-}" = "doctor" ]; then
   echo -e "${BOLD}megavibe doctor${RESET}"
   echo ""
