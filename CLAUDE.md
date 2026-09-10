@@ -63,7 +63,7 @@ Two gotchas:
    - `[ -d ".agent" ] || exit 0` — no-op outside megavibe projects
    - `command -v jq &>/dev/null || exit 0` — graceful without jq
    - Never block Claude over infra issues (exit 0, not exit 2)
-   - Exception: `block-dangerous-bash.sh` and `enforce-pr-format.sh` exit 2 intentionally
+   - Exception: `block-dangerous-bash.sh`, `enforce-pr-format.sh` and `block-stray-working-context.sh` exit 2 intentionally
    - Exception: `block-dangerous-bash.sh` and `rm-to-trash.sh` intentionally run in every project (safety is universal), so they skip the `.agent` guard
 
 4. **Template/live parity.** `template/.claude/` and the repo's own `.claude/` should stay in sync. After editing a template hook, run `bash init.sh .` to sync the live copy.

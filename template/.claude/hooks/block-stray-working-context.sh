@@ -11,10 +11,9 @@ set -u
 #
 # Runs on Write|Edit|MultiEdit. No-op when jq is missing (graceful).
 
-# No-op outside a megavibe project (CLAUDE.md invariant 3). This hook exits 2,
-# and only block-dangerous-bash.sh and rm-to-trash.sh are licensed to do that
-# everywhere — a plain WORKING_CONTEXT.md in an unrelated repo is not megavibe's
-# business.
+# No-op outside a megavibe project (CLAUDE.md invariant 3). The guard-exempt
+# hooks are block-dangerous-bash.sh and rm-to-trash.sh, and this is neither: a
+# plain WORKING_CONTEXT.md in an unrelated repo is not megavibe's business.
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
 

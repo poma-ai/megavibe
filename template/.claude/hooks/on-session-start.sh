@@ -44,6 +44,12 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
 # Extract session ID
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' | cut -c1-12)
+# Same gate as SID_FULL. `cut` bounds the LENGTH but not the content: a
+# session_id of "../../../../" survives it intact, and this value is a path
+# component in the flag filenames below.
+case "$SID" in
+  ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;;
+esac
 # The sessions DIRECTORY is keyed on the FULL session id, not the 12-char SID
 # used for flat flag files. /rehydrate derives its path from session_id in the
 # hook payload, so truncating here made the hook advertise one directory while
@@ -143,7 +149,7 @@ SUBAGENT_STATUS="
 
 CONTEXT="## Megavibe — project knowledge
 
-Your session ID is: ${SID}
+Your session ID is: ${SID_FULL}
 WORKING_CONTEXT path: .agent/sessions/${SID_FULL}/WORKING_CONTEXT.md
 
 ${TASK_HINT}

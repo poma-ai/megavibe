@@ -130,7 +130,13 @@ fi
 # The cost of that false positive is one skipped nudge, which is why it stands.
 for _wc in ".agent/sessions/${SID_FULL}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
   [ -f "$REHYDRATE_FLAG" ] || break
-  if [ -s "$_wc" ] && [ "$_wc" -nt "$REHYDRATE_FLAG" ]; then
+  # NOT `$_wc -nt $FLAG`: -nt is whole-second on the bash 3.2 macOS ships, so a
+  # rehydrate landing in the same second as the flag compared as older. That is
+  # the common case — the flag is set at compaction and /rehydrate runs moments
+  # later — and it produced three false nags then a false auto-clear, plus the
+  # forced Stop turn this whole change exists to remove. Equality means fresh:
+  # on-compact.sh only sets the flag when the WC is over an hour old.
+  if [ -s "$_wc" ] && [ ! "$REHYDRATE_FLAG" -nt "$_wc" ]; then
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 done
