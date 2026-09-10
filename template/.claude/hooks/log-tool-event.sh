@@ -55,6 +55,21 @@ mkdir -p "$LOGDIR" 2>/dev/null || true
 INPUT=$(cat)
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 SID="${SID:-default}"
+# The sessions DIRECTORY is keyed on the FULL session id, not the 12-char SID
+# used for flat flag files. /rehydrate derives its path from session_id in the
+# hook payload, so truncating here made the hook advertise one directory while
+# the skill wrote another: the stale-context hint read an empty file, and
+# .needs-rehydration never cleared because the file it watches was never the
+# file that got written.
+SID_FULL=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null)
+SID_FULL="${SID_FULL:-default}"
+# Validate before it becomes a path component. session_id comes from the harness
+# and is a UUID in practice, but this string is interpolated into mkdir/read
+# targets, and "in practice" is not a boundary. Anything outside a safe charset
+# — or a bare . / .. — falls back to the same "default" the missing-id case uses.
+case "$SID_FULL" in
+  ''|.|..|*[!A-Za-z0-9._-]*) SID_FULL="default" ;;
+esac
 
 # Session-scoped paths (prevent concurrent session races)
 LOGFILE="${LOGDIR}/tool-events.${SID}.jsonl"
@@ -104,10 +119,21 @@ fi
 # jq output into the file (Bash), which produces no Write event. Generic fix:
 # if the canonical file exists and is newer than the flag, rehydration
 # happened — clear regardless of which tool wrote it. Two stats per call.
-SESSION_WC=".agent/sessions/${SID}/WORKING_CONTEXT.md"
-if [ -f "$REHYDRATE_FLAG" ] && [ -s "$SESSION_WC" ] && [ "$SESSION_WC" -nt "$REHYDRATE_FLAG" ]; then
-  rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
-fi
+# Both spellings are checked: the full id is canonical, the 12-char one is what
+# a session that started before this fix wrote. The truncated path is NOT
+# strictly this session's — any session sharing the first 12 characters maps to
+# it, and so does the shared flag file itself. That collision predates this hook
+# and is negligible for UUIDs; it is recorded here rather than implied away,
+# because the previous wording claimed a scoping guarantee that does not exist.
+# What this loop does prove is mtime, not authorship: a fresh WORKING_CONTEXT is
+# inferred from "newer than the flag", so an unrelated touch also satisfies it.
+# The cost of that false positive is one skipped nudge, which is why it stands.
+for _wc in ".agent/sessions/${SID_FULL}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
+  [ -f "$REHYDRATE_FLAG" ] || break
+  if [ -s "$_wc" ] && [ "$_wc" -nt "$REHYDRATE_FLAG" ]; then
+    rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
+  fi
+done
 
 # --- Generic mtime-based reset ---
 # Catches writes to .agent/*.md by any tool, not just Edit/Write. Bash
@@ -142,7 +168,13 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
   # Clear rehydration flag ONLY if the canonical session-scoped WORKING_CONTEXT was written.
   # A stray .agent/WORKING_CONTEXT.md or project-root WORKING_CONTEXT.md must NOT clear the flag —
   # block-stray-working-context.sh blocks those at PreToolUse, but defend in depth.
-  if [[ "$FILE_PATH" =~ /\.agent/sessions/[^/]+/WORKING_CONTEXT\.md$ ]] && [ -f "$REHYDRATE_FLAG" ]; then
+  # The session component must be OURS. A generic [^/]+ meant that writing any
+  # other session's WORKING_CONTEXT — or a traversal spelling of the path —
+  # cleared this session's flag, so a rehydrate that never happened here looked
+  # like one that did.
+  if [ -f "$REHYDRATE_FLAG" ] \
+     && [[ "$FILE_PATH" =~ (^|/)\.agent/sessions/([^/]+)/WORKING_CONTEXT\.md$ ]] \
+     && { [ "${BASH_REMATCH[2]}" = "$SID_FULL" ] || [ "${BASH_REMATCH[2]}" = "$SID" ]; }; then
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 
@@ -508,7 +540,7 @@ if [ -f "$UPDATE_APPLIED_FILE" ] && [ -n "${MEGAVIBE_LAUNCH_VERSION:-}" ] && [ "
   NEW_VER=$(cat "$UPDATE_APPLIED_FILE" 2>/dev/null || echo "")
   if [ -n "$NEW_VER" ] && [ "$NEW_VER" != "$MEGAVIBE_LAUNCH_VERSION" ]; then
     # Show once per session (flag in session-scoped dir)
-    SESSION_DIR=".agent/sessions/${SID}"
+    SESSION_DIR=".agent/sessions/${SID_FULL}"
     SEEN_FLAG="${SESSION_DIR}/.update-nudge-seen"
     if [ ! -f "$SEEN_FLAG" ]; then
       mkdir -p "$SESSION_DIR" 2>/dev/null || true

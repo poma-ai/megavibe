@@ -44,6 +44,21 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
 # Extract session ID
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' | cut -c1-12)
+# The sessions DIRECTORY is keyed on the FULL session id, not the 12-char SID
+# used for flat flag files. /rehydrate derives its path from session_id in the
+# hook payload, so truncating here made the hook advertise one directory while
+# the skill wrote another: the stale-context hint read an empty file, and
+# .needs-rehydration never cleared because the file it watches was never the
+# file that got written.
+SID_FULL=$(echo "$INPUT" | jq -r '.session_id // "default"')
+SID_FULL="${SID_FULL:-default}"
+# Validate before it becomes a path component. session_id comes from the harness
+# and is a UUID in practice, but this string is interpolated into mkdir/read
+# targets, and "in practice" is not a boundary. Anything outside a safe charset
+# — or a bare . / .. — falls back to the same "default" the missing-id case uses.
+case "$SID_FULL" in
+  ''|.|..|*[!A-Za-z0-9._-]*) SID_FULL="default" ;;
+esac
 
 # Check for open tasks to tailor the message
 OPEN_TASKS=$(grep -cE "\| pending|\| in.progress" ".agent/TASKS.md" 2>/dev/null || echo "0")
@@ -129,7 +144,7 @@ SUBAGENT_STATUS="
 CONTEXT="## Megavibe — project knowledge
 
 Your session ID is: ${SID}
-WORKING_CONTEXT path: .agent/sessions/${SID}/WORKING_CONTEXT.md
+WORKING_CONTEXT path: .agent/sessions/${SID_FULL}/WORKING_CONTEXT.md
 
 ${TASK_HINT}
 ${SUBAGENT_STATUS}

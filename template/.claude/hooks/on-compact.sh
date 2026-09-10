@@ -53,7 +53,22 @@ echo "on-compact.sh fired at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
 
 # Extract session ID for scoping
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' | cut -c1-12)
-SESSION_DIR=".agent/sessions/${SID}"
+# The sessions DIRECTORY is keyed on the FULL session id, not the 12-char SID
+# used for flat flag files. /rehydrate derives its path from session_id in the
+# hook payload, so truncating here made the hook advertise one directory while
+# the skill wrote another: the stale-context hint read an empty file, and
+# .needs-rehydration never cleared because the file it watches was never the
+# file that got written.
+SID_FULL=$(echo "$INPUT" | jq -r '.session_id // "default"')
+SID_FULL="${SID_FULL:-default}"
+# Validate before it becomes a path component. session_id comes from the harness
+# and is a UUID in practice, but this string is interpolated into mkdir/read
+# targets, and "in practice" is not a boundary. Anything outside a safe charset
+# — or a bare . / .. — falls back to the same "default" the missing-id case uses.
+case "$SID_FULL" in
+  ''|.|..|*[!A-Za-z0-9._-]*) SID_FULL="default" ;;
+esac
+SESSION_DIR=".agent/sessions/${SID_FULL}"
 mkdir -p "$SESSION_DIR"
 
 # Reset augment-search ledgers: compaction drops the just-written / already-seen
@@ -71,6 +86,14 @@ rm -f ".agent/LOGS/injected.${SID}.log" ".agent/LOGS/session-writes.${SID}.log" 
 rm -f ".agent/LOGS/.closeout-done.${SID}"       ".agent/LOGS/.closeout-blocked.${SID}"       ".agent/LOGS/.closeout-count.${SID}"       ".agent/LOGS/.rehydrate-nudge.${SID}"       ".agent/LOGS/.rehydrate-blocked.${SID}" 2>/dev/null || true
 
 WC_PATH="${SESSION_DIR}/WORKING_CONTEXT.md"
+# Read-side migration. A session already running when this fix landed has its
+# context in the old truncated directory, and compaction is exactly the moment
+# that file is worth the most. Reads fall back to it; WC_PATH — the path
+# advertised to Claude as the write target — stays canonical, so the next
+# /rehydrate moves the session forward instead of deepening the split.
+WC_READ="$WC_PATH"
+[ -s "$WC_READ" ] || [ ! -s ".agent/sessions/${SID}/WORKING_CONTEXT.md" ] \
+  || WC_READ=".agent/sessions/${SID}/WORKING_CONTEXT.md"
 INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 
 # WC freshness gate: if /rehydrate ran within the last hour, the existing
@@ -80,8 +103,8 @@ INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 # Claude won't do if it (correctly) decides carryover context is sufficient.
 # Skip the flag in that case; user can still invoke /rehydrate voluntarily.
 WC_FRESH=0
-if [ -f "$WC_PATH" ]; then
-  WC_MTIME=$(stat -f %m "$WC_PATH" 2>/dev/null || stat -c %Y "$WC_PATH" 2>/dev/null || echo 0)
+if [ -f "$WC_READ" ]; then
+  WC_MTIME=$(stat -f %m "$WC_READ" 2>/dev/null || stat -c %Y "$WC_READ" 2>/dev/null || echo 0)
   NOW_TS=$(date +%s)
   WC_AGE=$(( NOW_TS - WC_MTIME ))
   [ "$WC_AGE" -lt 3600 ] 2>/dev/null && WC_FRESH=1
@@ -138,8 +161,8 @@ ${GIT_DIFF_STAT}"
 # a what-was-I-doing hint. Truncate to 40 lines — even at 40 lines this is
 # a stale hint, not authoritative; longer was bloating the systemMessage.
 OLD_WC=""
-if [ -f "$WC_PATH" ]; then
-  OLD_WC_BODY=$(head -40 "$WC_PATH" 2>/dev/null || echo "")
+if [ -f "$WC_READ" ]; then
+  OLD_WC_BODY=$(head -40 "$WC_READ" 2>/dev/null || echo "")
   if [ -n "$OLD_WC_BODY" ]; then
     OLD_WC="--- Pre-compact WORKING_CONTEXT.md (first 40 lines, stale hint only) ---
 ${OLD_WC_BODY}"
