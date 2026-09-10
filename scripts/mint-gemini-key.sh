@@ -24,26 +24,32 @@
 #
 # Usage:
 #   gcloud auth login                       # once, interactively
-#   bash scripts/mint-gemini-key.sh --billed [--project <id>] [--name <person>] [--write-rc]
+#   bash scripts/mint-gemini-key.sh [--project <id>] [--name <person>] [--write-rc]
 #   (--project may be omitted: it is taken from the project that owns the key in
 #    $GEMINI_API_KEY, or from the account's single billed project)
 #
-# Without --billed the script REFUSES a billing-enabled project (the old
-# free-tier mode, kept for experiments). Prints only a key prefix + length,
-# never the whole key. --write-rc appends the key to your shell profile;
-# otherwise the key lands in a 0600 temp file whose path is printed.
+# Billed is the default. `--free-tier` opts into the old mode and REFUSES a
+# billing-enabled project — kept for throwaway experiments only, never as a
+# backend: 20 requests/day project-wide, and prompts ARE used for training.
+# Prints only a key prefix + length, never the whole key. --write-rc appends the
+# key to your shell profile; otherwise the key lands in a 0600 temp file whose
+# path is printed.
 
 set -euo pipefail
 
 PROJECT=""
 WRITE_RC=0
-BILLED=0
+# Billed is the DEFAULT and the only supported mode. The free tier was dropped
+# as a backend: 20 requests/day project-wide, and prompts are used for training.
+# --free-tier is kept for throwaway experiments and says so at every step.
+BILLED=1
 SA_NAME="megavibe-gemini"
 while [ $# -gt 0 ]; do
   case "$1" in
     --project)   PROJECT="$2"; shift 2 ;;
     --write-rc)  WRITE_RC=1; shift ;;
-    --billed)    BILLED=1; shift ;;
+    --billed)    BILLED=1; shift ;;          # accepted, now redundant — the default
+    --free-tier) BILLED=0; shift ;;
     # Service-account ids: 6-30 chars, lowercase, no leading/trailing hyphen.
     --name)      SA_NAME="megavibe-gemini-$(printf '%s' "$2" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-*//' | cut -c1-14 | sed 's/-*$//')"; shift 2 ;;
     -h|--help)   sed -n '2,32p' "$0"; exit 0 ;;
@@ -107,7 +113,7 @@ case "$BILLING" in
     if [ "$BILLED" -eq 1 ]; then
       note "billing: enabled — Paid Service treatment (no training on prompts); keep the model pinned to flash"
     else
-      die "project $PROJECT HAS billing enabled — pass --billed if that is intended (it is, for admin-issued keys)"
+      die "project $PROJECT HAS billing enabled, but --free-tier was given — drop the flag"
     fi ;;
   unknown)
     [ "$BILLED" -eq 1 ] && die "--billed given but billing status of $PROJECT cannot be verified — refusing to hand out a key that may train on prompts"
