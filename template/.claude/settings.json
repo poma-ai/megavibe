@@ -126,6 +126,10 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/enforce-pr-format.sh"
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/augment-search.sh"
           }
         ]

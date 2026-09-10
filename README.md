@@ -301,7 +301,7 @@ export OPENAI_API_KEY="your-key-here"
 
 | What | Where |
 |------|-------|
-| Hooks (23 scripts) | `.claude/hooks/` |
+| Hooks (24 scripts) | `.claude/hooks/` |
 | Rules (4 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (6 commands) | `.claude/skills/` |

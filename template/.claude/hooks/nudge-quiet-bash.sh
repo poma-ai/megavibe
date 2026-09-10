@@ -12,7 +12,7 @@ set -u
 #
 # Triggered by: PreToolUse (Bash) and PreToolUse (Write of *.sh / *.bash).
 # Exit 0 ALWAYS — advisory only, never blocks (invariant #3; the only
-# intentional-block hook is block-dangerous-bash.sh).
+# intentional-block hooks are block-dangerous-bash.sh and enforce-pr-format.sh).
 #
 # Rationale: on bypass/yolo the only consumer of a script's stdout is the
 # model on its next turn — and the model authored the script, so echoing
