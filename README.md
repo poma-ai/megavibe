@@ -206,11 +206,11 @@ Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. Yo
 ```bash
 megavibe reviewers                          # what is on, where it was set, what is available
 megavibe reviewers set reviewer gemini      # this user, all projects
-megavibe reviewers set --project reviewer   # this project only
+megavibe reviewers set --project reviewer   # this project only (uncommitted)
 megavibe reviewers set auto                 # back to all available (the default)
 ```
 
-The Claude `reviewer` subagent always runs — it needs no key and is what makes the rule meaningful — so this really chooses which of Gemini and Codex join it. It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json` or the project's `.claude/settings.json`; an uncommitted `.claude/settings.local.json` overrides both, and the environment variable overrides everything. The session-start status table gains a Reviewers row, and a reviewer you switched off exits without spending anything when asked to review.
+The Claude `reviewer` subagent always runs — it needs no key and is what makes the rule meaningful — so this really chooses which of Gemini and Codex join it. It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json`, or — with `--project` — the project's uncommitted `.claude/settings.local.json`; the environment variable overrides both. A **committed** project `.claude/settings.json` is read too, but it may only *add* reviewers: a file that arrives with a clone must not be able to switch off the reviewers looking at that clone's code. The session-start status table gains a Reviewers row, and a reviewer you switched off exits without spending anything when asked to review.
 
 It limits **reviews only**. Gemini and Codex stay available for context recovery, summaries and large-context work whatever you set here — switching a reviewer off should not cost you `/rehydrate`.
 
