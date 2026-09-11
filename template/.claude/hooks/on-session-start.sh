@@ -114,14 +114,25 @@ mcp_status() {
 GEMINI_STATUS=$(mcp_status "gemini")
 [ -z "$GEMINI_STATUS" ] && { command -v gemini &>/dev/null && GEMINI_STATUS="CLI only (no MCP)" || GEMINI_STATUS="not installed"; }
 
-# Codex
-CODEX_STATUS=$(mcp_status "codex")
-if [ -z "$CODEX_STATUS" ]; then
-  command -v codex &>/dev/null && CODEX_STATUS="CLI only, no MCP" || CODEX_STATUS="not installed"
-fi
+# Codex — CLI only. There is no Codex MCP server: codex-cli 0.154.0 deleted the
+# `mcp-server` subcommand (2026-09-10). Reviews go through codex-review.sh.
+#
+# This ASSERTS the subcommand instead of assuming it, which is the whole lesson
+# from that removal: an npm-global CLI that auto-updates will keep deleting
+# things, and the resulting error (CONNECTION_CLOSED, or a TUI dying on
+# "stdin is not a terminal") never names the real cause. A one-line probe here
+# turns the next such removal into an obvious status line instead of a day of
+# misread outages.
 if command -v codex &>/dev/null; then
   CODEX_VER=$(codex --version 2>/dev/null || echo "")
+  if codex exec --help >/dev/null 2>&1; then
+    CODEX_STATUS="CLI via codex-review.sh"
+  else
+    CODEX_STATUS="INSTALLED BUT UNUSABLE — \`codex exec\` is gone; check codex-review.sh"
+  fi
   [ -n "$CODEX_VER" ] && CODEX_STATUS="${CODEX_STATUS} (${CODEX_VER})"
+else
+  CODEX_STATUS="not installed"
 fi
 
 # Playwright

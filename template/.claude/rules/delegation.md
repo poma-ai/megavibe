@@ -7,16 +7,18 @@
 **Standard fallback chain** (Gemini-primary tasks):
 1. Gemini direct API: `~/.megavibe/scripts/gemini-review.sh --prompt "..." FILE...` (requires `$GEMINI_API_KEY` from a **billed** project — Google-account OAuth was retired 2026-06-18, and the free tier is 20 req/day and trains on prompts; without a key, skip straight to Codex)
 2. Gemini MCP (`mcp__gemini-cli__ask-gemini`) — for short interactive questions only; the CLI it wraps hardcodes 3.x thinking, so long answers truncate or take minutes
-3. Codex MCP
+3. Codex: `~/.megavibe/scripts/codex-review.sh --prompt "..." FILE...` (NOT an MCP server — see below)
 4. Claude subagent (always available — same subscription)
 
 **Reverse chain** (Codex-primary tasks):
-1. Codex MCP
+1. Codex: `~/.megavibe/scripts/codex-review.sh` (or `codex exec` directly for research memos)
 2. Gemini direct API (`gemini-review.sh`)
 3. Gemini MCP
 4. Claude subagent
 
-**Codex MCP call defaults (measured 2026-09-09, codex-cli 0.153.4):** every `mcp__codex__codex` call takes `sandbox: "read-only"` **and** `approval-policy: "never"`. `codex mcp-server` starts sessions at `approval_policy: "on-request"`; when the model wants a command the sandbox blocks, it sends an MCP `elicitation/create` to Claude Code, and Claude Code answers elicitations by asking the human. An elicitation is a server-initiated question, not a permission check, so `--dangerously-skip-permissions` does not suppress it — the user gets a permission prompt in the middle of a review they never asked to approve. With `approval-policy: "never"` the blocked command simply fails, which is the right posture for a read-only reviewer. `codex mcp-server` ignores `-c approval_policy=...` and `[projects."..."]` entries carry no approval policy, so the tool-call argument is the only lever megavibe can pull; `.claude/hooks/codex-approval-never.sh` injects it (and forces `sandbox` to read-only) on every call as a backstop (`MEGAVIBE_CODEX_APPROVALS=1` disables the hook entirely — the only way to hand Codex a writable sandbox, approval prompts included). A top-level `approval_policy = "never"` in `~/.codex/config.toml` also works and additionally covers the interactive `codex` TUI, but it is machine-local and megavibe does not install it.
+**There is no Codex MCP server, since codex-cli 0.154.0 (2026-09-10).** That release deleted the `mcp-server` subcommand — `strings` on the native binary returns zero occurrences, so it is gone from compiled code, not just from help; `codex mcp` now manages Codex as a *client* (list/get/add/remove/login/logout). Do not try to register it, and do not read `CONNECTION_CLOSED` from a `codex` MCP entry as a network fault: codex forwards an unrecognised subcommand to the interactive CLI as a prompt, the TUI starts, dies with "stdin is not a terminal", and the pipe closes mid-handshake. The error never names the real cause, which is why this read as an outage for hours. `setup.sh` removes the dead registration; `on-session-start.sh` asserts `codex exec` exists rather than assuming it.
+
+**Use `~/.megavibe/scripts/codex-review.sh`**, which mirrors `gemini-review.sh`'s interface: `--prompt`/`--prompt-file` plus `FILE...`, files appended as `===== path =====` blocks, `--out`, `--model`, `--timeout` (default 300s, exit 124 on timeout so the chain falls through instead of hanging). It always passes `--sandbox read-only --skip-git-repo-check` and **refuses** `--approve-for-me`, `--full-auto` and `--dangerously-bypass-approvals-and-sandbox` — a reviewer does not need write access. `exec` has no interactive approver, so the old `approval-policy: "never"` is implicit and the elicitation problem that `codex-approval-never.sh` existed for cannot arise. That hook is therefore gone from the template and from new projects; existing projects keep an inert copy, since pruning it would mean a settings.json migration for zero behavioural gain — re-running `init.sh` drops the registration anyway. One caveat if you never re-init: that copy matches the tool NAME `mcp__codex__codex`, so a third-party MCP server registered under the name `codex` (which the cleanup deliberately does not delete) would have its input rewritten by a hook written for a different server.
 
 **Gemini thinking, measured 2026-09-06:** `gemini-3.8-flash` spends 15–40K thought tokens on a review prompt by default and returns almost no text under any output cap; `thinkingLevel: low` returns the complete answer in seconds. `gemini-review.sh` sets it. Keep `-m`/model overrides to flash except through `gemini-review.sh --pro` for reviews; the Pro line has no free tier and bills 3-16x flash.
 
@@ -33,7 +35,7 @@
 | Summarize text (any length/target) | Gemini | Codex | — | Claude subagent | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | — | Claude subagent | Literal, high-recall, structured markdown |
 | Research memo (multi-source, citations) | Codex | Gemini | — | Claude subagent | `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
-| **Independent review before shipping** (non-negotiable 4) | `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Gemini `gemini-review.sh` **+** Codex, in parallel | reviewer + whichever backend is up | — | `reviewer` subagent alone | Ranked findings with file:line, failing input, outcome, fix; ship / do-not-ship verdict |
+| **Independent review before shipping** (non-negotiable 4) | `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Gemini `gemini-review.sh` **+** Codex `codex-review.sh`, in parallel | reviewer + whichever backend is up | — | `reviewer` subagent alone | Ranked findings with file:line, failing input, outcome, fix; ship / do-not-ship verdict |
 | Fast second opinion / alternative plan | Codex | Gemini | — | Claude subagent | Patch plan + test plan |
 | Quick fact check / web search | Codex | Gemini | — | Claude subagent | Claims with sources |
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | — | Screenshots/HTML → `.agent/ASSETS/` |
