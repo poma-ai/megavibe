@@ -29,16 +29,20 @@ set -u
 # the edited region falls outside every range actually read, which is the case
 # where the model genuinely cannot know what it is changing.
 #
-# Two events, one script:
-#   PostToolUse(Read)          — record the (file, first line, last line) read
-#   PreToolUse(Edit|MultiEdit) — locate the edit, compare against those ranges
+# Three handlers, one script:
+#   PostToolUse(Read)                — record the (file, first, last) line read
+#   PostToolUse(Edit|MultiEdit|Write)— credit what the model just authored, and
+#                                      shift recorded ranges by the line delta
+#   PreToolUse(Edit|MultiEdit)       — locate the edit, compare against ranges
 #
 # Two limits, stated rather than implied:
 #   - Line numbers DRIFT. Ranges are recorded at read time; a later edit that
 #     inserts or deletes lines shifts everything below it. A full read still
 #     covers the file, so the common case is unaffected, but after a large
-#     insertion a slice range can point at the wrong lines. Recording each
-#     edited region as read (below) absorbs most of it; the rest is accepted.
+#     insertion a slice range can point at the wrong lines. The post-edit
+#     branch shifts ranges by the line delta so this mostly cancels, but an
+#     edit made outside this session (another process, a git operation) is not
+#     seen and will leave ranges stale.
 #   - The anchor can be COMMON. If the first line of old_string is `}` or
 #     `import os`, an occurrence inside a read range silences the warning even
 #     when the edit itself is elsewhere. That is the deliberate direction to err
@@ -104,30 +108,62 @@ if [ "$EVENT" = "PostToolUse" ] && [ "$TOOL" = "Read" ]; then
   exit 0
 fi
 
-# --- an edited region counts as read ----------------------------------------
-# You have seen both the old and the new text of what you just changed, so the
-# next edit nearby should not be flagged. This also absorbs most of the line
-# drift that follows an edit: without it, a slice read plus two edits in the
-# same area warns on the second one.
-if [ "$EVENT" = "PostToolUse" ] && { [ "$TOOL" = "Edit" ] || [ "$TOOL" = "MultiEdit" ]; }; then
+# --- keep the ranges honest after the model changes the file ----------------
+# Absolute line numbers go stale the moment an edit adds or removes lines, and
+# a stale range is a FALSE ALARM — telling the model it has not seen text it
+# wrote a call earlier. Reviewers reproduced three such cases on first try, so
+# this branch does three things:
+#   Write          — the model authored the whole file: record 1..EOF.
+#   Edit/MultiEdit — credit the WHOLE inserted region (not just its first line),
+#                    and SHIFT every existing range for that file by the line
+#                    delta so previously-read text keeps pointing at itself.
+if [ "$EVENT" = "PostToolUse" ] && \
+   { [ "$TOOL" = "Edit" ] || [ "$TOOL" = "MultiEdit" ] || [ "$TOOL" = "Write" ]; }; then
   FILE=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null) || exit 0
   [ -n "$FILE" ] && [ -f "$FILE" ] || exit 0
-  NEWS=$(printf '%s' "$INPUT" | jq -r '
-    if .tool_input.edits then (.tool_input.edits[]?.new_string // empty)
-    else (.tool_input.new_string // empty) end
-    | split("\n")[0]' 2>/dev/null) || exit 0
-  while IFS= read -r NEW; do
-    N=$(printf '%s' "$NEW" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    [ "${#N}" -ge 3 ] || continue
-    H=$(grep -nF -- "$N" "$FILE" 2>/dev/null | cut -d: -f1 | head -1)
-    [ -n "$H" ] || continue
-    # Exactly the changed line, not a neighbourhood. Crediting +/-5 would mark
-    # ten lines the model never saw as read, which is the opposite of what this
-    # file is for.
-    jq -nc --arg f "$FILE" --argjson a "$H" --argjson b "$H" \
+  EOFLINE=$(awk 'END{print NR}' "$FILE" 2>/dev/null)
+  case "${EOFLINE:-}" in ''|*[!0-9]*) exit 0 ;; esac
+
+  if [ "$TOOL" = "Write" ]; then
+    jq -nc --arg f "$FILE" --argjson a 1 --argjson b "$EOFLINE" '{f:$f,a:$a,b:$b}' \
+      >> "$RANGES" 2>/dev/null || true
+    exit 0
+  fi
+
+  # old/new line counts per edit, tab-separated, in application order.
+  PAIRS=$(printf '%s' "$INPUT" | jq -r '
+    (if .tool_input.edits then .tool_input.edits[]? else .tool_input end)
+    | [ ((.new_string // "") | split("\n") | length)
+      , ((.old_string // "") | split("\n") | length)
+      , ((.new_string // "") | [splits("\n") | select(length >= 3)][0] // "") ]
+    | @tsv' 2>/dev/null) || exit 0
+
+  while IFS="$(printf '\t')" read -r NLINES OLINES ANCHOR; do
+    case "${NLINES:-}" in ''|*[!0-9]*) continue ;; esac
+    case "${OLINES:-}" in ''|*[!0-9]*) continue ;; esac
+    [ -n "${ANCHOR:-}" ] || continue
+    H=$(grep -nF -- "$ANCHOR" "$FILE" 2>/dev/null | cut -d: -f1 | head -1)
+    case "${H:-}" in ''|*[!0-9]*) continue ;; esac
+    DELTA=$(( NLINES - OLINES ))
+    if [ "$DELTA" -ne 0 ]; then
+      # One jq pass: anything starting below the edit moves with it, and a range
+      # spanning the edit grows or shrinks by the same amount.
+      if jq -c --arg f "$FILE" --argjson h "$H" --argjson d "$DELTA" '
+           if .f == $f then
+             (if .a > $h then .a += $d else . end)
+             | (if .b >= $h then .b += $d else . end)
+             | (if .a < 1 then .a = 1 else . end)
+           else . end' "$RANGES" > "${RANGES}.tmp" 2>/dev/null; then
+        mv -f "${RANGES}.tmp" "$RANGES" 2>/dev/null || rm -f "${RANGES}.tmp" 2>/dev/null
+      else
+        rm -f "${RANGES}.tmp" 2>/dev/null
+      fi
+    fi
+    # The inserted region in full: the model authored every line of it.
+    jq -nc --arg f "$FILE" --argjson a "$H" --argjson b "$(( H + NLINES - 1 ))" \
       '{f:$f,a:$a,b:$b}' >> "$RANGES" 2>/dev/null || true
   done <<EOF
-$NEWS
+$PAIRS
 EOF
   exit 0
 fi
@@ -166,6 +202,9 @@ while IFS= read -r OLD; do
   # the cap costs nothing real and bounds the hot path.
   HITS=$(grep -nF -- "$NEEDLE" "$FILE" 2>/dev/null | cut -d: -f1 | head -40)
   [ -n "$HITS" ] || continue
+  # `grep` on a file with a NUL byte prints "Binary file X matches", which is
+  # not a line number: it reached an integer test and the message text.
+  case "$HITS" in *[!0-9[:space:]]*) continue ;; esac
   # Conservative: if ANY occurrence sits inside a read range, stay quiet. A
   # false alarm costs more than a missed one — it is what gets a hook disabled.
   COVERED=0
@@ -191,12 +230,13 @@ EOF
 
 [ "$BAD" -gt 0 ] || exit 0
 COUNT="$BAD"; LINE="$BADLINE"; TEXT="$BADTEXT"
-TOTAL=$(wc -l < "$FILE" 2>/dev/null | tr -d ' ')
-SEEN=$(grep -c . "$RANGES" 2>/dev/null || echo 0)
+COUNT_NOTE=""
+[ "$COUNT" -gt 1 ] && COUNT_NOTE=" ${COUNT} of the edits in this call land outside what you have read."
+TOTAL=$(awk 'END{print NR}' "$FILE" 2>/dev/null)
+SEEN=$(jq -r --arg f "$FILE" 'select(.f==$f) | 1' "$RANGES" 2>/dev/null | grep -c . || echo 0)
 
 MSG="[megavibe read-coverage] This edit lands on line ~${LINE} of ${FILE} (${TOTAL} lines), outside every range you have read this session"
-[ "$COUNT" -gt 1 ] && MSG="${MSG} — ${COUNT} of the edits in this call are"
-MSG="${MSG}. You are changing something you have not seen: near \"${TEXT}\". Read that region first, or say plainly that you are editing blind and why. (${SEEN} reads recorded; MEGAVIBE_READ_COVERAGE=0 disables this.)"
+MSG="${MSG}. You are changing something you have not seen: near \"${TEXT}\". Read that region first, or say plainly that you are editing blind and why.${COUNT_NOTE} (${SEEN} ranges recorded for this file; MEGAVIBE_READ_COVERAGE=0 disables this.)"
 
 jq -nc --arg c "$MSG" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse", additionalContext:$c}}' 2>/dev/null || true
