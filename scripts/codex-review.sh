@@ -21,9 +21,9 @@
 # gemini-review.sh. The model's answer goes to stdout; --out also writes it to
 # FILE. Exit 0 on an answer, 124 on timeout, 2 on a usage error, 1 on error.
 #
-# SANDBOX: always read-only, and the escape hatches
-# (--dangerously-bypass-approvals-and-sandbox, --approve-for-me) are refused
-# outright rather than passed through. This is where that enforcement now lives:
+# SANDBOX: always read-only. There is no --sandbox flag at all — passing one is
+# refused (exit 2), as are --approve-for-me, --full-auto and
+# --dangerously-bypass-approvals-and-sandbox. This is where that enforcement now lives:
 # codex-approval-never.sh used to force read-only on every mcp__codex__codex
 # call, and it can no longer fire because the tool it guarded does not exist.
 # A reviewer does not need write access to review.
@@ -104,12 +104,18 @@ perl -e '
   die "fork: $!" unless defined $pid;
   if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 127; }
   setpgrp($pid, $pid);   # race-free: whichever call lands first wins
-  $SIG{ALRM} = sub {
+  my $reap = sub {
+    my ($code) = @_;
     kill("TERM", -$pid);
     select(undef, undef, undef, 2);
     kill("KILL", -$pid);
-    exit 124;
+    exit $code;
   };
+  $SIG{ALRM} = sub { $reap->(124) };
+  # The child is in its OWN process group so the alarm can signal it as a group.
+  # That also means signals sent to the CALLER process group no longer reach it, so
+  # they must be forwarded by hand or cancelling the caller orphans codex.
+  $SIG{INT} = $SIG{TERM} = $SIG{HUP} = sub { $reap->(143) };
   alarm $t;
   waitpid($pid, 0);
   my $st = $?;

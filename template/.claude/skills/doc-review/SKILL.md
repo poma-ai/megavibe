@@ -1,7 +1,7 @@
 ---
 name: doc-review
 description: Independent three-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the Claude `reviewer` subagent, Gemini and Codex in parallel; synthesizes findings into a single report.
-allowed-tools: Bash, Read, Write, Agent, mcp__codex__codex
+allowed-tools: Bash, Read, Write, Agent
 ---
 
 # Doc-review (periodic doc hygiene)
@@ -21,7 +21,7 @@ After significant docs or code edits that change the documentation surface — `
    ```
    Most projects: just `CLAUDE.md` plus zero or more `README*.md` at the root. Adapt if the project uses a `docs/` folder. If only `CLAUDE.md` exists, the review is still useful — focus on bloat and drift-vs-code.
 
-2. **Send to the reviewers in PARALLEL**, in a single tool-call batch, with the SAME files and the SAME prompt. The `reviewer` subagent always runs (Agent tool, `subagent_type: reviewer`, or `general-purpose` with `model: opus` and the text of `.claude/agents/reviewer.md` if the project has not synced agents yet). Add Gemini via Bash — `bash ~/.megavibe/scripts/gemini-review.sh --prompt "<prompt>" <files>  (add `--pro` only when CLAUDE.md or the protocol itself is in the set)` — only if `$GEMINI_API_KEY` is set (it exits 1 otherwise; that is a skipped reviewer, not a failed review). Add Codex via `mcp__codex__codex` (read-only sandbox) if the Codex MCP is listed. Never use `mcp__gemini-cli__ask-gemini` here: the CLI it wraps truncates or stalls on 3.x thinking. The prompt:
+2. **Send to the reviewers in PARALLEL**, in a single tool-call batch, with the SAME files and the SAME prompt. The `reviewer` subagent always runs (Agent tool, `subagent_type: reviewer`, or `general-purpose` with `model: opus` and the text of `.claude/agents/reviewer.md` if the project has not synced agents yet). Add Gemini via Bash — `bash ~/.megavibe/scripts/gemini-review.sh --prompt "<prompt>" <files>  (add `--pro` only when CLAUDE.md or the protocol itself is in the set)` — only if `$GEMINI_API_KEY` is set (it exits 1 otherwise; that is a skipped reviewer, not a failed review). Add Codex via Bash — `bash ~/.megavibe/scripts/codex-review.sh --prompt "<prompt>" <files>` — only if `codex` is on PATH. There is no Codex MCP: codex-cli 0.154.0 removed it, and `setup.sh` deletes the dead registration, so a gate on "is the Codex MCP listed" is permanently false and would report Codex unavailable when it works. Never use `mcp__gemini-cli__ask-gemini` here: the CLI it wraps truncates or stalls on 3.x thinking. The prompt:
 
    > Review the attached project documentation set. For each finding, output `{category, file:line, what's wrong, suggested fix}`. Categories:
    >
