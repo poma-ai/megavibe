@@ -1616,16 +1616,34 @@ while true; do
     echo ""
     echo -e "  ${GREEN}Resuming conversation...${RESET}"
     echo ""
-    # Re-capture launch version after update
+    # Clear the update-applied signal (this session is now current)
+    rm -f "$MEGAVIBE_HOME/.update-applied"
+
+    # exec the UPDATED launcher rather than looping back to `claude`.
+    #
+    # Looping only restarted claude. Everything this script does BEFORE the loop
+    # — the MEGAWORK_* credential loader, GEMINI_API_KEY, PATH, the auto-compact
+    # window, the MCP checks — was fixed at the original launch and survived
+    # every /megavibe-restart. A wrapper started two days ago kept handing the
+    # new claude a two-day-old environment, so `github` and `reports` went on
+    # failing in a session restarted long after the loader landed. The nudge to
+    # restart was pointing at something that could not deliver what it promised.
+    #
+    # exec replaces this process, so the new one re-reads the script from disk
+    # and re-runs all of it. The marker is already removed above, so this cannot
+    # loop. If exec fails for any reason, fall through to the old behaviour
+    # rather than dropping the session.
+    if [ -x "$MEGAVIBE_HOME/megavibe" ]; then
+      exec bash "$MEGAVIBE_HOME/megavibe" --continue
+    fi
+
+    # Re-capture launch version after update (only reached if exec did not)
     if [ -n "$REPO_DIR" ] && is_git_source "$REPO_DIR"; then
       LAUNCH_VER=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
     elif [ -f "$VERSION_FILE" ]; then
       LAUNCH_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
     fi
     export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
-    # Clear the update-applied signal (this session is now current)
-    rm -f "$MEGAVIBE_HOME/.update-applied"
-    # Next iteration resumes the conversation
     CLAUDE_EXTRA_ARGS=(--continue)
     continue
   fi
