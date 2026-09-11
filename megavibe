@@ -416,6 +416,151 @@ if [ "${1:-}" = "worktree" ]; then
   exit 0
 fi
 
+if [ "${1:-}" = "reviewers" ]; then
+  shift
+  RV="$MEGAVIBE_HOME/scripts/reviewers.sh"
+  # -f, not -x: callers run it with `bash`. And NOT "megavibe update" — for a
+  # git-source install that only pulls; a plain `megavibe` launch is what syncs
+  # scripts/ into ~/.megavibe.
+  [ -f "$RV" ] || { echo "reviewers.sh is not installed yet. Run 'megavibe' once in any project (a launch syncs it), or 'bash setup.sh'."; exit 1; }
+  KNOWN_RV="reviewer gemini codex"
+
+  # Writes the key into a settings.json `env` block, or removes it. Atomic and
+  # non-destructive: jq builds the new document, a temp file in the same
+  # directory takes it, and only a clean jq run gets moved over the original —
+  # so an interrupted write cannot leave a truncated settings.json behind, and
+  # invalid JSON already in the file stops the write instead of being replaced.
+  rv_write() {
+    local file="$1" value="$2" dir tmp
+    dir=$(dirname "$file")
+    mkdir -p "$dir" || { echo "Could not create $dir"; exit 1; }
+    # Read-modify-write, so serialise it. `mkdir` because macOS ships no
+    # flock(1); the directory create is atomic on every POSIX filesystem. A lock
+    # older than 30s is a crashed run, not a live one.
+    #
+    # Staleness via stat, NOT `find -mmin`: the fraction of a minute this needs
+    # is not expressible there — BSD/bfs find rejects `-mmin -0.5` outright, and
+    # with its error swallowed the emptiness test read as "stale" and deleted
+    # the lock on every single check, which is no lock at all.
+    local lock="$dir/.settings.json.lock" waited=0 lock_mtime now
+    while ! mkdir "$lock" 2>/dev/null; do
+      lock_mtime=$(stat -f '%m' "$lock" 2>/dev/null || stat -c '%Y' "$lock" 2>/dev/null || echo "")
+      now=$(date +%s)
+      if [ -n "$lock_mtime" ] && [ "$((now - lock_mtime))" -gt 30 ]; then
+        rmdir "$lock" 2>/dev/null || true
+        continue
+      fi
+      waited=$((waited + 1))
+      [ "$waited" -gt 50 ] && { echo "Could not lock $file (another write is in progress)"; exit 1; }
+      sleep 0.1
+    done
+    # A RETURN trap does not fire on `exit`, so every error path below releases
+    # the lock explicitly as well.
+    trap 'rmdir "$lock" 2>/dev/null || true' RETURN
+    [ -f "$file" ] || echo '{}' > "$file"
+    jq -e . "$file" >/dev/null 2>&1 || {
+      rmdir "$lock" 2>/dev/null || true
+      echo "$file is not valid JSON — fix it first, refusing to overwrite."; exit 1; }
+    tmp=$(mktemp "$dir/.settings.json.XXXXXX") || { rmdir "$lock" 2>/dev/null || true; exit 1; }
+    # mktemp is 0600 and `mv` carries the mode across, silently tightening a
+    # 0644 settings.json.
+    _mode=$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo "")
+    [ -n "$_mode" ] && chmod "$_mode" "$tmp" 2>/dev/null || true
+    if [ -n "$value" ]; then
+      jq --arg v "$value" '.env = ((.env // {}) + {MEGAVIBE_REVIEWERS: $v})' "$file" > "$tmp"
+    else
+      jq 'if .env then .env |= del(.MEGAVIBE_REVIEWERS) else . end
+          | if (.env // {}) == {} then del(.env) else . end' "$file" > "$tmp"
+    fi || { rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; echo "Could not update $file"; exit 1; }
+    mv "$tmp" "$file"
+    rmdir "$lock" 2>/dev/null || true
+    trap - RETURN
+  }
+
+  case "${1:-list}" in
+    list|"")
+      # `|| true` plus a fallback: pipefail would otherwise propagate a broken
+      # helper's status through the assignment and `set -e` would exit before a
+      # single line reached the screen.
+      ACTIVE=$(bash "$RV" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' || true)
+      [ -n "$ACTIVE" ] || ACTIVE="$KNOWN_RV"
+      SRC=$(bash "$RV" source 2>/dev/null || echo "default")
+      echo -e "${BOLD}Reviewers${RESET}  (non-negotiable 4 — independent review before shipping)"
+      echo ""
+      printf "  %-10s %-4s %s\n" "REVIEWER" "ON" "AVAILABLE"
+      for r in $KNOWN_RV; do
+        case " $ACTIVE " in *" $r "*) on="yes" ;; *) on="no " ;; esac
+        case "$r" in
+          reviewer) avail="always (Claude subscription — cannot be switched off)" ;;
+          gemini)   [ -n "${GEMINI_API_KEY:-}" ] && avail="GEMINI_API_KEY is set" || avail="no GEMINI_API_KEY" ;;
+          codex)    if command -v codex >/dev/null 2>&1; then
+                      codex exec --help >/dev/null 2>&1 && avail="codex exec works" || avail="codex is installed but broken"
+                    else avail="not installed"; fi ;;
+        esac
+        printf "  %-10s %-4s %s\n" "$r" "$on" "$avail"
+      done
+      echo ""
+      echo -e "  Set by: ${BOLD}${SRC}${RESET}"
+      echo ""
+      echo "  This limits REVIEWS only. Gemini and Codex stay available for /rehydrate,"
+      echo "  summaries and large-context work whatever is set here."
+      echo ""
+      echo "  Change it:  megavibe reviewers set reviewer gemini      (this user, all projects)"
+      echo "              megavibe reviewers set --project reviewer   (this project only)"
+      echo "              megavibe reviewers set auto                 (back to all available)"
+      ;;
+
+    set)
+      shift
+      SCOPE_FILE="$HOME/.claude/settings.json"; SCOPE_NAME="this user, all projects"
+      if [ "${1:-}" = "--project" ]; then
+        shift
+        git rev-parse --show-toplevel >/dev/null 2>&1 || { echo "--project needs to run inside a project."; exit 1; }
+        SCOPE_FILE="$(git rev-parse --show-toplevel)/.claude/settings.json"
+        SCOPE_NAME="this project"
+      fi
+      [ $# -gt 0 ] || { echo "usage: megavibe reviewers set [--project] <reviewer...|auto>"; exit 2; }
+      command -v jq >/dev/null 2>&1 || { echo "jq is required to edit settings.json."; exit 1; }
+
+      # Strict here, unlike the resolver. A typo in a value someone is writing
+      # on purpose should be refused now, not fail open to "all reviewers"
+      # every time it is read afterwards.
+      case "$1" in
+        auto|all|default|none)
+          [ "$1" = "none" ] && { echo "There is no 'none' — review is non-negotiable 4. Use 'auto', or name the reviewers you want."; exit 2; }
+          rv_write "$SCOPE_FILE" ""
+          echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS removed from $SCOPE_FILE"
+          echo "    Back to the default: every reviewer that is available."
+          ;;
+        *)
+          PICKED=""
+          for want in "$@"; do
+            want=$(printf '%s' "$want" | tr 'A-Z' 'a-z' | tr -d ',')
+            [ "$want" = "claude" ] && want="reviewer"
+            case " $KNOWN_RV " in
+              *" $want "*) case " $PICKED " in *" $want "*) ;; *) PICKED="${PICKED:+$PICKED }$want" ;; esac ;;
+              *) echo "Unknown reviewer: $want   (known: $KNOWN_RV)"; exit 2 ;;
+            esac
+          done
+          rv_write "$SCOPE_FILE" "$PICKED"
+          echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"$PICKED\" in $SCOPE_FILE  (${SCOPE_NAME})"
+          case " $PICKED " in
+            *" reviewer "*) ;;
+            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent always runs on top of this — it is the floor non-negotiable 4 rests on and cannot be switched off." ;;
+          esac
+          echo "    Open sessions keep the old set until they restart."
+          ;;
+      esac
+      ;;
+
+    *)
+      echo "usage: megavibe reviewers [list | set [--project] <reviewer...|auto>]"
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+
 if [ "${1:-}" = "doctor" ]; then
   echo -e "${BOLD}megavibe doctor${RESET}"
   echo ""
@@ -822,6 +967,7 @@ if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" 
   echo "                        (tmux: megavibe-personal — the same brain the"
   echo "                        Telegram bot drives)"
   echo "  remote                Manage the Telegram bot (--stop|--status|--fg)"
+  echo "  reviewers             Show or change which reviewers run (list|set)"
   echo "  update                Update megavibe (--check to peek only)"
   echo ""
   echo "  Flags and multi-word prompts are passed to claude unchanged."
@@ -864,7 +1010,30 @@ fi
 #      `bash megavibe/megavibe` directly from a fresh clone before any
 #      source-repo pointer has been written.
 REPO_DIR=""
-if [ -f "$MEGAVIBE_HOME/source-repo" ]; then
+# 0. Handed over by the re-exec below. Without this the run that updates the
+#    wrapper itself loses the repo path (after exec, SCRIPT_DIR is
+#    $MEGAVIBE_HOME), so every OTHER sync in this block — init.sh, scripts/,
+#    telegram-bot.py — silently waits for the next launch. On a machine whose
+#    source-repo pointer is stale (a `curl | bash` install leaves it pointing at
+#    a deleted temp dir) that next launch never resolves a repo at all.
+#
+#    A FILE under $MEGAVIBE_HOME, never an environment variable. This value
+#    decides which `megavibe` gets installed over ~/.megavibe/megavibe and then
+#    executed, so it must carry the same trust as source-repo: writable only by
+#    the user. An env var is inherited from anywhere — including the
+#    `env` block of a settings.json committed inside a cloned repo, which is the
+#    mechanism this very feature documents for setting megavibe variables. That
+#    turned a $HOME-only boundary into "clone this repo and I run your wrapper".
+#    Consumed on read, so it cannot leak into a later run.
+REEXEC_PTR="$MEGAVIBE_HOME/.reexec-repo"
+if [ -f "$REEXEC_PTR" ]; then
+  REEXEC_REPO="$(cat "$REEXEC_PTR" 2>/dev/null || true)"
+  rm -f "$REEXEC_PTR"
+  if [ -n "$REEXEC_REPO" ] && [ -f "$REEXEC_REPO/setup.sh" ] && [ -d "$REEXEC_REPO/template" ]; then
+    REPO_DIR="$REEXEC_REPO"
+  fi
+fi
+if [ -z "$REPO_DIR" ] && [ -f "$MEGAVIBE_HOME/source-repo" ]; then
   SAVED_REPO="$(cat "$MEGAVIBE_HOME/source-repo")"
   if [ -f "$SAVED_REPO/setup.sh" ] && [ -d "$SAVED_REPO/template" ]; then
     REPO_DIR="$SAVED_REPO"
@@ -879,12 +1048,30 @@ if [ -n "$REPO_DIR" ]; then
   if ! diff -q "$REPO_DIR/megavibe" "$MEGAVIBE_HOME/megavibe" &>/dev/null 2>&1; then
     # This is the file bash is executing right now — rename, never cp.
     atomic_install "$REPO_DIR/megavibe" "$MEGAVIBE_HOME/megavibe" 755
-    # Re-exec from the updated copy so the rest of this script uses new logic
+    # Re-exec from the updated copy so the rest of this script uses new logic,
+    # handing the repo path over so the remaining syncs still happen this run.
+    printf '%s\n' "$REPO_DIR" > "$MEGAVIBE_HOME/.reexec-repo" 2>/dev/null || true
     exec "$MEGAVIBE_HOME/megavibe" "$@"
   fi
   # Sync init.sh
   if ! diff -q "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" &>/dev/null 2>&1; then
     atomic_install "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" 755
+  fi
+  # Sync scripts/ — the review CLI and the reviewer allow-list. Without this a
+  # `megavibe update` ships the protocol text and the session-start hook that
+  # REFERENCE these while the scripts themselves stay at the old version: the
+  # setting reads as configured, documented and displayed, and gates nothing.
+  # (setup.sh installs the same set — keep the two lists in step.)
+  if [ -d "$REPO_DIR/scripts" ]; then
+    mkdir -p "$MEGAVIBE_HOME/scripts"
+    for _s in "$REPO_DIR/scripts/"*.py "$REPO_DIR/scripts/gemini-review.sh" \
+              "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh"; do
+      [ -f "$_s" ] || continue
+      if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
+        atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
+          || echo "warning: could not sync scripts/$(basename "$_s")" >&2
+      fi
+    done
   fi
   # Sync telegram-bot.py — keep the deployed bot in lockstep with the repo so
   # fixes land on a normal `megavibe` run, not only via setup.sh. A running

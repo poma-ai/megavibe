@@ -135,6 +135,42 @@ else
   CODEX_STATUS="not installed"
 fi
 
+# --- Reviewer allow-list (non-negotiable 4) ---
+# Its OWN row, deliberately not an overwrite of the Gemini/Codex rows above.
+# Those say whether the backend works at all — for summaries, large context,
+# /rehydrate — and MEGAVIBE_REVIEWERS says nothing about any of that. Writing
+# "OFF" into them also erased the "INSTALLED BUT UNUSABLE" diagnosis this hook
+# exists to surface.
+REVIEWERS_SH="$HOME/.megavibe/scripts/reviewers.sh"
+ACTIVE_REVIEWERS=""
+# -f, not -x: the callers run it with `bash`, so the exec bit is not required,
+# and a failed chmod during install would otherwise skip the check silently.
+if [ -f "$REVIEWERS_SH" ]; then
+  ACTIVE_REVIEWERS=$(bash "$REVIEWERS_SH" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+  # Empty means the helper failed (the pipeline ends in sed, which succeeds on
+  # no input, so `||` cannot catch it). A broken helper must not report every
+  # reviewer off and talk Claude out of reviewing.
+  [ -n "$ACTIVE_REVIEWERS" ] || ACTIVE_REVIEWERS="reviewer gemini codex"
+fi
+
+# Order-insensitive: resolve() preserves the order the user typed, so a literal
+# comparison against "reviewer gemini codex" called "codex gemini reviewer" a
+# non-default set and nagged about it on every session start.
+REVIEWER_ROW=""
+REVIEWER_LINE=""
+if [ -n "$ACTIVE_REVIEWERS" ]; then
+  RV_SORTED=$(printf '%s\n' $ACTIVE_REVIEWERS | sort | tr '\n' ' ' | sed 's/ *$//')
+  if [ "$RV_SORTED" = "codex gemini reviewer" ]; then
+    REVIEWER_ROW="
+| Reviewers (non-negotiable 4) | all three |"
+  else
+    REVIEWER_ROW="
+| Reviewers (non-negotiable 4) | ${ACTIVE_REVIEWERS} |"
+    REVIEWER_LINE="
+Reviewers: only ${ACTIVE_REVIEWERS} are switched on. Do not ask any other one to review — \`--as-reviewer\` exits 4 for it, and that is a setting, not an outage. This limits REVIEWS only: Gemini and Codex stay available for /rehydrate, summaries and large-context work regardless. Change it with \`megavibe reviewers set\`."
+  fi
+fi
+
 # Playwright
 PLAYWRIGHT_STATUS=$(mcp_status "playwright")
 [ -z "$PLAYWRIGHT_STATUS" ] && PLAYWRIGHT_STATUS="not installed"
@@ -156,7 +192,7 @@ SUBAGENT_STATUS="
 | Gemini | ${GEMINI_STATUS} |
 | Codex | ${CODEX_STATUS} |
 | Playwright | ${PLAYWRIGHT_STATUS} |
-| poma-memory | ${POMA_STATUS} |"
+| poma-memory | ${POMA_STATUS} |${REVIEWER_ROW}${REVIEWER_LINE}"
 
 CONTEXT="## Megavibe — project knowledge
 
