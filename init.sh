@@ -204,6 +204,40 @@ for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray
     HOOKS_MISSING=$((HOOKS_MISSING + 1))
   fi
 done
+# --- Every registration must point at a file that exists --------------------
+# settings.json and the hook list above are deployed separately, so they can
+# drift: on 2026-09-11 the deployed template's settings.json already named
+# cloud-token.sh while the deployed init.sh still listed kube-token.sh. The
+# merge wrote the new registration into a project and nothing installed the
+# file, so EVERY Bash call in that session printed
+#   PreToolUse:Bash hook error ... cloud-token.sh: No such file or directory
+# — dozens of lines per turn, in a session doing real work.
+#
+# Repair rather than warn: copy the hook if the template has it, otherwise drop
+# the registration. A pointer to a missing file has no useful middle state.
+if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
+  for _ref in $(jq -r '[.hooks // {} | .[]? | .[]? | .hooks[]? | .command // empty] | .[]' "$SETTINGS" 2>/dev/null \
+                | grep -oE '\.claude/hooks/[A-Za-z0-9._-]+\.sh' | sort -u); do
+    _base=$(basename "$_ref")
+    [ -f "$PROJECT/.claude/hooks/$_base" ] && continue
+    if [ -f "$TEMPLATE_DIR/.claude/hooks/$_base" ]; then
+      atomic_install "$TEMPLATE_DIR/.claude/hooks/$_base" "$PROJECT/.claude/hooks/$_base" 755
+      echo "  repaired: .claude/hooks/$_base (registered but not installed)"
+    elif jq --arg b "$_base" '
+           .hooks |= with_entries(
+             .value |= ( map(.hooks |= map(select(((.command // "") | contains($b)) | not)))
+                       | map(select((.hooks | length) > 0)) )
+           )' "$SETTINGS" > "${SETTINGS}.tmp" 2>/dev/null; then
+      atomic_install "${SETTINGS}.tmp" "$SETTINGS"
+      rm -f "${SETTINGS}.tmp"
+      echo "  unregistered: $_base (no such hook in the template)"
+    else
+      rm -f "${SETTINGS}.tmp"
+      echo "  ⚠  $_base is registered but missing, and could not be repaired" >&2
+    fi
+  done
+fi
+
 if [ "$HOOKS_MISSING" -gt 0 ]; then
   echo "" >&2
   echo "  ⚠  WARNING: $HOOKS_MISSING hook(s) missing from $TEMPLATE_DIR/.claude/hooks/" >&2
