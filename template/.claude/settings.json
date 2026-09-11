@@ -36,6 +36,15 @@
             "command": ".claude/hooks/reindex-agent.sh"
           }
         ]
+      },
+      {
+        "matcher": "Read|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/read-coverage.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -183,6 +192,15 @@
           {
             "type": "command",
             "command": ".claude/hooks/augment-search.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/read-coverage.sh"
           }
         ]
       }
