@@ -431,7 +431,23 @@ if [ "${1:-}" = "reviewers" ]; then
   # so an interrupted write cannot leave a truncated settings.json behind, and
   # invalid JSON already in the file stops the write instead of being replaced.
   rv_write() {
-    local file="$1" value="$2" dir tmp
+    local file="$1" value="$2" dir tmp _mode hops=0 link
+    # Resolve a SYMLINKED settings.json to the file it points at, and rename
+    # onto that. Without this the atomic mv below replaces the link with a
+    # regular file: a settings.json symlinked into a dotfiles repo silently
+    # stops being the source of truth, the pin never reaches the repo, and
+    # every later edit there has no effect. Resolving keeps both properties —
+    # the link survives AND the write is still a rename, not a truncating
+    # copy. (setup.sh hit the same thing from the other side; see the
+    # "cp, not mv" note in its legacy-hook cleanup.)
+    while [ -L "$file" ] && [ "$hops" -lt 20 ]; do
+      link=$(readlink "$file") || break
+      case "$link" in
+        /*) file="$link" ;;
+        *)  file="$(dirname "$file")/$link" ;;
+      esac
+      hops=$((hops + 1))
+    done
     dir=$(dirname "$file")
     mkdir -p "$dir" || { echo "Could not create $dir"; exit 1; }
     # Read-modify-write, so serialise it. `mkdir` because macOS ships no
@@ -457,7 +473,11 @@ if [ "${1:-}" = "reviewers" ]; then
     # A RETURN trap does not fire on `exit`, so every error path below releases
     # the lock explicitly as well.
     trap 'rmdir "$lock" 2>/dev/null || true' RETURN
-    [ -f "$file" ] || echo '{}' > "$file"
+    # Guarded: an unwritable path (a symlink cycle, a read-only mount) makes
+    # the redirect fail, and set -e would then leave the lock directory behind.
+    [ -f "$file" ] || echo '{}' > "$file" 2>/dev/null || {
+      rmdir "$lock" 2>/dev/null || true
+      echo "Could not create $file"; exit 1; }
     jq -e . "$file" >/dev/null 2>&1 || {
       rmdir "$lock" 2>/dev/null || true
       echo "$file is not valid JSON — fix it first, refusing to overwrite."; exit 1; }
