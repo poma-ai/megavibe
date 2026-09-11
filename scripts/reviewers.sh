@@ -180,7 +180,7 @@ case "${1:-list}" in
     printf '%s\n' "$RAW_SRC"
     ;;
   -h|--help)
-    sed -n '2,49p' "$0"
+    sed -n '2,55p' "$0"
     ;;
   *)
     echo "usage: reviewers.sh [list|enabled <reviewer>|source]" >&2
