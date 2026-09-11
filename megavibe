@@ -965,11 +965,12 @@ LEGACY_DEF='
   # The lookahead keeps $CLAUDE_PROJECT_DIR_BACKUP — a DIFFERENT variable that
   # can point anywhere — from being rewritten to /__project___BACKUP and
   # inheriting the exemption.
-  def norm: cmd | gsub("\\$\\{?CLAUDE_PROJECT_DIR\\}?(?![A-Za-z0-9_])"; "/__project__");
-  def in_hookdir: norm as $c
-    | at_boundary($c; $home + "/.claude/hooks/")
-      or ($c | test("(^|[^A-Za-z0-9_/])\"?(\\$HOME|\\$\\{HOME\\}|~)\"?/\\.claude/hooks/"))
-      or ($c | test("(^|[ \t\r\n\"\u0027;|&(])\\.?/?\\.claude/hooks/"));
+  def nstr: gsub("\\$\\{?CLAUDE_PROJECT_DIR\\}?(?![A-Za-z0-9_])"; "/__project__");
+  def norm: cmd | nstr;
+  def in_hookdir_s($c): at_boundary($c; $home + "/.claude/hooks/")
+    or ($c | test("(^|[^A-Za-z0-9_/])\"?(\\$HOME|\\$\\{HOME\\}|~)\"?/\\.claude/hooks/"))
+    or ($c | test("(^|[ \t\r\n\"\u0027;|&(])\\.?/?\\.claude/hooks/"));
+  def in_hookdir: in_hookdir_s(norm);
   # One occurrence must satisfy BOTH halves: the text before it has to be a
   # user-level hooks-dir prefix, the text after it a shell terminator or the
   # end of the string. Testing the two halves independently deleted
@@ -979,8 +980,8 @@ LEGACY_DEF='
   #
   # The expanded-$HOME prefix carries the same boundary requirement as every
   # other spelling: a bare endswith() deleted
-  # "/opt/mirror/Users/alice/.claude/hooks/agent-log.sh", a MIRROR of the
-  # user home under another root, which is a different directory entirely.
+  # "/opt/mirror$HOME/.claude/hooks/agent-log.sh", a MIRROR of the user home
+  # under another root, which is a different directory entirely.
   #
   # Residual, accepted: a user hook that passes one of OUR paths as an
   # argument ("mine.sh --fallback ~/.claude/hooks/agent-log.sh") still reads
@@ -1008,21 +1009,45 @@ LEGACY_DEF='
   # An occurrence is exempt only when its own prefix ends in an absolute path
   # token — unquoted and space-free, or quoted and then free to contain
   # spaces. Anything it cannot resolve blocks the archive: fail closed.
+  # Third alternative: "$HOME/dev/myproj/.claude/hooks/notify.sh" is an
+  # ordinary user-level registration of a PROJECT hook, and only the absolute
+  # spelling of it was exempt — so the $HOME spelling blocked the archive on
+  # every run forever, under a message telling the user to delete a
+  # registration that is doing its job. It needs at least one segment between
+  # $HOME and .claude/, so "$HOME/.claude/hooks/" — our own dir — still
+  # blocks (and in_hookdir catches that one first regardless).
   def other_checkout: test("(^|[ \t\r\n\"\u0027;|&(])/[^ \t\r\n\"\u0027;|&()]*$")
-    or test("(^|[ \t\r\n;|&(])[\"\u0027]/[^\"\u0027]*$");
-  def references_hookdir: norm as $c
-    | ($c | contains(".claude/hooks/"))
-      and (in_hookdir
-           or (($c | split(".claude/hooks/")) as $p
-               | any($p[0:-1][]; other_checkout | not)));
+    or test("(^|[ \t\r\n;|&(])[\"\u0027]/[^\"\u0027]*$")
+    or test("(^|[ \t\r\n\"\u0027;|&(])\"?(\\$HOME|\\$\\{HOME\\}|~)\"?/[^ \t\r\n\"\u0027;|&()]+/$");
+  def refs_s($c): ($c | contains(".claude/hooks/"))
+    and (in_hookdir_s($c)
+         or (($c | split(".claude/hooks/")) as $p
+             | any($p[0:-1][]; other_checkout | not)));
+  def references_hookdir: refs_s(norm);
+  # The pre-archive scan runs over every STRING in the document, not over
+  # .hooks entries. statusLine.command and apiKeyHelper point at a script the
+  # same way a hook does, and scoping the gate to .hooks archived the
+  # directory out from under them while printing "archived legacy hook
+  # scripts" — exactly the outcome this gate exists to prevent. Scanning
+  # strings also covers command keys that do not exist yet.
+  def references_hookdir_str: refs_s(nstr);
 '
 heal_legacy_hooks() {
-  local f="$1" found stamp
+  local f="$1" found stamp n_legacy cmds_legacy
   [ -f "$f" ] || return 0
+  # The detection pass also CARRIES the commands it matched, so the success
+  # line can name them. A removal the user disagrees with (their own script
+  # whose basename collides with one of the 29, or a command that merely
+  # mentions a hook path) is otherwise silent, and the backup they would need
+  # is only findable if they know something was taken.
   found=$(jq -r --arg home "$HOME" --argjson names "$LEGACY_HOOK_NAMES" "$LEGACY_DEF"'
-      [ .hooks? // {} | .. | objects | select(legacy) ] | length > 0
-    ' "$f" 2>/dev/null || echo false)
-  [ "$found" = "true" ] || return 0
+      [ .hooks? // {} | .. | objects | select(legacy) | cmd ] as $c
+      | "\($c | length)\n\($c[0:3] | map(gsub("\\s+"; " ")) | join("; "))"
+    ' "$f" 2>/dev/null || printf "0\n")
+  n_legacy=$(printf '%s' "$found" | sed -n 1p)
+  cmds_legacy=$(printf '%s' "$found" | sed -n 2p)
+  case "$n_legacy" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n_legacy" -gt 0 ] || return 0
   # Cleared BEFORE the redirect, not only after: a leftover settings.json.tmp
   # that is a SYMLINK makes the redirect write through it into whatever it
   # points at, and one that is a DIRECTORY makes the redirect fail. Neither is
@@ -1077,7 +1102,7 @@ heal_legacy_hooks() {
       rm -rf "${f}.tmp" 2>/dev/null || true
       return 0
     fi
-    echo "  Healed: removed legacy ~/.claude/hooks/ entries from $(basename "$f") (they double-fired against project hooks; backup: $(basename "$f").pre-hookclean-${stamp})."
+    echo "  Healed: removed ${n_legacy} legacy ~/.claude/hooks/ registration(s) from $(basename "$f") — ${cmds_legacy} (they double-fired against project hooks; backup: $(basename "$f").pre-hookclean-${stamp})."
   else
     echo "  Note: $(basename "$f") has legacy ~/.claude/hooks/ registrations that could not be rewritten — left untouched."
   fi
@@ -1094,7 +1119,7 @@ if [ -d "$LEGACY_USER_HOOKS" ]; then
     for f in "${LEGACY_SETTINGS_FILES[@]}"; do
       [ -f "$f" ] || continue
       REF=$(jq -r --arg home "$HOME" --argjson names "$LEGACY_HOOK_NAMES" --arg file "$(basename "$f")" "$LEGACY_DEF"'
-          [ .hooks? // {} | .. | objects | select(references_hookdir) | cmd ] as $c
+          [ .. | strings | select(references_hookdir_str) ] as $c
           | if ($c | length) == 0 then "0"
             else "\($c | length) in \($file): \($c[0:2] | join("; "))"
             end
