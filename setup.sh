@@ -885,26 +885,226 @@ fi
 # JSONL bloats, counter nudges fire at half the intended threshold,
 # /compact recovery runs twice, statusMessage redraws double in scrollback.
 #
-# Strip the .hooks key from ~/.claude/settings.json if present, and
-# archive ~/.claude/hooks/ to ~/.claude/hooks.legacy-YYYYMMDD/ (don't
-# delete — preserve any user customizations). Idempotent: re-runs find
-# nothing to clean, skip silently.
+# Two conditions, both required, and the second is what keeps this honest:
+# the command must reference the user-level hooks dir, AND its basename must
+# be a hook megavibe has itself shipped. Path alone would delete a script the
+# user parked in that directory themselves; basename alone would delete a
+# project-scoped registration of the same hook, which is the one that should
+# survive. Anything else pointing into that dir is reported, never removed.
+#
+# LEGACY_HOOK_NAMES is a HISTORICAL list — every hook filename this repo has
+# ever shipped, retired ones included. It does not need updating when a hook
+# is added: new hooks are registered per-project, never at user level, so a
+# name that never existed before 2026-04 cannot appear in a legacy block.
+#
+# A registration can spell the dir several ways and all of them must match.
+# The wrapper matched only the expanded path, so it missed "$HOME/.claude/
+# hooks/..." — the spelling actually observed in the wild — which was only
+# ever removed by the del(.hooks) this replaces. Also matched: ${HOME}/, ~/,
+# the quoted "$HOME"/ form, and a relative .claude/hooks/... at any shell
+# token boundary (what this project's own template emits; in USER scope it
+# resolves against whatever project is cwd, which IS the double-fire).
+#
+# Matching is boundary-anchored, not plain substring: /opt/my~/.claude/hooks/x
+# is a different path and must survive, and $CLAUDE_PROJECT_DIR/.claude/hooks/
+# is a legitimate project-scoped registration.
+#
+# The rewrite is gated on a detection pass, not on "did the file change".
+# Without the gate, a settings.json holding an empty .hooks / an empty event
+# array gets rewritten and announced as a legacy cleanup that removed nothing.
+# Both user-level settings files are scanned: Claude Code reads hooks from
+# settings.local.json too, and a legacy block there double-fires just as well.
+#
+# The script dir is archived, never deleted — and not while a registration
+# still points into it. Archiving out from under a live registration is worse
+# than the double-firing this replaces: the hook then resolves to a path that
+# no longer exists, and the run reports a successful archive.
+#
+# That pre-archive check is deliberately broader than the removal filter, to
+# catch a spelling nobody thought of ($CLAUDE_CONFIG_DIR, some other var) and
+# to cover the user's own scripts this block refuses to touch. Broader, not
+# blind: a command holding an ABSOLUTE path token that ends in .claude/hooks/
+# names some other checkout's hooks, not this user's dir, and must not block
+# the archive — otherwise a legitimate user-level hook pointing at
+# /some/project/.claude/hooks/x.sh warns on every run with nothing to act on.
+#
+# The wrapper (megavibe, "Auto-heal legacy USER-LEVEL hooks") carries the same
+# LEGACY_DEF and the same gate. Two copies, because setup.sh bootstraps the
+# machine the wrapper lives on — there is no shared library to put it in yet.
+# Edit both or neither.
+#
+# Known gaps: a $CLAUDE_CONFIG_DIR pointing somewhere other than ~/.claude is
+# not handled (this whole block is $HOME-anchored), and a Windows-style
+# backslash spelling matches nothing.
+#
+# Idempotent: re-runs find nothing to clean and print nothing.
 LEGACY_HOOK_DIR="$HOME/.claude/hooks"
-if command -v jq &>/dev/null && [ -f "$USER_SETTINGS" ]; then
-  if jq -e '.hooks' "$USER_SETTINGS" >/dev/null 2>&1; then
-    jq 'del(.hooks)' "$USER_SETTINGS" > "${USER_SETTINGS}.tmp" && \
-      mv "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
-    ok "removed legacy .hooks block from ~/.claude/settings.json (project-level still active)"
+LEGACY_HOOK_NAMES='["after-edit.sh","agent-log.sh","augment-search.sh","block-dangerous-bash.sh","block-plan-mode.sh","block-stray-working-context.sh","codex-approval-never.sh","compaction-autopilot.sh","enforce-pr-format.sh","kube-token.sh","log-tool-event.sh","nudge-native-tools.sh","nudge-quiet-bash.sh","nudge-restart.sh","on-compact.sh","on-pre-compact.sh","on-session-end.sh","on-session-start.sh","read-delta.sh","redact-secrets.sh","reindex-agent.sh","resize-image.sh","revive-watcher.sh","rm-to-trash.sh","session-start.sh","snapshot.sh","start-context-watcher.sh","start-poma-serve.sh","truncate-verbose-bash.sh"]'
+# Shared by the detection pass, the filter and the pre-archive check, so they
+# cannot disagree. Applies to a hook entry; non-string .command (a list, a
+# schema that grows) is skipped rather than crashing jq, which would abort the
+# cleanup for the whole file and leave real legacy entries in place.
+LEGACY_DEF='
+  def cmd: .command | if type == "string" then . else "" end;
+  # $CLAUDE_PROJECT_DIR is neutralised, not excluded. A blanket
+  # contains("CLAUDE_PROJECT_DIR") test let ANY command mentioning it past the
+  # archive gate — including "$HOME/.claude/hooks/notify.sh \"$CLAUDE_PROJECT_DIR\"",
+  # an ordinary thing to write — and the dir was then archived out from under
+  # a live registration, reported as a heal. Rewritten to an absolute token it
+  # keeps $CLAUDE_PROJECT_DIR/.claude/hooks/x.sh non-blocking on its own merits.
+  def norm: cmd | gsub("\\$\\{?CLAUDE_PROJECT_DIR\\}?"; "/__project__");
+  def in_hookdir: norm as $c
+    | ($c | contains($home + "/.claude/hooks/"))
+      or ($c | test("(^|[^A-Za-z0-9_/])\"?(\\$HOME|\\$\\{HOME\\}|~)\"?/\\.claude/hooks/"))
+      or ($c | test("(^|[ \t\r\n\"\u0027;|&(])\\.?/?\\.claude/hooks/"));
+  # One occurrence must satisfy BOTH halves: the text before it has to be a
+  # user-level hooks-dir prefix, the text after it a shell terminator or the
+  # end of the string. Testing the two halves independently deleted
+  # "~/.claude/hooks/mine.sh /opt/other/.claude/hooks/log-tool-event.sh" —
+  # in_hookdir from the first path, ours from the second. split() rather than
+  # a regex so the 29 names need no escaping.
+  #
+  # Residual, accepted: a user hook that passes one of OUR paths as an
+  # argument ("mine.sh --fallback ~/.claude/hooks/agent-log.sh") still reads
+  # as legacy. Separating that from "bash ~/.claude/hooks/agent-log.sh" needs
+  # to know which token is the command, i.e. an interpreter list, which is
+  # more machinery than a bootstrapper should carry. The backup written before
+  # the rewrite is the recovery path.
+  def legacy: norm as $c
+    | any($names[];
+        (".claude/hooks/" + .) as $needle
+        | ($c | split($needle)) as $parts
+        | ($parts | length) > 1
+          and any(range(0; ($parts | length) - 1);
+                . as $i
+                | ($parts[$i+1] | . == "" or (.[0:1] | test("[ \t\r\n\"\u0027;|&<>,)]")))
+                  and ($parts[$i]
+                       | . == ""
+                         or endswith($home + "/")
+                         or test("(^|[ \t\"\u0027;|&(])((\\$HOME|\\$\\{HOME\\}|\"\\$HOME\"|~|\\.)/)?$"))));
+  def references_hookdir: norm as $c
+    | ($c | contains(".claude/hooks/"))
+      and (in_hookdir or ($c | test("(^|[ \t\"\u0027])/[^ \t\"\u0027]*\\.claude/hooks/") | not));
+'
+# Returns 0 always — a settings file this cannot parse or rewrite is left
+# alone, never a reason to abort the bootstrap.
+clean_legacy_hooks() {
+  local f="$1" found stamp
+  [ -f "$f" ] || return 0
+  found=$(jq -r --arg home "$HOME" --argjson names "$LEGACY_HOOK_NAMES" "$LEGACY_DEF"'
+      [ .hooks? // {} | .. | objects | select(legacy) ] | length > 0
+    ' "$f" 2>/dev/null || echo false)
+  [ "$found" = "true" ] || return 0
+  # Every branch tolerates a shape it did not expect — a non-array event
+  # value, a non-object element — instead of throwing. A throw here aborts
+  # the rewrite for the WHOLE file, so one malformed neighbour would leave
+  # a real legacy entry in place, silently.
+  # Braced so the SHELL's own redirect failure (read-only ~/.claude) is caught
+  # too, not just jq's stderr — otherwise a raw "Permission denied" line lands
+  # in front of the launcher's own message.
+  if { jq --arg home "$HOME" --argjson names "$LEGACY_HOOK_NAMES" "$LEGACY_DEF"'
+        if (.hooks | type) != "object" then .
+        else
+          .hooks |= (
+            with_entries(
+              .value |= (
+                if type != "array" then .
+                else map(
+                  if type != "object" then .
+                  elif (.hooks | type) == "array"
+                  then (.hooks |= map(select(if type == "object" then legacy | not else true end)))
+                       | select((.hooks | length) > 0)
+                  elif legacy then empty
+                  else .
+                  end
+                )
+                end
+              )
+            )
+            | with_entries(select((.value | type) != "array" or (.value | length) > 0))
+          )
+          | if .hooks == {} then del(.hooks) else . end
+        end
+      ' "$f" > "${f}.tmp"; } 2>/dev/null \
+     && jq -e . "${f}.tmp" >/dev/null 2>&1 \
+     && ! jq -e --slurpfile new "${f}.tmp" '. == $new[0]' "$f" >/dev/null 2>&1; then
+    # Timestamped, because .megavibe-backup is rewritten on every run and so
+    # survives exactly one further setup.sh. This is the only copy of the
+    # removed registrations.
+    stamp=$(date +%Y%m%d-%H%M%S)
+    # If the backup cannot be written, nothing is rewritten. It is the only
+    # copy of the removed registrations — .megavibe-backup is overwritten on
+    # every setup run — so announcing a backup path that does not exist while
+    # discarding the original is the one outcome to rule out.
+    if ! cp "$f" "${f}.pre-hookclean-${stamp}" 2>/dev/null; then
+      warn "could not back up $(basename "$f") — left untouched, legacy entries still there"
+      rm -rf "${f}.tmp" 2>/dev/null || true
+      return 0
+    fi
+    # cp, not mv, and a guarded one. mv replaces a symlinked settings.json
+    # with a regular file, stranding the dotfiles copy it pointed at, and
+    # drops the file mode; and an mv that fails (immutable flag, ACL, a sync
+    # mount) exits the whole script under set -e — in the launcher that means
+    # claude never starts, with a fresh backup left behind on every attempt.
+    if ! cp "${f}.tmp" "$f" 2>/dev/null; then
+      warn "could not rewrite $(basename "$f") — left untouched, legacy entries still there"
+      rm -rf "${f}.tmp" "${f}.pre-hookclean-${stamp}" 2>/dev/null || true
+      return 0
+    fi
+    ok "removed legacy ~/.claude/hooks/ entries from $(basename "$f") (backup: $(basename "$f").pre-hookclean-${stamp})"
+  else
+    warn "$(basename "$f") has legacy ~/.claude/hooks/ registrations that could not be rewritten — left untouched, remove them by hand"
   fi
+  # Not "rm -f": a stale .tmp left as a DIRECTORY (killed run, sync client)
+  # makes rm exit 1, and set -e then aborts the whole bootstrap here — before
+  # MCP registration and everything after it.
+  rm -rf "${f}.tmp" 2>/dev/null || true
+}
+LEGACY_SETTINGS_FILES=("$USER_SETTINGS" "$HOME/.claude/settings.local.json")
+if command -v jq &>/dev/null; then
+  for f in "${LEGACY_SETTINGS_FILES[@]}"; do clean_legacy_hooks "$f"; done
 fi
 if [ -d "$LEGACY_HOOK_DIR" ]; then
-  ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d)"
-  if [ ! -e "$ARCHIVE_DIR" ]; then
-    mv "$LEGACY_HOOK_DIR" "$ARCHIVE_DIR"
-    ok "archived legacy hook scripts to ${ARCHIVE_DIR}/"
+  # Three states, not two. "0" only when a check actually ran over every
+  # settings file present. "?" when it could not run at all — no jq, or jq
+  # failed — because archiving on a no-jq run strands every registration in a
+  # file nothing cleaned, which is the outcome the guard exists to prevent.
+  # jq_install can fail and still print ok, so this is reachable.
+  STILL_REFERENCED=0
+  if command -v jq &>/dev/null; then
+    for f in "${LEGACY_SETTINGS_FILES[@]}"; do
+      [ -f "$f" ] || continue
+      # Carries the offending command(s) with the count: a warn naming only a
+      # number, for a path the user cannot grep for, repeats every run with
+      # nothing to act on.
+      REF=$(jq -r --arg home "$HOME" --argjson names "$LEGACY_HOOK_NAMES" \
+              --arg file "$(basename "$f")" "$LEGACY_DEF"'
+          [ .hooks? // {} | .. | objects | select(references_hookdir) | cmd ] as $c
+          | if ($c | length) == 0 then "0"
+            else "\($c | length) in \($file): \($c[0:2] | join("; "))"
+            end
+        ' "$f" 2>/dev/null || echo "?")
+      [ "$REF" = "0" ] || STILL_REFERENCED="$REF"
+    done
   else
-    rm -rf "$LEGACY_HOOK_DIR"
-    ok "removed legacy hook scripts (archive ${ARCHIVE_DIR}/ already exists)"
+    STILL_REFERENCED="?"
+  fi
+  if [ "$STILL_REFERENCED" = "?" ]; then
+    warn "left ${LEGACY_HOOK_DIR}/ in place — could not check ~/.claude settings for registrations pointing into it"
+  elif [ "$STILL_REFERENCED" != "0" ]; then
+    warn "left ${LEGACY_HOOK_DIR}/ in place — still referenced by ${STILL_REFERENCED}"
+  else
+    ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d)"
+    # A same-day collision means the dir was archived once today and came
+    # back. The old code rm -rf'd the new copy, which is the one thing this
+    # branch promises not to do — second suffix instead.
+    [ -e "$ARCHIVE_DIR" ] && ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d-%H%M%S)"
+    if [ ! -e "$ARCHIVE_DIR" ]; then
+      mv "$LEGACY_HOOK_DIR" "$ARCHIVE_DIR"
+      ok "archived legacy hook scripts to ${ARCHIVE_DIR}/"
+    else
+      warn "left ${LEGACY_HOOK_DIR}/ in place — ${ARCHIVE_DIR}/ already exists"
+    fi
   fi
 fi
 
