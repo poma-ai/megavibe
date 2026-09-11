@@ -36,8 +36,10 @@
 # applies to the session, so hooks and Bash calls both inherit it:
 #
 #   ~/.claude/settings.json                all projects
-#   <project>/.claude/settings.json        one project (wins over the user file)
-#   <project>/.claude/settings.local.json  one project, uncommitted (wins over both)
+#   <project>/.claude/settings.local.json  one project, uncommitted (wins over it)
+#   <project>/.claude/settings.json        one project, COMMITTED — may only ADD
+#                                          a reviewer, never remove one, because
+#                                          this file arrives with a clone
 #
 # This script also reads those files directly, so a review script invoked from a
 # plain terminal (no Claude session, no exported var) honours the same setting.
@@ -72,6 +74,9 @@ RAW_SRC="default"
 # brace in the local override silently handed the session a restrictive pin the
 # user had already replaced.
 RAW_AMBIGUOUS=0
+# Set when the value came from a project-scope settings.json — a file that
+# arrives WITH a clone. See the "shareable" note in resolve().
+RAW_SHAREABLE=0
 
 # Assigns the globals RAW_VALUE and RAW_SRC rather than printing: a command
 # substitution runs in a subshell, so a printed value comes back but the
@@ -81,7 +86,7 @@ RAW_AMBIGUOUS=0
 # whatever the session already applied) beats project settings, which beat the
 # user file.
 _raw_value() {
-  RAW_VALUE=""; RAW_SRC="default"; RAW_AMBIGUOUS=0
+  RAW_VALUE=""; RAW_SRC="default"; RAW_AMBIGUOUS=0; RAW_SHAREABLE=0
   # Set-but-EMPTY is a deliberate "use the default", exactly as the header
   # says, and stops the search. Testing -n instead let MEGAVIBE_REVIEWERS=""
   # fall through to a file pin, so the documented way to clear the setting for
@@ -121,6 +126,14 @@ _raw_value() {
     v=$(jq -r '.env.MEGAVIBE_REVIEWERS // empty' "$f" 2>/dev/null || true)
     if [ -n "$v" ]; then
       RAW_VALUE="$v"; RAW_SRC="$f"
+      # A project-scope settings.json is COMMITTED, so it can arrive with a
+      # clone, written by whoever wrote the repo. settings.local.json is
+      # gitignored and the $HOME file is the user's own; neither can.
+      case "$f" in
+        "$HOME/.claude/settings.json") ;;
+        *settings.local.json) ;;
+        *) RAW_SHAREABLE=1 ;;
+      esac
       return 0
     fi
   done
@@ -169,6 +182,19 @@ resolve() {
     esac
   done
 
+  # A file that can arrive with a clone may ADD reviewers, never take them
+  # away. megavibe argues exactly this about the re-exec pointer — "the env
+  # block of a settings.json committed inside a cloned repo" is written by
+  # whoever wrote the repo — and then read that same file here, ahead of the
+  # user own file, from a plain terminal where Claude Code trust prompts are
+  # not involved at all. A hostile repo could switch off both external
+  # reviewers OF ITS OWN CODE. Pin per-project in .claude/settings.local.json,
+  # which is gitignored and is what `megavibe reviewers set --project` writes.
+  if [ "$RAW_SHAREABLE" = 1 ] && [ "$(printf '%s' "$out" | wc -w)" -lt "$(printf '%s' "$KNOWN" | wc -w)" ]; then
+    echo "reviewers.sh: $RAW_SRC is committed to the repo and would REMOVE a reviewer — ignoring it. Put a per-project pin in .claude/settings.local.json instead." >&2
+    printf '%s\n' $KNOWN
+    return 0
+  fi
   if [ "$unknown" = 1 ]; then
     echo "reviewers.sh: MEGAVIBE_REVIEWERS names something I do not recognise — using every reviewer rather than guessing which one was meant" >&2
     printf '%s\n' $KNOWN

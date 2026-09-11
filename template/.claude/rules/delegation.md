@@ -31,11 +31,11 @@
 ```
 megavibe reviewers                          # what is on, where it was set, what is available
 megavibe reviewers set reviewer gemini      # this user, all projects
-megavibe reviewers set --project reviewer   # this project only
+megavibe reviewers set --project reviewer   # this project only (uncommitted)
 megavibe reviewers set auto                 # back to the default
 ```
 
-It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json` or the project's `.claude/settings.json`, which Claude Code applies to the session so hooks and Bash calls inherit it. `reviewers.sh` also reads those files directly (plus an uncommitted `.claude/settings.local.json`, which wins over both), so a review script run from a plain terminal honours the same setting. Precedence: the exported variable, then `settings.local.json`, then the project file, then the user file. `~/.megavibe/scripts/reviewers.sh list` prints the resolved set, `source` says which of them supplied it.
+It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json`, or with `--project` into the project's uncommitted `.claude/settings.local.json`, which Claude Code applies to the session so hooks and Bash calls inherit it. `reviewers.sh` also reads those files directly, so a review script run from a plain terminal honours the same setting. Precedence: the exported variable, then `settings.local.json`, then the project's committed `settings.json`, then the user file — except that the committed project file may only **add** reviewers. It arrives with a clone, written by whoever wrote the repo, and a repo that can switch off the reviewers reading its own code is a hole, not a feature; a reducing pin there is ignored with a warning. `~/.megavibe/scripts/reviewers.sh list` prints the resolved set, `source` says which of them supplied it.
 
 **It gates the reviewer ROLE, not the backend.** `gemini-review.sh` and `codex-review.sh` are also the general Gemini/Codex transport — steps 1 and 3 of the fallback chain above, and what `/rehydrate` and `/prune-context` call — so they consult the allow-list **only when the caller passes `--as-reviewer`**. Pass that flag for the reviews of non-negotiable 4 and for nothing else: switching a reviewer off must not cost anyone context recovery. Getting this backwards is the bug the first cut shipped — `MEGAVIBE_REVIEWERS="reviewer"` silently stripped `/rehydrate` of both external backends.
 

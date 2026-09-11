@@ -559,9 +559,19 @@ if [ "${1:-}" = "reviewers" ]; then
       SCOPE_FILE="$HOME/.claude/settings.json"; SCOPE_NAME="this user, all projects"
       if [ "${1:-}" = "--project" ]; then
         shift
-        git rev-parse --show-toplevel >/dev/null 2>&1 || { echo "--project needs to run inside a project."; exit 1; }
-        SCOPE_FILE="$(git rev-parse --show-toplevel)/.claude/settings.json"
-        SCOPE_NAME="this project"
+        # settings.LOCAL.json, deliberately. The committed settings.json can
+        # arrive with a clone, so reviewers.sh refuses to let it remove a
+        # reviewer; writing the pin there would produce a setting that is
+        # displayed and then ignored. settings.local.json is gitignored and is
+        # the file that actually wins.
+        #
+        # And not git-only: init.sh bootstraps any directory, so a non-git
+        # project could never pin per-project at all.
+        SCOPE_ROOT="${CLAUDE_PROJECT_DIR:-}"
+        [ -n "$SCOPE_ROOT" ] || SCOPE_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+        [ -n "$SCOPE_ROOT" ] || SCOPE_ROOT="$PWD"
+        SCOPE_FILE="$SCOPE_ROOT/.claude/settings.local.json"
+        SCOPE_NAME="this project, uncommitted"
       fi
       [ $# -gt 0 ] || { echo "usage: megavibe reviewers set [--project] <reviewer...|auto>"; exit 2; }
       command -v jq >/dev/null 2>&1 || { echo "jq is required to edit settings.json."; exit 1; }
