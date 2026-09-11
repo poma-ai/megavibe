@@ -946,15 +946,25 @@ LEGACY_HOOK_NAMES='["after-edit.sh","agent-log.sh","augment-search.sh","block-da
 # cleanup for the whole file and leave real legacy entries in place.
 LEGACY_DEF='
   def cmd: .command | if type == "string" then . else "" end;
+  # A path token in a shell command starts at the string start or after one of
+  # these. Used as the left boundary everywhere, so no predicate can match a
+  # path that merely CONTAINS ours as a substring.
+  def bnd: . == "" or (.[-1:] | test("[ \t\r\n\"\u0027;|&(]"));
+  def at_boundary($c; $needle):
+    ($c | split($needle)) as $p
+    | ($p | length) > 1 and any($p[0:-1][]; bnd);
   # $CLAUDE_PROJECT_DIR is neutralised, not excluded. A blanket
   # contains("CLAUDE_PROJECT_DIR") test let ANY command mentioning it past the
   # archive gate — including "$HOME/.claude/hooks/notify.sh \"$CLAUDE_PROJECT_DIR\"",
   # an ordinary thing to write — and the dir was then archived out from under
   # a live registration, reported as a heal. Rewritten to an absolute token it
   # keeps $CLAUDE_PROJECT_DIR/.claude/hooks/x.sh non-blocking on its own merits.
-  def norm: cmd | gsub("\\$\\{?CLAUDE_PROJECT_DIR\\}?"; "/__project__");
+  # The lookahead keeps $CLAUDE_PROJECT_DIR_BACKUP — a DIFFERENT variable that
+  # can point anywhere — from being rewritten to /__project___BACKUP and
+  # inheriting the exemption.
+  def norm: cmd | gsub("\\$\\{?CLAUDE_PROJECT_DIR\\}?(?![A-Za-z0-9_])"; "/__project__");
   def in_hookdir: norm as $c
-    | ($c | contains($home + "/.claude/hooks/"))
+    | at_boundary($c; $home + "/.claude/hooks/")
       or ($c | test("(^|[^A-Za-z0-9_/])\"?(\\$HOME|\\$\\{HOME\\}|~)\"?/\\.claude/hooks/"))
       or ($c | test("(^|[ \t\r\n\"\u0027;|&(])\\.?/?\\.claude/hooks/"));
   # One occurrence must satisfy BOTH halves: the text before it has to be a
@@ -963,6 +973,11 @@ LEGACY_DEF='
   # "~/.claude/hooks/mine.sh /opt/other/.claude/hooks/log-tool-event.sh" —
   # in_hookdir from the first path, ours from the second. split() rather than
   # a regex so the 29 names need no escaping.
+  #
+  # The expanded-$HOME prefix carries the same boundary requirement as every
+  # other spelling: a bare endswith() deleted
+  # "/opt/mirror/Users/alice/.claude/hooks/agent-log.sh", a MIRROR of the
+  # user home under another root, which is a different directory entirely.
   #
   # Residual, accepted: a user hook that passes one of OUR paths as an
   # argument ("mine.sh --fallback ~/.claude/hooks/agent-log.sh") still reads
@@ -977,14 +992,26 @@ LEGACY_DEF='
         | ($parts | length) > 1
           and any(range(0; ($parts | length) - 1);
                 . as $i
-                | ($parts[$i+1] | . == "" or (.[0:1] | test("[ \t\r\n\"\u0027;|&<>,)]")))
+                | ($parts[$i+1] | . == "" or (.[0:1] | test("[ \t\r\n\"\u0027;|&<>)]")))
                   and ($parts[$i]
-                       | . == ""
-                         or endswith($home + "/")
-                         or test("(^|[ \t\"\u0027;|&(])((\\$HOME|\\$\\{HOME\\}|\"\\$HOME\"|~|\\.)/)?$"))));
+                       | (endswith($home + "/")
+                          and (.[0:(length - ($home | length) - 1)] | bnd))
+                         or test("(^|[ \t\r\n\"\u0027;|&(])(\"?(\\$HOME|\\$\\{HOME\\}|~|\\.)\"?/)?$"))));
+  # Broader than the removal filter, and evaluated PER OCCURRENCE. Deciding it
+  # over the whole string let one unrelated absolute path cancel the
+  # protection for a live reference beside it:
+  # "${HOOK_ROOT}/.claude/hooks/notify.sh /opt/project/.claude/hooks/other.sh"
+  # read as exempt and the directory was archived out from under notify.sh.
+  # An occurrence is exempt only when its own prefix ends in an absolute path
+  # token — unquoted and space-free, or quoted and then free to contain
+  # spaces. Anything it cannot resolve blocks the archive: fail closed.
+  def other_checkout: test("(^|[ \t\r\n\"\u0027;|&(])/[^ \t\r\n\"\u0027;|&()]*$")
+    or test("(^|[ \t\r\n;|&(])[\"\u0027]/[^\"\u0027]*$");
   def references_hookdir: norm as $c
     | ($c | contains(".claude/hooks/"))
-      and (in_hookdir or ($c | test("(^|[ \t\"\u0027])/[^ \t\"\u0027]*\\.claude/hooks/") | not));
+      and (in_hookdir
+           or (($c | split(".claude/hooks/")) as $p
+               | any($p[0:-1][]; other_checkout | not)));
 '
 # Returns 0 always — a settings file this cannot parse or rewrite is left
 # alone, never a reason to abort the bootstrap.
@@ -995,6 +1022,11 @@ clean_legacy_hooks() {
       [ .hooks? // {} | .. | objects | select(legacy) ] | length > 0
     ' "$f" 2>/dev/null || echo false)
   [ "$found" = "true" ] || return 0
+  # Cleared BEFORE the redirect, not only after: a leftover settings.json.tmp
+  # that is a SYMLINK makes the redirect write through it into whatever it
+  # points at, and one that is a DIRECTORY makes the redirect fail. Neither is
+  # hypothetical after a killed run or a file-sync client.
+  rm -rf "${f}.tmp" 2>/dev/null || true
   # Every branch tolerates a shape it did not expect — a non-array event
   # value, a non-object element — instead of throwing. A throw here aborts
   # the rewrite for the WHOLE file, so one malformed neighbour would leave
@@ -1047,8 +1079,12 @@ clean_legacy_hooks() {
     # mount) exits the whole script under set -e — in the launcher that means
     # claude never starts, with a fresh backup left behind on every attempt.
     if ! cp "${f}.tmp" "$f" 2>/dev/null; then
-      warn "could not rewrite $(basename "$f") — left untouched, legacy entries still there"
-      rm -rf "${f}.tmp" "${f}.pre-hookclean-${stamp}" 2>/dev/null || true
+      # The backup is KEPT. cp can truncate or partially write the
+      # destination before failing, so this branch is exactly where the only
+      # surviving copy matters — deleting it turned a failed rewrite into
+      # unrecoverable loss of the whole settings file.
+      warn "could not rewrite $(basename "$f") — backup kept at $(basename "$f").pre-hookclean-${stamp}"
+      rm -rf "${f}.tmp" 2>/dev/null || true
       return 0
     fi
     ok "removed legacy ~/.claude/hooks/ entries from $(basename "$f") (backup: $(basename "$f").pre-hookclean-${stamp})"
@@ -1065,12 +1101,15 @@ if command -v jq &>/dev/null; then
   for f in "${LEGACY_SETTINGS_FILES[@]}"; do clean_legacy_hooks "$f"; done
 fi
 if [ -d "$LEGACY_HOOK_DIR" ]; then
-  # Three states, not two. "0" only when a check actually ran over every
-  # settings file present. "?" when it could not run at all — no jq, or jq
-  # failed — because archiving on a no-jq run strands every registration in a
-  # file nothing cleaned, which is the outcome the guard exists to prevent.
-  # jq_install can fail and still print ok, so this is reachable.
+  # Three states, not two. STILL_REFERENCED=0 only when a check actually ran
+  # over every settings file present; CHECK_FAILED=1 when it could not run at
+  # all — no jq, or jq failed — because archiving on a no-jq run strands every
+  # registration in a file nothing cleaned, which is the outcome the guard
+  # exists to prevent. jq_install can fail and still print ok, so this is
+  # reachable. A separate flag rather than a "?" sentinel in the same
+  # variable, so a real reference string can never be mistaken for it.
   STILL_REFERENCED=0
+  CHECK_FAILED=0
   if command -v jq &>/dev/null; then
     for f in "${LEGACY_SETTINGS_FILES[@]}"; do
       [ -f "$f" ] || continue
@@ -1084,12 +1123,20 @@ if [ -d "$LEGACY_HOOK_DIR" ]; then
             else "\($c | length) in \($file): \($c[0:2] | join("; "))"
             end
         ' "$f" 2>/dev/null || echo "?")
-      [ "$REF" = "0" ] || STILL_REFERENCED="$REF"
+      # Accumulated, not overwritten. With a reference in settings.json AND
+      # one in settings.local.json, the second assignment used to hide the
+      # first and the user fixed half the problem.
+      if [ "$REF" = "?" ]; then
+        CHECK_FAILED=1
+      elif [ "$REF" != "0" ]; then
+        if [ "$STILL_REFERENCED" = "0" ]; then STILL_REFERENCED="$REF"
+        else STILL_REFERENCED="${STILL_REFERENCED}; ${REF}"; fi
+      fi
     done
   else
-    STILL_REFERENCED="?"
+    CHECK_FAILED=1
   fi
-  if [ "$STILL_REFERENCED" = "?" ]; then
+  if [ "$CHECK_FAILED" = "1" ]; then
     warn "left ${LEGACY_HOOK_DIR}/ in place — could not check ~/.claude settings for registrations pointing into it"
   elif [ "$STILL_REFERENCED" != "0" ]; then
     warn "left ${LEGACY_HOOK_DIR}/ in place — still referenced by ${STILL_REFERENCED}"
@@ -1100,8 +1147,15 @@ if [ -d "$LEGACY_HOOK_DIR" ]; then
     # branch promises not to do — second suffix instead.
     [ -e "$ARCHIVE_DIR" ] && ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d-%H%M%S)"
     if [ ! -e "$ARCHIVE_DIR" ]; then
-      mv "$LEGACY_HOOK_DIR" "$ARCHIVE_DIR"
-      ok "archived legacy hook scripts to ${ARCHIVE_DIR}/"
+      # Guarded: an unguarded mv that fails (parent-dir ACL, immutable flag,
+      # a sync mount) exits non-zero under set -e, which in setup.sh aborts
+      # the bootstrap before MCP registration and in the launcher means claude
+      # never starts.
+      if mv "$LEGACY_HOOK_DIR" "$ARCHIVE_DIR" 2>/dev/null; then
+        ok "archived legacy hook scripts to ${ARCHIVE_DIR}/"
+      else
+        warn "left ${LEGACY_HOOK_DIR}/ in place — could not move it to ${ARCHIVE_DIR}/"
+      fi
     else
       warn "left ${LEGACY_HOOK_DIR}/ in place — ${ARCHIVE_DIR}/ already exists"
     fi
