@@ -22,7 +22,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    - If the on-compact hook already told you, use that path.
    - Otherwise your session ID is in the hook stdin JSON (`session_id`); WORKING_CONTEXT lives at `.agent/sessions/{session_id}/WORKING_CONTEXT.md`.
 
-2. **Check backend availability** (standard fallback chain): `$GEMINI_API_KEY` set (→ `gemini-review.sh`) → Codex MCP → Claude subagent (always works).
+2. **Check backend availability** (standard fallback chain): `$GEMINI_API_KEY` set (→ `gemini-review.sh`) → Codex (`codex-review.sh`) → Claude subagent (always works).
 
 3. **Assemble a BOUNDED input** via Bash (caps keep it well under any backend limit and fast):
 
@@ -54,7 +54,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    ```
 
    - Non-zero exit (incl. SIGALRM timeout) **or** an empty `$OUT` = that backend FAILED. Don't retry it — move down the chain.
-   - **Fallback order:** Gemini direct API (above) → Codex (`perl -e 'alarm shift; exec @ARGV' 150 codex exec "$INSTR — the state is in the file $IN"`) → **Claude subagent** (Agent tool, model sonnet — internal, cannot hang, always finishes). Not the Gemini CLI and not `mcp__gemini-cli__ask-gemini` for this: both run the model with full thinking on a large input and stall.
+   - **Fallback order:** Gemini direct API (above) → Codex (`~/.megavibe/scripts/codex-review.sh --timeout 150 --prompt "$INSTR" --out "$OUT" "$IN"`) — use the wrapper, NOT a bare `perl -e 'alarm shift; exec @ARGV' … codex exec`: that one-line form leaves codex orphaned to PID 1 on timeout, and passes the prompt through argv, which here is the largest input in the system → **Claude subagent** (Agent tool, model sonnet — internal, cannot hang, always finishes). Not the Gemini CLI and not `mcp__gemini-cli__ask-gemini` for this: both run the model with full thinking on a large input and stall.
 
 5. **Verify + load.** Confirm `$OUT` is non-empty and contains the requested sections, then Read it into your window. If every external backend failed AND the subagent is unavailable, hand-write a minimal WORKING_CONTEXT from TASKS.md + git state rather than leaving it empty.
 

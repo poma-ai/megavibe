@@ -13,7 +13,7 @@ Use Gemini (or the standard fallback chain) to surgically remove redundant lines
 
 ## Prerequisites
 
-- At least one backend must be available. Try in order: Gemini MCP → `$GEMINI_API_KEY` curl → Codex MCP → Claude subagent (last resort)
+- At least one backend must be available. Try in order: Gemini (`gemini-review.sh`) → Codex (`codex-review.sh`) → Claude subagent (last resort)
 - FULL_CONTEXT.md should be large enough to warrant compaction (500+ lines)
 - The Claude subagent has a 200K token window — for very large logs, it may need to process in chunks
 

@@ -1349,6 +1349,37 @@ elif [ -f "$VERSION_FILE" ]; then
 fi
 export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
 
+# ─── Admin-issued MCP credentials ────────────────────────────────────
+#
+# Some user-scope MCP registrations reference ${MEGAWORK_TOKEN_<NAME>} and
+# ${MEGAWORK_PASSWORD_<NAME>} — the `github` and `reports` servers. Those
+# placeholders were only ever filled by the megawork launcher, so a plain
+# `megavibe` dev session started them with the value unsubstituted: GitHub
+# answered 400 "Authorization header is badly formatted", and the reports
+# toolbox exited during config parse on a missing variable. Every dev session
+# in every project therefore opened with two MCP failures for servers whose
+# credentials were sitting on disk, readable, the whole time — and two standing
+# red lines are how people learn to ignore MCP failures that matter.
+#
+# Same loader as megawork/bin/megawork's export_tokens, over the same files.
+# Inert when the policy directory is absent, which is every machine that never
+# installed megawork. Values are read from files into the environment and never
+# passed through argv, so they stay out of `ps`.
+MEGAWORK_POLICY="${MEGAWORK_ENGINE:-$HOME/.megawork}/policy"
+if [ -d "$MEGAWORK_POLICY" ]; then
+  for _tf in "$MEGAWORK_POLICY"/*-token; do
+    [ -s "$_tf" ] || continue
+    _n=$(basename "$_tf" -token | tr 'a-z-' 'A-Z_')
+    export "MEGAWORK_TOKEN_$_n=$(tr -d '[:space:]' < "$_tf")"
+  done
+  for _tf in "$MEGAWORK_POLICY"/*-password; do
+    [ -s "$_tf" ] || continue
+    _n=$(basename "$_tf" -password | tr 'a-z-' 'A-Z_')
+    export "MEGAWORK_PASSWORD_$_n=$(tr -d '[:space:]' < "$_tf")"
+  done
+  unset _tf _n
+fi
+
 # ─── Auto-compact threshold ──────────────────────────────────────────
 #
 # Cap effective context window so built-in auto-compact fires earlier,

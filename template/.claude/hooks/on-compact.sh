@@ -18,7 +18,7 @@ set -u
 # - Always inject: DECISIONS.md + TASKS.md + LESSONS.md (structured, small)
 # - FULL_CONTEXT.md < 10KB: also inject raw (no AI needed)
 # - FULL_CONTEXT.md >= 10KB: inject rehydration instructions for Claude to
-#   call Gemini MCP → GEMINI_API_KEY curl → Codex MCP → Claude subagent (fallback chain)
+#   call gemini-review.sh → codex-review.sh → Claude subagent (fallback chain)
 #
 # Improvements over v1:
 # - LESSONS.md injected (was missing)

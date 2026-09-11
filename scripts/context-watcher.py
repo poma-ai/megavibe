@@ -394,8 +394,12 @@ def _call_gemini(prompt: str, timeout: int) -> str:
 
 
 def _call_codex(prompt: str, timeout: int) -> str:
-    # codex CLI: `codex exec` with prompt on stdin
-    r = subprocess.run(["codex", "exec", "--quiet"],
+    # codex CLI: `codex exec` with the prompt on stdin.
+    # NOT --quiet: codex-cli 0.154.0 rejects it ("unexpected argument '--quiet'"),
+    # so every codex-backed flush failed for anyone without a GEMINI_API_KEY.
+    # Same release that removed `mcp-server`.
+    r = subprocess.run(["codex", "exec", "--sandbox", "read-only",
+                        "--skip-git-repo-check", "--color", "never", "-"],
                        input=prompt, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"codex exit={r.returncode}: {r.stderr[:400]}")
