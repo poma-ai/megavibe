@@ -12,15 +12,21 @@
 #   This script calls the API directly, so it can set the level.
 #
 # Usage:
-#   scripts/gemini-review.sh [--pro] [--level low|medium|high] [--max N]
-#                            [--out FILE] --prompt "text" FILE...
+#   scripts/gemini-review.sh [--as-reviewer] [--pro] [--level low|medium|high]
+#                            [--max N] [--out FILE] --prompt "text" FILE...
 #   scripts/gemini-review.sh ... --prompt-file PROMPT.md FILE...
 #
 # Files are appended to the prompt as "===== path =====" blocks. Output: the
 # model's text on stdout; with --out, the text goes there and the raw JSON to
 # FILE.raw.json for audit (without --out nothing is left behind).
-# Exit 0 on a complete answer, 3 if the answer was cut off (MAX_TOKENS), 1 on
-# API/network error. Never retries more than once (megavibe rule).
+# --as-reviewer marks this call as one of non-negotiable 4's reviews, and is the
+# ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's general
+# Gemini path (/rehydrate, summaries, large context), which no reviewer setting
+# should be able to switch off.
+#
+# Exit 0 on a complete answer, 3 if the answer was cut off (MAX_TOKENS), 4 if
+# asked to review while gemini is off in MEGAVIBE_REVIEWERS, 1 on API/network
+# error. Never retries more than once (megavibe rule).
 #
 # Model: gemini-flash-latest by default (≈$0.04 per 50K-token review on the
 # paid key). --pro = gemini-3.1-pro-preview at thinkingLevel medium (≈$0.15);
@@ -51,11 +57,13 @@ MODEL="gemini-3.1-flash-lite"; LEVEL="low"; MAX=16000; OUT=""; PROMPT=""; PROMPT
 #   3. it reported partial coverage, or emitted no parseable verdict at all
 #   4. the INPUT is high-stakes by deterministic file match — fires even when the
 #      cheap model says everything is fine
+AS_REVIEWER=""
 AUTO=""; MIN_CONF="0.75"; PRO_MODEL="gemini-3.1-pro-preview"; PRO_LEVEL="medium"
 FILES=()
 need(){ [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
+    --as-reviewer) AS_REVIEWER=1; shift ;;
     --pro)         MODEL="$PRO_MODEL"; LEVEL="$PRO_LEVEL"; shift ;;
     --auto)        AUTO=1; shift ;;
     --min-conf)    need "$@"; MIN_CONF="$2"; shift 2 ;;
@@ -65,12 +73,34 @@ while [ $# -gt 0 ]; do
     --out)         need "$@"; OUT="$2"; shift 2 ;;
     --prompt)      need "$@"; PROMPT="$2"; shift 2 ;;
     --prompt-file) need "$@"; PROMPT_FILE="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
     --)            shift; FILES+=("$@"); break ;;
     -*)            echo "unknown arg: $1" >&2; exit 2 ;;
     *)             FILES+=("$1"); shift ;;
   esac
 done
+
+# Asked to REVIEW, and this reviewer is switched off? Refuse before spending
+# anything. The gate lives here, not only in the protocol text, so an agent that
+# calls a disabled reviewer out of habit gets a free no-op instead of a paid
+# review the user did not want.
+#
+# Only under --as-reviewer. This script is also megavibe's general gemini path —
+# /rehydrate and /prune-context and every large-context task come through here —
+# and MEGAVIBE_REVIEWERS is a statement about reviewing, not about the backend.
+# Gating unconditionally would have stripped context recovery of its backend for
+# anyone who switched one reviewer off.
+_RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
+  _rv_rc=0; bash "$_RVDIR/reviewers.sh" enabled gemini >/dev/null 2>&1 || _rv_rc=$?
+  # ONLY 1 means "switched off". A helper that crashed, or one from a future
+  # version with different exit codes, must not be able to silence a reviewer —
+  # non-negotiable 4 fails open.
+  if [ "$_rv_rc" -eq 1 ]; then
+    echo "skip: gemini is not in MEGAVIBE_REVIEWERS ($(bash "$_RVDIR/reviewers.sh" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    exit 4
+  fi
+fi
 
 KEY="${GEMINI_API_KEY:-}"
 [ -n "$KEY" ] || { echo "error: GEMINI_API_KEY is not set (needs a key from a billed project)" >&2; exit 1; }

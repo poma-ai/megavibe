@@ -1,12 +1,12 @@
 ---
 name: doc-review
-description: Independent three-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the Claude `reviewer` subagent, Gemini and Codex in parallel; synthesizes findings into a single report.
+description: Independent three-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the switched-on reviewers (Claude `reviewer` subagent, Gemini, Codex) in parallel; synthesizes findings into a single report.
 allowed-tools: Bash, Read, Write, Agent
 ---
 
 # Doc-review (periodic doc hygiene)
 
-Send the project's full markdown documentation surface to three independent readers in parallel — the Claude `reviewer` subagent (always), Gemini and Codex (when available) — for an independent challenge. Synthesize the reviews into a single findings report. The user decides which findings to act on.
+Send the project's full markdown documentation surface to every switched-on reviewer in parallel — the Claude `reviewer` subagent always, plus Gemini and Codex unless the user has left one out of the `MEGAVIBE_REVIEWERS` allow-list or it is unavailable — for an independent challenge. Synthesize the reviews into a single findings report. The user decides which findings to act on.
 
 ## When to use
 
@@ -21,7 +21,7 @@ After significant docs or code edits that change the documentation surface — `
    ```
    Most projects: just `CLAUDE.md` plus zero or more `README*.md` at the root. Adapt if the project uses a `docs/` folder. If only `CLAUDE.md` exists, the review is still useful — focus on bloat and drift-vs-code.
 
-2. **Send to the reviewers in PARALLEL**, in a single tool-call batch, with the SAME files and the SAME prompt. The `reviewer` subagent always runs (Agent tool, `subagent_type: reviewer`, or `general-purpose` with `model: opus` and the text of `.claude/agents/reviewer.md` if the project has not synced agents yet). Add Gemini via Bash — `bash ~/.megavibe/scripts/gemini-review.sh --prompt "<prompt>" <files>  (add `--pro` only when CLAUDE.md or the protocol itself is in the set)` — only if `$GEMINI_API_KEY` is set (it exits 1 otherwise; that is a skipped reviewer, not a failed review). Add Codex via Bash — `bash ~/.megavibe/scripts/codex-review.sh --prompt "<prompt>" <files>` — only if `codex` is on PATH. There is no Codex MCP: codex-cli 0.154.0 removed it, and `setup.sh` deletes the dead registration, so a gate on "is the Codex MCP listed" is permanently false and would report Codex unavailable when it works. Never use `mcp__gemini-cli__ask-gemini` here: the CLI it wraps truncates or stalls on 3.x thinking. The prompt:
+2. **Send to the reviewers in PARALLEL**, in a single tool-call batch, with the SAME files and the SAME prompt. Call only the reviewers in the `MEGAVIBE_REVIEWERS` allow-list — the session-start table has a Reviewers row naming the active set, and a reviewer left out of it exits 4 under `--as-reviewer` instead of reviewing. The `reviewer` subagent always runs (Agent tool, `subagent_type: reviewer`, or `general-purpose` with `model: opus` and the text of `.claude/agents/reviewer.md` if the project has not synced agents yet). Add Gemini via Bash — `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --prompt "<prompt>" <files>` (add `--pro` only when CLAUDE.md or the protocol itself is in the set) — only if `$GEMINI_API_KEY` is set (it exits 1 otherwise; that is a skipped reviewer, not a failed review). Add Codex via Bash — `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --prompt "<prompt>" <files>` — only if `codex` is on PATH. There is no Codex MCP: codex-cli 0.154.0 removed it, and `setup.sh` deletes the dead registration, so a gate on "is the Codex MCP listed" is permanently false and would report Codex unavailable when it works. Never use `mcp__gemini-cli__ask-gemini` here: the CLI it wraps truncates or stalls on 3.x thinking. The prompt:
 
    > Review the attached project documentation set. For each finding, output `{category, file:line, what's wrong, suggested fix}`. Categories:
    >
@@ -33,7 +33,7 @@ After significant docs or code edits that change the documentation surface — `
    >
    > Be specific and concise. Do not propose stylistic rewrites — only substantive issues.
 
-3. **Missing reviewers.** The `reviewer` subagent is never skipped. If Gemini or Codex is unavailable per `.claude/rules/delegation.md`, run with the rest and name the missing reviewer in the synthesis. Never substitute `summarizer` for `reviewer`. A single-reviewer round (reviewer only) is still a review — say so plainly.
+3. **Missing reviewers.** A backend that is unavailable (no key, not installed) and one that is switched off in `MEGAVIBE_REVIEWERS` are both simply absent from the round — name which, and do not treat a switched-off reviewer as an outage to work around. The `reviewer` subagent is never skipped: `MEGAVIBE_REVIEWERS` governs the external reviewers only and cannot remove it. If Gemini or Codex is unavailable per `.claude/rules/delegation.md`, run with the rest and name the missing reviewer in the synthesis. Never substitute `summarizer` for `reviewer`. A single-reviewer round (reviewer only) is still a review — say so plainly.
 
 4. **Synthesize.** Merge the reports into a single output, grouped by category. For each finding:
    - Note how many reviewers flagged it — **all** or **two** (high-confidence) vs **one** (check it yourself before acting)

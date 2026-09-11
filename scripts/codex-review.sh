@@ -13,13 +13,19 @@
 # non-negotiable 4 are called the same way and neither is the awkward one.
 #
 # Usage:
-#   scripts/codex-review.sh [--model M] [--timeout N]
+#   scripts/codex-review.sh [--as-reviewer] [--model M] [--timeout N]
 #                           [--out FILE] --prompt "text" FILE...
 #   scripts/codex-review.sh ... --prompt-file PROMPT.md FILE...
 #
 # Files are appended to the prompt as "===== path =====" blocks, same as
 # gemini-review.sh. The model's answer goes to stdout; --out also writes it to
-# FILE. Exit 0 on an answer, 124 on timeout, 2 on a usage error, 1 on error.
+# FILE. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
+# is the ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's
+# general Codex path (/rehydrate, research memos, second opinions), which no
+# reviewer setting should be able to switch off.
+#
+# Exit 0 on an answer, 124 on timeout, 4 if asked to review while codex is off
+# in MEGAVIBE_REVIEWERS, 2 on a usage error, 1 on error.
 #
 # SANDBOX: always read-only. There is no --sandbox flag at all — passing one is
 # refused (exit 2), as are --approve-for-me, --full-auto and
@@ -38,10 +44,12 @@ MODEL=""; TIMEOUT=300; OUT=""; PROMPT=""; PROMPT_FILE=""
 # flag to raise it: a caller-supplied sandbox is how the previous version of
 # this guarantee was lost.
 readonly SANDBOX="read-only"
+AS_REVIEWER=""
 FILES=()
 need(){ [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
+    --as-reviewer) AS_REVIEWER=1; shift ;;
     --model)       need "$@"; MODEL="$2"; shift 2 ;;
     --timeout)     need "$@"; TIMEOUT="$2"; shift 2 ;;
     --out)         need "$@"; OUT="$2"; shift 2 ;;
@@ -50,7 +58,7 @@ while [ $# -gt 0 ]; do
     # Refused, not forwarded: a review that can write is not a review.
     --sandbox|--dangerously-bypass-approvals-and-sandbox|--approve-for-me|--full-auto)
       echo "error: $1 is not available here — this reviewer is read-only by contract" >&2; exit 2 ;;
-    -h|--help)     sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,39p' "$0"; exit 0 ;;
     --)            shift; FILES+=("$@"); break ;;
     -*)            echo "unknown arg: $1" >&2; exit 2 ;;
     *)             FILES+=("$1"); shift ;;
@@ -60,6 +68,28 @@ done
 # Zero would CANCEL perl's alarm, silently turning the timeout contract off.
 case "$TIMEOUT" in ''|*[!0-9]*) echo "error: --timeout must be a number" >&2; exit 2 ;; esac
 [ "$TIMEOUT" -gt 0 ] || { echo "error: --timeout must be greater than 0 (0 disables the alarm)" >&2; exit 2; }
+
+# Asked to REVIEW, and this reviewer is switched off? Refuse before spending
+# anything. The gate lives here, not only in the protocol text, so an agent that
+# calls a disabled reviewer out of habit gets a free no-op instead of a paid
+# review the user did not want.
+#
+# Only under --as-reviewer. This script is also megavibe's general codex path —
+# /rehydrate and /prune-context and every large-context task come through here —
+# and MEGAVIBE_REVIEWERS is a statement about reviewing, not about the backend.
+# Gating unconditionally would have stripped context recovery of its backend for
+# anyone who switched one reviewer off.
+_RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
+  _rv_rc=0; bash "$_RVDIR/reviewers.sh" enabled codex >/dev/null 2>&1 || _rv_rc=$?
+  # ONLY 1 means "switched off". A helper that crashed, or one from a future
+  # version with different exit codes, must not be able to silence a reviewer —
+  # non-negotiable 4 fails open.
+  if [ "$_rv_rc" -eq 1 ]; then
+    echo "skip: codex is not in MEGAVIBE_REVIEWERS ($(bash "$_RVDIR/reviewers.sh" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    exit 4
+  fi
+fi
 
 command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1; }
 [ -n "$PROMPT" ] || [ -n "$PROMPT_FILE" ] || { echo "error: --prompt or --prompt-file is required" >&2; exit 2; }
