@@ -138,7 +138,7 @@
           },
           {
             "type": "command",
-            "command": ".claude/hooks/kube-token.sh"
+            "command": ".claude/hooks/cloud-token.sh"
           }
         ]
       },

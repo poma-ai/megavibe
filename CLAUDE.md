@@ -34,6 +34,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `megawork/` | Derived profile Megawork — the profile for non-technical colleagues | Medium — see `megawork/README.md` |
 | `scripts/google-oauth-mint.sh` | Per-user Google OAuth refresh token for scopes a gcloud login does not carry (Ads, Workspace Admin, GA4 Admin). Loopback consent, token 0600 in ~/.config. `groupwrite` is a WRITE scope — see the header | Medium — touches credentials |
 | `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
+| `template/.claude/hooks/cloud-token.sh` | Keeps `kubectl` and `gcloud` carrying a freshly minted token so a non-interactive session never asks for an interactive login. Inert until `~/.megavibe/personal/cloud-token.conf` exists | Medium — touches credentials |
 | `scripts/leak-scan.sh` | Pre-push check that this PUBLIC repo publishes no secrets/internal identifiers, and nothing that only works inside one company | Low — read-only |
 | `THIRD_PARTY_NOTICES.md` | MIT notices for the two upstreams `sr-style.md` adapts | Low — licensing |
 | `README-watcher.md` | Context-watcher detail | Low |
