@@ -23,7 +23,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (26 hooks; canonical list in init.sh) | Medium |
+| `template/.claude/hooks/*.sh` | Hook scripts template (25 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Last-resort fallback agent (sonnet) | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The always-on independent reviewer (Opus, fresh context, runs things) — non-negotiable 4 | Medium — affects every review |
 | `scripts/provision-megawork.sh` | Admin: Megawork credentials and local config (gemini, ga4, github, grafana, db, toolbox, org) into the private overlay; identities in one project | Medium — touches IAM |
@@ -157,7 +157,7 @@ For hook changes, ask Gemini to review for edge cases (missing files, race condi
 |----------|-----------|
 | `.agent/` files, not Mem0 | Megavibe's `.agent/` + Claude Code's built-in auto-memory (`~/.claude/projects/.../memory/`) cover project + cross-session context. Mem0 would be a third layer with SaaS dependency, free-tier limits, and known bugs. |
 | No swarms/antfarm | ~10 files of shell + markdown. Single-agent Claude is sufficient. Swarms add git worktree coordination for zero benefit at this scale. |
-| Gemini for re-hydration (Codex as fallback) | Larger context window than Claude subagents for digesting full `.agent/FULL_CONTEXT.md`. Cheaper for read-heavy tasks via MCP. Codex falls back when Gemini is geo-blocked. |
+| Gemini for re-hydration (Codex as fallback) | Larger context window than Claude subagents for digesting full `.agent/FULL_CONTEXT.md`. Cheaper for read-heavy tasks. Codex falls back when Gemini is geo-blocked — via `codex-review.sh`, not MCP: codex-cli 0.154.0 removed its MCP server. |
 | User-level protocol, project-level hooks | Protocol in `~/.claude/CLAUDE.md` = one source of truth everywhere. Hooks in `.claude/settings.json` = project-scoped, interact with local `.agent/`. |
 | No Context7 / Sequential Thinking MCP | No external library deps (pure shell + markdown). The Explore→Plan→Implement→Verify workflow already provides structured reasoning. |
 | No claude-mem plugin | Built-in auto-memory + `.agent/` files already provide durable cross-session context. claude-mem adds value for very long projects but isn't needed for this small framework. |

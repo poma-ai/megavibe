@@ -543,7 +543,7 @@ fi
 # (always overwrite) so updates propagate without a per-project init step.
 if [ -d "$SCRIPT_DIR/scripts" ]; then
   mkdir -p "$MEGAVIBE_HOME/scripts"
-  for _py in "$SCRIPT_DIR/scripts/"*.py "$SCRIPT_DIR/scripts/gemini-review.sh"; do
+  for _py in "$SCRIPT_DIR/scripts/"*.py "$SCRIPT_DIR/scripts/gemini-review.sh" "$SCRIPT_DIR/scripts/codex-review.sh"; do
     [ -f "$_py" ] || continue
     if ! atomic_install "$_py" "$MEGAVIBE_HOME/scripts/$(basename "$_py")" 755; then
       warn "could not install scripts/$(basename "$_py")"
@@ -952,14 +952,44 @@ ensure_mcp() {
   ok "$name MCP server"
 }
 
-# Codex MCP
-register_codex_mcp() {
-  ensure_mcp codex codex mcp-server
+# Codex is NOT an MCP server any more.
+#
+# codex-cli 0.154.0 (2026-09-10) deleted the `mcp-server` subcommand — `strings`
+# on the native binary returns zero occurrences, so it is gone from compiled
+# code, not merely from help. `codex mcp` now manages Codex as a CLIENT
+# (list/get/add/remove/login/logout) and has no server mode.
+#
+# The failure mode is what makes this worth the comment: codex forwards an
+# unrecognised subcommand to the interactive CLI as a PROMPT, the TUI starts,
+# and it dies with "stdin is not a terminal". The pipe closes mid-handshake and
+# Claude Code reports CONNECTION_CLOSED — indistinguishable from a network
+# fault, which is why this looked like an outage for hours.
+#
+# Codex now runs through scripts/codex-review.sh over `codex exec`, which is
+# non-interactive and unaffected. Nothing registers it as an MCP server.
+#
+# Removing, not just skipping: every machine that ran an earlier setup.sh still
+# has the dead entry, and it makes every session in every project open with a
+# CONNECTION_CLOSED line for a server that cannot exist — which trains everyone
+# to ignore MCP failure notices, including real ones.
+unregister_dead_codex_mcp() {
+  command -v claude &>/dev/null || return 0
+  local args
+  args=$( (claude mcp get codex 2>/dev/null || true) | awk '/^[ \t]*Args:/{sub(/^[ \t]*Args:[ \t]*/,""); print; exit}' )
+  local cmd
+  cmd=$( (claude mcp get codex 2>/dev/null || true) | awk '/^[ \t]*Command:/{sub(/^[ \t]*Command:[ \t]*/,""); print; exit}' )
+  # EXACT match only. A substring test would also delete a working third-party
+  # server whose args merely contain "mcp-server" (`npx some-codex-mcp-server`
+  # is a realistic spelling) — deleting someone's working config to fix ours.
+  if [ "$cmd" = "codex" ] && [ "$args" = "mcp-server" ]; then
+    if claude mcp remove codex >/dev/null 2>&1; then
+      ok "removed dead codex MCP registration (codex-cli >= 0.154.0 has no mcp-server)"
+    else
+      warn "could not remove the dead codex MCP registration — remove it with: claude mcp remove codex"
+    fi
+  fi
 }
-
-if command -v codex &>/dev/null; then
-  register_codex_mcp
-fi
+unregister_dead_codex_mcp
 
 # Gemini MCP
 register_gemini_mcp() {

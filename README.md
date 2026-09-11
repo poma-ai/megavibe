@@ -34,8 +34,11 @@ Stated plainly, because you should decide before pasting:
 - **Commits get a co-author trailer** (`megavibe <megavibe@poma-ai.com>`) so
   agent-assisted commits are identifiable. Change it in
   `~/.claude/settings.json` under `attribution`, or clear it.
-- **MCP servers are registered** user-wide: Gemini, Codex and Playwright if their
-  CLIs are present, plus the bundled poma-memory semantic search.
+- **MCP servers are registered** user-wide: Gemini and Playwright if their CLIs
+  are present, plus the bundled poma-memory semantic search. Codex is NOT an MCP
+  server — codex-cli 0.154.0 removed its `mcp-server` subcommand, so megavibe
+  calls it through `~/.megavibe/scripts/codex-review.sh` over `codex exec` and
+  removes any dead registration left by an earlier setup.
 - **Hooks run on every tool call** in projects you initialise — they write context
   files under `.agent/` and never send anything off your machine on their own.
 - **Backends see your content.** Delegating to Gemini or Codex sends the material
@@ -299,7 +302,7 @@ export OPENAI_API_KEY="your-key-here"
 | Personal assistant project | `~/.megavibe/personal/` |
 | Core protocol | `~/.claude/CLAUDE.md` |
 | Status bar | `~/.claude/statusline.sh` |
-| MCP servers | Codex, Gemini, Playwright, poma-memory |
+| MCP servers | Gemini, Playwright, poma-memory (Codex is a CLI, not MCP) |
 
 ### Per-project (automatic on first `megavibe` run)
 
