@@ -66,6 +66,12 @@ ALWAYS="reviewer"
 # precisely because four different files can supply it.
 RAW_VALUE=""
 RAW_SRC="default"
+# Set when a candidate file exists but cannot be trusted to answer. Resolution
+# then stops and returns EVERY reviewer: an unparseable higher-precedence file
+# used to fall through to whatever a lower-precedence one said, so a missing
+# brace in the local override silently handed the session a restrictive pin the
+# user had already replaced.
+RAW_AMBIGUOUS=0
 
 # Assigns the globals RAW_VALUE and RAW_SRC rather than printing: a command
 # substitution runs in a subshell, so a printed value comes back but the
@@ -75,8 +81,12 @@ RAW_SRC="default"
 # whatever the session already applied) beats project settings, which beat the
 # user file.
 _raw_value() {
-  RAW_VALUE=""; RAW_SRC="default"
-  if [ -n "${MEGAVIBE_REVIEWERS:-}" ]; then
+  RAW_VALUE=""; RAW_SRC="default"; RAW_AMBIGUOUS=0
+  # Set-but-EMPTY is a deliberate "use the default", exactly as the header
+  # says, and stops the search. Testing -n instead let MEGAVIBE_REVIEWERS=""
+  # fall through to a file pin, so the documented way to clear the setting for
+  # one run did the opposite of clearing it.
+  if [ -n "${MEGAVIBE_REVIEWERS+x}" ]; then
     RAW_VALUE="$MEGAVIBE_REVIEWERS"; RAW_SRC="environment (MEGAVIBE_REVIEWERS)"
     return 0
   fi
@@ -90,7 +100,7 @@ _raw_value() {
   command -v jq >/dev/null 2>&1 || have_jq=0
 
   # Each candidate quoted on its own: an unquoted ${root:+...} carrying two
-  # paths still word-splits, so a project under "/Users/me/my project" lost its
+  # paths still word-splits, so a project under "$HOME/my project" lost its
   # pin silently. With root empty these expand to "" and the -f test skips them.
   for f in ".claude/settings.local.json" ".claude/settings.json" \
            "${root:+$root/.claude/settings.local.json}" \
@@ -99,16 +109,20 @@ _raw_value() {
     [ -n "$f" ] && [ -f "$f" ] || continue
     [ -n "$seen_file" ] || seen_file="$f"
     [ "$have_jq" = 1 ] || continue
+    # Parse check FIRST, and it stops the search. A file that exists but will
+    # not parse cannot be distinguished from one carrying no pin, and that
+    # difference decides whether a reviewer runs — so it is ambiguous, not
+    # absent, and ambiguous resolves to every reviewer.
+    if ! jq -e . "$f" >/dev/null 2>&1; then
+      echo "reviewers.sh: $f is not valid JSON — cannot tell what it pins, using every reviewer" >&2
+      RAW_AMBIGUOUS=1; RAW_SRC="$f (not valid JSON)"
+      return 0
+    fi
     v=$(jq -r '.env.MEGAVIBE_REVIEWERS // empty' "$f" 2>/dev/null || true)
     if [ -n "$v" ]; then
       RAW_VALUE="$v"; RAW_SRC="$f"
       return 0
     fi
-    # A file that exists but will not parse cannot be distinguished from one
-    # carrying no pin — and that difference decides whether a reviewer runs.
-    # Say so rather than quietly resolving to "all".
-    jq -e . "$f" >/dev/null 2>&1 || \
-      echo "reviewers.sh: $f is not valid JSON — any MEGAVIBE_REVIEWERS pin in it is being ignored" >&2
   done
 
   if [ "$have_jq" = 0 ] && [ -n "$seen_file" ]; then
@@ -120,8 +134,9 @@ _raw_value() {
 # Resolved set on stdout, one id per line. Never fails: a config this script
 # cannot make sense of falls back to "everything".
 resolve() {
-  local normalized id out="" warned=0
+  local normalized id out="" warned=0 unknown=0
   _raw_value
+  [ "$RAW_AMBIGUOUS" = 0 ] || { printf '%s\n' $KNOWN; return 0; }
   normalized=$(printf '%s' "$RAW_VALUE" | tr 'A-Z' 'a-z' | tr ',;' '  ')
 
   case "$(printf '%s' "$normalized" | tr -d '[:space:]')" in
@@ -135,6 +150,12 @@ resolve() {
     case " $KNOWN " in
       *" $id "*) case " $out " in *" $id "*) ;; *) out="$out $id" ;; esac ;;
       *)
+        # ANY unrecognised name invalidates the whole pin. Dropping just the
+        # bad token and keeping the rest is the fail-CLOSED direction: a typo
+        # in one name ("gemini codx") quietly removed codex from every review
+        # from then on, and the surviving good token stopped the fallback
+        # below from ever firing.
+        unknown=1
         # Capped: a pasted 5000-word value would otherwise emit 5000 lines
         # straight into the agent transcript.
         if [ "$warned" -lt 3 ]; then
@@ -148,11 +169,8 @@ resolve() {
     esac
   done
 
-  # Only $ALWAYS survived: the value named nothing else we recognise, which is a
-  # typo far more often than a deliberate "Claude only". Fail open.
-  if [ "$(printf '%s' "$out" | tr -d '[:space:]')" = "$(printf '%s' "$ALWAYS" | tr -d '[:space:]')" ] \
-     && ! printf '%s' " $normalized " | grep -q " reviewer \| claude "; then
-    echo "reviewers.sh: MEGAVIBE_REVIEWERS named no known reviewer — falling back to all" >&2
+  if [ "$unknown" = 1 ]; then
+    echo "reviewers.sh: MEGAVIBE_REVIEWERS names something I do not recognise — using every reviewer rather than guessing which one was meant" >&2
     printf '%s\n' $KNOWN
     return 0
   fi
@@ -167,11 +185,24 @@ case "${1:-list}" in
     [ $# -ge 2 ] || { echo "usage: reviewers.sh enabled <reviewer>" >&2; exit 2; }
     want=$(printf '%s' "$2" | tr 'A-Z' 'a-z')
     [ "$want" = "claude" ] && want="reviewer"
+    # One known id and nothing else. grep reads a multi-line pattern as several
+    # patterns, so `enabled $'gemini\ncodex'` reported success on gemini alone.
+    case " $KNOWN " in
+      *" $want "*) ;;
+      *) echo "reviewers.sh: not a known reviewer: $2 (known: $KNOWN)" >&2; exit 2 ;;
+    esac
     # Resolved into a variable rather than piped into grep: with `pipefail`, a
     # grep that exits on its first match can SIGPIPE the producer and turn an
     # "enabled" answer into status 141. -F because this is a name, not a
     # pattern: `enabled '.*'` must not match everything.
-    active=$(resolve)
+    #
+    # Both guards below exit 0 — "on". Status 1 is the ONE answer that switches
+    # a reviewer off, and the callers act on it, so it has to mean exactly that
+    # and never "this script broke". A crashed resolve can still have printed
+    # something, and `reviewer` is in every valid answer, so its absence says
+    # the output is not one.
+    active=$(resolve) || exit 0
+    printf '%s\n' "$active" | grep -qxF -- "reviewer" || exit 0
     printf '%s\n' "$active" | grep -qxF -- "$want"
     ;;
   source)

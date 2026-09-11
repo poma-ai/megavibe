@@ -448,6 +448,11 @@ if [ "${1:-}" = "reviewers" ]; then
       esac
       hops=$((hops + 1))
     done
+    # Still a link at the cap: the rename below would replace THIS link and
+    # strand the rest of the chain. Refuse instead of resolving half-way.
+    if [ -L "$file" ]; then
+      echo "Could not resolve $1 — symlink chain deeper than $hops levels."; exit 1
+    fi
     dir=$(dirname "$file")
     mkdir -p "$dir" || { echo "Could not create $dir"; exit 1; }
     # Read-modify-write, so serialise it. `mkdir` because macOS ships no
@@ -460,14 +465,23 @@ if [ "${1:-}" = "reviewers" ]; then
     # the lock on every single check, which is no lock at all.
     local lock="$dir/.settings.json.lock" waited=0 lock_mtime now
     while ! mkdir "$lock" 2>/dev/null; do
-      lock_mtime=$(stat -f '%m' "$lock" 2>/dev/null || stat -c '%Y' "$lock" 2>/dev/null || echo "")
+      # BSD and GNU stat are probed SEPARATELY. Chained with ||, GNU stat reads
+      # `-f` as --file-system and takes both arguments as operands: it prints
+      # filesystem info for the lock, fails on the format string, and the
+      # fallback then appends its number to that. The arithmetic below got
+      # multiline text.
+      lock_mtime=$(stat -f '%m' "$lock" 2>/dev/null || true)
+      case "$lock_mtime" in ''|*[!0-9]*) lock_mtime=$(stat -c '%Y' "$lock" 2>/dev/null || true) ;; esac
+      case "$lock_mtime" in ''|*[!0-9]*) lock_mtime="" ;; esac
       now=$(date +%s)
-      if [ -n "$lock_mtime" ] && [ "$((now - lock_mtime))" -gt 30 ]; then
-        rmdir "$lock" 2>/dev/null || true
-        continue
-      fi
+      # Counted BEFORE the stale branch. `continue` used to skip the counter
+      # and the sleep both, so a stale lock that rmdir cannot remove (a stray
+      # file inside it) span this loop forever at full CPU.
       waited=$((waited + 1))
       [ "$waited" -gt 50 ] && { echo "Could not lock $file (another write is in progress)"; exit 1; }
+      if [ -n "$lock_mtime" ] && [ "$((now - lock_mtime))" -gt 30 ]; then
+        rmdir "$lock" 2>/dev/null || true
+      fi
       sleep 0.1
     done
     # A RETURN trap does not fire on `exit`, so every error path below releases
@@ -484,7 +498,9 @@ if [ "${1:-}" = "reviewers" ]; then
     tmp=$(mktemp "$dir/.settings.json.XXXXXX") || { rmdir "$lock" 2>/dev/null || true; exit 1; }
     # mktemp is 0600 and `mv` carries the mode across, silently tightening a
     # 0644 settings.json.
-    _mode=$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || echo "")
+    _mode=$(stat -f '%Lp' "$file" 2>/dev/null || true)
+    case "$_mode" in ''|*[!0-7]*) _mode=$(stat -c '%a' "$file" 2>/dev/null || true) ;; esac
+    case "$_mode" in ''|*[!0-7]*) _mode="" ;; esac
     [ -n "$_mode" ] && chmod "$_mode" "$tmp" 2>/dev/null || true
     if [ -n "$value" ]; then
       jq --arg v "$value" '.env = ((.env // {}) + {MEGAVIBE_REVIEWERS: $v})' "$file" > "$tmp"
@@ -492,7 +508,15 @@ if [ "${1:-}" = "reviewers" ]; then
       jq 'if .env then .env |= del(.MEGAVIBE_REVIEWERS) else . end
           | if (.env // {}) == {} then del(.env) else . end' "$file" > "$tmp"
     fi || { rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; echo "Could not update $file"; exit 1; }
-    mv "$tmp" "$file"
+    # Guarded. A RETURN trap does not fire on `exit`, so an unguarded mv that
+    # fails (read-only ~/.claude, an ACL, a full disk) left BOTH the temp file
+    # and the lock directory behind — and the lock then blocked every later
+    # write for 30 seconds at a time.
+    if ! mv "$tmp" "$file" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+      rmdir "$lock" 2>/dev/null || true
+      echo "Could not write $file"; exit 1
+    fi
     rmdir "$lock" 2>/dev/null || true
     trap - RETURN
   }
@@ -550,7 +574,8 @@ if [ "${1:-}" = "reviewers" ]; then
           [ "$1" = "none" ] && { echo "There is no 'none' — review is non-negotiable 4. Use 'auto', or name the reviewers you want."; exit 2; }
           rv_write "$SCOPE_FILE" ""
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS removed from $SCOPE_FILE"
-          echo "    Back to the default: every reviewer that is available."
+          echo "    Cleared in this scope. The resolved set is whatever remains:"
+          echo "    run 'megavibe reviewers' to see it and where it now comes from."
           ;;
         *)
           PICKED=""
@@ -1045,10 +1070,14 @@ REPO_DIR=""
 #    mechanism this very feature documents for setting megavibe variables. That
 #    turned a $HOME-only boundary into "clone this repo and I run your wrapper".
 #    Consumed on read, so it cannot leak into a later run.
-REEXEC_PTR="$MEGAVIBE_HOME/.reexec-repo"
+#    Named with the PID, which `exec` preserves, so the run that wrote it is
+#    the only one that can read it. A shared name let a second launch starting
+#    in the same moment consume the first one's pointer, and the run that had
+#    just updated the wrapper — the only one that needs it — lost it.
+REEXEC_PTR="$MEGAVIBE_HOME/.reexec-repo.$$"
 if [ -f "$REEXEC_PTR" ]; then
   REEXEC_REPO="$(cat "$REEXEC_PTR" 2>/dev/null || true)"
-  rm -f "$REEXEC_PTR"
+  rm -f "$REEXEC_PTR" 2>/dev/null || true
   if [ -n "$REEXEC_REPO" ] && [ -f "$REEXEC_REPO/setup.sh" ] && [ -d "$REEXEC_REPO/template" ]; then
     REPO_DIR="$REEXEC_REPO"
   fi
@@ -1070,7 +1099,7 @@ if [ -n "$REPO_DIR" ]; then
     atomic_install "$REPO_DIR/megavibe" "$MEGAVIBE_HOME/megavibe" 755
     # Re-exec from the updated copy so the rest of this script uses new logic,
     # handing the repo path over so the remaining syncs still happen this run.
-    printf '%s\n' "$REPO_DIR" > "$MEGAVIBE_HOME/.reexec-repo" 2>/dev/null || true
+    printf '%s\n' "$REPO_DIR" > "$MEGAVIBE_HOME/.reexec-repo.$$" 2>/dev/null || true
     exec "$MEGAVIBE_HOME/megavibe" "$@"
   fi
   # Sync init.sh
@@ -1082,8 +1111,10 @@ if [ -n "$REPO_DIR" ]; then
   # REFERENCE these while the scripts themselves stay at the old version: the
   # setting reads as configured, documented and displayed, and gates nothing.
   # (setup.sh installs the same set — keep the two lists in step.)
-  if [ -d "$REPO_DIR/scripts" ]; then
-    mkdir -p "$MEGAVIBE_HOME/scripts"
+  # `|| true`: this whole block is an optional sync. $MEGAVIBE_HOME/scripts
+  # existing as a FILE, or a denied create, would otherwise exit under set -e
+  # before claude starts — a broken update turning into a broken launch.
+  if [ -d "$REPO_DIR/scripts" ] && mkdir -p "$MEGAVIBE_HOME/scripts" 2>/dev/null; then
     for _s in "$REPO_DIR/scripts/"*.py "$REPO_DIR/scripts/gemini-review.sh" \
               "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh"; do
       [ -f "$_s" ] || continue
