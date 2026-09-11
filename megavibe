@@ -776,6 +776,31 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
       exit 1
     fi
   fi
+  # Name the tab after the folder the session actually runs IN, not the one it
+  # was launched FROM. The tmux session already has -c "$PERSONAL_DIR", and the
+  # green status bar makes it visually distinct, but Terminal.app takes the
+  # tab's folder from OSC 7 — which the shell emits on cd, and we are a child
+  # process, so our own cd can never reach it. Emit it directly.
+  #
+  # Self-restoring: on detach this process is gone and the parent shell runs its
+  # precmd (update_terminal_cwd in /etc/zshrc_Apple_Terminal), which re-emits
+  # OSC 7 for the real directory. Nothing to clean up. tmux has set-titles off
+  # by default, so it does not overwrite this either.
+  cd "$PERSONAL_DIR" || true
+  # Byte-identical in shape to Apple's own update_terminal_cwd in
+  # /etc/zshrc_Apple_Terminal: `printf '\e]7;%s\a' "file://$HOST$url_path"`.
+  # BEL-terminated, not ST — that is what ships and what Terminal.app is known
+  # to accept. $HOST is a zsh variable and this script is bash, so hostname(1)
+  # supplies it; both return the same name here.
+  # Apple percent-encodes every non-unreserved byte; these four are the ones
+  # that actually break the URI, and a space is the realistic one (init.sh
+  # already warns about directory names like "POMA AI").
+  _osc7="$PERSONAL_DIR"
+  # `%` escaped: bash handles it bare, zsh does not (it appends instead of
+  # replacing). Escaped is correct in both, and costs nothing.
+  _osc7="${_osc7//\%/%25}"; _osc7="${_osc7// /%20}"
+  _osc7="${_osc7//\#/%23}"; _osc7="${_osc7//\?/%3F}"
+  printf '\033]7;file://%s%s\a' "${HOST:-$(hostname)}" "$_osc7"
   exec tmux attach -t "$PERSONAL_TMUX"
 fi
 
