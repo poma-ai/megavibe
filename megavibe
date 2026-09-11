@@ -267,6 +267,14 @@ show_update_notice() {
       echo -e "  ${YELLOW}Update available.${RESET} Run: ${BOLD}megavibe update${RESET}"
     fi
   fi
+  # A subcontractor CLI broke on its own auto-upgrade and was rolled back. Shown
+  # once, loudly: the alternative is what happened on 2026-09-10, where the
+  # upgrade was silent and the breakage surfaced hours later as an MCP error
+  # that pointed at nothing.
+  if [ -f "$MEGAVIBE_HOME/.cli-downgrade-notice" ]; then
+    echo -e "  ${YELLOW}⚠  $(cat "$MEGAVIBE_HOME/.cli-downgrade-notice")${RESET}"
+    rm -f "$MEGAVIBE_HOME/.cli-downgrade-notice"
+  fi
 }
 
 # ─── Update subcommand ──────────────────────────────────────────────
@@ -965,6 +973,55 @@ fi
 
 # Check at most once per day (stamp file tracks last check)
 NOW=$(date +%s)
+# ─── Subcontractor CLI auto-update ───────────────────────────────────
+#
+# These upgrades used to be `npm i -g <pkg> &>/dev/null || true`. On
+# 2026-09-10 at 20:48 that line pulled codex-cli 0.154.0, which had DELETED the
+# `mcp-server` subcommand megavibe registered as an MCP server. Output was
+# discarded, so nothing recorded it. Sessions already running kept working
+# (their server process was already spawned); every session started afterwards
+# failed with CONNECTION_CLOSED, an error that names neither codex nor the
+# upgrade. It cost hours to trace back to a background npm call from the
+# launcher.
+#
+# So: upgrade, then PROVE the capability megavibe actually depends on still
+# exists. If it does not, roll back to the version that worked and leave a
+# breadcrumb the next session start will show. Tracking `latest` is fine; doing
+# it silently and unverified is not.
+update_npm_cli() {
+  local pkg="$1" probe="$2" before after log="$MEGAVIBE_HOME/logs/cli-updates.log"
+  mkdir -p "$MEGAVIBE_HOME/logs" 2>/dev/null || true
+  before=$(npm ls -g --depth=0 --json 2>/dev/null | jq -r --arg p "$pkg" '.dependencies[$p].version // empty' 2>/dev/null)
+  npm i -g "$pkg" >>"$log" 2>&1 || { echo "$(date -u +%FT%TZ) $pkg: npm install failed" >> "$log"; return 0; }
+  after=$(npm ls -g --depth=0 --json 2>/dev/null | jq -r --arg p "$pkg" '.dependencies[$p].version // empty' 2>/dev/null)
+  [ -n "$after" ] && [ "$before" = "$after" ] && return 0
+  echo "$(date -u +%FT%TZ) $pkg: ${before:-none} -> ${after:-unknown}" >> "$log"
+  # The probe is the whole point: a version number cannot tell you whether the
+  # subcommand you invoke still exists.
+  if eval "$probe" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "$(date -u +%FT%TZ) $pkg: PROBE FAILED after upgrade ($probe)" >> "$log"
+  [ -n "$before" ] || return 0
+  # Three outcomes, and they are not the same thing. Conflating them is how a
+  # message ends up saying "left at 2.0.0" about a package that is on 1.0.0.
+  if ! npm i -g "${pkg}@${before}" >>"$log" 2>&1; then
+    echo "$(date -u +%FT%TZ) $pkg: rollback install FAILED — still on ${after:-unknown}" >> "$log"
+    printf '%s is broken on %s and could NOT be rolled back to %s. See %s\n' \
+      "$pkg" "${after:-unknown}" "$before" "$log" > "$MEGAVIBE_HOME/.cli-downgrade-notice"
+  elif eval "$probe" >/dev/null 2>&1; then
+    echo "$(date -u +%FT%TZ) $pkg: rolled back to $before, probe passes" >> "$log"
+    printf '%s broke on upgrade to %s (%s failed) — rolled back to %s. See %s\n' \
+      "$pkg" "${after:-unknown}" "$probe" "$before" "$log" > "$MEGAVIBE_HOME/.cli-downgrade-notice"
+  else
+    # Rollback installed cleanly and the probe still fails, so the upgrade was
+    # never the cause — say that instead of blaming it.
+    echo "$(date -u +%FT%TZ) $pkg: back on $before but probe still fails — not an upgrade regression" >> "$log"
+    printf '%s: %s fails on both %s and %s, so this is not the upgrade. See %s\n' \
+      "$pkg" "$probe" "${after:-unknown}" "$before" "$log" > "$MEGAVIBE_HOME/.cli-downgrade-notice"
+  fi
+}
+
 LAST_CHECK=$(cat "$UPDATE_STAMP" 2>/dev/null || echo "0")
 AGE=$(( NOW - LAST_CHECK ))
 
@@ -979,8 +1036,8 @@ if [ "$AGE" -gt 86400 ]; then
         npm config set prefix "$HOME/.local" 2>/dev/null || true
       fi
     fi
-    npm i -g @openai/codex &>/dev/null || true
-    npm i -g @google/gemini-cli &>/dev/null || true
+    update_npm_cli @openai/codex     'codex exec --help'
+    update_npm_cli @google/gemini-cli 'gemini --version'
   ) &
 fi
 
