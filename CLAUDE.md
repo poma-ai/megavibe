@@ -35,6 +35,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `scripts/google-oauth-mint.sh` | Per-user Google OAuth refresh token for scopes a gcloud login does not carry (Ads, Workspace Admin, GA4 Admin). Loopback consent, token 0600 in ~/.config. `groupwrite` is a WRITE scope — see the header | Medium — touches credentials |
 | `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
 | `scripts/leak-scan.sh` | Pre-push check that this PUBLIC repo publishes no secrets/internal identifiers, and nothing that only works inside one company | Low — read-only |
+| `THIRD_PARTY_NOTICES.md` | MIT notices for the two upstreams `sr-style.md` adapts | Low — licensing |
 | `README-watcher.md` | Context-watcher detail | Low |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
@@ -43,15 +44,26 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 
 `template/sr-style.md` is appended to every session's system prompt by the wrapper
 (`--append-system-prompt`, non-destructive). Adapted from
-github.com/disler/fixing-smartass-opus-5 (MIT). Disable for one run with
+github.com/disler/fixing-smartass-opus-5 (MIT); section 5 from
+github.com/DietrichGebert/ponytail (MIT). Disable for one run with
 `MEGAVIBE_STYLE=0 megavibe`.
 
-Two gotchas:
+Three gotchas:
 - Upstream says "never add a co-author to a commit message" and this harness
   requires the `Co-authored-by` trailer. That rule is deliberately dropped; do not
-  re-sync it from upstream. All deviations are marked `[mv]` in the file.
+  re-sync it from that upstream. Its deviations are marked `[mv]` in the file;
+  the ponytail ones are in this file instead (next bullet), so `[mv]` is no longer
+  a complete index of what was changed.
 - It rides the wrapper's `diff -rq` template sync to `~/.megavibe/template/`, so it
   is user-level. `init.sh` does not deploy it into projects.
+- Two upstreams now, so "re-sync from upstream" is ambiguous — check which section
+  before touching one. Section 5 adapts selected ponytail guidance as prompt text
+  (the ladder, the root-cause/caller rule, the `SHORTCUT:` marker); its rule files
+  and skills for 20+ agents are a distribution problem megavibe does not have, and
+  are deliberately not imported. Deviations: ponytail's "shortest working diff
+  wins" and "deletion over addition" are dropped — as absolutes they invite the
+  under-delivery this harness forbids — and its `ponytail:` marker is renamed
+  `SHORTCUT:` so the convention does not depend on knowing that project.
 
 
 ## Critical invariants
