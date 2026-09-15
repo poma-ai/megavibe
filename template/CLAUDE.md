@@ -99,6 +99,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/rehydrate` — regenerate WORKING_CONTEXT.md from .agent/ files via Gemini/Codex
 - `/catchup` — orient yourself in a project at session start (reads .agent/ + git state)
+- `/init-feature <description>` — scope a feature before building: summary, complexity and token estimate, then a fork (write a spec, or vibe it)
 - `/prune-context` — **superseded.** Compaction is now `.claude/hooks/agent-log.sh fold`, which moves old entries into `.agent/snapshot.md` instead of asking an AI which lines to delete from a log nobody can reconstruct. **Not the same as `/compact`** — see the decision table below.
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
 

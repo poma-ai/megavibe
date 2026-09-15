@@ -245,6 +245,7 @@ Inside a megavibe session:
 | `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — three-reviewer (Claude `reviewer` subagent + Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |
+| `/init-feature <description>` | **Before starting a feature** — scoped summary, complexity and token estimate, then you pick: write a spec or vibe it |
 | `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
 
@@ -328,7 +329,7 @@ export OPENAI_API_KEY="your-key-here"
 | Hooks (27 scripts) | `.claude/hooks/` |
 | Rules (5 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
-| Skills (6 commands) | `.claude/skills/` |
+| Skills (7 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |
 | Hook config | `.claude/settings.json` |
 | Context structure | `.agent/` |

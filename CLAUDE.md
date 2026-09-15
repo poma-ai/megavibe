@@ -19,7 +19,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
 | `template/CLAUDE.md` | Core protocol — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/*.md` | 5 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline, prod-access-discipline) | Medium — review recommended |
-| `template/.claude/skills/*/SKILL.md` | 6 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy) | Low — workflow shortcuts |
+| `template/.claude/skills/*/SKILL.md` | 7 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy, init-feature) | Low — workflow shortcuts |
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
