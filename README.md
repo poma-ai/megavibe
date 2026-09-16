@@ -245,7 +245,8 @@ Inside a megavibe session:
 | `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — three-reviewer (Claude `reviewer` subagent + Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |
-| `/init-feature <description>` | **Before starting a feature** — scoped summary, complexity and token estimate, then you pick: write a spec or vibe it |
+| `/init-feature <description \| issue link>` | **Before starting a feature** — takes prose or a GitHub issue link; produces a scoped summary and a complexity/token estimate you confirm or send back, then you pick: write a spec or vibe it, and whether to post the result to that ticket or open a new one |
+| `/finish-feature [base]` | **After finishing one** — measures turns, tool calls and tokens actually spent from the transcript, scores them against what `/init-feature` predicted, comments the result on the PR and offers to merge it |
 | `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
 
@@ -329,7 +330,7 @@ export OPENAI_API_KEY="your-key-here"
 | Hooks (27 scripts) | `.claude/hooks/` |
 | Rules (5 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
-| Skills (7 commands) | `.claude/skills/` |
+| Skills (8 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |
 | Hook config | `.claude/settings.json` |
 | Context structure | `.agent/` |
