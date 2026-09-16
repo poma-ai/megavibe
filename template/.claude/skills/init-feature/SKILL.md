@@ -145,7 +145,9 @@ If the applicable test fails, drop **the ticket question** silently rather than 
 - **The input was a ticket** → **Add the summary and estimate to `<ticket>` as a comment?**
 - **The input was prose** → **Open a GitHub issue for this?**
 
-Never both: a ticket the work came from does not want a duplicate opened beside it. Default either answer to no — both are outward-facing and other people see them.
+Never both: a ticket the work came from does not want a duplicate opened beside it.
+
+The defaults differ. **Comment on the ticket the work came from — default yes**: put `Yes, comment on <ticket>` first, marked `(Recommended)`. The ticket is already open and its readers already follow it, and where there is no `.agent/` that comment is the only record `/finish-feature` can score against. **Open a new issue — default no**: put `No` first, unmarked; it publishes a new object into someone else's tracker. Both are still asked — a default is a pre-selection, never an answer you may assume.
 
 Do not choose the route for the user and do not start work until they answer. This fork is the point of the skill.
 
@@ -225,7 +227,7 @@ When the feature actually lands, write a **new** log entry quoting the original 
 
 ## Rules
 
-- Read-only until the user answers Step 4. The confirmation authorises nothing on its own — it unlocks the route question, and the first write of any kind is the issue filing after that second answer.
+- Read-only until the user answers Step 4. The confirmation authorises nothing on its own — it unlocks the route question, and the first write of any kind is the comment or the issue filing after that second answer.
 - The summary is the user's to correct. The confirmation is not a formality and it is not a route option — a scope the user disagrees with makes the route, the issue and everything downstream meaningless, so it is asked and settled before they are asked at all.
 - Cap the exploration. Burning 80k tokens to estimate an 80k-token feature is a failure of the skill.
 - Every estimate is a range with its assumptions stated. Never present a single number as a measurement.
