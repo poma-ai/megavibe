@@ -23,6 +23,9 @@ set -u
 #   (SessionStart:compact only fires on AUTO-compaction, so on-compact.sh
 #   cannot be relied on to stamp these files — PreCompact is the only
 #   hook that reliably fires for both manual and automatic compactions)
+# - Drop this session's read-delta cache, whose rows would otherwise claim
+#   that file content survived the compaction that is about to drop it
+#   (see the SID note at that block: the two hooks must agree on the name)
 # - Emit a systemMessage noting what may be lost and the single required
 #   post-compact action (/rehydrate) — per D79, /catchup is folded inline
 
@@ -50,6 +53,31 @@ date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true
 # Mark that rehydration is needed. on-compact.sh normally sets this too,
 # but it won't fire for manual /compact — so we set it here as the floor.
 touch "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
+
+# --- Invalidate the read-delta re-Read cache ---
+# read-delta.sh answers a re-Read of an unchanged file with a stub saying the
+# content is "already in your context above". Compaction is exactly the event
+# that makes that false: the earlier Read leaves the context window while the
+# cache row survives, so the next Read of that file would hand back a stub
+# pointing at content nobody has. Dropping this session's rows costs one full
+# re-read and nothing else. PreCompact is the only hook that fires for both
+# manual and automatic compaction, which is why it lives here.
+#
+# read-delta.sh sanitises the id before it reaches a filename; $SID above is
+# NOT sanitised, because other per-session files written here are read back
+# by log-tool-event.sh under the unsanitised name. So derive read-delta's
+# form separately, and delete both spellings: the two hooks agreeing is what
+# makes the invalidation work, and deleting a cache that is not there costs
+# nothing while missing one costs a false stub.
+RD_SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | tr -cd 'A-Za-z0-9-' | cut -c1-12)
+RD_SID="${RD_SID:-default}"
+for _rd_sid in "$RD_SID" "$SID"; do
+  rm -f "${LOGDIR}/read-cache.${_rd_sid}.jsonl" 2>/dev/null || true
+  rm -f "${LOGDIR}"/read-stub."${_rd_sid}".*.txt 2>/dev/null || true
+  # ...and the pre-fix stub name, which has no agent segment for that glob
+  # to match. One file per project, but it is never cleaned up otherwise.
+  rm -f "${LOGDIR}/read-stub.${_rd_sid}.txt" 2>/dev/null || true
+done
 
 # How stale is the context?
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
