@@ -150,4 +150,4 @@ fi
 
 echo ""
 echo "Done. Your folder is now: $NEW_REAL"
-echo "Open the app again and it will work there."
+echo "Start it again with:  megawork"

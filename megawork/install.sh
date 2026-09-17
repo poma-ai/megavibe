@@ -189,12 +189,7 @@ fi
 echo ""
 echo "${B}You're set.${R}"
 echo ""
-if [ -d "/Applications/Megawork.app" ]; then
-  echo "  1. Open ${B}Megawork${R} from your Applications folder"
-  echo "     (drag it to the Dock so it's always there)"
-else
-  echo "  1. Open Terminal and type: ${B}megawork${R}"
-fi
+echo "  1. Open Terminal and type: ${B}megawork${R}"
 echo "  2. Say hello, and tell it what you're working on"
 echo ""
 echo "  Your folder is: $(cat "$ENGINE/data-dir" 2>/dev/null || echo "$HOME/Megawork")"

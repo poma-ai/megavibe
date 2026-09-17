@@ -5,14 +5,13 @@
 # Creates:
 #   ~/.megawork/      engine: policy, protocol, launcher   (control plane)
 #   ~/megawork/       the colleague's four folders          (data plane)
-#   /Applications/…app       Dock-able launcher                    (optional)
 #
 # The two planes are separate on purpose: the session can write the data folder
 # but must never be able to rewrite its own guardrails. Kept out of
 # ~/Desktop and ~/Documents so iCloud sync cannot lock the folders mid-session.
 #
 # Usage: bash megawork/init.sh [--data DIR] [--gdrive [FolderName]]
-#                                   [--folder-name NAME] [--name "App Name"] [--no-app]
+#                                   [--folder-name NAME] [--name NAME]
 #
 # With no --data and a terminal, it asks where the folder should live and lists
 # the Google Drive locations (including shared drives) it finds on this Mac.
@@ -23,7 +22,6 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 ENGINE="${MEGAWORK_HOME:-$HOME/.megawork}"
 DATA="$HOME/megawork"
 APPNAME="Megawork"
-MAKE_APP=1
 USE_GDRIVE=0
 DATA_EXPLICIT=0
 
@@ -34,7 +32,10 @@ while [ $# -gt 0 ]; do
               case "${2:-}" in -*|"") shift ;; *) FOLDER_NAME="$2"; shift 2 ;; esac ;;
     --folder-name) FOLDER_NAME="$2"; shift 2 ;;
     --name)   APPNAME="$2"; shift 2 ;;
-    --no-app) MAKE_APP=0; shift ;;
+    # Accepted and ignored: it selected the app bundle, which no longer exists.
+    # install.sh forwards "$@", so rejecting it would abort AFTER Node and the
+    # harness are installed.
+    --no-app) shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -77,16 +78,46 @@ if [ "$_unattended" -eq 0 ] && { [ -z "${MEGAWORK_HOME:-}" ] || [ "$_mh" = "$HOM
   done
   # An app bundle is ours only when it is the old osacompile applet whose compiled
   # script launches the old engine. Names alone never decide a recursive delete.
-  # NOT the current bundle id: that is what this script builds, and an install
-  # made with --name Megavibe lives at exactly this path.
+  # This script no longer builds any bundle (the app was dropped 2026-09-12);
+  # the loop below retires one an older version installed.
   for _old in "/Applications/Megavibe Nondev.app" "/Applications/Megavibe.app"; do
     [ -d "$_old" ] || continue
     [ -f "$_old/Contents/MacOS/applet" ] && [ -f "$_old/Contents/Resources/Scripts/main.scpt" ] || continue
     _dec=$(osadecompile "$_old/Contents/Resources/Scripts/main.scpt" 2>/dev/null || true)
-    case "$_dec" in *'/.megavibe-nondev/bin/megavibe-nondev'*) ;; *) continue ;; esac
-    rm -rf "$_old" 2>/dev/null || true
+    # Anchored to THIS user's home. The content check (above) already stops a
+    # stranger's unrelated Megavibe.app being deleted, but on a shared Mac an
+    # unanchored match also hit another account's applet, whose script contains
+    # /Users/<them>/.megavibe-nondev/... — their launcher, deleted by our run.
+    case "$_dec" in *"$HOME/.megavibe-nondev/bin/megavibe-nondev"*) ;; *) continue ;; esac
+    # Recoverable, like the sibling engine removal a few lines up.
+    if command -v rmtrash >/dev/null 2>&1; then rmtrash -rf "$_old" 2>/dev/null || true
+    elif command -v trash >/dev/null 2>&1; then trash "$_old" 2>/dev/null || true
+    else rm -rf "$_old" 2>/dev/null || true; fi
   done
   if [ "$_old_engine_gone" -eq 1 ]; then echo "  ✓ removed the old megavibe-nondev install"; fi
+fi
+
+# Retire a Dock bundle THIS profile built (the app was dropped 2026-09-12).
+# Deliberately OUTSIDE the interactive gate above: every megawork-update runs
+# init.sh with MEGAWORK_NONINTERACTIVE=1, so gating this on a human present
+# meant the population that still HAS the bundle was exactly the population
+# that never lost it. Leaving it is not neutral — its boot script is baked in
+# and runs the updater with no MEGAWORK_HOME, printing "This setup does not say
+# where your folder is" at every launch. Nothing here needs a person: it is
+# content-gated and anchored to THIS engine.
+if [ -z "${MEGAWORK_HOME:-}" ] || [ "$_mh" = "$HOME/.megawork" ]; then
+  for _app in /Applications/*.app; do
+    [ -f "$_app/Contents/MacOS/boot" ] || continue
+    # -F: $ENGINE is user-controlled and every value contains ".megawork",
+    # where the dot is a regex wildcard. This guards a recursive delete.
+    grep -qF "ENGINE=\"$ENGINE\"" "$_app/Contents/MacOS/boot" 2>/dev/null || continue
+    # -rf: an .app is a DIRECTORY and rmtrash refuses one without -r.
+    if command -v rmtrash >/dev/null 2>&1; then rmtrash -rf "$_app" 2>/dev/null
+    elif command -v trash >/dev/null 2>&1; then trash "$_app" 2>/dev/null
+    else rm -rf "$_app" 2>/dev/null; fi \
+      && echo "  ✓ retired the old Dock app — start it with: megawork" \
+      || echo "  ! could not remove $_app — delete it by hand; it is no longer used"
+  done
 fi
 
 # Ask the human, not stdin: piped installs (curl | bash) hand us the script on
@@ -198,7 +229,21 @@ mkdir -p "$ENGINE/policy" "$ENGINE/prompts" "$ENGINE/bin" "$ENGINE/logs" "$ENGIN
 # a half-updated engine (found by running init twice).
 chmod u+w "$ENGINE/policy/"*.json "$ENGINE/policy/sandbox.sb" 2>/dev/null || true
 mkdir -p "$ENGINE/hooks"
-cp "$SRC/template/hooks/"*.sh "$ENGINE/hooks/" && chmod +x "$ENGINE/hooks/"*.sh
+# Install executables by RENAME, never by overwriting in place.
+#
+# `cp` truncates the destination and writes into the SAME inode. The launcher
+# triggers this installer from inside its own startup path, so a plain `cp` here
+# rewrites the very file bash is still reading: it resumes at a stale offset and
+# executes fragments. Reproduced — an update left the launcher dying with
+# `line 133: dbox: command not found` (the tail of `SANDBOX=...`) and no session,
+# which is precisely the "a colleague must never be left with a broken
+# assistant" case in README.md. `mv` swaps the directory entry instead, so a
+# running process keeps reading the inode it opened.
+install_exe() {   # install_exe SRC DEST
+  cp "$1" "$2.new" && chmod +x "$2.new" && mv -f "$2.new" "$2"
+}
+# Hooks install by rename too — a PreToolUse hook can be mid-execution.
+for _h in "$SRC/template/hooks/"*.sh; do install_exe "$_h" "$ENGINE/hooks/$(basename "$_h")"; done
 # Keep the templates with the engine so the folder can be moved later on a
 # machine that has no copy of the repo (see bin/megawork-folder).
 mkdir -p "$ENGINE/templates/policy"
@@ -206,14 +251,11 @@ cp "$SRC/template/sandbox.sb.template"          "$ENGINE/templates/"
 cp "$SRC/template/policy/settings.json.template" "$ENGINE/templates/policy/"
 cp "$SRC/template/policy/mcp.json"      "$ENGINE/policy/mcp.json"
 cp "$SRC/template/CLAUDE-megawork.md"     "$ENGINE/prompts/CLAUDE-megawork.md"
-cp "$SRC/bin/megawork"           "$ENGINE/bin/megawork"
-cp "$SRC/bin/megawork-doctor"             "$ENGINE/bin/megawork-doctor"
-cp "$SRC/bin/megawork-mode"               "$ENGINE/bin/megawork-mode"
-cp "$SRC/bin/megawork-folder"             "$ENGINE/bin/megawork-folder"
-cp "$SRC/bin/megawork-connect"            "$ENGINE/bin/megawork-connect"
-cp "$SRC/bin/megawork-update"             "$ENGINE/bin/megawork-update"
+
+for _b in megawork megawork-doctor megawork-mode megawork-folder megawork-connect megawork-update; do
+  install_exe "$SRC/bin/$_b" "$ENGINE/bin/$_b"
+done
 rm -f "$ENGINE/bin/mint-gemini-key.sh" 2>/dev/null || true   # shipped briefly in 9b587f2; minting is an admin task now
-chmod +x "$ENGINE/bin/megawork" "$ENGINE/bin/megawork-doctor" "$ENGINE/bin/megawork-mode" "$ENGINE/bin/megawork-folder" "$ENGINE/bin/megawork-connect" "$ENGINE/bin/megawork-update"
 mkdir -p "$DATA"
 DATA_REAL=$(cd "$DATA" && pwd -P)
 printf '%s\n' "$DATA_REAL" > "$ENGINE/data-dir"
@@ -299,19 +341,24 @@ This folder is where you and your assistant work together.
   Delivered   Finished results, ready to hand on.
   Library     Reference material to look things up in.
 
-To start, open $APPNAME from your Dock and just say what you need —
+To start, run:  megawork   — then just say what you need —
 in normal words. For example: "summarise the three PDFs I put in Inbox".
 
 Your assistant can only see and change things inside this folder.
 
-Want it somewhere else — a Google Drive folder, say? Open the app and just ask,
+Want it somewhere else — a Google Drive folder, say? Just ask your assistant,
 or run: megawork-folder --list
 TXT
 ok "folder ready at $DATA"
 
 # POMA's own chunker indexes what they put in the folder, so the assistant can
 # find things by meaning rather than filename. Local, no cloud round-trip.
-if command -v poma-memory &>/dev/null; then
+# Is this the real install, or a scratch one? Everything that touches the Mac
+# OUTSIDE the engine dir is gated on this.
+DEFAULT_ENGINE=0; [ "$(cd "$ENGINE" && pwd -P)" = "$(cd "$HOME/.megawork" 2>/dev/null && pwd -P || echo /nonexistent)" ] && DEFAULT_ENGINE=1
+[ "${MEGAWORK_HOME:-}" = "" ] && DEFAULT_ENGINE=1
+
+if [ "$DEFAULT_ENGINE" -eq 1 ] && command -v poma-memory &>/dev/null; then
   ( poma-memory index "$DATA" >/dev/null 2>&1 && \
     ok "documents indexed for search (POMA semantic memory)" ) || true
 fi
@@ -323,7 +370,11 @@ fi
 # jq, not python3: /usr/bin/python3 on a Mac without Xcode command line tools
 # is a stub that pops an "install developer tools?" dialog and fails. jq ships
 # with macOS 15 and later, which this profile requires anyway.
-if command -v jq &>/dev/null; then
+# DEFAULT_ENGINE: init.sh:50 claims "scratch installs never touch the Mac", and
+# this block and the indexer were the two that did — a review run added a
+# .projects entry to the developer's live ~/.claude.json. Same class as the
+# comment a few lines up about a test install doing exactly that, twice.
+if [ "$DEFAULT_ENGINE" -eq 1 ] && command -v jq &>/dev/null; then
   CLAUDE_JSON="$HOME/.claude.json"
   [ -f "$CLAUDE_JSON" ] || echo '{}' > "$CLAUDE_JSON"
   if jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
@@ -336,13 +387,10 @@ fi
 
 # ─── CLI shortcut ───────────────────────────────────────────────────
 # A non-default MEGAWORK_HOME is a scratch or side-by-side install: it must not
-# repoint the user's ~/.local/bin commands or the Dock app at itself (a test
+# repoint the user's ~/.local/bin commands at itself (a test
 # install did exactly that to a developer's real setup — twice).
-DEFAULT_ENGINE=0; [ "$(cd "$ENGINE" && pwd -P)" = "$(cd "$HOME/.megawork" 2>/dev/null && pwd -P || echo /nonexistent)" ] && DEFAULT_ENGINE=1
-[ "${MEGAWORK_HOME:-}" = "" ] && DEFAULT_ENGINE=1
 if [ "$DEFAULT_ENGINE" -eq 0 ]; then
-  echo "  (engine at $ENGINE is not the default ~/.megawork — leaving ~/.local/bin and /Applications alone)"
-  MAKE_APP=0
+  echo "  (engine at $ENGINE is not the default ~/.megawork — leaving ~/.local/bin alone)"
 fi
 if [ "$DEFAULT_ENGINE" -eq 1 ]; then
 mkdir -p "$HOME/.local/bin"
@@ -386,105 +434,6 @@ if [ -f "$HOME/.claude/CLAUDE.md" ]; then
   else
     echo "  → keeping both (run 'megawork-mode on' later if you prefer)"
   fi
-fi
-
-# ─── Dock-able launcher app ─────────────────────────────────────────
-if [ "$MAKE_APP" -eq 1 ] && [ "$(uname -s)" = "Darwin" ]; then
-  APP="/Applications/${APPNAME}.app"
-  # Build the bundle by hand instead of using osacompile. An .app is just a
-  # directory, and osacompile ad-hoc signs it — so writing our icon into
-  # Contents/Resources broke the seal and macOS then ignored the icon entirely.
-  # Owning the bundle means the icon is simply part of it from the start.
-  OVERLAY="${MEGAWORK_OVERLAY:-$HOME/.megavibe/personal/megawork}"
-  STAGE_DIR=$(mktemp -d); STAGE="$STAGE_DIR/${APPNAME}.app"
-  mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
-
-  cat > "$STAGE/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleName</key><string>${APPNAME}</string>
-  <key>CFBundleDisplayName</key><string>${APPNAME}</string>
-  <key>CFBundleIdentifier</key><string>com.poma-ai.megawork</string>
-  <key>CFBundleVersion</key><string>1.0</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>launch</string>
-  <key>CFBundleIconFile</key><string>appicon</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict></plist>
-PLIST
-
-  # The boot script lives in the .app, NOT in the engine, on purpose: it updates
-  # the engine, and a shell cannot safely go on reading a script whose file is
-  # being replaced underneath it. It also runs megawork-update from a copy in
-  # /tmp for the same reason - the updater replaces itself otherwise. After the
-  # update it execs the engine launcher, so the session always starts from the
-  # version that was just installed.
-  cat > "$STAGE/Contents/MacOS/boot" <<BOOT
-#!/bin/bash
-ENGINE="$ENGINE"
-if [ -x "\$ENGINE/bin/megawork-update" ]; then
-  U=\$(mktemp -t megawork-update 2>/dev/null) || U=""
-  if [ -n "\$U" ] && cp "\$ENGINE/bin/megawork-update" "\$U" 2>/dev/null; then
-    chmod +x "\$U" 2>/dev/null
-    "\$U" --if-due || true       # offline, or a failed update: start anyway
-    rm -f "\$U"
-  fi
-fi
-exec "\$ENGINE/bin/megawork"
-BOOT
-  chmod +x "$STAGE/Contents/MacOS/boot"
-
-  cat > "$STAGE/Contents/MacOS/launch" <<LAUNCH
-#!/bin/bash
-# Open a Terminal window on the assistant. Terminal, not the Claude desktop
-# app: the desktop app would not apply the sandbox or the policy.
-# NOTE: this block is inside an UNQUOTED heredoc, so backticks would run as
-# command substitution at build time. Do not use them here.
-# "activate" on a Terminal that is not running opens a default window, and a
-# bare "do script" then opens a SECOND one - two windows on every cold start,
-# which is every start from the Dock icon. Reuse the window the launch made.
-osascript -e 'tell application "Terminal"
-    if it is not running then
-        run
-        repeat 50 times
-            if (count of windows) > 0 then exit repeat
-            delay 0.1
-        end repeat
-    end if
-    if (count of windows) > 0 and (busy of front window) is false then
-        set w to do script "clear; \"$APP/Contents/MacOS/boot\"" in front window
-    else
-        set w to do script "clear; \"$APP/Contents/MacOS/boot\""
-    end if
-    activate
-    try
-        set custom title of w to "${APPNAME}"
-    end try
-end tell'
-LAUNCH
-  chmod +x "$STAGE/Contents/MacOS/launch"
-
-  if [ -f "$OVERLAY/icon.icns" ]; then
-    cp "$OVERLAY/icon.icns" "$STAGE/Contents/Resources/appicon.icns"
-  fi
-
-  # Move the old app aside first, not away: if the new one cannot land, put it back.
-  OLD_APP=""; [ -e "$APP" ] && { OLD_APP="$STAGE_DIR/previous.app"; mv "$APP" "$OLD_APP" 2>/dev/null || OLD_APP=""; }
-  if mv "$STAGE" "$APP" 2>/dev/null || { [ -n "$OLD_APP" ] && mv "$OLD_APP" "$APP" 2>/dev/null; false; }; then
-    # Ad-hoc sign the finished bundle, so the seal matches what is inside it.
-    codesign --force --deep --sign - "$APP" 2>/dev/null || true
-    touch "$APP"; killall Dock 2>/dev/null || true
-    [ -f "$APP/Contents/Resources/appicon.icns" ] && ok "launcher created with its icon: $APP" \
-      || ok "launcher created: $APP (no icon in the overlay)"
-    echo "    drag it to the Dock"
-  else
-    echo "  ! could not create the launcher app (existing app left untouched)"
-    echo "    it can still be started by running: $ENGINE/bin/megawork"
-  fi
-  rm -rf "$STAGE_DIR"
 fi
 
 # ─── Admin-provisioned credentials from the overlay ─────────────────
@@ -558,8 +507,8 @@ if [ -z "${MEGAWORK_WRAPPED:-}" ]; then
   echo ""
   echo "Done. Next:"
   echo "  1. run 'claude' once and sign in"
-  if [ -d "/Applications/${APPNAME}.app" ]; then
-    echo "  2. drag ${APPNAME} from /Applications to the Dock"
+  if [ "$DEFAULT_ENGINE" -eq 1 ]; then
+    echo "  2. start it any time with:  megawork"
   else
     echo "  2. start it with: $ENGINE/bin/megawork"
   fi

@@ -31,6 +31,17 @@ if [ ! -d "$DATA" ]; then
   echo "  ${D}If it lives in Google Drive, wait for Drive to finish syncing, then try again. Nothing was changed.${R}"; exit 1
 fi
 
+# --if-due is no longer wired into launch (see bin/megawork). It remains for a
+# caller that wants "install only if due". The due check stays BEFORE the
+# network call so such a caller pays no curl on a checked-today run.
+if [ "${1:-}" = "--if-due" ]; then
+  _stamp="$ENGINE/logs/.update-checked"
+  mkdir -p "$ENGINE/logs" 2>/dev/null || true
+  [ -f "$_stamp" ] && [ -z "$(find "$_stamp" -mtime +1 2>/dev/null)" ] && exit 0
+  # A health check must not silently replace the software it is auditing.
+  case "${MEGAWORK_NONINTERACTIVE:-}" in 1|true|yes) exit 0 ;; esac
+fi
+
 # Scoped to this subtree, not the whole repository: otherwise every commit to
 # megavibe would tell a colleague their assistant needs updating.
 REMOTE_SHA=$(curl -fsSL --max-time 20 \
@@ -38,8 +49,9 @@ REMOTE_SHA=$(curl -fsSL --max-time 20 \
   | sed -n 's/.*"sha": *"\([0-9a-f]\{7\}\).*/\1/p' | head -1)
 LOCAL_SHA=$(cat "$ENGINE/version" 2>/dev/null || echo "")
 
-# --if-due: what the app icon runs at every launch. Silent and instant unless
-# there is genuinely something to install, so it can sit in the startup path.
+# --if-due: what the launcher runs at every start (bin/megawork, from a temp
+# copy). Silent and instant unless there is genuinely something to install, so
+# it can sit in the startup path.
 if [ "${1:-}" = "--if-due" ]; then
   STAMP="$ENGINE/logs/.update-checked"
   mkdir -p "$ENGINE/logs" 2>/dev/null || true
@@ -120,12 +132,24 @@ if MEGAWORK_HOME="$ENGINE" MEGAWORK_WRAPPED=1 MEGAWORK_NONINTERACTIVE=1 \
   # missing jq forever).
   # Also allowed: conditions of the MACHINE that predate the update and that
   # the old version suffered equally (no jq on macOS 14, Claude not installed).
+  # And a TIMED-OUT probe: the doctor grades that ✗ so a crashed launcher is
+  # caught, but a cold start inside a seatbelt on a loaded Mac can exceed the
+  # 150s alarm with nothing wrong. Updates are manual now, so this gate is the
+  # ONLY channel a fix travels — rejecting a good update and telling a
+  # non-technical person their assistant is broken is the worse error here.
   OTHER_BAD=$(printf '%s\n' "$DOC" | grep '✗' \
-    | grep -Ev '^ *✗ (not signed in — run|jq is missing — undo|Claude Code is not installed$)' || true)
+    | grep -Ev '^ *✗ (not signed in — run|jq is missing — undo|Claude Code is not installed$|the launch probe produced no output)' || true)
   # A doctor that crashed (non-zero, but printed no ✗ at all) proved nothing —
   # that is a rollback, not a pass.
   DOC_RAN=0; printf '%s\n' "$DOC" | grep -qE '✓|✗' && DOC_RAN=1
-  if [ "$DOC_RC" -eq 0 ] || { [ "$DOC_RAN" -eq 1 ] && [ -z "$OTHER_BAD" ]; }; then
+  # Gate on EVIDENCE, not on the exit code. megawork-doctor exits 1 for every
+  # ✗, including the three this code deliberately forgives (not signed in, jq
+  # missing, Claude not installed) — so ANDing DOC_RC here silently deleted the
+  # whitelist above and made a signed-out Mac roll back every update, forever.
+  # DOC_RAN proves the doctor actually produced a verdict; OTHER_BAD proves no
+  # unforgiven ✗ appeared. A crashed launcher now yields a ✗ (doctor's
+  # catch-all), so it lands in OTHER_BAD and still fails the gate.
+  if [ "$DOC_RAN" -eq 1 ] && [ -z "$OTHER_BAD" ]; then
     rm -rf "$BACKUP"
     echo "  ${G}✓${R} Updated. Your folder, history and connections are unchanged."
     printf '%s' "$DOC" | grep -q 'not signed in' && \

@@ -4,11 +4,32 @@ A megavibe profile for people who are not programmers: plain language, a single
 folder they own, and an OS-enforced boundary so nothing they ask for can wander
 outside it. Same harness underneath — hooks, context files, subagents, backends.
 
+Start it with `megawork` — or `megavibe nondev` on a machine that also has the
+developer CLI. There is no separate app: the Dock bundle was removed 2026-09-12
+once the launch reduced to a single command. **The self-serve install deploys
+only the `megawork*` commands** (`setup.sh --harness-only` installs no megavibe
+CLI), so colleague-facing text must never say `megavibe`.
+
 Status: the *fallback* contract is scripted and passes 10/10 (`spike/RESULTS.md`);
 the adopted seatbelt contract is measured in `spike/RESULTS-capable.md` §D and
-re-checked by `megawork-doctor` on every run (the `open` escape is launched for real when a person runs the doctor, and checked statically during unattended updates). An adversarial review closed two
-sandbox escapes (see §D "Post-review hardening"). Installs, runs, and has been
-exercised end to end — but not yet piloted with a real non-technical user.
+re-checked by `megawork-doctor` on every run (the `open` escape is launched for
+real when a person runs the doctor, and checked statically during unattended
+updates). An adversarial review closed two sandbox escapes (see §D
+"Post-review hardening").
+
+Verified live on 2026-09-12, on a real filesystem rather than a `/tmp` HOME —
+the earlier "verified end-to-end" claim was made under `/tmp`, which this
+repo's own LESSONS records as a source of false verdicts:
+
+- fresh install from a real TTY, 32 s, idempotent on a second run
+- `megavibe nondev doctor` → 19 ok, 0 problems against the installed engine
+- a real session wrote inside the folder and was refused outside it (EPERM),
+  confirmed from outside the session — the file was never created
+- the deny list still holds under `bypassPermissions` (a `sudo` call was
+  blocked at the permission layer before executing)
+
+**Still not piloted with a real non-technical user.** Everything above was
+exercised by a developer; nothing here predicts what a colleague will do.
 
 ## Install
 
@@ -35,7 +56,7 @@ Run interactively, the installer lists the locations that actually exist on the
 Mac — the home folder, every Google Drive account's *My Drive*, and every shared
 drive — so "which folder?" is a menu choice rather than a path to type.
 
-Then drag the app from `/Applications` to the Dock — the installer has already walked them through signing in.
+Then start it any time with `megawork` — the installer has already walked them through signing in.
 
 Afterwards the person can move it themselves, without an admin:
 
@@ -52,6 +73,16 @@ folder, keeps Apple Mail and connected services switched on, and pre-approves
 the new folder so Claude does not ask "do you trust this folder?".
 
 ## How containment works
+
+**What it contains is writes, not reads.** Readers generalise "nothing it does
+can write outside their folder" into "it is sandboxed", and the second sentence
+is broader than the first. The profile's read side is wide, network is
+unrestricted (`(allow default)`), the login keychain is readable (documented
+below), and the working folder is explicitly encouraged to be a *shared* Drive
+folder. With no permission prompt in the loop, a document a third party drops
+into `Inbox` is a read-and-send path with no human checkpoint — which is why the
+outward-facing denies are name-agnostic rather than a list of servers we happen
+to know. Treat the folder's contents as trusted input, because the profile does.
 
 The boundary is a macOS **seatbelt profile**, not Claude's own flags:
 
@@ -121,7 +152,24 @@ signs in to nothing at all, or `megawork-connect analytics` runs
 itself. The service-account route is the right one for colleagues. Work tools are theirs
 to edit — Linear, HubSpot, Notion, Drive: that is how they already use them and
 the blast radius is small. What policy denies is outward-facing messaging:
-sending mail, posting or replying in Slack, trashing or archiving mail. Drafting
+sending mail, posting or replying in Slack, trashing or archiving mail. Those
+denies are **server-name-agnostic** (`mcp__*__*send*`, `*post*`, `*reply*`,
+`*trash*`, `*archive*`, plus the `*_message*` operations). Measured 2026-09-12: a
+deny rule with a wildcard in the SERVER position removes the tool from the
+session entirely rather than merely skipping its prompt — verified against a
+stub MCP server, 6 tools reduced to 1.
+
+**They raise the bar under `bypassPermissions`; they do not make it safe.** Two
+measured limits, both worth knowing before you rely on this:
+
+- **Matching is substring, not word.** `*post*` also removes `postgres_query`
+  and `list_posts`; `*archive*` removes `archive_search`, a read. An admin
+  naming tools in `policy/tools.yaml` must avoid those substrings — a denied
+  tool vanishes from the session with no error and no explanation.
+- **Five verbs are not the category.** `share`, `publish`, `upload`, `invite`
+  and `export` are not covered, and Bash plus unrestricted network is a sending
+  route entirely outside MCP filtering. Treat this as defence in depth behind
+  read-only tokens at the source, not as the boundary. Drafting
 is allowed, since "write me a reply" is the point. Where read-only matters it is
 enforced at the source — the GitHub token is issued read-only and the server runs
 in read-only mode, the GA4 identity is a Viewer — not by guessing tool names. `applemail` is the odd one out: it is not a
@@ -145,7 +193,12 @@ carries the things that make megavibe worth using:
   first and rolls back automatically if the health check fails afterwards — a
   colleague must never be left with a broken assistant and no way back. The
   launcher mentions an available update at most once a week, as one quiet line,
-  and never installs anything on its own.
+  and never installs anything on its own — deliberately. Installing at launch
+  was tried on 2026-09-12 and reverted the same day: a colleague who has not
+  yet signed in fails the post-update health check, so every launch downloaded,
+  installed, rolled back and warned them — daily, permanently, and no fix could
+  ever land. The notice keeps its own stamp (`logs/.update-notified`); sharing
+  one with `--if-due` is what made it unreachable.
 - **A health check**, `megawork-doctor`, readable over a screen share.
 
 ## Coexisting with classic megavibe
@@ -171,7 +224,7 @@ choice instead of a blend (non-destructive; the doctor reports which mode is act
 
 Start the session with `--remote` (or `MEGAWORK_REMOTE=1`) and attach from the
 Claude app via Remote Control. The session still starts here — inside the sandbox, under
-the admin policy — and the app merely drives it. Starting a session *from inside* the app
+the admin policy — and the Claude app merely attaches to it. Starting a session *from inside* that app
 instead would bypass the sandbox and the policy entirely.
 
 ## Files
@@ -201,7 +254,6 @@ a private overlay directory and point `MEGAWORK_OVERLAY` at it (default
 
 ```
 $MEGAWORK_OVERLAY/
-  icon.icns                   ← your own Dock icon, applied at install if present
   PILOT-BRIEF.md              ← who is testing, what they report (names, emails)
   gemini-key                  ← admin-issued credentials: picked up by every install
   github-token                   the admin runs, copied to ~/.megawork/policy/ (0600,

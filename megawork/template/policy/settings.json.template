@@ -1,6 +1,6 @@
 {
   "permissions": {
-    "defaultMode": "default",
+    "defaultMode": "bypassPermissions",
     "_comment_allow": "Allow rules must name the server — Claude Code rejects a bare mcp__* wildcard, though deny rules accept globs anywhere. These cover the services megawork-connect knows about plus the local ones; megawork-connect adds a rule when it connects anything new, so nobody is ever asked to approve tool calls one at a time.",
     "allow": ["Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Bash", "Task", "WebSearch", "WebFetch",
               "mcp__gmail__*", "mcp__slack__*", "mcp__linear__*", "mcp__hubspot__*", "mcp__analytics__*", "mcp__github__*",
@@ -8,11 +8,13 @@
               "mcp__claude_ai_Gmail__*", "mcp__claude_ai_Google_Drive__*",
               "mcp__claude_ai_Google_Calendar__*", "mcp__claude_ai_HubSpot__*",
               "mcp__claude_ai_Notion__*"],
-    "_comment_deny": "Mid-string globs in deny rules are supported and were measured (2026-09-07: chat_postMessage, send_message, reply_to_thread all blocked by mcp__slack__*post*/*send*/*reply*). Work tools (Linear, HubSpot, Notion, Drive) are theirs to edit — that is how they already use them and the blast radius is small. What stays denied is outward-facing messaging and mail loss: sending mail, posting in chat, deleting/trashing/archiving mail (label changes included, since removing INBOX is how Gmail archives). Read-only where it matters is enforced at the source (a read-only GitHub token, Viewer roles), not here.",
+    "_comment_deny": "The trailing mcp__*__ rules are SERVER-NAME-AGNOSTIC. They RAISE THE BAR under bypassPermissions; they do not make it safe, and must not be described as if they do. Two measured caveats. (1) Matching is SUBSTRING, not word: mcp__*__*post* also removes postgres_query and list_posts, and *archive* removes archive_search — an admin naming tools in policy/tools.yaml must avoid these substrings, because a denied tool simply VANISHES from the session with no error. (2) Five verbs are not the category: share, publish, upload, invite and export are not covered, and Bash plus unrestricted network is a sending route entirely outside MCP filtering. What they do fix: the named rules only cover servers we thought of, but account-level claude.ai connectors cannot be enumerated in advance, so under bypass an unlisted mcp__claude_ai_Slack__*post* would be neither allowed (no prompt) nor denied (no block). The README states flatly that this policy denies sending mail and posting in chat; without the wildcard rules that sentence was true only for hard-coded names. Mid-string globs in deny rules are supported and were measured (2026-09-07: chat_postMessage, send_message, reply_to_thread all blocked by mcp__slack__*post*/*send*/*reply*). Work tools (Linear, HubSpot, Notion, Drive) are theirs to edit — that is how they already use them and the blast radius is small. What stays denied is outward-facing messaging and mail loss: sending mail, posting in chat, deleting/trashing/archiving mail (label changes included, since removing INBOX is how Gmail archives). Read-only where it matters is enforced at the source (a read-only GitHub token, Viewer roles), not here.",
     "deny": ["Bash(sudo:*)", "Read(//**/.ssh/**)", "Read(//**/Keychains/**)", "Read(//**/.aws/**)",
              "mcp__gmail__*send*", "mcp__gmail__*delete*", "mcp__gmail__*trash*", "mcp__gmail__*archive*", "mcp__gmail__*label*", "mcp__gmail__*modify*",
              "mcp__claude_ai_Gmail__*send*", "mcp__claude_ai_Gmail__*delete*", "mcp__claude_ai_Gmail__*trash*", "mcp__claude_ai_Gmail__*archive*", "mcp__claude_ai_Gmail__*label*", "mcp__claude_ai_Gmail__*modify*",
-             "mcp__slack__*post*", "mcp__slack__*send*", "mcp__slack__*reply*", "mcp__slack__*add_message*", "mcp__slack__*react*"]
+             "mcp__slack__*post*", "mcp__slack__*send*", "mcp__slack__*reply*", "mcp__slack__*add_message*", "mcp__slack__*react*",
+             "mcp__*__*send*", "mcp__*__*post*", "mcp__*__*reply*", "mcp__*__*trash*", "mcp__*__*archive*",
+             "mcp__*__*add_message*", "mcp__*__*modify_message*", "mcp__*__*delete_message*"]
   },
   "env": { "MEGAWORK_DATA": "@DATA@", "MEGAWORK_ENGINE": "@ENGINE@" },
   "_comment_disabled": "Browser automation cannot work in here — the sandbox denies the LaunchServices brokers Chrome needs (that deny is what closes the `open` escape) and blocks its cache. Left enabled it spawns a headless Chrome that fails on a loop, filling the session with errors nobody can act on. Megawork does document work; it does not drive a browser.",

@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
-# megawork launcher — starts a jailed, plain-language Claude session.
+# megawork launcher — starts a sandboxed, plain-language Claude session.
+# Normally reached as `megavibe nondev`.
 #
-# Implements the launch contract proven by megawork/spike/jail-spike.sh (10/10):
-#   claude --restricted --strict-mcp-config --mcp-config <policy> \
-#          --settings <policy> --add-dir <data folder>
+# THE LIVE CONTRACT (the seatbelt path, below at the sandbox-exec call):
+#   sandbox-exec -f <policy>/sandbox.sb claude \
+#       --settings <policy>/settings.json --add-dir <data folder> \
+#       --add-dir <engine>/snapshots --append-system-prompt <protocol>
 #
-#   --restricted        removes Bash/code tools and WebFetch, confines file
-#                       tools to the working directories, refuses bypass mode,
-#                       and ignores user/project settings (so a colleague's
-#                       stray ~/.claude config cannot widen the jail)
-#   --settings          the admin-owned policy IS still honoured (verified)
-#   --strict-mcp-config no MCP servers, including account-level claude.ai
-#                       connectors (verified absent)
+#   sandbox.sb    the real boundary: a macOS seatbelt profile. It confines
+#                 writes to the working folder and closes the `open` escape.
+#                 Verified live 2026-09-12 — a write to ~/Documents returned
+#                 EPERM and the file was confirmed absent from outside.
+#   settings.json permission mode plus the deny list (mail send, chat post,
+#                 sudo). Measured 2026-09-12: the deny list is still enforced
+#                 under bypassPermissions, so the two layers are independent.
+#
+# The FALLBACK contract, used only when sandbox-exec is unavailable, is the
+# `claude --restricted --strict-mcp-config ...` call at the bottom of this
+# file: no Bash, no connectors, file tools confined. Less capable, but it needs
+# no OS sandbox. Do not read the fallback's flags as describing the live path —
+# that confusion is why the launcher was long believed to refuse bypass mode.
 #
 # The control plane (this script, policy, protocol) lives OUTSIDE the data
 # folder on purpose: a session that can write the folder must never be able to
@@ -101,18 +109,31 @@ fi
 
 cd "$DATA"
 
-# The app icon updates before the session starts (see the boot script in
-# init.sh), so this notice is only for someone who typed `megawork` in a
-# terminal. Once a week, one quiet line, never mid-session: a surprise change
-# while somebody is working is worse than being a few days behind. Being a few
-# days behind is NOT harmless though — a quiet line is what left a pilot Mac
-# sitting in a login loop for days, which is why the icon no longer waits to be
-# asked.
-STAMP="$ENGINE/logs/.update-checked"
+# Updates are MANUAL, and that is a deliberate reversal.
+#
+# The app icon used to install updates at launch; when the app was removed
+# (2026-09-12) that trigger went with it, and the obvious fix was to run the
+# updater here instead. Three review rounds showed that one decision produced
+# seven distinct defects, and the worst of them inverted the very problem it
+# was meant to solve: a colleague who has not yet signed in fails the doctor
+# gate, so every launch downloaded, installed, rolled back and printed a scare
+# message — daily, permanently, with no way for a fix to ever land. It also
+# left the first session after an update running the OLD launcher against the
+# NEW policy, made Ctrl-C leave a half-installed engine, and put up to ~140s of
+# network in front of a session that mostly had nothing to install.
+#
+# So: the launcher only ever TELLS. `megavibe nondev update` (or
+# `megawork-update`) installs, with the folder reachable and a person present.
+#
+# Its own stamp, deliberately. Sharing one with `--if-due` is what made this
+# notice unreachable: the updater touched the stamp daily, so `-mtime +7` was
+# never true and the fallback never printed.
+STAMP="$ENGINE/logs/.update-notified"
 if [ ! -f "$STAMP" ] || [ -n "$(find "$STAMP" -mtime +7 2>/dev/null)" ]; then
-  touch "$STAMP" 2>/dev/null
+  touch "$STAMP" 2>/dev/null || true
   if [ -x "$ENGINE/bin/megawork-update" ] && "$ENGINE/bin/megawork-update" --check >/dev/null 2>&1; then
     echo "  A newer version is available — run: megawork-update"
+    echo "  (or, with the developer CLI: megavibe nondev update)"
     echo ""
   fi
 fi
@@ -240,5 +261,13 @@ fi
 # own restricted mode. Less capable — no Bash, no connectors — but never
 # unconfined, because an unconfined session is the one outcome we refuse.
 echo "note: running in reduced-capability mode (no OS sandbox available)" >&2
-exec claude --restricted --strict-mcp-config --mcp-config "$POLICY/mcp.json" \
+# --permission-mode default is REQUIRED here and is not a style choice.
+# The policy sets defaultMode bypassPermissions for the seatbelt path; Claude
+# refuses to start under --restricted with that mode ("bypassPermissions not
+# supported in restricted mode"), which turned the documented fallback —
+# "reduced capability, never reduced containment" — into no session at all.
+# --restricted already removes Bash and confines the file tools, so prompting
+# is the right posture here anyway.
+exec claude --restricted --permission-mode default \
+  --strict-mcp-config --mcp-config "$POLICY/mcp.json" \
   "${CLAUDE_ARGS[@]}" "$@"
