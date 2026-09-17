@@ -45,6 +45,15 @@
             "command": ".claude/hooks/read-coverage.sh"
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/read-delta.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

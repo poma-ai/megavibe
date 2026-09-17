@@ -14,7 +14,8 @@ set -u
 # that tells Claude the content is unchanged and to refer to the earlier
 # read above.
 #
-# Triggered by: PreToolUse (Read). Exit 0 always (advisory).
+# Triggered by: PreToolUse (Read) to answer, and PostToolUse (Read) to
+# record. Exit 0 always (advisory).
 # Rationale: Claude frequently re-reads the same file across turns to
 # "re-check" its state. Full re-reads of unchanged files duplicate
 # tokens already in the conversation. Stubbing the re-read costs the
@@ -26,12 +27,46 @@ set -u
 # real file through, because a wasted re-read costs tokens and a false
 # stub costs the reader the document without telling anyone.
 #
-# Mechanism:
-#   - Compute sha256 of current file
-#   - Compare to last cached hash for this (file_path, session, agent)
-#   - On hit: write a small stub file, rewrite file_path to the stub
-#   - On miss or first read: append {file, hash, ts, size, agent} to cache,
-#     pass through
+# Mechanism, split across the two events:
+#   PreToolUse  — sha256 the file, compare to the last row for this
+#                 (file_path, session, agent) that is marked confirmed. On a
+#                 hit, write a small stub and rewrite file_path to it. On a
+#                 miss, pass the file through and append a PENDING row
+#                 holding that hash and this call's tool_use_id.
+#   PostToolUse — append a CONFIRMED row, but only given evidence that the
+#                 read was whole, that the response describes this file,
+#                 that the pending row belongs to this very call, and that
+#                 the bytes actually delivered hash to what the row claims.
+#
+# Nothing is promoted or deleted: the cache is append-only and the pending
+# row stays where it is. It can only ever be spent by a call presenting the
+# same tool_use_id — the code enforces the match, not the uniqueness, which
+# rests on the harness issuing an id per call. A degenerate or missing id is
+# therefore treated as no receipt at all.
+#
+# A row answers a Read only if it says confirmed:true. That is positive
+# proof, not the absence of a marker, so rows written by older versions of
+# this hook — which recorded at PreToolUse, BEFORE the read ran — never
+# answer one, even though they sit in the same cache file after an upgrade.
+#
+# Recording on PostToolUse is the point, not an implementation detail. A row
+# written at PreToolUse claims a Read happened that may not have: denied at
+# the permission prompt, interrupted with ESC, or failed. The next Read of
+# that path would then be answered with a stub for content that never
+# entered the context. Measured: a Read of a nonexistent path fires no
+# PostToolUse event at all, and an over-size read is routed to
+# PostToolUseFailure, so this event does encode "the tool returned".
+#
+# "The tool returned" is NOT the same as "the reader has the file", which is
+# what the stub asserts. The recording branch therefore checks three further
+# things rather than assuming them: that the response describes a whole read
+# of this file, that a pending row from this same call vouches for it, and
+# that the delivered bytes hash to what the row will claim. Each came from a
+# review that reproduced the false stub that check prevents; see each one.
+#
+# On a hit, PostToolUse sees the REWRITTEN path (the stub) in tool_input,
+# which the recursion guard below skips — so a hit records nothing and the
+# row keeps the timestamp of the read that actually delivered the content.
 #
 # The key includes the AGENT, not just the session. A subagent has its own
 # fresh context window and shares neither the parent's conversation nor its
@@ -71,22 +106,49 @@ set -u
 # that says "already in your context above" must never outlive the content
 # it points at.
 #
-# Known residuals, both fail towards a false stub and neither is closed here:
-#   - The row is written at PreToolUse, before the Read is known to have
-#     happened. A Read denied at the permission prompt or interrupted leaves
-#     a row, so the NEXT read of that path is a stub for content that never
-#     entered context. The fix is to record on PostToolUse(Read), which
-#     fires only when the tool actually ran. Deferred on frequency, NOT on
-#     cost: it needs a denial or an interrupt followed by a retry of the
-#     same path in the same session. The cost is in fact small — the
-#     template already registers a PostToolUse(Read) matcher, and init.sh
-#     replaces the hooks block wholesale, so there is no migration to write.
+# Deliberate cost, not a bug: a Read cannot be answered from a row that does
+# not exist yet, so two Reads of the same path issued together — before
+# either has completed — both pass the file through. Whether the harness
+# interleaves the two events per call or batches them is not established
+# here; the live cache shows adjacent pending/confirmed pairs, which
+# suggests interleaving. Either way a pending row must not answer anything,
+# since it describes content that has not been delivered.
+#
+# Known residuals, in two groups.
+#
+# Things this hook does NOT do, which cost tokens and nothing else:
+#   - A file above the Read tool's token cap is never confirmed, so it is
+#     never deduplicated — the benefit is absent exactly where a re-read is
+#     most expensive. Closing that needs page-level bookkeeping, which is a
+#     different design.
+#   - A cache line that is not valid JSON is skipped rather than aborting
+#     the lookup, so a partial write costs one re-read, not the session's
+#     caching.
+#
+# Things that can still produce a false stub. All the same shape: something
+# removes content from a context without firing a hook this file can see, so
+# a row outlives what it describes.
 #   - Only main-thread compaction is covered, via PreCompact. A subagent's
 #     own context compacting does not fire it. Nor, probably, does the
 #     time-based mid-turn eviction of old tool results that the installed
 #     Claude Code binary carries strings for (`tengu_time_based_microcompact`)
 #     — unverified either way, and the more likely of the two to bite,
 #     because it is on the main thread and needs no long-running subagent.
+#   - /rewind truncates the conversation and fires no hook event at all (the
+#     binary's event list is PreToolUse, PostToolUse, PreCompact, PostCompact,
+#     Stop, Notification, SessionStart). If it keeps the session id, which is
+#     likely and unverified, the cache survives a rewind that discarded the
+#     reads it describes.
+#   - /clear appears safe by accident rather than by guard: it starts a new
+#     transcript with a new session id, so the cache filename rotates. No
+#     SessionStart matcher for it is registered, so nothing enforces that.
+#
+# Registration: BOTH events, in .claude/settings.json. Registered on only
+# PreToolUse, every miss still appends a pending row that nothing will ever
+# confirm, so the cache grows and never answers anything — the hook does no
+# harm and no good. On only PostToolUse there is no pending row to authorise
+# anything, so it records nothing. Neither is unsafe, and neither is
+# detectable except by noticing that re-Reads are never stubbed.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
@@ -97,6 +159,23 @@ MIN_BYTES=200
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
 [ "$TOOL_NAME" = "Read" ] || exit 0
+
+# Which half of the job this invocation is. Anything that is not the
+# recording event is treated as the answering event. That does NOT rescue a
+# hook registered only on PreToolUse (an older settings.json that never
+# re-ran init.sh): answering requires a confirmed row, only the recording
+# event writes one, so such a setup accumulates pending rows and never
+# stubs anything. See the registration note above.
+EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null || echo "")
+
+# The id of THIS tool call. Measured: PreToolUse and PostToolUse carry the
+# same tool_use_id for one Read, and it is unique per call. That makes it a
+# receipt for one specific read rather than a claim about the file in
+# general, which is the only thing that can safely authorise a cache row.
+TOOL_UID=$(echo "$INPUT" | jq -r '.tool_use_id // ""' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
+# Sanitising can strip an id down to something short enough to collide, so a
+# degenerate one is treated as no id at all: no pending row, no confirmation.
+[ ${#TOOL_UID} -ge 8 ] || TOOL_UID=""
 
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
 OFFSET=$(echo "$INPUT" | jq -r '.tool_input.offset // 0' 2>/dev/null || echo "0")
@@ -174,6 +253,112 @@ HASH=$(shasum -a 256 "$FILE" 2>/dev/null | awk '{print $1}' | tr -cd 'a-f0-9')
 
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+if [ "$EVENT" = "PostToolUse" ]; then
+  # --- Record. Three things must be true, each checked against evidence.
+  #
+  # 1. The reader got the WHOLE file. A Read past the tool's token cap
+  #    returns a page and says so; recording the whole-file hash then makes
+  #    the next Read a stub for lines that never arrived. Measured shape:
+  #    tool_response.file carries numLines, totalLines, startLine, and on a
+  #    truncated read the extra key truncatedByTokenCap.
+  #
+  #    totalLines is also checked against this file's own line count, so the
+  #    proof is "the response describes THIS file" and not merely "the
+  #    response agrees with itself". Presence of a field says nothing about
+  #    its meaning: if a future version reported totalLines per page, page
+  #    one would satisfy numLines == totalLines with every check passing.
+  #    Measured, totalLines is the newline count plus one; the looser of the
+  #    two is accepted because that last line is a counting convention.
+  WC_L=$(wc -l < "$FILE" 2>/dev/null | tr -cd '0-9')
+  WC_L="${WC_L:-0}"
+  COMPLETE=$(echo "$INPUT" | jq -r --argjson wc "${WC_L:-0}" --arg path "$FILE" '
+    (.tool_response.file // empty) as $f
+    | if ($f | type) != "object" then "0"
+      elif ($f.truncatedByTokenCap // false) then "0"
+      elif (($f.numLines | type) == "number")
+       and (($f.totalLines | type) == "number")
+       and (($f.startLine | type) == "number")
+       and (($f.content | type) == "string")
+       and ($f.filePath == $path)
+       and ($f.startLine == 1)
+       and ($f.numLines == $f.totalLines)
+       and (($f.totalLines == $wc) or ($f.totalLines == $wc + 1)) then "1"
+      else "0" end' 2>/dev/null || echo "0")
+
+  if [ "$COMPLETE" != "1" ]; then
+    # A truncated or short read is the ordinary reason to be here and is not
+    # worth a word. A tool_response that HAS a file object but not the keys
+    # this check needs is different: it means the payload shape moved and the
+    # cache has silently stopped working. Say so once per session, because
+    # "look here first" is useless advice if there is nothing to look at.
+    if echo "$INPUT" | jq -e '(.tool_response.file | type) == "object"
+         and ((.tool_response.file.numLines | type) != "number"
+           or (.tool_response.file.totalLines | type) != "number")' >/dev/null 2>&1; then
+      SHAPE_FLAG=".agent/LOGS/.read-delta-shape.${SID}"
+      if [ ! -e "$SHAPE_FLAG" ]; then
+        : > "$SHAPE_FLAG" 2>/dev/null || true
+        mkdir -p "${HOME}/.megavibe" 2>/dev/null || true
+        echo "$(date -u +%FT%TZ) read-delta.sh: tool_response.file lacks numLines/totalLines — re-Read caching is off for this session" \
+          >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null || true
+      fi
+    fi
+    exit 0
+  fi
+
+  # 2. This row is authorised by THIS read, not by some earlier one. The
+  #    pending row PreToolUse left carries the tool_use_id of the call it
+  #    belongs to, so it cannot be spent by a different Read that happens to
+  #    arrive at the same hash. Matching on (file, agent, hash) alone made
+  #    the pending row a session-lifetime bearer token: a denied, truncated
+  #    or abandoned read left one behind, and any later read of a file that
+  #    returned to that byte state — a branch switch, an undo, a formatter
+  #    round-trip — could spend it and confirm content nobody had read.
+  [ -n "$TOOL_UID" ] || exit 0
+  PENDING=$(grep -F -- "$TOOL_UID" "$CACHE" 2>/dev/null \
+    | jq -Rrc --arg f "$FILE" --arg a "$AGENT" --arg h "$HASH" --arg u "$TOOL_UID" \
+        'fromjson? // empty
+         | select(.file == $f and .agent == $a and .hash == $h and .uid == $u and (.pending // false) == true)' \
+        2>/dev/null \
+    | tail -1)
+  [ -n "$PENDING" ] || exit 0
+
+  # 3. The bytes the READER got are the bytes this row will describe. Checks
+  #    1 and 2 both look at the file on disk, so neither sees a write that
+  #    was reverted before PostToolUse ran: a formatter loop, a git stash and
+  #    pop, a build that rewrites and restores. The reader would hold the
+  #    intermediate version while the row described the original, and the
+  #    next Read would be told it already had content it never saw.
+  #
+  #    tool_response.file.content is what was actually delivered. Measured:
+  #    it is byte-identical to the file for every shape tested, except that
+  #    the Read tool strips carriage returns — a full `tr -d '\r'`, not a
+  #    CRLF-to-LF rewrite, confirmed against a lone mid-line CR. A CRLF file
+  #    therefore matches the \r-stripped form and stays cacheable instead of
+  #    being silently dropped.
+  #
+  #    That tolerance is an ASSUMPTION about the tool, not a property of
+  #    this file: it is safe only while the transform is exactly \r-removal,
+  #    because then the bytes accepted here are the bytes a later Read of
+  #    the same disk state returns. If a future Read normalises anything
+  #    else — CRLF only, a BOM, tabs — this branch would accept a copy that
+  #    is not what a re-read delivers, and the stub would be false with
+  #    nothing reporting it. Re-measure before trusting it across an
+  #    upgrade.
+  CONTENT_HASH=$(echo "$INPUT" | jq -j '.tool_response.file.content // ""' 2>/dev/null \
+    | shasum -a 256 2>/dev/null | awk '{print $1}' | tr -cd 'a-f0-9')
+  if [ "$CONTENT_HASH" != "$HASH" ]; then
+    CRLF_HASH=$(tr -d '\r' < "$FILE" 2>/dev/null | shasum -a 256 2>/dev/null | awk '{print $1}' | tr -cd 'a-f0-9')
+    [ -n "$CONTENT_HASH" ] && [ "$CONTENT_HASH" = "$CRLF_HASH" ] || exit 0
+  fi
+  #
+  # The pending row is left where it is. Nothing promotes or deletes it; it
+  # simply can never be spent again, because its uid belongs to a call that
+  # is now over. Never emit JSON here: PostToolUse output rewrites nothing.
+  { jq -nc --arg f "$FILE" --arg h "$HASH" --arg ts "$NOW" --argjson sz "$SIZE" --arg a "$AGENT" \
+      '{file:$f, hash:$h, ts:$ts, size:$sz, agent:$a, confirmed:true}' >> "$CACHE"; } 2>/dev/null || true
+  exit 0
+fi
+
 # Look up this agent's last entry for this file. The cheap prefilter greps the
 # bare content digest rather than the path. Two reasons: a path is stored
 # JSON-escaped, so a literal grep for one containing a quote or backslash
@@ -187,8 +372,10 @@ LAST_TS=""
 if [ -f "$CACHE" ]; then
   LAST_ENTRY=$(grep -F -- "$HASH" "$CACHE" 2>/dev/null \
     | tail -200 \
-    | jq -rc --arg f "$FILE" --arg a "$AGENT" \
-        'select(.file == $f and .agent == $a)' 2>/dev/null \
+    | jq -Rrc --arg f "$FILE" --arg a "$AGENT" \
+        'fromjson? // empty
+         | select(.file == $f and .agent == $a and .confirmed == true)' \
+        2>/dev/null \
     | tail -1)
   if [ -n "$LAST_ENTRY" ]; then
     LAST_HASH=$(echo "$LAST_ENTRY" | jq -r '.hash // ""' 2>/dev/null || echo "")
@@ -227,10 +414,6 @@ If you need fresh line numbers (e.g. after an Edit just made) or a
 specific slice, call Read with offset/limit to bypass this cache.
 STUBEOF
 
-  # Record the hit so ts is refreshed (same hash)
-  jq -nc --arg f "$FILE" --arg h "$HASH" --arg ts "$NOW" --argjson sz "$SIZE" --arg a "$AGENT" \
-    '{file:$f, hash:$h, ts:$ts, size:$sz, agent:$a, hit:true}' >> "$CACHE" 2>/dev/null || true
-
   # Emit the updatedInput. hookSpecificOutput is the current format for
   # PreToolUse input modification (v2.0.10+).
   jq -nc --arg path "$STUB" \
@@ -238,8 +421,14 @@ STUBEOF
   exit 0
 fi
 
-# Cache miss (new file or content changed). Record and pass through.
-jq -nc --arg f "$FILE" --arg h "$HASH" --arg ts "$NOW" --argjson sz "$SIZE" --arg a "$AGENT" \
-  '{file:$f, hash:$h, ts:$ts, size:$sz, agent:$a, hit:false}' >> "$CACHE" 2>/dev/null || true
+# Cache miss (new file, changed content, or a reader who has not seen it).
+# Pass the real file through and leave a PENDING row stamped with this call's
+# tool_use_id: it records the hash as it is right now, and PostToolUse will
+# only accept it for the SAME call at the SAME hash. A pending row never
+# answers a Read, and one left behind by a denied, interrupted or truncated
+# read can never be spent by a later one.
+[ -n "$TOOL_UID" ] || exit 0
+{ jq -nc --arg f "$FILE" --arg h "$HASH" --arg ts "$NOW" --argjson sz "$SIZE" --arg a "$AGENT" --arg u "$TOOL_UID" \
+    '{file:$f, hash:$h, ts:$ts, size:$sz, agent:$a, uid:$u, pending:true}' >> "$CACHE"; } 2>/dev/null || true
 
 exit 0

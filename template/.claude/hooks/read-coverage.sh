@@ -29,6 +29,13 @@ set -u
 # the edited region falls outside every range actually read, which is the case
 # where the model genuinely cannot know what it is changing.
 #
+# Blind spot worth knowing about: read-delta.sh rewrites file_path at
+# PreToolUse when a re-Read hits its cache, so the PostToolUse(Read) this
+# script sees carries the STUB's path, not the file's. A stubbed re-read
+# therefore extends no range here. Harmless — the range it would have added
+# was already recorded by the read that populated that cache — but it is why
+# a file can look less-read than the transcript suggests.
+#
 # Three handlers, one script:
 #   PostToolUse(Read)                — record the (file, first, last) line read
 #   PostToolUse(Edit|MultiEdit|Write)— credit what the model just authored, and

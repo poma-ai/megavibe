@@ -77,6 +77,8 @@ for _rd_sid in "$RD_SID" "$SID"; do
   # ...and the pre-fix stub name, which has no agent segment for that glob
   # to match. One file per project, but it is never cleaned up otherwise.
   rm -f "${LOGDIR}/read-stub.${_rd_sid}.txt" 2>/dev/null || true
+  # The once-per-session "payload shape moved" flag belongs to that cache.
+  rm -f "${LOGDIR}/.read-delta-shape.${_rd_sid}" 2>/dev/null || true
 done
 
 # How stale is the context?
