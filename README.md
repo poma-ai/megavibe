@@ -273,12 +273,16 @@ curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/megawork/inst
 Or, from an existing megavibe install:
 
 ```bash
-megavibe megawork init      # asks where the folder should live (Google Drive aware)
-megavibe megawork doctor    # verify, including live sandbox-escape tests
-megavibe megawork folder    # show or move the working folder
+megavibe nondev             # start a session (sandboxed, plain language)
+megavibe nondev init        # asks where the folder should live (Google Drive aware)
+megavibe nondev doctor      # verify, including live sandbox-escape tests
+megavibe nondev folder      # show or move the working folder
+
+# On the colleague's own Mac the self-serve installer deploys `megawork*` only —
+# `megavibe nondev` is the developer spelling. `megavibe megawork` is an alias.
 ```
 
-The person gets a Dock app, four folders (Inbox / Workspace / Delivered /
+The person gets one command (`megawork`), four folders (Inbox / Workspace / Delivered /
 Library) and an assistant that opens by telling them what is waiting. Undo is
 automatic. Nothing it does can write outside their folder.
 

@@ -143,7 +143,7 @@ fi
 # ── login state (the one thing the colleague must do) ──
 if command -v claude &>/dev/null; then
   # Probe through the REAL launcher (sandbox + policy + protocol), so a broken
-  # combination fails here rather than at the Dock.
+  # combination fails here rather than in front of the colleague.
   # NONINTERACTIVE: the launcher would otherwise complete a queued service
   # sign-in — a browser, from a "read-only" health check, with its output
   # swallowed by tail. Update sets this too; a hand-run doctor did not.
@@ -152,9 +152,15 @@ if command -v claude &>/dev/null; then
   case "$OUT" in
     *DOCTOR-OK*)      ok "a real session starts, signed in, under the full policy" ;;
     *"Not logged in"*|*login*) bad "not signed in — run 'claude' once and sign in" ;;
-    "")               warn "the launch probe produced no output (timed out?)" ;;
+    "")               bad "the launch probe produced no output (timed out?)" ;;
     *)                _d=$(printf '%s' "$OUT" | tr -d '\n' | cut -c1-70)
-                      warn "could not confirm a working session${_d:+: $_d} — try again in a moment" ;;
+                      # Anything that is neither DOCTOR-OK nor a sign-in prompt
+                      # is a FAILED start, not a note. This branch used to warn,
+                      # so a launcher dying with "bin/megawork: line 133: dbox:
+                      # command not found" was reported as "0 problems", exit 0
+                      # — and megawork-update trusts that exit code to delete
+                      # its rollback copy. A broken install graded itself healthy.
+                      bad "a real session did NOT start${_d:+: $_d}" ;;
   esac
 fi
 

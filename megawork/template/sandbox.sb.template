@@ -124,6 +124,14 @@
 ; stop `cat` from doing the same. It is the token for the account whose session
 ; this already is.
 (deny file-read*
+  ; The megavibe overlay is THE credential store (gemini-key, github-token,
+  ; ga4-service-account.json, grafana-token, *-password, cloud-token.conf).
+  ; The engine's copies under policy/ were denied below from the start; the
+  ; originals never were, and were readable from inside the profile. With no
+  ; permission prompt in the loop, one hostile document in a shared Inbox was
+  ; `cat` then `curl`. Not on a colleague Mac — the overlay is admin-side — but
+  ; `megavibe nondev` runs on the machines that DO hold it.
+  (subpath "@HOME@/.megavibe/personal")
   (subpath "@HOME@/.ssh")
   (subpath "@HOME@/.gnupg")
   (subpath "@HOME@/.aws")
