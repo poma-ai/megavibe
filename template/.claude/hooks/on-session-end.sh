@@ -20,13 +20,27 @@ set -u
 # Only act if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0
 
-# Require jq + tmux
+# Require jq. tmux is required only for the watcher teardown below, so it is
+# checked there — a machine without tmux still gets the cache cleanup.
 command -v jq &>/dev/null || exit 0
-command -v tmux &>/dev/null || exit 0
 
 INPUT=$(cat)
 SID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)
 [ -n "$SID" ] || exit 0
+
+# --- read-delta leftovers ---
+# read-delta.sh reaps its own stubs only when it scores a cache hit, so an
+# agent that hits once and exits leaves one behind for good. These are pure
+# scratch: the cache describes a context that no longer exists once the
+# session ends, and a stub is consumed within the turn that wrote it.
+# Anything older than a day belongs to a session that is over.
+if [ -d ".agent/LOGS" ]; then
+  find .agent/LOGS -maxdepth 1 -name 'read-stub.*.txt' -mtime +1 -delete 2>/dev/null || true
+  find .agent/LOGS -maxdepth 1 -name 'read-cache.*.jsonl' -mtime +1 -delete 2>/dev/null || true
+  find .agent/LOGS -maxdepth 1 -name '.read-delta-shape.*' -mtime +1 -delete 2>/dev/null || true
+fi
+
+command -v tmux &>/dev/null || exit 0
 
 TMUX_SESSION="mvw-${SID}"
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then

@@ -2,7 +2,7 @@
 # DO NOT use set -e — hook must be resilient to transient failures.
 _hook_error() {
   local msg="read-delta.sh failed at line $1: $2"
-  echo "$msg" >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+  echo "$msg" >> "${HOME:-/tmp}/.megavibe/hook-errors.log" 2>/dev/null
   exit 0
 }
 trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
@@ -82,7 +82,7 @@ set -u
 #   - Missing/empty files
 #   - Partial reads (offset or limit set — user explicitly wants slice)
 #   - Image/PDF/binary extensions (resize-image.sh handles those)
-#   - Tiny files (below MIN_BYTES — overhead not worth it)
+#   - Files below MIN_BYTES, where the stub costs more than it saves
 #   - Reads of the stub file itself (recursion guard)
 #
 # Cache file: .agent/LOGS/read-cache.${SID}.jsonl (one per session, every
@@ -108,11 +108,9 @@ set -u
 #
 # Deliberate cost, not a bug: a Read cannot be answered from a row that does
 # not exist yet, so two Reads of the same path issued together — before
-# either has completed — both pass the file through. Whether the harness
-# interleaves the two events per call or batches them is not established
-# here; the live cache shows adjacent pending/confirmed pairs, which
-# suggests interleaving. Either way a pending row must not answer anything,
-# since it describes content that has not been delivered.
+# either has completed — both pass the file through. A pending row could
+# answer the second, but it describes content that has not been delivered,
+# which is the one thing this hook must never assert.
 #
 # Known residuals, in two groups.
 #
@@ -129,11 +127,19 @@ set -u
 # removes content from a context without firing a hook this file can see, so
 # a row outlives what it describes.
 #   - Only main-thread compaction is covered, via PreCompact. A subagent's
-#     own context compacting does not fire it. Nor, probably, does the
-#     time-based mid-turn eviction of old tool results that the installed
-#     Claude Code binary carries strings for (`tengu_time_based_microcompact`)
-#     — unverified either way, and the more likely of the two to bite,
-#     because it is on the main thread and needs no long-running subagent.
+#     own context compacting does not fire it, and neither does time-based
+#     microcompaction, which is CONFIRMED present in Claude Code 2.1.274:
+#     `tengu_time_based_microcompact` clears old tool results while keeping
+#     recent ones, on the main thread, with no hook event. Its gating and
+#     default are not established. This is the residual most likely to
+#     bite, because it needs no subagent and no explicit command, and it
+#     targets the OLDEST reads — exactly the ones a re-Read wants.
+#
+#     Two things bound it. The stub now tells a reader that finds nothing
+#     above to re-read and say so, which turns silent data loss into a
+#     recoverable miss for EVERY residual here. And a confirmed row expires
+#     (CACHE_TTL_SECS), so a row cannot answer for a read old enough to
+#     have been cleared underneath it.
 #   - /rewind truncates the conversation and fires no hook event at all (the
 #     binary's event list is PreToolUse, PostToolUse, PreCompact, PostCompact,
 #     Stop, Notification, SessionStart). If it keeps the session id, which is
@@ -154,32 +160,84 @@ set -u
 command -v jq &>/dev/null || exit 0
 command -v shasum &>/dev/null || exit 0
 
-MIN_BYTES=200
+# The stub itself costs ~650 bytes, so caching a file smaller than a few
+# times that LOSES tokens while claiming to save them. Measured: a 211-byte
+# file produced a 650-byte stub announcing a ~52 token saving. Break-even is
+# around 700 bytes; this floor is set well clear of it.
+MIN_BYTES=3000
+
+# A confirmed row stops answering after this long. Nothing in the harness
+# tells this hook that a tool result was evicted from the context — see the
+# residuals above — so age is the only bound available on how wrong a row
+# can be.
+CACHE_TTL_SECS=3600
 
 INPUT=$(cat)
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
+
+# One parse, not nine. This hook fires on every Read, and on the recording
+# event the payload carries the file's entire content — so a jq process per
+# field meant re-parsing 150KB nine times over. Measured on a 152KB payload:
+# nine calls 37ms, one call 5ms.
+#
+# Fields are NUL-separated because a file path legitimately contains spaces,
+# tabs and newlines, and NUL is the one byte a JSON string cannot hold. Read
+# with `read -r -d ""`, not eval: this is untrusted input, and no escaping
+# scheme has to be correct if nothing is ever evaluated.
+#
+# SUB_MARKER is computed inside this expression on purpose. It distinguishes
+# an agent_id that is ABSENT from one that is empty, which the `// ""` that
+# produces AGENT_ID necessarily erases.
+{
+  IFS= read -r -d "" TOOL_NAME
+  IFS= read -r -d "" EVENT
+  IFS= read -r -d "" TOOL_UID
+  IFS= read -r -d "" FILE
+  IFS= read -r -d "" OFFSET
+  IFS= read -r -d "" LIMIT
+  IFS= read -r -d "" SID
+  IFS= read -r -d "" AGENT_ID
+  IFS= read -r -d "" SUB_MARKER
+} < <(printf '%s' "$INPUT" | jq -j '
+  [ (.tool_name // ""),
+    (.hook_event_name // ""),
+    (.tool_use_id // ""),
+    (.tool_input.file_path // ""),
+    (.tool_input.offset // 0 | tostring),
+    (.tool_input.limit // 0 | tostring),
+    (.session_id // "default"),
+    ((.agent_id // .agentId // "") | tostring),
+    (if ((.agent_id // .agentId // .agent_type // .agentType) != null)
+       then "1" else "0" end)
+  ] | map(. + "\u0000") | join("")' 2>/dev/null) || true
+
+TOOL_NAME="${TOOL_NAME:-}"
 [ "$TOOL_NAME" = "Read" ] || exit 0
 
-# Which half of the job this invocation is. Anything that is not the
-# recording event is treated as the answering event. That does NOT rescue a
-# hook registered only on PreToolUse (an older settings.json that never
-# re-ran init.sh): answering requires a confirmed row, only the recording
-# event writes one, so such a setup accumulates pending rows and never
-# stubs anything. See the registration note above.
-EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null || echo "")
+# Which half of the job this invocation is. Only the two events this hook is
+# registered for do anything; a payload from anywhere else exits rather than
+# emitting an updatedInput nothing consumes, or appending a row nothing will
+# confirm. A hook registered only on PreToolUse (an older settings.json that
+# never re-ran init.sh) is NOT rescued by the answering branch: answering
+# needs a confirmed row, only the recording event writes one, so such a setup
+# accumulates pending rows and never stubs anything.
+EVENT="${EVENT:-}"
+case "$EVENT" in
+  PostToolUse|PreToolUse|"") ;;
+  *) exit 0 ;;
+esac
 
 # The id of THIS tool call. Measured: PreToolUse and PostToolUse carry the
 # same tool_use_id for one Read, and it is unique per call. That makes it a
 # receipt for one specific read rather than a claim about the file in
 # general, which is the only thing that can safely authorise a cache row.
-TOOL_UID=$(echo "$INPUT" | jq -r '.tool_use_id // ""' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
 # Sanitising can strip an id down to something short enough to collide, so a
 # degenerate one is treated as no id at all: no pending row, no confirmation.
+TOOL_UID=$(printf '%s' "${TOOL_UID:-}" | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
 [ ${#TOOL_UID} -ge 8 ] || TOOL_UID=""
 
-FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null || echo "")
-OFFSET=$(echo "$INPUT" | jq -r '.tool_input.offset // 0' 2>/dev/null || echo "0")
-LIMIT=$(echo "$INPUT" | jq -r '.tool_input.limit // 0' 2>/dev/null || echo "0")
+FILE="${FILE:-}"
+OFFSET="${OFFSET:-0}"
+LIMIT="${LIMIT:-0}"
 [ -n "$FILE" ] || exit 0
 
 # Only full-file reads. Partial reads (offset/limit) bypass the cache —
@@ -204,13 +262,16 @@ case "$EXT" in
 esac
 
 # Skip tiny files — hash + stub overhead not worth it
-SIZE=$(stat -f %z "$FILE" 2>/dev/null || stat -c %s "$FILE" 2>/dev/null || echo "0")
+# -L because shasum and wc -l follow symlinks: without it a symlink is
+# measured as its own path length, so the file is never cached and, for a
+# long enough target path, the stub would print a wrong size.
+SIZE=$(stat -Lf %z "$FILE" 2>/dev/null || stat -Lc %s "$FILE" 2>/dev/null || echo "0")
 SIZE="${SIZE:-0}"
 [ "$SIZE" -ge "$MIN_BYTES" ] 2>/dev/null || exit 0
 
 # Sanitised because SID reaches a filename; a session_id containing a slash
 # would otherwise point the cache at a directory that does not exist.
-SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | tr -cd 'A-Za-z0-9-' | cut -c1-12)
+SID=$(printf '%s' "${SID:-default}" | tr -cd 'A-Za-z0-9-' | cut -c1-12)
 SID="${SID:-default}"
 
 # Subagent tool calls carry agent_id; the main thread has none, and keys as
@@ -219,11 +280,9 @@ SID="${SID:-default}"
 # it would let two agents share a cache scope, which is the bug this key
 # exists to prevent. Only the stub FILENAME needs a safe form, so that is a
 # hash of the id rather than a stripped version of it.
-AGENT_ID=$(echo "$INPUT" | jq -r '(.agent_id // .agentId // "") | tostring' 2>/dev/null | tr -d '\n')
+AGENT_ID=$(printf '%s' "${AGENT_ID:-}" | tr -d '\n')
 [ "$AGENT_ID" = "null" ] && AGENT_ID=""
-SUB_MARKER=$(echo "$INPUT" \
-  | jq -r 'if ((.agent_id // .agentId // .agent_type // .agentType) != null) then "1" else "0" end' \
-  2>/dev/null || echo "")
+SUB_MARKER="${SUB_MARKER:-}"
 
 if [ -n "$AGENT_ID" ]; then
   # Prefixed so no agent can key as the main thread, whatever its id is.
@@ -252,6 +311,8 @@ HASH=$(shasum -a 256 "$FILE" 2>/dev/null | awk '{print $1}' | tr -cd 'a-f0-9')
 [ ${#HASH} -eq 64 ] || exit 0
 
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+NOW_EPOCH=$(date +%s 2>/dev/null | tr -cd '0-9')
+NOW_EPOCH="${NOW_EPOCH:-0}"
 
 if [ "$EVENT" = "PostToolUse" ]; then
   # --- Record. Three things must be true, each checked against evidence.
@@ -293,13 +354,16 @@ if [ "$EVENT" = "PostToolUse" ]; then
     # "look here first" is useless advice if there is nothing to look at.
     if echo "$INPUT" | jq -e '(.tool_response.file | type) == "object"
          and ((.tool_response.file.numLines | type) != "number"
-           or (.tool_response.file.totalLines | type) != "number")' >/dev/null 2>&1; then
+           or (.tool_response.file.totalLines | type) != "number"
+           or (.tool_response.file.startLine | type) != "number"
+           or (.tool_response.file.content | type) != "string"
+           or (.tool_response.file.filePath | type) != "string")' >/dev/null 2>&1; then
       SHAPE_FLAG=".agent/LOGS/.read-delta-shape.${SID}"
       if [ ! -e "$SHAPE_FLAG" ]; then
         : > "$SHAPE_FLAG" 2>/dev/null || true
-        mkdir -p "${HOME}/.megavibe" 2>/dev/null || true
-        echo "$(date -u +%FT%TZ) read-delta.sh: tool_response.file lacks numLines/totalLines — re-Read caching is off for this session" \
-          >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null || true
+        mkdir -p "${HOME:-/tmp}/.megavibe" 2>/dev/null || true
+        echo "$(date -u +%FT%TZ) read-delta.sh: tool_response.file is missing a field this hook needs (numLines/totalLines/startLine/content/filePath) — re-Read caching is off for this session" \
+          >> "${HOME:-/tmp}/.megavibe/hook-errors.log" 2>/dev/null || true
       fi
     fi
     exit 0
@@ -355,7 +419,8 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # simply can never be spent again, because its uid belongs to a call that
   # is now over. Never emit JSON here: PostToolUse output rewrites nothing.
   { jq -nc --arg f "$FILE" --arg h "$HASH" --arg ts "$NOW" --argjson sz "$SIZE" --arg a "$AGENT" \
-      '{file:$f, hash:$h, ts:$ts, size:$sz, agent:$a, confirmed:true}' >> "$CACHE"; } 2>/dev/null || true
+      --argjson at "${NOW_EPOCH:-0}" \
+      '{file:$f, hash:$h, ts:$ts, at:$at, size:$sz, agent:$a, confirmed:true}' >> "$CACHE"; } 2>/dev/null || true
   exit 0
 fi
 
@@ -366,15 +431,18 @@ fi
 # thing we would claim is unchanged, so reads of other files — or of other
 # versions of this file — cannot push the row we need out of the tail window.
 # Nothing is parsed out of the grep: jq makes every decision, filtering on
-# path and agent.
+# path, agent, confirmation and age. A row with no timestamp is one written
+# before the TTL existed, and it expires rather than being trusted.
 LAST_HASH=""
 LAST_TS=""
 if [ -f "$CACHE" ]; then
   LAST_ENTRY=$(grep -F -- "$HASH" "$CACHE" 2>/dev/null \
     | tail -200 \
     | jq -Rrc --arg f "$FILE" --arg a "$AGENT" \
+        --argjson now "${NOW_EPOCH:-0}" --argjson ttl "${CACHE_TTL_SECS:-3600}" \
         'fromjson? // empty
-         | select(.file == $f and .agent == $a and .confirmed == true)' \
+         | select(.file == $f and .agent == $a and .confirmed == true
+                  and (.at | type) == "number" and ($now - .at) <= $ttl)' \
         2>/dev/null \
     | tail -1)
   if [ -n "$LAST_ENTRY" ]; then
@@ -410,8 +478,10 @@ The file is unchanged since your own previous Read of this path earlier
 in this conversation. Re-reading would duplicate ~$((SIZE / 4)) tokens of
 content already in your context above.
 
-If you need fresh line numbers (e.g. after an Edit just made) or a
-specific slice, call Read with offset/limit to bypass this cache.
+If you cannot find that content above, this cache is WRONG and you have
+not read this file: call Read again with offset=1 to bypass the cache,
+and say so. The same applies if you need fresh line numbers after an
+edit, or only a slice.
 STUBEOF
 
   # Emit the updatedInput. hookSpecificOutput is the current format for
@@ -429,6 +499,7 @@ fi
 # read can never be spent by a later one.
 [ -n "$TOOL_UID" ] || exit 0
 { jq -nc --arg f "$FILE" --arg h "$HASH" --arg ts "$NOW" --argjson sz "$SIZE" --arg a "$AGENT" --arg u "$TOOL_UID" \
-    '{file:$f, hash:$h, ts:$ts, size:$sz, agent:$a, uid:$u, pending:true}' >> "$CACHE"; } 2>/dev/null || true
+    --argjson at "${NOW_EPOCH:-0}" \
+    '{file:$f, hash:$h, ts:$ts, at:$at, size:$sz, agent:$a, uid:$u, pending:true}' >> "$CACHE"; } 2>/dev/null || true
 
 exit 0
