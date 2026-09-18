@@ -56,7 +56,7 @@
         ]
       },
       {
-        "matcher": "Bash|Agent|Monitor",
+        "matcher": "Bash|Agent",
         "hooks": [
           {
             "type": "command",

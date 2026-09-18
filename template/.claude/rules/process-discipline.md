@@ -33,21 +33,31 @@ f=<output file>; last=0; while sleep 240; do s=$(wc -c <"$f" 2>/dev/null | tr -d
 ```
 
 Every beat wakes you with fresh evidence, whether or not the task finished.
-Read it as a diagnosis, not a status: `+0` for several beats is a hang; a file
-that keeps growing with the same lines is a crashloop; a subagent transcript
-whose last tool names repeat is a loop. Act on those — kill it, fix it,
-`SendMessage` or `TaskStop` the agent — instead of waiting one more interval.
-When the completion notification arrives, `TaskStop` the heartbeat. Interval at
-most five minutes (`MEGAVIBE_BG_CHECK_SECS`); the default of four also keeps
-the API's five-minute prompt cache warm, which is a side benefit, not a reason
-to beat faster.
+Read it against what the task *is*, not as a verdict: a build or test run at
+`+0` for two beats is hung, while a server idling at `+0` is healthy; a file
+that keeps growing with the same lines repeating is a crashloop; a subagent
+transcript whose last tool names repeat for many beats is a loop. Read the
+output before acting, then act — kill it, fix it, `SendMessage` or `TaskStop`
+the agent — instead of waiting one more interval. When the completion
+notification arrives, `TaskStop` the heartbeat. There is no exemption for
+"short" tasks: a thirty-second task that hangs is the same silence, and the
+heartbeat costs one notification if the task finishes first. If `Monitor` is
+not in your tool set, `ToolSearch "select:Monitor"`; if it is unavailable
+altogether, run the same loop with a fixed beat count through
+`run_in_background` and let its completion be the wake-up.
 
-`watch-background.sh` enforces both halves: on start it injects the exact
-loop to arm, and on a turn boundary it refuses to let the turn end while a
-task older than the interval has neither a notification nor a heartbeat — once
-per interval per task, never in a loop. A Stop hook cannot wake you later; the
-heartbeat is the only thing that can. Do not read a subagent's `.output`
-symlink whole: it is the full JSONL transcript.
+`watch-background.sh` enforces both halves. On start it injects the exact loop
+to arm. On a turn boundary it reads the harness's live task registry and
+refuses to let the turn end while a running task older than the interval has
+no other running task whose command names it — which is what an armed
+heartbeat looks like, and which stops being true the moment the heartbeat
+exits or is stopped. Once per interval, all overdue tasks in one reason, never
+in a loop. A Stop hook cannot wake you later; the heartbeat is the only thing
+that can. `MEGAVIBE_BG_CHECK_SECS` sets the interval (clamped to 60–600 s; the
+heartbeat beats 60 s under it); `MEGAVIBE_BG_WATCH=0` switches the hook off.
+The default four-minute beat also happens to keep the API's five-minute prompt
+cache warm — a side benefit, not a reason to beat faster. Do not read a
+subagent's `.output` symlink whole: it is the full JSONL transcript.
 
 ## Bind dev servers to localhost by default
 
