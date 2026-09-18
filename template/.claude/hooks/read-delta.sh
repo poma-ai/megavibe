@@ -186,7 +186,10 @@ INPUT=$(cat)
 #
 # SUB_MARKER is computed inside this expression on purpose. It distinguishes
 # an agent_id that is ABSENT from one that is empty, which the `// ""` that
-# produces AGENT_ID necessarily erases.
+# produces AGENT_ID necessarily erases. It watches agent_id only: agent_type
+# is also present on the MAIN thread of a `claude --agent` session (the hook
+# schema says to use agent_id, not agent_type, to tell the two apart), so
+# keying on it switched the cache off for such a session entirely.
 {
   IFS= read -r -d "" TOOL_NAME
   IFS= read -r -d "" EVENT
@@ -206,7 +209,7 @@ INPUT=$(cat)
     (.tool_input.limit // 0 | tostring),
     (.session_id // "default"),
     ((.agent_id // .agentId // "") | tostring),
-    (if ((.agent_id // .agentId // .agent_type // .agentType) != null)
+    (if ((.agent_id // .agentId) != null)
        then "1" else "0" end)
   ] | map(. + "\u0000") | join("")' 2>/dev/null) || true
 
@@ -265,7 +268,12 @@ esac
 # -L because shasum and wc -l follow symlinks: without it a symlink is
 # measured as its own path length, so the file is never cached and, for a
 # long enough target path, the stub would print a wrong size.
-SIZE=$(stat -Lf %z "$FILE" 2>/dev/null || stat -Lc %s "$FILE" 2>/dev/null || echo "0")
+# GNU first, then validate: GNU stat reads -f as --file-system and prints a
+# filesystem block for "$FILE" on stdout while exiting 1, so the BSD form
+# tried first leaves that block prefixed to the fallback's answer and the
+# numeric test below fails on every Linux machine.
+SIZE=$(stat -Lc %s "$FILE" 2>/dev/null || true)
+case "$SIZE" in ''|*[!0-9]*) SIZE=$(stat -Lf %z "$FILE" 2>/dev/null || echo "0") ;; esac
 SIZE="${SIZE:-0}"
 [ "$SIZE" -ge "$MIN_BYTES" ] 2>/dev/null || exit 0
 
@@ -313,6 +321,9 @@ HASH=$(shasum -a 256 "$FILE" 2>/dev/null | awk '{print $1}' | tr -cd 'a-f0-9')
 NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 NOW_EPOCH=$(date +%s 2>/dev/null | tr -cd '0-9')
 NOW_EPOCH="${NOW_EPOCH:-0}"
+# No clock, no TTL: with now=0 every row would pass the age check, so the one
+# bound on a stale row would be gone. Pass the file through instead.
+[ "$NOW_EPOCH" -gt 0 ] 2>/dev/null || exit 0
 
 if [ "$EVENT" = "PostToolUse" ]; then
   # --- Record. Three things must be true, each checked against evidence.
