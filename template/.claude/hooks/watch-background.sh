@@ -157,6 +157,10 @@ LIVE=""
 while IFS= read -r row; do
   [ -n "$row" ] || continue
   id=$(printf '%s' "$row" | jq -r '.id // ""' 2>/dev/null); [ -n "$id" ] || continue
+  # A row whose notification can never be seen (transcript moved, session
+  # resumed under a new id) would otherwise nudge every interval forever.
+  started=$(printf '%s' "$row" | jq -r '.started // 0' 2>/dev/null | tr -cd '0-9'); started="${started:-0}"
+  [ $((NOW - started)) -lt 86400 ] || continue
   if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && grep -qF "<task-id>${id}</task-id>" "$TRANSCRIPT" 2>/dev/null; then
     continue
   fi
