@@ -154,15 +154,36 @@ if [ -f "$REVIEWERS_SH" ]; then
 fi
 
 # Order-insensitive: resolve() preserves the order the user typed, so a literal
-# comparison against "reviewer gemini codex" called "codex gemini reviewer" a
-# non-default set and nagged about it on every session start.
+# comparison against a fixed string called "codex reviewer" a non-default set
+# and nagged about it on every session start.
+#
+# Three shapes worth telling apart. The DEFAULT (reviewer + codex, or
+# reviewer + gemini on a machine without codex) is silent — it is what the
+# protocol already describes, and a line explaining the default on every single
+# session start is noise. "all three" is silent too: more review than the
+# default is never a surprise worth a warning. Anything else is a deliberate
+# pin, and THAT gets the line, because a reviewer the user forgot they switched
+# off is exactly what silently degrades every later review.
 REVIEWER_ROW=""
 REVIEWER_LINE=""
 if [ -n "$ACTIVE_REVIEWERS" ]; then
   RV_SORTED=$(printf '%s\n' $ACTIVE_REVIEWERS | sort | tr '\n' ' ' | sed 's/ *$//')
+  # MEGAVIBE_REVIEWERS=auto in the environment beats every settings file
+  # (_raw_value checks the env first), so this asks for the DEFAULT set rather
+  # than re-reading whatever pin is in force. Without it, a deliberate
+  # "reviewer gemini" pin resolves equal to itself and reads as the default.
+  RV_DEFAULT=$(MEGAVIBE_REVIEWERS=auto bash "$REVIEWERS_SH" list 2>/dev/null </dev/null | sort | tr '\n' ' ' | sed 's/ *$//')
   if [ "$RV_SORTED" = "codex gemini reviewer" ]; then
     REVIEWER_ROW="
 | Reviewers (non-negotiable 4) | all three |"
+  elif [ "$RV_SORTED" = "codex reviewer" ]; then
+    REVIEWER_ROW="
+| Reviewers (non-negotiable 4) | reviewer + codex (default; gemini is codex's fallback) |"
+  elif [ "$RV_SORTED" = "gemini reviewer" ] && [ "$RV_DEFAULT" = "gemini reviewer" ]; then
+    # Default on a machine where codex does not work. Also silent: the Codex
+    # row above already says why, and there is nothing for the user to fix here.
+    REVIEWER_ROW="
+| Reviewers (non-negotiable 4) | reviewer + gemini (default — codex unavailable) |"
   else
     REVIEWER_ROW="
 | Reviewers (non-negotiable 4) | ${ACTIVE_REVIEWERS} |"

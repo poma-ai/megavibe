@@ -18,16 +18,16 @@ set -u
 # - Always inject: DECISIONS.md + TASKS.md + LESSONS.md (structured, small)
 # - FULL_CONTEXT.md < 10KB: also inject raw (no AI needed)
 # - FULL_CONTEXT.md >= 10KB: inject rehydration instructions for Claude to
-#   call gemini-review.sh → codex-review.sh → Claude subagent (fallback chain)
+#   call codex-review.sh → Claude subagent → gemini-review.sh (fallback chain)
 #
 # Improvements over v1:
 # - LESSONS.md injected (was missing)
 # - Raw FULL_CONTEXT for small files (was never injected)
-# - No-cliff rule: Gemini output >= input size or 400 lines, whichever smaller
+# - No-cliff rule: backend output >= input size or 400 lines, whichever smaller
 # - Source-of-truth guard: always compact from raw FULL_CONTEXT.md, not old WC
 # - poma-memory search suggestion for targeted context augmentation
 #
-# CRITICAL: Gemini must always read raw .agent/FULL_CONTEXT.md from disk
+# CRITICAL: the backend must always read raw .agent/FULL_CONTEXT.md from disk
 # (the append-only source of truth), NEVER from a previous WORKING_CONTEXT.md.
 #
 # Session isolation: rehydration flag and WORKING_CONTEXT are session-scoped.
@@ -204,7 +204,7 @@ compaction summary above is your ONLY source of context. Before continuing:
 2. Update .agent/DECISIONS.md with any decisions from the summary.
 3. Update .agent/TASKS.md with pending tasks from the summary.
 4. Then run /rehydrate — this is your only required slash command. It will
-   regenerate ${WC_PATH} via Gemini/Codex (full AI-powered recovery).
+   regenerate ${WC_PATH} via Codex (full AI-powered recovery).
 
 DO NOT skip steps 1–3. The compaction summary will be lost if you don't
 externalize it now. Orientation (git state + /catchup equivalent) is inlined
@@ -234,7 +234,7 @@ FULL_CONTEXT on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FUL
 
 ## Post-compact recovery
 
-Run /rehydrate — it regenerates ${WC_PATH} via the Gemini/Codex fallback
+Run /rehydrate — it regenerates ${WC_PATH} via the Codex/Claude/Gemini fallback
 chain (full AI-powered recovery). That is the ONLY slash command you need
 to type; the catchup-equivalent (git state + .agent/ files) is inlined
 below so you already have the information /catchup would have produced.
@@ -259,7 +259,7 @@ ${OLD_WC}
 ${FULL_CONTEXT}"
 
 else
-  # === NORMAL: instruct Claude to call Gemini/Codex for focused summary ===
+  # === NORMAL: instruct Claude to call the backend chain for a focused summary ===
   echo "Strategy: rehydration instructions (${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines, wc_fresh=${WC_FRESH})" >&2
   [ "$WC_FRESH" -eq 0 ] && { touch ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; }
 
@@ -269,7 +269,7 @@ and is likely still valid. Treat it as your source of truth — running
 /rehydrate now is OPTIONAL. If you decide carryover context is enough,
 just continue working; no nag will fire."
   else
-    REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the Gemini/Codex fallback
+    REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the Codex/Claude/Gemini fallback
 chain (full AI-powered recovery). Do /rehydrate BEFORE resuming any other
 work. Until it completes, stale-context nags are suppressed for ~5 minutes
 so you get a clean window."

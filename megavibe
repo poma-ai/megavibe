@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # Session management is handled entirely via slash commands inside Claude:
 #   /catchup  — review project state + open tasks from previous work
-#   /rehydrate — full context recovery via Gemini/Codex
+#   /rehydrate — full context recovery via Codex/Claude/Gemini
 
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 
@@ -684,7 +684,11 @@ if [ "${1:-}" = "reviewers" ]; then
         case " $ACTIVE " in *" $r "*) on="yes" ;; *) on="no " ;; esac
         case "$r" in
           reviewer) avail="always (Claude subscription — cannot be switched off)" ;;
-          gemini)   [ -n "${GEMINI_API_KEY:-}" ] && avail="GEMINI_API_KEY is set" || avail="no GEMINI_API_KEY" ;;
+          gemini)   if [ -n "${GEMINI_API_KEY:-}" ]; then
+                      if bash "$RV" fallback gemini >/dev/null 2>&1; then
+                        avail="GEMINI_API_KEY is set — reviews only as codex's fallback"
+                      else avail="GEMINI_API_KEY is set"; fi
+                    else avail="no GEMINI_API_KEY"; fi ;;
           codex)    if command -v codex >/dev/null 2>&1; then
                       codex exec --help >/dev/null 2>&1 && avail="codex exec works" || avail="codex is installed but broken"
                     else avail="not installed"; fi ;;
@@ -697,9 +701,14 @@ if [ "${1:-}" = "reviewers" ]; then
       echo "  This limits REVIEWS only. Gemini and Codex stay available for /rehydrate,"
       echo "  summaries and large-context work whatever is set here."
       echo ""
-      echo "  Change it:  megavibe reviewers set reviewer gemini      (this user, all projects)"
+      echo "  The default is the reviewer subagent + Codex. Gemini is Codex's FALLBACK:"
+      echo "  it reviews only when Codex failed that day, and always on --pro. Measured"
+      echo "  over one day of paired reviews, a Gemini review shipped real blockers."
+      echo ""
+      echo "  Change it:  megavibe reviewers set all                  (all three in parallel)"
+      echo "              megavibe reviewers set reviewer codex       (never gemini, not even as fallback)"
       echo "              megavibe reviewers set --project reviewer   (this project only)"
-      echo "              megavibe reviewers set auto                 (back to all available)"
+      echo "              megavibe reviewers set auto                 (back to the default)"
       ;;
 
     set)
@@ -728,12 +737,25 @@ if [ "${1:-}" = "reviewers" ]; then
       # on purpose should be refused now, not fail open to "all reviewers"
       # every time it is read afterwards.
       case "$1" in
-        auto|all|default|none)
-          [ "$1" = "none" ] && { echo "There is no 'none' — review is non-negotiable 4. Use 'auto', or name the reviewers you want."; exit 2; }
+        none)
+          echo "There is no 'none' — review is non-negotiable 4. Use 'auto', or name the reviewers you want."; exit 2 ;;
+        auto|default)
+          # Clears the pin, so the resolver's DEFAULT applies: reviewer + codex.
+          # `all` is deliberately NOT here any more. The two used to mean the
+          # same thing because the default WAS all three; now they differ, and
+          # writing "all" as a clear would hand the user the default while
+          # echoing that they had asked for everything.
           rv_write "$SCOPE_FILE" ""
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS removed from $SCOPE_FILE"
           echo "    Cleared in this scope. The resolved set is whatever remains:"
           echo "    run 'megavibe reviewers' to see it and where it now comes from."
+          ;;
+        all)
+          rv_write "$SCOPE_FILE" "all"
+          echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"all\" in $SCOPE_FILE  (${SCOPE_NAME})"
+          echo "    All three review every change in parallel, Gemini included as a peer"
+          echo "    rather than as Codex's fallback."
+          echo "    Open sessions keep the old set until they restart."
           ;;
         *)
           PICKED=""

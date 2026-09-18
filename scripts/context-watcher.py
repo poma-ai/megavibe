@@ -336,8 +336,11 @@ def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
         order = ["gemini", "codex"]
     elif preferred == "codex":
         order = ["codex", "gemini"]
-    else:  # auto
-        order = ["gemini", "codex"]
+    else:  # auto: codex first. A flush every 5 minutes per session on the
+        # Gemini API bills every token; codex draws on a plan already paid for,
+        # and on a small model at low effort answers this prompt in seconds
+        # (measured 2026-09-18). Gemini stays as the fallback.
+        order = ["codex", "gemini"]
 
     last_err = None
     for backend in order:
@@ -398,8 +401,19 @@ def _call_codex(prompt: str, timeout: int) -> str:
     # NOT --quiet: codex-cli 0.154.0 rejects it ("unexpected argument '--quiet'"),
     # so every codex-backed flush failed for anyone without a GEMINI_API_KEY.
     # Same release that removed `mcp-server`.
-    r = subprocess.run(["codex", "exec", "--sandbox", "read-only",
-                        "--skip-git-repo-check", "--color", "never", "-"],
+    # Small model, low effort: extraction does not reason (0-94 reasoning tokens
+    # at every effort on a 60K-token input, measured 2026-09-18), so the model
+    # sets the time and the plan tokens. Both overridable for a plan that lacks
+    # this model; an unknown model fails the call and the chain falls to gemini.
+    model = os.environ.get("MEGAVIBE_CODEX_MODEL", "gpt-5.6-terra")
+    effort = os.environ.get("MEGAVIBE_CODEX_EFFORT", "low")
+    cmd = ["codex", "exec", "--sandbox", "read-only",
+           "--skip-git-repo-check", "--color", "never"]
+    if model:
+        cmd += ["-m", model]
+    if effort:
+        cmd += ["-c", f"model_reasoning_effort={effort}"]
+    r = subprocess.run(cmd + ["-"],
                        input=prompt, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"codex exit={r.returncode}: {r.stderr[:400]}")

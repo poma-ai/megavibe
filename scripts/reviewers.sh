@@ -14,11 +14,21 @@
 # setting therefore decides which EXTERNAL reviewers join it. Naming `reviewer`
 # in the list is accepted and harmless.
 #
-# Unset, empty, or `auto` = every reviewer that is actually available. That is
-# the default and nobody has to configure anything. To pin the set, list only
+# Unset, empty, or `auto` = the default: `reviewer` plus `codex` when `codex
+# exec` works on this machine, otherwise `reviewer` plus `gemini`. Gemini is
+# then the FALLBACK reviewer: not in the set, but `gemini-review.sh
+# --as-reviewer --fallback` may still run it when codex is installed and fails
+# on the day (quota, outage). `reviewers.sh fallback gemini` answers whether
+# that is allowed. Why gemini is not a peer any more: measured over one day's
+# reviews (2026-09-18, 11 paired units), a single-call Gemini review produced
+# four wrong headline findings and five SHIP verdicts on code with confirmed
+# blockers, while codex — which runs the code — reproduced real findings in
+# every unit. `all` names every reviewer explicitly. To pin the set, list only
 # what you want:
 #
 #   MEGAVIBE_REVIEWERS="reviewer gemini"     # codex is never asked to review
+#   MEGAVIBE_REVIEWERS="reviewer codex"      # gemini never, not even as fallback
+#   MEGAVIBE_REVIEWERS="all"                 # all three, in parallel, as before
 #
 # It gates the REVIEWER ROLE, not the backend. gemini-review.sh and
 # codex-review.sh are also megavibe's general Gemini/Codex transport — that is
@@ -52,6 +62,8 @@
 # Usage:
 #   reviewers.sh list            # resolved set, one id per line
 #   reviewers.sh enabled <id>    # exit 0 if on, 1 if off, 2 on a usage error
+#   reviewers.sh fallback <id>   # exit 0 if <id> may review as the FALLBACK
+#                                # (default set only, and only gemini), 1 if not
 #   reviewers.sh source          # where the setting came from, or "default"
 #
 # `megavibe reviewers` is the friendly front end for all of this.
@@ -77,6 +89,30 @@ RAW_AMBIGUOUS=0
 # Set when the value came from a project-scope settings.json — a file that
 # arrives WITH a clone. See the "shareable" note in resolve().
 RAW_SHAREABLE=0
+# True when the configured value selects the DEFAULT set (unset, empty, auto,
+# default) — the only mode that has a fallback reviewer. Deliberately NOT a
+# flag set inside resolve(): the callers read resolve through `$(...)`, which
+# is a subshell, so an assignment made in there never reaches the caller. Same
+# trap _raw_value documents. This asks the question directly instead.
+_is_default_set() {
+  _raw_value
+  [ "$RAW_AMBIGUOUS" = 0 ] || return 1
+  case "$(printf '%s' "$RAW_VALUE" | tr 'A-Z' 'a-z' | tr -d '[:space:]')" in
+    ''|auto|default) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The default set. Codex when it works here, otherwise gemini. `codex exec
+# --help` is asserted, not `command -v codex`: an installed binary whose
+# subcommand was removed is not a reviewer (see codex-review.sh).
+_default_set() {
+  if command -v codex >/dev/null 2>&1 && codex exec --help >/dev/null 2>&1; then
+    printf '%s\n' reviewer codex
+  else
+    printf '%s\n' reviewer gemini
+  fi
+}
 
 # Assigns the globals RAW_VALUE and RAW_SRC rather than printing: a command
 # substitution runs in a subshell, so a printed value comes back but the
@@ -153,7 +189,8 @@ resolve() {
   normalized=$(printf '%s' "$RAW_VALUE" | tr 'A-Z' 'a-z' | tr ',;' '  ')
 
   case "$(printf '%s' "$normalized" | tr -d '[:space:]')" in
-    ''|auto|all|default) printf '%s\n' $KNOWN; return 0 ;;
+    ''|auto|default) _default_set; return 0 ;;
+    all) printf '%s\n' $KNOWN; return 0 ;;
   esac
 
   out="$ALWAYS"
@@ -231,6 +268,24 @@ case "${1:-list}" in
     printf '%s\n' "$active" | grep -qxF -- "reviewer" || exit 0
     printf '%s\n' "$active" | grep -qxF -- "$want"
     ;;
+  fallback)
+    [ $# -ge 2 ] || { echo "usage: reviewers.sh fallback <reviewer>" >&2; exit 2; }
+    want=$(printf '%s' "$2" | tr 'A-Z' 'a-z')
+    case " $KNOWN " in
+      *" $want "*) ;;
+      *) echo "reviewers.sh: not a known reviewer: $2 (known: $KNOWN)" >&2; exit 2 ;;
+    esac
+    # Only gemini, only in the default set, and only when codex holds the
+    # place gemini would otherwise have. A pin that names the set is exact:
+    # "reviewer codex" means gemini never, and "reviewer gemini" already has
+    # gemini as a peer, so neither has a fallback.
+    [ "$want" = "gemini" ] || exit 1
+    _is_default_set || exit 1
+    active=$(_default_set) || exit 1
+    printf '%s\n' "$active" | grep -qxF -- "codex" || exit 1
+    printf '%s\n' "$active" | grep -qxF -- "gemini" && exit 1
+    exit 0
+    ;;
   source)
     # resolve() is what populates RAW_SRC, so it has to run first.
     resolve >/dev/null
@@ -240,7 +295,7 @@ case "${1:-list}" in
     sed -n '2,55p' "$0"
     ;;
   *)
-    echo "usage: reviewers.sh [list|enabled <reviewer>|source]" >&2
+    echo "usage: reviewers.sh [list|enabled <reviewer>|fallback <reviewer>|source]" >&2
     exit 2
     ;;
 esac

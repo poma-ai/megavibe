@@ -10,7 +10,7 @@ everything from a lossy summary.
 
 | | Who it is for | What it gives them |
 |---|---|---|
-| **megavibe** | developers using Claude Code | durable project context, workflow protocol, second opinions from Gemini/Codex |
+| **megavibe** | developers using Claude Code | durable project context, workflow protocol, second opinions from Codex/Gemini |
 | **megawork** | a non-technical colleague on a Mac | the same harness in plain language, confined to one folder by a macOS sandbox |
 
 **Before you paste the install command**, know what it does to your machine — it
@@ -116,7 +116,7 @@ your-project/
 
 1. An **out-of-band watcher daemon** reads the live transcript and writes summaries to `.agent/` files between turns — no in-session token tax, on by default. (Hook-based nudges are still there as a safety net when the watcher is off.)
 2. When Claude's context gets compacted, a hook fires automatically
-3. Claude calls Gemini (or ChatGPT, or a built-in subagent) to read the full log and produce a focused summary
+3. Claude calls Codex (or a built-in subagent, or Gemini) to read the full log and produce a focused summary
 4. Claude reads the summary and continues — zero information loss, no human intervention
 
 ---
@@ -125,7 +125,7 @@ your-project/
 
 ### Continuous out-of-band context flush (the watcher)
 
-A background Python daemon (`~/.megavibe/scripts/context-watcher.py`) tails the live transcript JSONL and, on a 5-minute trickle, asks Gemini to extract decisions, lessons, task changes, and a narrative recap — then writes them straight to `.agent/` files under `flock`. No in-session token cost, no prompts for Claude. Decisions are **staged** to a per-session queue for human review (low-stakes items auto-apply); review with `python3 ~/.megavibe/scripts/review-decisions.py`.
+A background Python daemon (`~/.megavibe/scripts/context-watcher.py`) tails the live transcript JSONL and, on a 5-minute trickle, asks Codex (Gemini as fallback) to extract decisions, lessons, task changes, and a narrative recap — then writes them straight to `.agent/` files under `flock`. No in-session token cost, no prompts for Claude. Decisions are **staged** to a per-session queue for human review (low-stakes items auto-apply); review with `python3 ~/.megavibe/scripts/review-decisions.py`.
 
 The watcher is on by default — set `MEGAVIBE_WATCHER=0` to opt out. When it's running, in-session tier nudges suppress automatically (no double-up). Full design and operations notes: **[README-watcher.md](README-watcher.md)**.
 
@@ -134,10 +134,10 @@ The watcher is on by default — set `MEGAVIBE_WATCHER=0` to opt out. When it's 
 When Claude runs out of memory and compacts, megavibe detects it and triggers recovery. Three tiers:
 
 - **Small projects** (< 10KB context): injects the full log directly — no AI needed
-- **Normal projects**: Claude calls Gemini to produce a focused ~400-line summary
+- **Normal projects**: Claude calls Codex to produce a focused ~400-line summary
 - **Empty context** (first compaction): instructs Claude to save the compaction summary before it's lost
 
-Recovery uses a fallback chain: Gemini (API key) → ChatGPT/Codex → Claude subagent (always works, same subscription).
+Recovery uses a fallback chain: ChatGPT/Codex → Claude subagent (always works, same subscription) → Gemini (API key). Measured on a 196 KB context log, Codex answers in 23 s on a small model at low effort, the subagent produces the richest summary but spends the session's own quota, and Gemini is the thinnest and the only one billed per token.
 
 ### Semantic search augmentation
 
@@ -185,8 +185,8 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 | What you add | How | What it unlocks |
 |-------------|-----|-----------------|
 | **Claude Code** (required) | Subscription | Core: editing, commands, memory, context recovery via built-in subagent |
-| **Gemini CLI** | Set `GEMINI_API_KEY` (a key from a **billed** project — the free tier is 20 req/day and trains on prompts) | Better context recovery (1M token window), large file analysis |
-| **ChatGPT/Codex CLI** | Run `codex` to log in | Research with web search, second opinions |
+| **ChatGPT/Codex CLI** | Run `codex` to log in | The primary backend: reviews, context recovery, research with web search, second opinions |
+| **Gemini CLI** | Set `GEMINI_API_KEY` (a key from a **billed** project — the free tier is 20 req/day and trains on prompts) | Fallback backend; 1M-token window for very large inputs |
 | **Playwright** | Installed by setup | Browser automation, screenshots, UI testing |
 | **poma-memory** | Bundled (automatic) | Semantic search over project memory |
 | **Telegram bot** | Optional, see below | Personal assistant + project launcher from phone/Watch |
@@ -201,16 +201,19 @@ Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. Yo
 >
 > **Antigravity CLI (Google's successor) is deliberately not the backend:** it works headlessly on a Workspace login, but it is an agent harness — ~13K tokens of system prompt per call, 2–4 minutes and 3–5x the tokens for the same review the API answers in 7 s, a weekly per-account compute quota with lockouts, and Workspace access is a Gemini Enterprise add-on. Measured 2026-09-06; revisit if Google ships a harness-free headless mode.
 
-**Choosing which reviewers run.** Before anything ships, megavibe asks three independent readers to review it: the Claude `reviewer` subagent, Gemini, and Codex. If you only want some of them:
+**Choosing which reviewers run.** Before anything ships, megavibe asks two independent readers to review it: the Claude `reviewer` subagent and Codex. Gemini is their fallback, not a third peer — it reviews only when Codex fails on the day, and always on `--pro`. If you want something else:
 
 ```bash
 megavibe reviewers                          # what is on, where it was set, what is available
-megavibe reviewers set reviewer gemini      # this user, all projects
+megavibe reviewers set all                  # all three in parallel, Gemini as a peer
+megavibe reviewers set reviewer codex       # never Gemini, not even as a fallback
 megavibe reviewers set --project reviewer   # this project only (uncommitted)
-megavibe reviewers set auto                 # back to all available (the default)
+megavibe reviewers set auto                 # back to the default
 ```
 
-The Claude `reviewer` subagent always runs — it needs no key and is what makes the rule meaningful — so this really chooses which of Gemini and Codex join it. It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json`, or — with `--project` — the project's uncommitted `.claude/settings.local.json`; the environment variable overrides both. A **committed** project `.claude/settings.json` is read too, but it may only *add* reviewers: a file that arrives with a clone must not be able to switch off the reviewers looking at that clone's code. The session-start status table gains a Reviewers row, and a reviewer you switched off exits without spending anything when asked to review.
+**Why Gemini is the fallback reviewer.** Measured across one day of paired reviews (11 units where both read the same diff with the same prompt): Codex — which reads the repo, runs the tests, and reproduces the failing input — found real defects in every unit. Gemini, a single stateless API call over inlined files, produced four wrong headline findings and five SHIP verdicts on code with confirmed blockers. It also has one unique catch to its name that nothing else found, which is why it stays in the chain rather than being removed. On a machine without Codex, Gemini takes its place in the default set automatically.
+
+The Claude `reviewer` subagent always runs — it needs no key and is what makes the rule meaningful — so this really chooses which external readers join it. It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json`, or — with `--project` — the project's uncommitted `.claude/settings.local.json`; the environment variable overrides both. A **committed** project `.claude/settings.json` is read too, but it may only *add* reviewers: a file that arrives with a clone must not be able to switch off the reviewers looking at that clone's code. The session-start status table gains a Reviewers row, and a reviewer you switched off exits without spending anything when asked to review.
 
 It limits **reviews only**. Gemini and Codex stay available for context recovery, summaries and large-context work whatever you set here — switching a reviewer off should not cost you `/rehydrate`.
 
@@ -243,7 +246,7 @@ Inside a megavibe session:
 | `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook already inlines its output. |
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
 | `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
-| `/doc-review` | After material doc/code changes — three-reviewer (Claude `reviewer` subagent + Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
+| `/doc-review` | After material doc/code changes — multi-reviewer (Claude `reviewer` subagent + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |
 | `/init-feature <description \| issue link>` | **Before starting a feature** — takes prose or a GitHub issue link; produces a scoped summary and a complexity/token estimate you confirm or send back, then you pick: write a spec or vibe it, and whether to post the result to that ticket or open a new one |
 | `/finish-feature [base]` | **After finishing one** — measures turns, tool calls and tokens actually spent from the transcript, scores them against what `/init-feature` predicted, comments the result on the PR and offers to merge it |
@@ -409,7 +412,7 @@ Yes. `.agent/` files are designed for concurrent access. Commit `.agent/` to git
 No, it complements it. Claude's auto-memory handles cross-session preferences. Megavibe handles detailed project context, decisions, and task state.
 
 **What if I don't have Gemini or ChatGPT?**
-Megavibe still works. Context recovery falls back to a built-in Claude subagent (same subscription). External backends improve quality but are never required.
+Megavibe still works. Context recovery and reviews fall back to built-in Claude subagents on the same subscription. External backends improve quality but are never required.
 
 **Do I need Telegram for remote access?**
 No. Every session has `/rc` (Remote Control) built in — connect from the Claude app on your phone with no extra setup. Telegram adds a personal assistant and project launcher on top.

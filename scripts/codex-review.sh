@@ -13,13 +13,19 @@
 # non-negotiable 4 are called the same way and neither is the awkward one.
 #
 # Usage:
-#   scripts/codex-review.sh [--as-reviewer] [--model M] [--timeout N]
-#                           [--out FILE] --prompt "text" FILE...
+#   scripts/codex-review.sh [--as-reviewer] [--model M] [--effort low|medium|high]
+#                           [--timeout N] [--out FILE] --prompt "text" FILE...
 #   scripts/codex-review.sh ... --prompt-file PROMPT.md FILE...
 #
 # Files are appended to the prompt as "===== path =====" blocks, same as
 # gemini-review.sh. The model's answer goes to stdout; --out also writes it to
-# FILE. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
+# FILE. --model and --effort override ~/.codex/config.toml for this one call
+# (effort maps to `-c model_reasoning_effort=`); unset, the config's defaults
+# apply. Measured 2026-09-18 on a 60K-token rehydration: effort changes nothing
+# (0-94 reasoning tokens at every level — summarising does not reason) while the
+# model sets the time and the length, gpt-5.6-terra 23 s / gpt-6-astra 100 s.
+# So a summary call names a small model and low effort; a review leaves both to
+# the config, where the user has chosen the effort they pay for. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
 # is the ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's
 # general Codex path (/rehydrate, research memos, second opinions), which no
 # reviewer setting should be able to switch off.
@@ -39,7 +45,7 @@
 
 set -euo pipefail
 
-MODEL=""; TIMEOUT=300; OUT=""; PROMPT=""; PROMPT_FILE=""
+MODEL=""; EFFORT=""; TIMEOUT=300; OUT=""; PROMPT=""; PROMPT_FILE=""
 # read-only is not a default, it is the contract. There is deliberately no
 # flag to raise it: a caller-supplied sandbox is how the previous version of
 # this guarantee was lost.
@@ -51,6 +57,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --as-reviewer) AS_REVIEWER=1; shift ;;
     --model)       need "$@"; MODEL="$2"; shift 2 ;;
+    --effort)      need "$@"; EFFORT="$2"; shift 2 ;;
     --timeout)     need "$@"; TIMEOUT="$2"; shift 2 ;;
     --out)         need "$@"; OUT="$2"; shift 2 ;;
     --prompt)      need "$@"; PROMPT="$2"; shift 2 ;;
@@ -64,6 +71,8 @@ while [ $# -gt 0 ]; do
     *)             FILES+=("$1"); shift ;;
   esac
 done
+
+case "$EFFORT" in ''|low|medium|high) ;; *) echo "error: --effort must be low, medium or high" >&2; exit 2 ;; esac
 
 # Zero would CANCEL perl's alarm, silently turning the timeout contract off.
 case "$TIMEOUT" in ''|*[!0-9]*) echo "error: --timeout must be a number" >&2; exit 2 ;; esac
@@ -115,6 +124,7 @@ trap 'rm -f "$REQ" "$REQ.err" "$ANS"' EXIT
 # has to be scraped out of the run's progress chrome.
 ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
+[ -n "$EFFORT" ] && ARGS+=(-c "model_reasoning_effort=$EFFORT")
 ARGS+=(-)
 
 # macOS has no timeout(1) and no gtimeout without coreutils, so this is perl.
@@ -172,4 +182,4 @@ rm -f "$REQ.err"
 [ -n "$OUT" ] && cp "$ANS" "$OUT"
 cat "$ANS"
 echo "" >&2
-echo "[codex-review: sandbox=$SANDBOX${MODEL:+ model=$MODEL} timeout=${TIMEOUT}s]" >&2
+echo "[codex-review: sandbox=$SANDBOX${MODEL:+ model=$MODEL}${EFFORT:+ effort=$EFFORT} timeout=${TIMEOUT}s]" >&2

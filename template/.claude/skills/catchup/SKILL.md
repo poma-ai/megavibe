@@ -6,7 +6,7 @@ allowed-tools: Read, Glob, Grep, Bash
 
 # Catch Up on Project State
 
-Fast, read-only orientation. No Gemini/Codex calls — this should finish in seconds.
+Fast, read-only orientation. No backend calls — this should finish in seconds.
 
 ## Steps
 

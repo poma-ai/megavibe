@@ -12,7 +12,8 @@
 #   This script calls the API directly, so it can set the level.
 #
 # Usage:
-#   scripts/gemini-review.sh [--as-reviewer] [--pro] [--level low|medium|high]
+#   scripts/gemini-review.sh [--as-reviewer] [--fallback] [--pro]
+#                            [--level low|medium|high]
 #                            [--max N] [--out FILE] --prompt "text" FILE...
 #   scripts/gemini-review.sh ... --prompt-file PROMPT.md FILE...
 #
@@ -23,6 +24,14 @@
 # ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's general
 # Gemini path (/rehydrate, summaries, large context), which no reviewer setting
 # should be able to switch off.
+#
+# --fallback says this review is standing in for codex, which is in the set and
+# failed today (quota, outage, timeout). It is accepted only when reviewers.sh
+# says gemini is the fallback — the default set, with codex in it and gemini
+# not. It is NOT a way past a pin: `MEGAVIBE_REVIEWERS="reviewer codex"` means
+# gemini never reviews, and --fallback still exits 4 there. Use it only after
+# codex actually failed; a fallback review run alongside a successful codex
+# review is just the reviewer the measurements moved out of the set.
 #
 # Exit 0 on a complete answer, 3 if the answer was cut off (MAX_TOKENS), 4 if
 # asked to review while gemini is off in MEGAVIBE_REVIEWERS, 1 on API/network
@@ -57,13 +66,14 @@ MODEL="gemini-3.1-flash-lite"; LEVEL="low"; MAX=16000; OUT=""; PROMPT=""; PROMPT
 #   3. it reported partial coverage, or emitted no parseable verdict at all
 #   4. the INPUT is high-stakes by deterministic file match — fires even when the
 #      cheap model says everything is fine
-AS_REVIEWER=""
+AS_REVIEWER=""; FALLBACK=""
 AUTO=""; MIN_CONF="0.75"; PRO_MODEL="gemini-3.1-pro-preview"; PRO_LEVEL="medium"
 FILES=()
 need(){ [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --as-reviewer) AS_REVIEWER=1; shift ;;
+    --fallback)    FALLBACK=1; shift ;;
     --pro)         MODEL="$PRO_MODEL"; LEVEL="$PRO_LEVEL"; shift ;;
     --auto)        AUTO=1; shift ;;
     --min-conf)    need "$@"; MIN_CONF="$2"; shift 2 ;;
@@ -73,7 +83,7 @@ while [ $# -gt 0 ]; do
     --out)         need "$@"; OUT="$2"; shift 2 ;;
     --prompt)      need "$@"; PROMPT="$2"; shift 2 ;;
     --prompt-file) need "$@"; PROMPT_FILE="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,44p' "$0"; exit 0 ;;
     --)            shift; FILES+=("$@"); break ;;
     -*)            echo "unknown arg: $1" >&2; exit 2 ;;
     *)             FILES+=("$1"); shift ;;
@@ -93,11 +103,19 @@ done
 _RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
   _rv_rc=0; bash "$_RVDIR/reviewers.sh" enabled gemini >/dev/null 2>&1 || _rv_rc=$?
+  # Off in the set, but standing in for a codex that failed? Ask whether gemini
+  # is the fallback here. Same fail-open rule: only a clean 0 opens the door.
+  if [ "$_rv_rc" -eq 1 ] && [ -n "$FALLBACK" ]; then
+    if bash "$_RVDIR/reviewers.sh" fallback gemini >/dev/null 2>&1; then
+      _rv_rc=0
+      echo "note: gemini is reviewing as the FALLBACK for codex" >&2
+    fi
+  fi
   # ONLY 1 means "switched off". A helper that crashed, or one from a future
   # version with different exit codes, must not be able to silence a reviewer —
   # non-negotiable 4 fails open.
   if [ "$_rv_rc" -eq 1 ]; then
-    echo "skip: gemini is not in MEGAVIBE_REVIEWERS ($(bash "$_RVDIR/reviewers.sh" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'))" >&2
+    echo "skip: gemini is not in MEGAVIBE_REVIEWERS ($(bash "$_RVDIR/reviewers.sh" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'))${FALLBACK:+ — and not the fallback here}" >&2
     exit 4
   fi
 fi

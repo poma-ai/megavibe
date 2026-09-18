@@ -1,6 +1,6 @@
 ---
 name: prune-context
-description: Selectively prune redundant lines from .agent/FULL_CONTEXT.md via AI (Gemini/Codex). Use when FULL_CONTEXT.md has grown large (500+ lines). Distinct from /compact (Claude Code built-in, which summarizes the live conversation).
+description: Selectively prune redundant lines from .agent/FULL_CONTEXT.md via AI (Codex, then the Claude subagent, then Gemini). Use when FULL_CONTEXT.md has grown large (500+ lines). Distinct from /compact (Claude Code built-in, which summarizes the live conversation).
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Glob
 ---
@@ -9,11 +9,11 @@ allowed-tools: Read, Write, Edit, Glob
 
 > **Not to be confused with `/compact`.** `/compact` is Claude Code's built-in conversation summarizer. `/prune-context` removes redundant lines from the durable `.agent/FULL_CONTEXT.md` log. See the "Which compaction do I need?" table in `CLAUDE.md`.
 
-Use Gemini (or the standard fallback chain) to surgically remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
+Use Codex (or the standard fallback chain) to surgically remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
 
 ## Prerequisites
 
-- At least one backend must be available. Try in order: Gemini (`gemini-review.sh`) → Codex (`codex-review.sh`) → Claude subagent (last resort)
+- At least one backend must be available. Try in order: Codex (`codex-review.sh --model gpt-5.6-terra --effort low`) → Claude subagent → Gemini (`gemini-review.sh`)
 - FULL_CONTEXT.md should be large enough to warrant compaction (500+ lines)
 - The Claude subagent has a 200K token window — for very large logs, it may need to process in chunks
 
@@ -39,7 +39,7 @@ Use Gemini (or the standard fallback chain) to surgically remove redundant lines
 
 5. **Append a compaction note** at the end of FULL_CONTEXT.md:
    ```
-   --- Compacted on YYYY-MM-DD: removed N lines (Gemini-selected) ---
+   --- Compacted on YYYY-MM-DD: removed N lines (AI-selected) ---
    ```
 
 6. **Report results** to the user: how many lines before, how many removed, how many remain.
