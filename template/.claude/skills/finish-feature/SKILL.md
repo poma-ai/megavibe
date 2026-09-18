@@ -116,7 +116,7 @@ Write the comment from Step 4 — predicted versus actual size, predicted versus
 
 **If that PR is still open** → ask whether to merge it. Never merge without an explicit yes; it is outward-facing and it is other people's branch protection you would be spending. Check first, and **report instead of asking** in every one of these — the failure mode is offering a merge that should not have been offered, not declining one that was fine:
 
-- **No review.** Merging is shipping, and non-negotiable 4 requires review before shipping. `reviewDecision` must be `APPROVED`, or this session must have actually run a review round on this change. Branch protection catches this only in repos that have it, which is not most repos, so check it here rather than trusting `BLOCKED` to appear.
+- **No review.** Merging is shipping, and non-negotiable 4 requires a FULL-SET review of the final candidate before shipping — an intermediate, single-reviewer round does not qualify, and neither does a round run against an earlier state. Name which reviewers actually ran in the pre-merge report. `reviewDecision` must be `APPROVED`, or this session must have actually run that round on this change. Branch protection catches this only in repos that have it, which is not most repos, so check it here rather than trusting `BLOCKED` to appear.
 - `isDraft` is true → say so. `state` is `OPEN` for a draft, and `gh pr merge` fails on one.
 - `mergeable` is `CONFLICTING` → say so
 - `mergeable` is `UNKNOWN` → GitHub computes mergeability asynchronously, so this is the normal answer right after a push. Re-poll once, then report if it is still unknown. Never offer a merge on an unknown.

@@ -51,11 +51,11 @@ Iterating toward a fix is a normal round. The last one before merge is not. A ch
 
 ## Switching reviewers off
 
-`MEGAVIBE_REVIEWERS` is an allow-list of reviewer ids — `gemini`, `codex`, and `reviewer` (the Claude subagent, which is **always** in the resolved set and cannot be switched off: it is the floor non-negotiable 4 rests on, costs no key, and has no script to gate it through). Being in the set is about eligibility, not cadence: the two tiers above decide which rounds actually call it. Unset, empty or `auto` is the DEFAULT: `reviewer` + `codex` where `codex exec` works, `reviewer` + `gemini` where it does not, and all three if the probe cannot answer at all. `all` names every reviewer explicitly and makes Gemini a peer again. To pin the set:
+`MEGAVIBE_REVIEWERS` is an allow-list of reviewer ids — `gemini`, `codex`, and `reviewer` (the Claude subagent, which is **always** in the resolved set and cannot be switched off: it is the floor non-negotiable 4 rests on, costs no key, and has no script to gate it through). Being in the set is about eligibility, not cadence: the two tiers above decide which rounds actually call it. Unset, empty or `auto` is the DEFAULT: `reviewer` + `codex` where `codex exec` works, `reviewer` + `gemini` where it does not, and all three if the probe cannot answer at all. `all` names every reviewer explicitly and makes Gemini eligible as a peer — eligibility, not cadence: an ordinary intermediate round still runs one reviewer, and ship rounds run the eligible set in parallel. To pin the set:
 
 ```
 megavibe reviewers                          # what is on, where it was set, what is available
-megavibe reviewers set all                  # all three in parallel
+megavibe reviewers set all                  # all three eligible; ship rounds run them in parallel
 megavibe reviewers set reviewer codex       # never gemini, not even as codex's fallback
 megavibe reviewers set --project reviewer   # this project only (uncommitted)
 megavibe reviewers set auto                 # back to the default
@@ -84,7 +84,7 @@ Enforcement is in the scripts, not only here — under `--as-reviewer` they exit
 | Summarize text (any length/target) | Codex `--effort low` | Claude subagent | Gemini | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | Claude subagent | Literal, high-recall, structured markdown |
 | Research memo (multi-source, citations) | Codex (`--search` when freshness matters) | Gemini | Claude subagent | `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
-| **Review, normal round** (non-negotiable 4) | Codex `codex-review.sh --as-reviewer`, when switched on AND available | `reviewer` subagent — also whenever Codex is switched off, since exit 4 is not a review | `gemini-review.sh --as-reviewer --fallback --pro` when Codex failed today | Ranked findings with file:line, failing input, outcome, fix |
+| **Review, normal round** (non-negotiable 4) | Codex `codex-review.sh --as-reviewer`, when switched on AND available | `reviewer` subagent — whenever Codex is switched off, absent, OR its call failed | `gemini-review.sh --as-reviewer --fallback --pro` may JOIN the subagent when Codex failed today; it never takes the round alone | Ranked findings with file:line, failing input, outcome, fix |
 | **Review, ship round or anything critical** | EVERY reviewer both switched on and available, in parallel — `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered), Codex, and Gemini when pinned as a peer | whichever of them are available | Gemini `--fallback --pro` stands in for a Codex that FAILED (a Codex switched off is not a failure) | Same, plus a ship / do-not-ship verdict |
 | Fast second opinion / alternative plan | Codex | Claude subagent | Gemini | Patch plan + test plan |
 | Quick fact check / web search | Codex | Gemini | Claude subagent | Claims with sources |

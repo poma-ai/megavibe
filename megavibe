@@ -726,7 +726,7 @@ if [ "${1:-}" = "reviewers" ]; then
       echo "  and when it does, always with --pro. Measured over one day of paired"
       echo "  reviews, a Gemini review shipped real blockers."
       echo ""
-      echo "  Change it:  megavibe reviewers set all                  (all three in parallel)"
+      echo "  Change it:  megavibe reviewers set all                  (all three eligible as peers)"
       echo "              megavibe reviewers set reviewer codex       (never gemini, not even as fallback)"
       echo "              megavibe reviewers set --project reviewer   (this project only)"
       echo "              megavibe reviewers set auto                 (back to the default)"
@@ -774,8 +774,9 @@ if [ "${1:-}" = "reviewers" ]; then
         all)
           rv_write "$SCOPE_FILE" "all"
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"all\" in $SCOPE_FILE  (${SCOPE_NAME})"
-          echo "    All three review every change in parallel, Gemini included as a peer"
-          echo "    rather than as Codex's fallback."
+          echo "    All three are eligible, Gemini as a peer rather than Codex's fallback."
+          echo "    Ship rounds and critical work run them in parallel; an ordinary"
+          echo "    intermediate round still runs one reviewer."
           echo "    Open sessions keep the old set until they restart."
           ;;
         *)
@@ -792,7 +793,7 @@ if [ "${1:-}" = "reviewers" ]; then
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"$PICKED\" in $SCOPE_FILE  (${SCOPE_NAME})"
           case " $PICKED " in
             *" reviewer "*) ;;
-            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent sits on top of this and cannot be switched off — it is the floor non-negotiable 4 rests on. It joins ship rounds and critical work, and reviews alone when no external backend is available." ;;
+            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent sits on top of this and cannot be switched off — it is the floor non-negotiable 4 rests on. It joins ship rounds and critical work, and takes the normal round alone whenever Codex is switched off, absent, or its call fails." ;;
           esac
           echo "    Open sessions keep the old set until they restart."
           ;;
