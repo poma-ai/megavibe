@@ -95,9 +95,37 @@ RAW_SHAREABLE=0
 # is a subshell, so an assignment made in there never reaches the caller. Same
 # trap _raw_value documents. This asks the question directly instead.
 _is_default_set() {
-  _raw_value
+  _effective_raw
   [ "$RAW_AMBIGUOUS" = 0 ] || return 1
   [ "$(_classify "$RAW_VALUE")" = "default" ]
+}
+
+# _raw_value, but with a committed project settings.json that _guard_shareable
+# would REJECT already discarded — so policy questions see the same
+# configuration that membership does.
+#
+# Without this the two disagreed: `list` correctly ignored a committed
+# `"reviewer"` pin and returned the user's default set, while `fallback gemini`
+# still read that rejected pin, called it an explicit list, and answered "no".
+# A cloned repo could not remove a reviewer but could still switch off the
+# fallback that covers one — the same hole one level down.
+#
+# How it tells "rejected" from "honoured" without duplicating the set builder:
+# a committed file that ADDS changes the resolved set away from the baseline,
+# and one that is rejected leaves the resolved set EQUAL to the baseline. So an
+# equal result means the committed value is not what is in force.
+_effective_raw() {
+  _raw_value
+  [ "$RAW_AMBIGUOUS" = 0 ] || return 0
+  [ "$RAW_SHAREABLE" = 1 ] || return 0
+
+  local full base
+  full=$(resolve 2>/dev/null)
+  SKIP_SHAREABLE=1; base=$(resolve 2>/dev/null); SKIP_SHAREABLE=0
+  if [ "$full" = "$base" ]; then
+    SKIP_SHAREABLE=1; _raw_value; SKIP_SHAREABLE=0
+  fi
+  return 0
 }
 
 # ONE normalization, used by everything. `list` and `fallback` each had their
@@ -133,21 +161,44 @@ _classify() {
 # leaves its children alive.
 _codex_ok() {
   command -v codex >/dev/null 2>&1 || return 1
-  command -v perl >/dev/null 2>&1 || { codex exec --help >/dev/null 2>&1; return $?; }
-  perl -e '
-    my $pid = fork(); exit(2) unless defined $pid;
-    if ($pid == 0) { setpgrp(0,0); open(STDOUT,">","/dev/null"); open(STDERR,">","/dev/null");
-                     exec(@ARGV); exit(127); }
-    setpgrp($pid,$pid);
-    $SIG{ALRM} = sub { kill("TERM",-$pid); select(undef,undef,undef,0.5);
-                       kill("KILL",-$pid); exit(2) };
-    alarm 5; waitpid($pid,0); my $st = $?; alarm 0;
-    exit($st == 0 ? 0 : 1);
-  ' codex exec --help
-  case $? in
+
+  local _rc=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 codex exec --help >/dev/null 2>&1 || _rc=$?
+    [ "$_rc" = 124 ] && return 2
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 5 codex exec --help >/dev/null 2>&1 || _rc=$?
+    [ "$_rc" = 124 ] && return 2
+  elif command -v perl >/dev/null 2>&1; then
+    # Signals are forwarded as well as the alarm handled. Without the INT/TERM/
+    # HUP handlers, cancelling the caller left the probe's codex child alive in
+    # the process group this deliberately put it in — the exact orphan
+    # process-discipline.md forbids, and the reason codex-review.sh carries the
+    # same three handlers.
+    perl -e '
+      my $pid = fork(); exit(2) unless defined $pid;
+      if ($pid == 0) { setpgrp(0,0); open(STDOUT,">","/dev/null"); open(STDERR,">","/dev/null");
+                       exec(@ARGV); exit(127); }
+      setpgrp($pid,$pid);
+      my $reap = sub { my ($c) = @_; kill("TERM",-$pid); select(undef,undef,undef,0.5);
+                       kill("KILL",-$pid); exit($c) };
+      $SIG{ALRM} = sub { $reap->(2) };
+      $SIG{INT} = $SIG{TERM} = $SIG{HUP} = sub { $reap->(2) };
+      alarm 5; waitpid($pid,0); my $st = $?; alarm 0;
+      exit($st == 0 ? 0 : 1);
+    ' codex exec --help || _rc=$?
+  else
+    # Nothing here can bound the call. Running it unbounded would put an
+    # untimed probe in front of every review — the defect this whole function
+    # exists to remove — so the answer is "unknown", which costs one extra
+    # reviewer and never a hang.
+    return 2
+  fi
+
+  case "$_rc" in
     0) return 0 ;;   # works
     1) return 1 ;;   # answered, but not usable
-    *) return 2 ;;   # timed out or could not be run — unknown
+    *) return 2 ;;   # timed out, or could not be run — unknown
   esac
 }
 
@@ -364,15 +415,20 @@ case "${1:-list}" in
       *" $want "*) ;;
       *) echo "reviewers.sh: not a known reviewer: $2 (known: $KNOWN)" >&2; exit 2 ;;
     esac
-    # Only gemini, only in the default set, and only when codex holds the
-    # place gemini would otherwise have. A pin that names the set is exact:
-    # "reviewer codex" means gemini never, and "reviewer gemini" already has
-    # gemini as a peer, so neither has a fallback.
+    # Only gemini, and only when the effective configuration is the DEFAULT
+    # set. A pin that names the set is exact: "reviewer codex" means gemini
+    # never, not even standing in.
+    #
+    # Deliberately NO availability probe here. It used to re-run `_default_set`
+    # and refuse when that resolution already contained gemini — which made the
+    # answer depend on a second probe of codex, so a probe that succeeded for
+    # `enabled` and then timed out for `fallback` turned "uncertain" into
+    # "switched off" and exited 4 on the last reviewer standing. Where gemini
+    # is already a peer, permitting the fallback changes nothing: it is allowed
+    # to review either way. So config alone decides, and uncertainty cannot
+    # subtract.
     [ "$want" = "gemini" ] || exit 1
     _is_default_set || exit 1
-    active=$(_default_set) || exit 1
-    printf '%s\n' "$active" | grep -qxF -- "codex" || exit 1
-    printf '%s\n' "$active" | grep -qxF -- "gemini" && exit 1
     exit 0
     ;;
   source)
