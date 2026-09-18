@@ -39,9 +39,13 @@ Nothing was invented by any of them; every specific claim in all four traced bac
 
 Every round gets **one** reviewer — Codex, or the `reviewer` subagent where Codex is unavailable. The round that gates the ship, and anything critical, gets **both in parallel**. Critical means credentials or security, data loss or destructive paths, anything public or user-facing, the protocol and templates themselves, and anything the user names.
 
-The reason is cost asymmetry, measured. Codex draws on a separate plan; the `reviewer` subagent draws ~180-200K tokens of the SAME subscription the session is spending — in one session here, two invocations cost 386K tokens. Running both on every intermediate round spends the session's own context budget to re-check work that is still moving, and a defect introduced in round one is caught by the ship round anyway, because the ship round is the gate. Running only Codex on the last round, on the other hand, ships on a single unreproduced opinion.
+The reason is cost asymmetry, measured. Codex draws on a separate plan; the `reviewer` subagent draws ~180-200K tokens of the SAME subscription the session is spending — in one session here, two invocations cost 386K tokens. Running both on every intermediate round spends the user's Claude subscription quota (a different resource from the session's context window, and the one that runs out) to re-check work that is still moving. Running only Codex on the last round ships on a single unreproduced opinion.
 
-Iterating toward a fix is a normal round. The last one before merge is not. A change that goes through exactly one review round is having its ship round, so it gets both.
+The honest cost of this trade: an intermediate reviewer's mistake can shape the implementation and the framing of the next review, and the ship round may miss it again — especially if it is shown only the latest fixes rather than the whole candidate. That is why the ship round reviews the **final candidate in full**, not the delta since the last round. "Round one's defect gets caught later" is the expectation, not a guarantee.
+
+Iterating toward a fix is a normal round. The last one before merge is not. A change that goes through exactly one review round is having its ship round, so it gets the full set.
+
+**Decide the tier before the round, not after.** Nothing ships on an intermediate review: before merging, deploying, publishing or calling an important result done, the final candidate must have had a full-set review. If a round you started as "normal" turns out to be the last, run the missing reviewers on the final state first. Otherwise a change can be reviewed cheaply forever and then merged on the strength of a round that was never the gate.
 
 **The floor is one independent reviewer, never zero.** On a machine with only a Claude subscription, that is the subagent on every round, because there is nothing else — the tiering removes the *second* reader on intermediate rounds, never the only one.
 
@@ -80,8 +84,8 @@ Enforcement is in the scripts, not only here — under `--as-reviewer` they exit
 | Summarize text (any length/target) | Codex `--effort low` | Claude subagent | Gemini | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | Claude subagent | Literal, high-recall, structured markdown |
 | Research memo (multi-source, citations) | Codex (`--search` when freshness matters) | Gemini | Claude subagent | `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
-| **Review, normal round** (non-negotiable 4) | Codex `codex-review.sh --as-reviewer` | `reviewer` subagent, where Codex is unavailable | `gemini-review.sh --as-reviewer --fallback --pro` when Codex failed today | Ranked findings with file:line, failing input, outcome, fix |
-| **Review, ship round or anything critical** | `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Codex, in parallel | whichever of the two is available | Gemini `--fallback --pro` stands in for Codex, named as such in the synthesis | Same, plus a ship / do-not-ship verdict |
+| **Review, normal round** (non-negotiable 4) | Codex `codex-review.sh --as-reviewer`, when switched on AND available | `reviewer` subagent — also whenever Codex is switched off, since exit 4 is not a review | `gemini-review.sh --as-reviewer --fallback --pro` when Codex failed today | Ranked findings with file:line, failing input, outcome, fix |
+| **Review, ship round or anything critical** | EVERY reviewer both switched on and available, in parallel — `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered), Codex, and Gemini when pinned as a peer | whichever of them are available | Gemini `--fallback --pro` stands in for a Codex that FAILED (a Codex switched off is not a failure) | Same, plus a ship / do-not-ship verdict |
 | Fast second opinion / alternative plan | Codex | Claude subagent | Gemini | Patch plan + test plan |
 | Quick fact check / web search | Codex | Gemini | Claude subagent | Claims with sources |
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | Screenshots/HTML → `.agent/ASSETS/` |

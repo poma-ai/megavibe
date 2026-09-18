@@ -6,7 +6,7 @@ allowed-tools: Bash, Read, Write, Agent
 
 # Doc-review (periodic doc hygiene)
 
-Send the project's full markdown documentation surface to every switched-on reviewer in parallel — the Claude `reviewer` subagent always, plus Codex unless the user has left it out of the `MEGAVIBE_REVIEWERS` allow-list or it is unavailable — for an independent challenge. A doc set is user-facing, so this is a **critical** review in the sense of non-negotiable 4: it always runs the full set, never the single-reviewer normal round. Synthesize the reviews into a single findings report. The user decides which findings to act on.
+Send the project's full markdown documentation surface to every reviewer that is both switched on and available, in parallel — the Claude `reviewer` subagent always, plus Codex unless the user has left it out of the `MEGAVIBE_REVIEWERS` allow-list or it is unavailable, plus Gemini where the user pinned it as a peer — for an independent challenge. A doc set is user-facing, so this is a **critical** review in the sense of non-negotiable 4: it always runs the full set, never the single-reviewer normal round. Synthesize the reviews into a single findings report. The user decides which findings to act on.
 
 ## When to use
 

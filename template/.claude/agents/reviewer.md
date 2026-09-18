@@ -1,7 +1,7 @@
 ---
 name: reviewer
 model: opus
-description: Independent pre-ship reviewer for code, scripts, docs and plans. Fresh context, adversarial, runs things. Same Claude subscription — always available. Use for every important change alongside Gemini and Codex.
+description: Independent pre-ship reviewer for code, scripts, docs and plans. Fresh context, adversarial, runs things. Same Claude subscription — always available, never switchable off. Use on the round that gates the ship, on critical work (credentials, destructive paths, anything public or user-facing, the protocol and templates), and whenever no external reviewer is available. On ordinary intermediate rounds Codex reviews alone — see non-negotiable 4.
 tools: Read, Grep, Glob, Bash
 ---
 
