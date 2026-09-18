@@ -37,6 +37,7 @@ SID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)
 if [ -d ".agent/LOGS" ]; then
   find .agent/LOGS -maxdepth 1 -name 'read-stub.*.txt' -mtime +1 -delete 2>/dev/null || true
   find .agent/LOGS -maxdepth 1 -name 'read-cache.*.jsonl' -mtime +1 -delete 2>/dev/null || true
+  find .agent/LOGS -maxdepth 1 -name '.bg-tasks.*.jsonl' -mtime +1 -delete 2>/dev/null || true
   find .agent/LOGS -maxdepth 1 -name '.read-delta-shape.*' -mtime +1 -delete 2>/dev/null || true
 fi
 

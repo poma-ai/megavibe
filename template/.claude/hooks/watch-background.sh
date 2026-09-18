@@ -7,34 +7,49 @@ set -u
 #
 # The harness notifies when a background task COMPLETES. A task that hangs, or
 # restarts itself in a loop, never completes, so the notification never comes
-# and silence looks exactly like progress. Sessions have waited on that silence
-# for an hour. The fix is a heartbeat: something that wakes the main thread on
-# a clock, with fresh evidence, whether or not the task has finished.
+# and silence looks exactly like progress. Sessions have waited an hour on
+# that silence. The fix is a heartbeat: something that wakes the main thread
+# on a clock, with fresh evidence, whether or not the task has finished.
 #
-# Three handlers, one script:
-#   PostToolUse(Bash, run_in_background) — record the task; tell Claude to arm
-#       a Monitor heartbeat on its output file now, with the loop to paste.
-#   PostToolUse(Agent, async) — same for a subagent, on its transcript symlink.
-#   PostToolUse(Monitor) — a Monitor whose command names a recorded task's id
-#       or output path covers that task; mark it.
-#   Stop — for every recorded task older than CHECK_SECS with no completion
-#       notification in the transcript, and no heartbeat covering it, block the
-#       stop ONCE with "read the output file now and judge". At most once per
-#       CHECK_SECS per task, and never when stop_hook_active is set (that stop
-#       is the one this hook already caused). A Stop hook cannot wake Claude
-#       later; it can only refuse to let the turn end on "waiting". The
-#       heartbeat is the mechanism, this is the net under it.
+# Two handlers, one script:
+#   PostToolUse(Bash run_in_background | async Agent) — record when the task
+#       started, and tell Claude to arm a Monitor heartbeat on its output
+#       file now, with the exact loop to paste.
+#   Stop — the harness hands every Stop hook `background_tasks`: the live
+#       registry, each entry {id, type, status, description, command}. For
+#       every RUNNING task older than CHECK_SECS with no other running task
+#       whose command names it (that is what a heartbeat looks like from
+#       here), block the stop once with "read the output now and judge". Once
+#       per interval, all overdue tasks in one reason, and never when
+#       stop_hook_active is set — that stop is the one this hook caused.
+#       A Stop hook cannot wake Claude later; it can only refuse to let a
+#       turn end on "waiting". The heartbeat is the mechanism, this is the
+#       net under it.
 #
-# State: .agent/LOGS/.bg-tasks.${SID}.jsonl, one row per task:
-#   {id, path, kind, started, covered, nudged}
-# Rewritten on Stop with completed tasks dropped. Per session, so two sessions
-# in one checkout never nudge each other about the other's tasks.
+# Measured payload shapes (2.1.27x), because the text Claude sees is composed
+# by the harness and never reaches a hook:
+#   Bash bg   tool_response = {backgroundTaskId, stdout:"", stderr:"", ...}
+#             — no path. The output file exists at launch under
+#             <tmp>/claude-<uid>/<cwd slug>/<launch id>/tasks/<id>.output.
+#   Agent     tool_response = {isAsync:true, status:"async_launched",
+#             agentId, outputFile, ...}; a synchronous run has no agentId.
+#   Monitor   registry entry type "shell", command = the loop.
+#   Stop      background_tasks = [{id, type: "shell"|"subagent", status,
+#             description, command}], only tasks still known to the harness.
 #
-# Env: MEGAVIBE_BG_CHECK_SECS (default 300) — the interval, both for the
-# heartbeat Claude is told to arm and for how long a task may go unchecked
-# before a Stop is blocked. MEGAVIBE_BG_WATCH=0 switches the hook off.
+# State: .agent/LOGS/.bg-tasks.${SID}.jsonl — {id, path, kind, started,
+# nudged} per task, appended at start, rewritten at Stop to the registry's
+# live set. The registry says what is alive; this file only remembers when
+# each task began and when it was last nudged. Per session, so two sessions
+# in one checkout never nudge each other. PostToolUse only appends and Stop
+# never overlaps a tool call, so no lock is needed.
 #
-# Triggered by: PostToolUse (Bash|Agent|Monitor), Stop. Exit 0 always.
+# Env: MEGAVIBE_BG_CHECK_SECS sets the interval, clamped to 60..600 — a
+# task may go at most that long unchecked, and the heartbeat Claude is told
+# to arm beats 60 s under it so a heartbeating task is never also nudged.
+# MEGAVIBE_BG_WATCH=0 switches the hook off.
+#
+# Triggered by: PostToolUse (Bash|Agent), Stop. Exit 0 always.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
@@ -43,8 +58,7 @@ command -v jq &>/dev/null || exit 0
 CHECK_SECS="${MEGAVIBE_BG_CHECK_SECS:-300}"
 case "$CHECK_SECS" in ''|*[!0-9]*) CHECK_SECS=300 ;; esac
 [ "$CHECK_SECS" -ge 60 ] || CHECK_SECS=60
-# The heartbeat sleeps a little under the check interval so a task that is
-# heartbeating is never also nudged for being unchecked.
+[ "$CHECK_SECS" -le 600 ] || CHECK_SECS=600
 BEAT_SECS=$((CHECK_SECS - 60))
 [ "$BEAT_SECS" -ge 30 ] || BEAT_SECS=30
 
@@ -55,22 +69,21 @@ INPUT=$(cat 2>/dev/null || echo "")
   IFS= read -r -d "" EVENT
   IFS= read -r -d "" TOOL
   IFS= read -r -d "" SID
-  IFS= read -r -d "" TRANSCRIPT
   IFS= read -r -d "" STOP_ACTIVE
 } < <(printf '%s' "$INPUT" | jq -j '
   [ (.hook_event_name // ""), (.tool_name // ""), (.session_id // "default"),
-    (.transcript_path // ""), (.stop_hook_active // false | tostring)
+    (.stop_hook_active // false | tostring)
   ] | map(. + "\u0000") | join("")' 2>/dev/null) || true
-EVENT="${EVENT:-}"; TOOL="${TOOL:-}"; TRANSCRIPT="${TRANSCRIPT:-}"; STOP_ACTIVE="${STOP_ACTIVE:-false}"
+EVENT="${EVENT:-}"; TOOL="${TOOL:-}"; STOP_ACTIVE="${STOP_ACTIVE:-false}"
 
-SID=$(printf '%s' "${SID:-default}" | tr -cd 'A-Za-z0-9-' | cut -c1-12)
+SID=$(printf '%s' "${SID:-default}" | tr -cd 'A-Za-z0-9-' | cut -c1-64)
 SID="${SID:-default}"
 mkdir -p ".agent/LOGS" 2>/dev/null || true
 STATE=".agent/LOGS/.bg-tasks.${SID}.jsonl"
 NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
 [ "$NOW" -gt 0 ] || exit 0
 
-task_file() {  # id -> path of the harness's output file for it, or ""
+task_file() {  # id -> the harness's output file for it, or ""
   local uid f
   uid=$(id -u 2>/dev/null || echo 0)
   for f in "${TMPDIR:-/tmp}"/claude-"$uid"/*/*/tasks/"$1".output \
@@ -81,114 +94,108 @@ task_file() {  # id -> path of the harness's output file for it, or ""
   return 0
 }
 
-record() {  # id path kind
-  jq -nc --arg id "$1" --arg p "$2" --arg k "$3" --argjson t "$NOW" \
-    '{id:$id, path:$p, kind:$k, started:$t, covered:false, nudged:0}' >> "$STATE" 2>/dev/null || true
-}
-
 # ---------------------------------------------------------------- PostToolUse
 if [ "$EVENT" = "PostToolUse" ]; then
-  RESP=$(printf '%s' "$INPUT" | jq -r '.tool_response | tostring' 2>/dev/null || echo "")
-
   case "$TOOL" in
     Bash)
       BG=$(printf '%s' "$INPUT" | jq -r '.tool_input.run_in_background // false' 2>/dev/null || echo false)
       [ "$BG" = "true" ] || exit 0
       ID=$(printf '%s' "$INPUT" | jq -r '.tool_response.backgroundTaskId // ""' 2>/dev/null || echo "")
-      [ -n "$ID" ] || ID=$(printf '%s' "$RESP" | sed -n 's/.*background with ID: \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
+      [ -n "$ID" ] || ID=$(printf '%s' "$INPUT" | jq -r '.tool_response | tostring' 2>/dev/null \
+                          | sed -n 's/.*background with ID: \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
       [ -n "$ID" ] || exit 0
-      # The "Output is being written to: <path>" sentence Claude sees is
-      # composed by the harness; the hook payload carries only the id and an
-      # empty stdout (measured). The file already exists at launch, under
-      # <tmp>/claude-<uid>/<cwd slug>/<launch id>/tasks/<id>.output, so find
-      # it by id. One glob per background start, not per tool call.
-      OUT=$(printf '%s' "$RESP" | sed -n 's/.*written to: \([^ ]*\.output\).*/\1/p' | head -1)
-      [ -n "$OUT" ] || OUT=$(task_file "$ID")
-      [ -n "$OUT" ] || OUT="(the output file named in the tool result)"
-      record "$ID" "$OUT" "bash"
+      OUT=$(task_file "$ID")
+      KIND=bash
       DESC=$(printf '%s' "$INPUT" | jq -r '.tool_input.description // "background task"' 2>/dev/null | cut -c1-80)
-      LOOP="f='$OUT'; last=0; while sleep $BEAT_SECS; do s=\$(wc -c <\"\$f\" 2>/dev/null | tr -d ' ' || echo 0); printf 'bg $ID: %s bytes (+%s) | %s\\n' \"\$s\" \"\$((s-last))\" \"\$(tail -c 200 \"\$f\" 2>/dev/null | tr '\\n' ' ')\"; last=\$s; done"
-      MSG="Background task $ID started ($DESC). Output: $OUT. Do NOT end your turn waiting for it: a task that hangs or crashloops never sends a completion notification, and silence looks like progress. Arm a heartbeat NOW with the Monitor tool (description: 'heartbeat $ID', timeout_ms = the task's budget, at most 3600000), command:
-$LOOP
-Each beat wakes you with the byte delta and the tail: +0 for several beats is a hang, a growing file with repeating lines is a crashloop — read the output file and act on either. When the completion notification arrives, TaskStop the heartbeat. If the task is expected to finish inside $BEAT_SECS seconds, say so in one line instead of arming one."
       ;;
     Agent)
-      # An async spawn reports "agentId: <id>" and "output_file: <path>"; a
-      # synchronous one returns the result inline and needs no heartbeat.
-      ID=$(printf '%s' "$RESP" | sed -n 's/.*agentId: \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
+      ID=$(printf '%s' "$INPUT" | jq -r 'select(.tool_response | type == "object")
+             | select(.tool_response.status == "async_launched" or .tool_response.isAsync == true)
+             | .tool_response.agentId // ""' 2>/dev/null || echo "")
       [ -n "$ID" ] || exit 0
-      OUT=$(printf '%s' "$RESP" | sed -n 's/.*output_file: \([^ ]*\.output\).*/\1/p' | head -1)
-      [ -n "$OUT" ] || OUT="(see the tool result)"
-      record "$ID" "$OUT" "agent"
-      LOOP="f='$OUT'; last=0; while sleep $BEAT_SECS; do n=\$(wc -l <\"\$f\" 2>/dev/null | tr -d ' ' || echo 0); t=\$(tail -1 \"\$f\" 2>/dev/null | jq -r '[.message.content[]? | select(.type==\"tool_use\") | .name] | join(\",\")' 2>/dev/null); printf 'agent $ID: %s entries (+%s) | last tools: %s\\n' \"\$n\" \"\$((n-last))\" \"\${t:-none}\"; last=\$n; done"
-      MSG="Subagent $ID started. Do NOT end your turn waiting for it: a subagent that loops or stalls never completes, and silence looks like progress. Arm a heartbeat NOW with the Monitor tool (description: 'heartbeat $ID', timeout_ms = its budget, at most 3600000), command:
-$LOOP
-Never Read that transcript whole — it is the subagent's full JSONL. +0 entries for several beats is a stall; the same tool names repeating for many beats is a loop — SendMessage the agent or TaskStop it. When its completion notification arrives, TaskStop the heartbeat."
-      ;;
-    Monitor)
-      # Mark every recorded task whose id or output path the Monitor names.
-      [ -f "$STATE" ] || exit 0
-      CMD=$(printf '%s' "$INPUT" | jq -r '(.tool_input.command // "") + " " + (.tool_input.description // "")' 2>/dev/null || echo "")
-      [ -n "$CMD" ] || exit 0
-      TMP="$STATE.tmp.$$"
-      jq -c --arg cmd "$CMD" 'select(type=="object") | (.id // "") as $id | (.path // "") as $p
-        | if ($id != "" and ($cmd | contains($id))) or ($p != "" and ($cmd | contains($p))) then .covered = true else . end' "$STATE" > "$TMP" 2>/dev/null && mv -f "$TMP" "$STATE" 2>/dev/null
-      rm -f "$TMP" 2>/dev/null
-      exit 0
+      OUT=$(printf '%s' "$INPUT" | jq -r '.tool_response.outputFile // ""' 2>/dev/null || echo "")
+      [ -n "$OUT" ] && [ -e "$OUT" ] || OUT=$(task_file "$ID")
+      KIND=agent
+      DESC=$(printf '%s' "$INPUT" | jq -r '.tool_response.description // .tool_input.description // "subagent"' 2>/dev/null | cut -c1-80)
       ;;
     *) exit 0 ;;
   esac
 
+  jq -nc --arg id "$ID" --arg p "$OUT" --arg k "$KIND" --argjson t "$NOW" \
+    '{id:$id, path:$p, kind:$k, started:$t, nudged:0}' >> "$STATE" 2>/dev/null || true
+
+  # The loop is built by jq so the path is shell-quoted whatever it contains.
+  # No path resolved → no loop: a loop on a placeholder reports 0 bytes
+  # forever, which reads as a hang and gets a healthy task killed.
+  if [ -n "$OUT" ]; then
+    if [ "$KIND" = "bash" ]; then
+      LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
+        "f=" + ($p|@sh) + "; last=0; while sleep " + ($s|tostring) + "; do s=$(wc -c <\"$f\" 2>/dev/null | tr -d \" \" || echo 0); printf '"'"'bg " + $id + ": %s bytes (+%s) | %s\\n'"'"' \"$s\" \"$((s-last))\" \"$(tail -c 200 \"$f\" 2>/dev/null | tr '"'"'\\n'"'"' '"'"' '"'"')\"; last=$s; done"')
+      READ="Each beat is the byte delta and the tail. Judge it against what the task IS: a build or test run at +0 for two beats is hung; a server idling at +0 is healthy; a file that keeps growing with the same lines repeating is a crashloop. Read the output file before acting, then act — kill it, fix it, or say it is fine."
+    else
+      LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
+        "f=" + ($p|@sh) + "; last=0; while sleep " + ($s|tostring) + "; do n=$(wc -l <\"$f\" 2>/dev/null | tr -d \" \" || echo 0); t=$(tail -1 \"$f\" 2>/dev/null | jq -r '"'"'[.message.content[]? | select(.type==\"tool_use\") | .name] | join(\",\")'"'"' 2>/dev/null); printf '"'"'agent " + $id + ": %s entries (+%s) | last tools: %s\\n'"'"' \"$n\" \"$((n-last))\" \"${t:-none}\"; last=$n; done"')
+      READ="Each beat is the transcript's entry delta and the last tools it called. +0 entries for two beats is a stall; the same tool names for many beats is a loop — SendMessage the agent or TaskStop it. Never Read that .output file whole: it is the subagent's full JSONL transcript."
+    fi
+    ARM="Arm a heartbeat NOW with the Monitor tool (if Monitor is not in your tool set, ToolSearch \"select:Monitor\" first). description: \"heartbeat $ID\"; timeout_ms: the task's budget, at most 3600000; command:
+$LOOP
+$READ When the task's completion notification arrives, TaskStop the heartbeat. If Monitor is unavailable, run the same loop with a fixed beat count through Bash run_in_background instead — its completion is then the wake-up."
+  else
+    ARM="Arm a heartbeat NOW with the Monitor tool on the output file named in the tool result: every ${BEAT_SECS}s print its byte count, the delta since the last beat, and its tail. Judge each beat against what the task is (a build at +0 is hung, an idle server at +0 is fine, repeating lines are a crashloop), read the file before acting, and TaskStop the heartbeat when the completion notification arrives."
+  fi
+  MSG="Background $KIND task $ID started ($DESC)${OUT:+. Output: $OUT}. Do NOT end your turn waiting for it: a task that hangs or crashloops never sends a completion notification, and silence looks like progress. $ARM"
   jq -nc --arg m "$MSG" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
   exit 0
 fi
 
 # ----------------------------------------------------------------------- Stop
 [ "$EVENT" = "Stop" ] || exit 0
-[ -f "$STATE" ] || exit 0
-[ -s "$STATE" ] || exit 0
 # This stop was caused by a block from a Stop hook (ours or another). Never
 # block again inside that cycle, or the turn can never end.
 [ "$STOP_ACTIVE" = "true" ] && exit 0
 
-# Drop tasks whose completion notification is in the transcript. A grep per
-# task, not a parse: the transcript can be tens of MB.
-LIVE=""
-while IFS= read -r row; do
-  [ -n "$row" ] || continue
-  id=$(printf '%s' "$row" | jq -r '.id // ""' 2>/dev/null); [ -n "$id" ] || continue
-  # A row whose notification can never be seen (transcript moved, session
-  # resumed under a new id) would otherwise nudge every interval forever.
-  started=$(printf '%s' "$row" | jq -r '.started // 0' 2>/dev/null | tr -cd '0-9'); started="${started:-0}"
-  [ $((NOW - started)) -lt 86400 ] || continue
-  if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] && grep -qF "<task-id>${id}</task-id>" "$TRANSCRIPT" 2>/dev/null; then
-    continue
-  fi
-  LIVE="${LIVE}${row}
-"
-done < "$STATE"
-printf '%s' "$LIVE" > "$STATE" 2>/dev/null || true
-[ -n "$LIVE" ] || exit 0
+REG=$(printf '%s' "$INPUT" | jq -c '.background_tasks // [] | map(select(type=="object"))' 2>/dev/null || echo "[]")
+[ "$REG" != "[]" ] || { : > "$STATE" 2>/dev/null; exit 0; }
 
-# The oldest unchecked, uncovered task older than the interval.
-DUE=$(printf '%s' "$LIVE" | jq -c --argjson now "$NOW" --argjson secs "$CHECK_SECS" \
-  'select(type=="object") | select(.covered != true) | select(($now - .started) >= $secs) | select(($now - (.nudged // 0)) >= $secs)' 2>/dev/null | head -1)
-[ -n "$DUE" ] || exit 0
+# Join the registry's running tasks with what this session recorded. A task
+# the registry no longer lists is over; a running task this file never saw
+# (started before the hook was installed, or in a session that shares the
+# checkout) is not ours to judge. A running task is COVERED when another
+# running task's command names its id or its output path — that is what an
+# armed heartbeat looks like from here, and it stops being true the moment
+# the heartbeat exits, times out or is stopped.
+STATE_JSON=$(jq -sc 'map(select(type=="object"))' "$STATE" 2>/dev/null || echo "[]")
+RESULT=$(jq -nc --argjson reg "$REG" --argjson st "$STATE_JSON" --argjson now "$NOW" --argjson secs "$CHECK_SECS" '
+  ($reg | map(select(.status == "running"))) as $live
+  | ($live | map(.id)) as $ids
+  | ($st | map(select(.id as $i | $ids | index($i)))
+        | group_by(.id) | map(max_by(.nudged))) as $rows
+  | ($live | map(.command // "")) as $cmds
+  | ($rows | map(
+       . as $r
+       | .covered = ([$cmds[] | select(. != "" and (contains($r.id) or ($r.path != "" and contains($r.path))))] | length > 0)
+       | .age = ($now - .started)
+       | .due = ((.covered | not) and .age >= $secs and ($now - .nudged) >= $secs))) as $rows
+  | {rows: $rows, due: ($rows | map(select(.due)))}' 2>/dev/null) || exit 0
+[ -n "$RESULT" ] || exit 0
 
-ID=$(printf '%s' "$DUE" | jq -r '.id'); OUT=$(printf '%s' "$DUE" | jq -r '.path'); KIND=$(printf '%s' "$DUE" | jq -r '.kind')
-AGE=$(( (NOW - $(printf '%s' "$DUE" | jq -r '.started')) / 60 ))
+DUE=$(printf '%s' "$RESULT" | jq -c '.due' 2>/dev/null || echo "[]")
+if [ "$DUE" = "[]" ]; then
+  printf '%s' "$RESULT" | jq -c '.rows[] | {id, path, kind, started, nudged}' > "$STATE.tmp.$$" 2>/dev/null \
+    && mv -f "$STATE.tmp.$$" "$STATE" 2>/dev/null
+  rm -f "$STATE.tmp.$$" 2>/dev/null
+  exit 0
+fi
 
 # Record the nudge before emitting it, so a crash between the two costs a
 # nudge rather than repeating one.
-TMP="$STATE.tmp.$$"
-printf '%s' "$LIVE" | jq -c --arg id "$ID" --argjson now "$NOW" 'if .id == $id then .nudged = $now else . end' > "$TMP" 2>/dev/null && mv -f "$TMP" "$STATE" 2>/dev/null
-rm -f "$TMP" 2>/dev/null
+printf '%s' "$RESULT" | jq -c --argjson now "$NOW" '.rows[] | if .due then .nudged = $now else . end | {id, path, kind, started, nudged}' > "$STATE.tmp.$$" 2>/dev/null \
+  && mv -f "$STATE.tmp.$$" "$STATE" 2>/dev/null
+rm -f "$STATE.tmp.$$" 2>/dev/null
 
-if [ "$KIND" = "agent" ]; then
-  HOW="Check its progress without reading the transcript whole: \`wc -l\` and the last entry's tool names (tail -1 | jq). No growth is a stall, the same tools repeating is a loop: SendMessage or TaskStop it."
-else
-  HOW="Read the tail of that file now (tail -c 2000). No growth is a hang; repeating restart, traceback or retry lines are a crashloop: kill it or fix it, do not keep waiting."
-fi
-REASON="Background $KIND task $ID has run for ${AGE} min with no completion notification and no heartbeat watching it (output: $OUT). $HOW Then arm a Monitor heartbeat on it (every ${BEAT_SECS}s, byte or entry delta plus tail) so the next check does not depend on you remembering, and report in one line. Silence is not success."
+LIST=$(printf '%s' "$DUE" | jq -r '.[] | "- \(.kind) task \(.id), \(.age / 60 | floor) min, no heartbeat" + (if .path != "" then " — output: \(.path)" else "" end)' 2>/dev/null)
+REASON="Background tasks are running with no completion notification and no heartbeat watching them:
+$LIST
+For each: read the output now (tail -c 2000 for a bash task; for a subagent, wc -l and the last entry's tool names — never the whole transcript). Judge it against what the task is: a build at +0 growth is hung, an idle server at +0 is fine, repeating restart or traceback lines are a crashloop — act on that, do not keep waiting. Then arm a Monitor heartbeat on each (every ${BEAT_SECS}s: byte or entry delta plus tail) so the next check does not depend on you remembering, and report in one line per task. Silence is not success. (MEGAVIBE_BG_WATCH=0 switches this check off; MEGAVIBE_BG_CHECK_SECS sets the interval, 60–600.)"
 jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
 exit 0
