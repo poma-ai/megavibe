@@ -54,6 +54,15 @@
             "command": ".claude/hooks/read-delta.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash|Agent|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/watch-background.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -229,6 +238,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/compaction-autopilot.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/watch-background.sh"
           }
         ]
       }

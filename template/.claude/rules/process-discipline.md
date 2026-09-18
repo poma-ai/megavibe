@@ -17,6 +17,38 @@ Use one of these instead:
 - **Foreground in a terminal the user is watching** — for things you want them to see in real time.
 - **Named tmux session** — for things genuinely meant to outlive the current Claude session: `tmux new -d -s <project>-<purpose> '<command>'`. The session name is how the user finds and kills it later.
 
+## Backgrounded work gets a heartbeat
+
+`run_in_background` and an async `Agent` return at once and promise a
+notification when the task completes. A task that hangs, or restarts itself in
+a loop, never completes — so the notification never comes, and from the main
+thread a crashloop is indistinguishable from progress. Sessions have waited an
+hour on that silence. A completion event is not monitoring.
+
+The moment you start one, arm a `Monitor` heartbeat on its output file and do
+not end the turn "waiting":
+
+```bash
+f=<output file>; last=0; while sleep 240; do s=$(wc -c <"$f" 2>/dev/null | tr -d ' ' || echo 0); printf 'bg <id>: %s bytes (+%s) | %s\n' "$s" "$((s-last))" "$(tail -c 200 "$f" 2>/dev/null | tr '\n' ' ')"; last=$s; done
+```
+
+Every beat wakes you with fresh evidence, whether or not the task finished.
+Read it as a diagnosis, not a status: `+0` for several beats is a hang; a file
+that keeps growing with the same lines is a crashloop; a subagent transcript
+whose last tool names repeat is a loop. Act on those — kill it, fix it,
+`SendMessage` or `TaskStop` the agent — instead of waiting one more interval.
+When the completion notification arrives, `TaskStop` the heartbeat. Interval at
+most five minutes (`MEGAVIBE_BG_CHECK_SECS`); the default of four also keeps
+the API's five-minute prompt cache warm, which is a side benefit, not a reason
+to beat faster.
+
+`watch-background.sh` enforces both halves: on start it injects the exact
+loop to arm, and on a turn boundary it refuses to let the turn end while a
+task older than the interval has neither a notification nor a heartbeat — once
+per interval per task, never in a loop. A Stop hook cannot wake you later; the
+heartbeat is the only thing that can. Do not read a subagent's `.output`
+symlink whole: it is the full JSONL transcript.
+
 ## Bind dev servers to localhost by default
 
 For uvicorn, fastapi, `python -m http.server`, vite, next dev, webpack-dev-server, json-server, and similar: pass `--host 127.0.0.1` (or the framework equivalent) unless the user explicitly asked for LAN access.
