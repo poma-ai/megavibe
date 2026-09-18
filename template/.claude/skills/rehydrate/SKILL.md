@@ -46,15 +46,22 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    ```bash
    OUT=".agent/sessions/${SID}/WORKING_CONTEXT.md"; mkdir -p "$(dirname "$OUT")"
    INSTR="Read the project state below and write a WORKING_CONTEXT.md (max 400 lines) with sections: Goal; Constraints (must-not-break); What's Done (files touched); Open Tasks (+acceptance criteria); Risks/Unknowns; Next Actions (3 concrete). Output ONLY the markdown."
-   # Codex on a small model at low effort. Measured 2026-09-18 on a 196 KB input:
-   # 23s and 76 lines. Effort is the wrong knob here (94 reasoning tokens even at
-   # high — digesting a log does not reason), and a bigger model just costs four
-   # times the wall clock for a longer document. The wrapper owns its own timeout
-   # and kills the whole process group, so there is no orphan and no argv limit.
-   bash ~/.megavibe/scripts/codex-review.sh --model gpt-5.6-terra --effort low \
+   # Codex at low effort. Measured 2026-09-18 on a 196 KB input: 23s and 76
+   # lines on a small model. Effort is the wrong knob here (94 reasoning tokens
+   # even at `high` — digesting a log does not reason), so `low` is free. The
+   # wrapper owns its own timeout and kills the whole process group, so there is
+   # no orphan and no argv limit.
+   bash ~/.megavibe/scripts/codex-review.sh --effort low \
      --timeout 150 --out "$OUT" --prompt "$INSTR" "$IN" >/dev/null 2>"$OUT.err" || : > "$OUT"
    [ -s "$OUT" ] && rm -f "$OUT.err"   # keep the .err only when it failed
    ```
+
+   No `--model`: the user's own `~/.codex/config.toml` picks it, and a name
+   pinned here would fail every rehydration on any plan that does not expose it,
+   pushing this to the Claude subagent and ~125K tokens of the session's own
+   quota. If a small model is available and you want the speed, `--model` it —
+   `gpt-5.6-terra` measured fastest here — but re-run without the flag if that
+   call fails rather than falling down the chain on a model name.
 
    - Non-zero exit (incl. the wrapper's 124 timeout) **or** an empty `$OUT` = that backend FAILED. Don't retry it — move down the chain.
    - **Fallback order:** Codex (above) → **Claude subagent** (Agent tool, `subagent_type: summarizer` — internal, cannot hang, always finishes, and the best output of the three; it spends this subscription's own quota, ~125K tokens on an input this size, which is why it is second and not first) → **Gemini** (`perl -e 'alarm shift; exec @ARGV' 150 bash ~/.megavibe/scripts/gemini-review.sh --max 12000 --out "$OUT" --prompt "$INSTR" "$IN"`, then `rm -f "$OUT.raw.json"`) — every Gemini token is billed, and on a job this size `--max 12000` counts thinking too, so check `finishReason` in the `.err` before trusting a short answer. Never the Gemini CLI or `mcp__gemini-cli__ask-gemini` here: both run full thinking on a large input and stall.

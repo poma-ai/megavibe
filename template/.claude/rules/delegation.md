@@ -5,7 +5,7 @@
 **Megavibe works with ONLY a Claude Code subscription.** External backends (Codex, Gemini) improve quality for specific tasks but are never required. Every task has a last-resort path through Claude itself (via the `summarizer` subagent at `.claude/agents/summarizer.md`).
 
 **The standard chain, for every task:**
-1. **Codex** — `~/.megavibe/scripts/codex-review.sh --prompt "..." FILE...` (NOT an MCP server — see below). For a summarising job add `--model gpt-5.6-terra --effort low`; for a review leave both off and let the user's own `~/.codex/config.toml` choose.
+1. **Codex** — `~/.megavibe/scripts/codex-review.sh --prompt "..." FILE...` (NOT an MCP server — see below). For a summarising job add `--effort low`; for a review leave it off and let the user's own `~/.codex/config.toml` choose. Add `--model` only if you are prepared to re-run without it when that model is not on this plan: a pinned name that a plan does not expose fails every call and pushes the work to the Claude subagent's 125K tokens.
 2. **Claude subagent** — `.claude/agents/summarizer.md`, no key, always available, and the best output of the three on a context digest. It spends the same subscription quota the session runs on, which is the only reason it is not first.
 3. **Gemini** — `~/.megavibe/scripts/gemini-review.sh --prompt "..." FILE...` (requires `$GEMINI_API_KEY` from a **billed** project — Google-account OAuth was retired 2026-06-18, and the free tier is 20 req/day and trains on prompts). Every token is billed and on reviews it is the weakest of the three, so it is last.
 4. Gemini MCP (`mcp__gemini-cli__ask-gemini`) — short interactive questions only; the CLI it wraps hardcodes 3.x thinking, so long answers truncate or take minutes.
@@ -15,11 +15,13 @@
 | Backend | Time | Output | What it costs |
 |---|---|---|---|
 | Codex `gpt-5.6-terra`, effort low | 23 s | 76 lines | plan tokens |
-| Claude `summarizer` (sonnet) | 87 s | 64 lines, richest of the four | 125K tokens of this session's own subscription |
+| Claude `summarizer` (sonnet) | 87 s | 64 lines | 125K tokens of this session's own subscription |
 | Codex `gpt-6-astra`, effort low / high | 93 / 105 s | 156 / 168 lines | plan tokens |
-| Gemini `3.1-flash-lite`, level low | 9 s | 40 lines, thinnest | billed per token |
+| Gemini `3.1-flash-lite`, level low | 9 s | 40 lines | billed per token |
 
-Nothing was invented by any of them. Two things follow. **Effort is the wrong knob for summarising** — even at `high`, Codex spent 94 reasoning tokens, because digesting a log does not reason; the MODEL sets the time and the length. And **a bigger model is not a better summary**: astra spent four times the wall clock to produce a longer document, not a more accurate one.
+Nothing was invented by any of them; every specific claim in all four traced back to the input. Line count is the only measured column, and it does not rank them — the subagent's 64 lines carried the most specifics per line (named commits, task IDs, the open blockers and who they were waiting on), which is the judgement behind putting it above Gemini and is a judgement, not a measurement. Two things follow. **Effort is the wrong knob for summarising** — even at `high`, Codex spent 94 reasoning tokens, because digesting a log does not reason; the MODEL sets the time and the length. And **a bigger model is not a better summary**: astra spent four times the wall clock to produce a longer document, not a more accurate one.
+
+**What a Codex quota day looks like, because this order concentrates load on one plan.** Reviews, re-hydration and the watcher's five-minute flush now all draw on the same subscription, and on the day these numbers were measured Codex was quota-exhausted for about three hours. When that happens the review round is the `reviewer` subagent plus `gemini-review.sh --as-reviewer --fallback --pro`, and that is the weakest configuration megavibe has: the same audit recorded Gemini alone approving five changes that carried real blockers. So on a quota day, **treat every Gemini finding as a lead to reproduce and every Gemini verdict as unverified**, say in the synthesis that Codex did not run, and prefer holding a risky merge to shipping on a single unreproduced review. `megavibe reviewers set all` is the standing answer for anyone who would rather pay for the third opinion every day than rely on it only when the primary is down.
 
 **Reviews rank differently** — see the review row below. There depth is the whole point: Codex reads the repo, runs the tests and reproduces the failing input, and over 11 paired reviews in one day it found real defects in every unit. Gemini, one stateless API call over inlined files, produced four wrong headline findings and five SHIP verdicts on code with confirmed blockers, including "a masterclass" on a patch with a P1 in it. That is why it is the fallback reviewer rather than a third opinion, and why it always gets `--pro` when it does review.
 
@@ -64,8 +66,8 @@ Enforcement is in the scripts, not only here — under `--as-reviewer` they exit
 | Need | Primary | Fallback 1 | Fallback 2 | Output format |
 |------|---------|-----------|-----------|---------------|
 | Large context (long logs, many files, PDFs) | Codex | Claude subagent | Gemini | Key claims, evidence anchors, risks, unknowns |
-| Re-hydrate working context | Codex `--model gpt-5.6-terra --effort low` | Claude subagent | Gemini | `.agent/sessions/{sid}/WORKING_CONTEXT.md` (max ~400 lines) |
-| Summarize text (any length/target) | Codex `--model gpt-5.6-terra --effort low` | Claude subagent | Gemini | Structured summary at specified target length |
+| Re-hydrate working context | Codex `--effort low` | Claude subagent | Gemini | `.agent/sessions/{sid}/WORKING_CONTEXT.md` (max ~400 lines) |
+| Summarize text (any length/target) | Codex `--effort low` | Claude subagent | Gemini | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | Claude subagent | Literal, high-recall, structured markdown |
 | Research memo (multi-source, citations) | Codex (`--search` when freshness matters) | Gemini | Claude subagent | `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
 | **Independent review before shipping** (non-negotiable 4) | every reviewer in `MEGAVIBE_REVIEWERS` (default: `reviewer` + `codex`) — `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Codex `codex-review.sh --as-reviewer`, in parallel | Codex failed today → `gemini-review.sh --as-reviewer --fallback --pro` stands in, named as such in the synthesis | `reviewer` subagent alone | Ranked findings with file:line, failing input, outcome, fix; ship / do-not-ship verdict |

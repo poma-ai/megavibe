@@ -13,7 +13,7 @@ Use Codex (or the standard fallback chain) to surgically remove redundant lines 
 
 ## Prerequisites
 
-- At least one backend must be available. Try in order: Codex (`codex-review.sh --model gpt-5.6-terra --effort low`) → Claude subagent → Gemini (`gemini-review.sh`)
+- At least one backend must be available. Try in order: Codex (`codex-review.sh --effort low`) → Claude subagent → Gemini (`gemini-review.sh`)
 - FULL_CONTEXT.md should be large enough to warrant compaction (500+ lines)
 - The Claude subagent has a 200K token window — for very large logs, it may need to process in chunks
 

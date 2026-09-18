@@ -123,16 +123,58 @@ GEMINI_STATUS=$(mcp_status "gemini")
 # "stdin is not a terminal") never names the real cause. A one-line probe here
 # turns the next such removal into an obvious status line instead of a day of
 # misread outages.
-if command -v codex &>/dev/null; then
-  CODEX_VER=$(codex --version 2>/dev/null || echo "")
-  if codex exec --help >/dev/null 2>&1; then
-    CODEX_STATUS="CLI via codex-review.sh"
-  else
-    CODEX_STATUS="INSTALLED BUT UNUSABLE — \`codex exec\` is gone; check codex-review.sh"
-  fi
-  [ -n "$CODEX_VER" ] && CODEX_STATUS="${CODEX_STATUS} (${CODEX_VER})"
-else
+# Bounded, and asked ONCE. This used to run `codex --version` and
+# `codex exec --help` unbounded, so a codex that hangs rather than fails — the
+# documented codex-cli failure mode — held the whole SessionStart hook until
+# Claude Code killed it, and the user lost the entire orientation block with no
+# explanation. It also disagreed with reviewers.sh's 5s-bounded probe on a slow
+# binary, putting two opposite answers to one question in the same table.
+_RV_PROBE="$HOME/.megavibe/scripts/reviewers.sh"
+CODEX_PROBE=2
+if [ -f "$_RV_PROBE" ]; then
+  # `|| CODEX_PROBE=$?`, not `cmd; CODEX_PROBE=$?`. This hook runs under an ERR
+  # trap, and the probe returns 1 for "unusable" and 2 for "did not answer" as
+  # ORDINARY ANSWERS. Written as a bare command, either of those tripped the
+  # trap and aborted the whole orientation block — LESSONS, DECISIONS, the
+  # backend table, the reviewers row — for the exact conditions this probe
+  # exists to report. Measured: a codex stub exiting 3 emptied the hook.
+  CODEX_PROBE=0
+  bash "$_RV_PROBE" codex-ok >/dev/null 2>&1 || CODEX_PROBE=$?
+  # Every later reviewers.sh call in this hook reuses this answer instead of
+  # re-probing. Each probe is bounded at 5s, but this hook makes enough of them
+  # that a wedged codex still cost 137s end to end — past any hook timeout, so
+  # the whole orientation block was lost for the one condition worth reporting.
+  export MEGAVIBE_CODEX_OK="$CODEX_PROBE"
+elif command -v codex &>/dev/null; then
+  CODEX_PROBE=2   # cannot bound it here; say so rather than risk the hang
+fi
+if ! command -v codex &>/dev/null; then
   CODEX_STATUS="not installed"
+else
+  # ONLY when the probe already said codex works. Two reasons, both measured.
+  # A version string is decoration on a row whose headline is "unusable" or
+  # "not answering", so a broken codex does not need one. And asking anyway is
+  # how this hook still took 126s against a wedged codex even with every probe
+  # bounded: `$(perl -e 'alarm 5; exec @ARGV' codex --version)` kills the
+  # process the alarm can reach, but the orphaned grandchild keeps the
+  # command-substitution pipe open, and `$( )` blocks until the last writer
+  # exits — the full 120s. Bounding the process does not bound the pipe.
+  CODEX_VER=""
+  if [ "$CODEX_PROBE" = 0 ]; then
+    if command -v timeout >/dev/null 2>&1; then
+      CODEX_VER=$(timeout 5 codex --version 2>/dev/null || echo "")
+    elif command -v gtimeout >/dev/null 2>&1; then
+      CODEX_VER=$(gtimeout 5 codex --version 2>/dev/null || echo "")
+    else
+      CODEX_VER=$(codex --version 2>/dev/null || echo "")
+    fi
+  fi
+  case "$CODEX_PROBE" in
+    0) CODEX_STATUS="CLI via codex-review.sh" ;;
+    1) CODEX_STATUS="INSTALLED BUT UNUSABLE — \`codex exec\` is gone; check codex-review.sh" ;;
+    *) CODEX_STATUS="INSTALLED BUT NOT ANSWERING — the probe timed out; reviews fall back" ;;
+  esac
+  [ -n "$CODEX_VER" ] && CODEX_STATUS="${CODEX_STATUS} (${CODEX_VER})"
 fi
 
 # --- Reviewer allow-list (non-negotiable 4) ---
@@ -211,8 +253,10 @@ fi
 # usable (otherwise there is nothing to opt back into).
 REVIEWER_DEFAULT_NOTE=""
 _RV_STAMP="$HOME/.megavibe/.reviewer-default-notice"
+# No GEMINI_API_KEY condition: the key is commonly exported from a shell
+# profile the hook never sees, and a user whose reviewer count silently dropped
+# from three to two needs telling whether or not this process can see it.
 if [ -n "$ACTIVE_REVIEWERS" ] && [ ! -f "$_RV_STAMP" ] \
-   && [ "$RV_SORTED" = "codex reviewer" ] && [ -n "${GEMINI_API_KEY:-}" ] \
    && bash "$REVIEWERS_SH" fallback gemini >/dev/null 2>&1; then
   REVIEWER_DEFAULT_NOTE="
 

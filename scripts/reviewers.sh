@@ -31,7 +31,7 @@
 #   MEGAVIBE_REVIEWERS="all"                 # all three, in parallel, as before
 #
 # It gates the REVIEWER ROLE, not the backend. gemini-review.sh and
-# codex-review.sh are also megavibe's general Gemini/Codex transport — that is
+# codex-review.sh are also megavibe's general Codex/Gemini transport — that is
 # how /rehydrate and /prune-context reach them — so they consult this only when
 # the caller passes --as-reviewer. Switching codex off must not cost you context
 # recovery.
@@ -64,6 +64,10 @@
 #   reviewers.sh enabled <id>    # exit 0 if on, 1 if off, 2 on a usage error
 #   reviewers.sh fallback <id>   # exit 0 if <id> may review as the FALLBACK
 #                                # (default set only, and only gemini), 1 if not
+#   reviewers.sh codex-ok        # exit 0 works, 1 unusable, 2 could not tell.
+#                                # BOUNDED — the one probe everything should use,
+#                                # so a wedged codex cannot hang a caller and two
+#                                # callers cannot disagree about the same binary.
 #   reviewers.sh source          # where the setting came from, or "default"
 #
 # `megavibe reviewers` is the friendly front end for all of this.
@@ -159,16 +163,45 @@ _classify() {
 # The fork/setpgrp/group-kill shape is deliberate (codex-review.sh has the
 # long version): a bare `alarm; exec` signals only the replacement process and
 # leaves its children alive.
+# Memoised in-process, and overridable by the caller. Bounding each probe at 5s
+# was not enough: one `list` resolves through resolve → _guard_shareable →
+# _effective_raw and can probe several times, and the session-start hook then
+# runs list, a default-set list, a fallback check and the notice check. Measured
+# against a wedged codex, that hook took 137 SECONDS — every probe individually
+# bounded, the total far past any hook timeout. So each process probes at most
+# once, and a caller that has already asked exports MEGAVIBE_CODEX_OK (0 works,
+# 1 unusable, 2 unknown) so the whole tree reuses one answer.
+_CODEX_OK_MEMO=""
 _codex_ok() {
+  case "${MEGAVIBE_CODEX_OK:-}" in
+    0|1|2) return "$MEGAVIBE_CODEX_OK" ;;
+  esac
+  [ -z "$_CODEX_OK_MEMO" ] || return "$_CODEX_OK_MEMO"
+
+  _codex_ok_probe; _CODEX_OK_MEMO=$?
+  return "$_CODEX_OK_MEMO"
+}
+
+_codex_ok_probe() {
   command -v codex >/dev/null 2>&1 || return 1
 
+  # 124 is the timeout's own "I gave up" and means UNKNOWN; every other
+  # non-zero is codex answering that it cannot do this, which is 1. Letting
+  # those fall through to the shared case below mapped clap's exit 2 for a
+  # removed subcommand — the documented motivating failure, codex-cli 0.154.0
+  # deleting `mcp-server` — to "unknown", so Linux kept a broken codex in the
+  # set and then labelled it "the probe timed out" when it had answered in
+  # milliseconds. The perl branch already collapses non-zero to 1; these now
+  # agree with it.
   local _rc=0
   if command -v timeout >/dev/null 2>&1; then
     timeout 5 codex exec --help >/dev/null 2>&1 || _rc=$?
     [ "$_rc" = 124 ] && return 2
+    [ "$_rc" = 0 ] || return 1
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout 5 codex exec --help >/dev/null 2>&1 || _rc=$?
     [ "$_rc" = 124 ] && return 2
+    [ "$_rc" = 0 ] || return 1
   elif command -v perl >/dev/null 2>&1; then
     # Signals are forwarded as well as the alarm handled. Without the INT/TERM/
     # HUP handlers, cancelling the caller left the probe's codex child alive in
@@ -408,6 +441,13 @@ case "${1:-list}" in
     printf '%s\n' "$active" | grep -qxF -- "reviewer" || exit 0
     printf '%s\n' "$active" | grep -qxF -- "$want"
     ;;
+  codex-ok)
+    # Deliberately public. on-session-start.sh and the `megavibe reviewers`
+    # listing each had their own unbounded `codex exec --help`, which meant a
+    # hook could hang forever on a wedged binary AND could disagree with the
+    # bounded probe two rows below it in the same table.
+    _codex_ok
+    ;;
   fallback)
     [ $# -ge 2 ] || { echo "usage: reviewers.sh fallback <reviewer>" >&2; exit 2; }
     want=$(printf '%s' "$2" | tr 'A-Z' 'a-z')
@@ -440,7 +480,7 @@ case "${1:-list}" in
     sed -n '2,55p' "$0"
     ;;
   *)
-    echo "usage: reviewers.sh [list|enabled <reviewer>|fallback <reviewer>|source]" >&2
+    echo "usage: reviewers.sh [list|enabled <reviewer>|fallback <reviewer>|codex-ok|source]" >&2
     exit 2
     ;;
 esac

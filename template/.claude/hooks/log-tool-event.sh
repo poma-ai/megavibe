@@ -517,7 +517,7 @@ if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ]; then
     if [ -f "$INSTRUCTIONS_FILE" ]; then
       REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Read ${INSTRUCTIONS_FILE} for instructions, OR ignore if your carryover context is sufficient — flag auto-clears after ${REHYDRATE_NAG_MAX} nags."
     else
-      REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Call Gemini/Codex to regenerate WORKING_CONTEXT.md, or ignore if carryover context is enough."
+      REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Call Codex (then the Claude subagent, then Gemini) to regenerate WORKING_CONTEXT.md, or ignore if carryover context is enough."
     fi
   fi
   if [ -n "$REHYDRATE_MSG" ]; then

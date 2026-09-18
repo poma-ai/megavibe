@@ -13,7 +13,7 @@
 # non-negotiable 4 are called the same way and neither is the awkward one.
 #
 # Usage:
-#   scripts/codex-review.sh [--as-reviewer] [--model M] [--effort low|medium|high]
+#   scripts/codex-review.sh [--as-reviewer] [--model M] [--effort minimal|low|medium|high]
 #                           [--timeout N] [--out FILE] --prompt "text" FILE...
 #   scripts/codex-review.sh ... --prompt-file PROMPT.md FILE...
 #
@@ -57,7 +57,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --as-reviewer) AS_REVIEWER=1; shift ;;
     --model)       need "$@"; MODEL="$2"; shift 2 ;;
-    --effort)      need "$@"; EFFORT="$2"; shift 2 ;;
+    --effort)      need "$@"; EFFORT=$(printf '%s' "$2" | tr 'A-Z' 'a-z'); shift 2 ;;
     --timeout)     need "$@"; TIMEOUT="$2"; shift 2 ;;
     --out)         need "$@"; OUT="$2"; shift 2 ;;
     --prompt)      need "$@"; PROMPT="$2"; shift 2 ;;
@@ -72,7 +72,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-case "$EFFORT" in ''|low|medium|high) ;; *) echo "error: --effort must be low, medium or high" >&2; exit 2 ;; esac
+# Case-insensitive, and `minimal` accepted because codex accepts it. Validated
+# rather than passed through: the value lands in a `-c model_reasoning_effort=`
+# TOML literal.
+case "$EFFORT" in ''|minimal|low|medium|high) ;; *) echo "error: --effort must be minimal, low, medium or high" >&2; exit 2 ;; esac
 
 # Zero would CANCEL perl's alarm, silently turning the timeout contract off.
 case "$TIMEOUT" in ''|*[!0-9]*) echo "error: --timeout must be a number" >&2; exit 2 ;; esac

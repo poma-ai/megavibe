@@ -685,12 +685,32 @@ if [ "${1:-}" = "reviewers" ]; then
         case "$r" in
           reviewer) avail="always (Claude subscription — cannot be switched off)" ;;
           gemini)   if [ -n "${GEMINI_API_KEY:-}" ]; then
-                      if bash "$RV" fallback gemini >/dev/null 2>&1; then
-                        avail="GEMINI_API_KEY is set — reviews only as codex's fallback"
-                      else avail="GEMINI_API_KEY is set"; fi
+                      # Membership first. `fallback gemini` answers 0 for ANY
+                      # default configuration, including the one on a machine
+                      # with no codex where gemini holds codex's place — so
+                      # asking it here printed "ON yes" beside "reviews only as
+                      # codex's fallback" in the same row, on exactly the
+                      # Claude-plus-Gemini machine this project is written for.
+                      case " $ACTIVE " in
+                        *" gemini "*) avail="GEMINI_API_KEY is set" ;;
+                        *) if bash "$RV" fallback gemini >/dev/null 2>&1; then
+                             avail="GEMINI_API_KEY is set — reviews only as codex's fallback"
+                           else avail="GEMINI_API_KEY is set"; fi ;;
+                      esac
                     else avail="no GEMINI_API_KEY"; fi ;;
           codex)    if command -v codex >/dev/null 2>&1; then
-                      codex exec --help >/dev/null 2>&1 && avail="codex exec works" || avail="codex is installed but broken"
+                      # Bounded, via the same probe reviewers.sh uses, so this
+                      # listing cannot hang on a wedged binary or disagree with
+                      # the session-start table about the same question.
+                      # `|| _c=$?` for the same reason the hook does it: 1 and
+                      # 2 are answers, not failures, and this script runs with
+                      # `set -e`.
+                      _c=0; bash "$RV" codex-ok >/dev/null 2>&1 || _c=$?
+                      case $_c in
+                        0) avail="codex exec works" ;;
+                        1) avail="codex is installed but broken" ;;
+                        *) avail="codex is installed but did not answer in time" ;;
+                      esac
                     else avail="not installed"; fi ;;
         esac
         printf "  %-10s %-4s %s\n" "$r" "$on" "$avail"
@@ -702,8 +722,9 @@ if [ "${1:-}" = "reviewers" ]; then
       echo "  summaries and large-context work whatever is set here."
       echo ""
       echo "  The default is the reviewer subagent + Codex. Gemini is Codex's FALLBACK:"
-      echo "  it reviews only when Codex failed that day, and always on --pro. Measured"
-      echo "  over one day of paired reviews, a Gemini review shipped real blockers."
+      echo "  it reviews only when Codex failed that day — the caller passes --fallback —"
+      echo "  and when it does, always with --pro. Measured over one day of paired"
+      echo "  reviews, a Gemini review shipped real blockers."
       echo ""
       echo "  Change it:  megavibe reviewers set all                  (all three in parallel)"
       echo "              megavibe reviewers set reviewer codex       (never gemini, not even as fallback)"
@@ -730,7 +751,7 @@ if [ "${1:-}" = "reviewers" ]; then
         SCOPE_FILE="$SCOPE_ROOT/.claude/settings.local.json"
         SCOPE_NAME="this project, uncommitted"
       fi
-      [ $# -gt 0 ] || { echo "usage: megavibe reviewers set [--project] <reviewer...|auto>"; exit 2; }
+      [ $# -gt 0 ] || { echo "usage: megavibe reviewers set [--project] <reviewer...|all|auto>"; exit 2; }
       command -v jq >/dev/null 2>&1 || { echo "jq is required to edit settings.json."; exit 1; }
 
       # Strict here, unlike the resolver. A typo in a value someone is writing
@@ -779,7 +800,7 @@ if [ "${1:-}" = "reviewers" ]; then
       ;;
 
     *)
-      echo "usage: megavibe reviewers [list | set [--project] <reviewer...|auto>]"
+      echo "usage: megavibe reviewers [list | set [--project] <reviewer...|all|auto>]"
       exit 2
       ;;
   esac

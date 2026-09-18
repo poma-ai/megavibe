@@ -415,6 +415,17 @@ def _call_codex(prompt: str, timeout: int) -> str:
         cmd += ["-c", f"model_reasoning_effort={effort}"]
     r = subprocess.run(cmd + ["-"],
                        input=prompt, capture_output=True, text=True, timeout=timeout)
+    if r.returncode != 0 and (model or effort):
+        # Retry with whatever ~/.codex/config.toml names. The pinned model is an
+        # optimisation, not a requirement, and a plan that does not expose it
+        # would otherwise fail EVERY five-minute flush for the life of every
+        # session — a default-on feature going permanently silent because of a
+        # model name. Before this pin existed, _call_codex passed no -m and so
+        # always worked.
+        cmd = ["codex", "exec", "--sandbox", "read-only",
+               "--skip-git-repo-check", "--color", "never"]
+        r = subprocess.run(cmd + ["-"],
+                           input=prompt, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"codex exit={r.returncode}: {r.stderr[:400]}")
     return r.stdout
