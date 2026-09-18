@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
     --dir)     need_value "$1" $#; PROJECT="$2"; shift 2 ;;
     --base)    need_value "$1" $#; BASE="$2";    shift 2 ;;
     --json)    JSON=1; shift ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "session-cost: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
