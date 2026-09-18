@@ -29,7 +29,7 @@ The moment you start one, arm a `Monitor` heartbeat on its output file and do
 not end the turn "waiting":
 
 ```bash
-f=<output file>; last=0; while sleep 240; do s=$(wc -c <"$f" 2>/dev/null | tr -d ' ' || echo 0); printf 'bg <id>: %s bytes (+%s) | %s\n' "$s" "$((s-last))" "$(tail -c 200 "$f" 2>/dev/null | tr '\n' ' ')"; last=$s; done
+f="<output file>"; last=0; while sleep 240; do s=$(wc -c <"$f" 2>/dev/null | tr -d ' ' || echo 0); printf 'bg <id>: %s bytes (+%s) | %s\n' "$s" "$((s-last))" "$(tail -c 200 "$f" 2>/dev/null | tr '\n' ' ')"; last=$s; done
 ```
 
 Every beat wakes you with fresh evidence, whether or not the task finished.
