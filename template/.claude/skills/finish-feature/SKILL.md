@@ -93,7 +93,7 @@ gh auth status >/dev/null 2>&1 && gh repo view --json nameWithOwner >/dev/null 2
 This has to be its own command. `gh pr view` exits 1 when the branch has no PR, when the remote is not GitHub at all, **and** on a detached HEAD, so treating that one exit status as "no PR yet" makes the skill offer to open a PR it cannot create — `gh pr create` then fails with "you must be on a branch". `gh auth status` does not cover either case: auth is per-host, not per-repo. Then find what exists:
 
 ```sh
-gh pr view --json number,state,isDraft,url,mergeable,mergeStateStatus,reviewDecision 2>/dev/null || echo "none"
+gh pr view --json number,state,isDraft,url,mergeable,mergeStateStatus,reviewDecision,headRefOid 2>/dev/null || echo "none"
 ```
 
 Treat `none` as "no PR" only because the gate above already proved this is a GitHub repo — on its own that exit status also means a GitLab remote or a detached HEAD, and `gh auth status` passes in both since auth is per-host, not per-repo.
@@ -116,7 +116,7 @@ Write the comment from Step 4 — predicted versus actual size, predicted versus
 
 **If that PR is still open** → ask whether to merge it. Never merge without an explicit yes; it is outward-facing and it is other people's branch protection you would be spending. Check first, and **report instead of asking** in every one of these — the failure mode is offering a merge that should not have been offered, not declining one that was fine:
 
-- **No review.** Merging is shipping, and non-negotiable 4 requires a FULL-SET review of the final candidate before shipping — an intermediate, single-reviewer round does not qualify, and neither does a round run against an earlier state. Name which reviewers actually ran in the pre-merge report. `reviewDecision` must be `APPROVED`, or this session must have actually run that round on this change. Branch protection catches this only in repos that have it, which is not most repos, so check it here rather than trusting `BLOCKED` to appear.
+- **No review.** Merging is shipping, and non-negotiable 4 requires a FULL-SET review of the final candidate before shipping — an intermediate, single-reviewer round does not qualify, and neither does a round run against an earlier state. **This session must have run that round, and run it on the commit you are about to merge**: compare the SHA you reviewed against `headRefOid`, and say in the pre-merge report which reviewers ran and against which SHA. A GitHub `reviewDecision` of `APPROVED` does NOT substitute — it says a human clicked approve, not that the full set read this head, and it is frequently stale by one push. Merge with `gh pr merge --match-head-commit <the SHA you reviewed>` so a push between the review and the merge fails the merge instead of silently shipping unreviewed code. Branch protection catches none of this in most repos, so check it here rather than trusting `BLOCKED` to appear.
 - `isDraft` is true → say so. `state` is `OPEN` for a draft, and `gh pr merge` fails on one.
 - `mergeable` is `CONFLICTING` → say so
 - `mergeable` is `UNKNOWN` → GitHub computes mergeability asynchronously, so this is the normal answer right after a push. Re-poll once, then report if it is still unknown. Never offer a merge on an unknown.

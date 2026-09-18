@@ -162,7 +162,7 @@ For hook changes, ask Codex — it runs the script under `--sandbox read-only` �
 |----------|-------|-----|
 | Reviewing protocol text changes | `reviewer` subagent + Codex `--as-reviewer` | The protocol IS critical per non-negotiable 4, so always the full set — every round, not just the ship round |
 | Reviewing hook shell scripts | `reviewer` subagent + Codex `--as-reviewer`, every round | Hooks ARE templates, and several are security or destructive-path guards — critical on both counts, so the tiering never reduces them. Both run the scripts; a reviewer that only reads them missed a P1 in every measured case |
-| Intermediate round on ordinary code in a consuming project | Codex `--as-reviewer` alone | The subagent costs ~180-200K tokens of the user's Claude subscription. Note almost nothing in THIS repo qualifies: protocol, templates, hooks and scripts are all critical |
+| Intermediate round on ordinary code in a consuming project | Codex `--as-reviewer` alone, and only when that call actually succeeds — otherwise the `reviewer` subagent takes the round | The subagent costs ~180-200K tokens of the user's Claude subscription. Note almost nothing in THIS repo qualifies: protocol, templates, hooks and scripts are all critical |
 | Researching CLAUDE.md best practices, Claude Code features | Web search / Codex | Needs current community info |
 | Comparing megavibe to alternatives | Codex, or Gemini for a very large input | Second opinion on architecture |
 | README edits, prose polish, small script fixes | Handle directly | Not worth delegation overhead |

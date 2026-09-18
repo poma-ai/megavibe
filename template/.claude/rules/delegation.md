@@ -37,7 +37,7 @@ Nothing was invented by any of them; every specific claim in all four traced bac
 
 ## Two review tiers, and why
 
-Every round gets **one** reviewer — Codex, or the `reviewer` subagent where Codex is unavailable. The round that gates the ship, and anything critical, gets **both in parallel**. Critical means credentials or security, data loss or destructive paths, anything public or user-facing, the protocol and templates themselves, and anything the user names.
+Every round gets **one** reviewer — Codex where it is switched on and its call succeeds, otherwise the `reviewer` subagent (Gemini may join that round, never take it alone). The round that gates the ship, and anything critical, gets every eligible reviewer **in parallel**. Critical means credentials or security, data loss or destructive paths, anything public or user-facing, the protocol and templates themselves, and anything the user names.
 
 The reason is cost asymmetry, measured. Codex draws on a separate plan; the `reviewer` subagent draws ~180-200K tokens of the SAME subscription the session is spending — in one session here, two invocations cost 386K tokens. Running both on every intermediate round spends the user's Claude subscription quota (a different resource from the session's context window, and the one that runs out) to re-check work that is still moving. Running only Codex on the last round ships on a single unreproduced opinion.
 
