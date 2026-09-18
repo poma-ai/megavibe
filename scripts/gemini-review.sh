@@ -104,11 +104,20 @@ _RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
   _rv_rc=0; bash "$_RVDIR/reviewers.sh" enabled gemini >/dev/null 2>&1 || _rv_rc=$?
   # Off in the set, but standing in for a codex that failed? Ask whether gemini
-  # is the fallback here. Same fail-open rule: only a clean 0 opens the door.
+  # is the fallback here.
+  #
+  # Only status 1 means "no". Anything else — a crash, a missing file, a future
+  # version with different codes — is the helper failing to answer, and an
+  # unanswered question resolves to MORE review, exactly as the `enabled` gate
+  # below does. Written as `if bash ...; then` this read every non-zero status
+  # as a refusal, so one broken helper silenced the last reviewer standing.
   if [ "$_rv_rc" -eq 1 ] && [ -n "$FALLBACK" ]; then
-    if bash "$_RVDIR/reviewers.sh" fallback gemini >/dev/null 2>&1; then
+    _fb_rc=0; bash "$_RVDIR/reviewers.sh" fallback gemini >/dev/null 2>&1 || _fb_rc=$?
+    if [ "$_fb_rc" -ne 1 ]; then
       _rv_rc=0
-      echo "note: gemini is reviewing as the FALLBACK for codex" >&2
+      [ "$_fb_rc" -eq 0 ] \
+        && echo "note: gemini is reviewing as the FALLBACK for codex" >&2 \
+        || echo "note: could not confirm the fallback policy (reviewers.sh exit $_fb_rc) — reviewing anyway" >&2
     fi
   fi
   # ONLY 1 means "switched off". A helper that crashed, or one from a future

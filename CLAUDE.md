@@ -183,7 +183,7 @@ For hook changes, ask Codex — it runs the script under `--sandbox read-only` �
 - **`Explore`**: Trace hook interaction flows end-to-end, deep-dive into event chains
 - **`Plan`**: Before multi-file changes (e.g., adding a new hook type)
 - **`general-purpose`**: Web research on Claude Code features, hook API changes, community practices
-- **Gemini MCP**: Protocol text review, reviewing full README for consistency
+- **Codex** (`codex-review.sh`): protocol text review, reviewing the full README for consistency — Gemini only as its fallback
 
 Don't use subagents for: single-file edits, README tweaks, reading one script.
 

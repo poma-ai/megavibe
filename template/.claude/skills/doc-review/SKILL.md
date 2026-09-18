@@ -44,7 +44,7 @@ After significant docs or code edits that change the documentation surface — `
 
 ## Rules
 
-- **Parallel, not sequential.** Issue both backend calls in one message — half the wall time and avoids one backend's framing biasing the other.
+- **Parallel, not sequential.** Issue every call for the switched-on set in one message — half the wall time, and it avoids one reviewer's framing biasing the next. Gemini's `--fallback` call is the one exception: it exists only because Codex already failed, so it is necessarily a second round. When the user has pinned `all`, Gemini is a peer and goes in the parallel batch like everything else.
 - The **synthesis** is the value. Don't dump raw outputs from each backend; the merged view is what the user reads.
 - Avoid stylistic noise. The review targets substantive drift/contradiction/bloat, not prose taste.
 - If Codex and its Gemini fallback both fail, the `reviewer` subagent's report is the review — say so. Never let the skill degrade to a self-review by the session that wrote the docs; the whole point is *independent* challenge.

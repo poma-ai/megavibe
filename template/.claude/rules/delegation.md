@@ -35,20 +35,25 @@ Nothing was invented by any of them. Two things follow. **Effort is the wrong kn
 
 ## Switching reviewers off
 
-`MEGAVIBE_REVIEWERS` is an allow-list of reviewer ids — `gemini`, `codex`, and `reviewer` (the Claude subagent, which is **always** in the resolved set and cannot be switched off: it is the floor non-negotiable 4 rests on, costs no key, and has no script to gate it through). Unset, empty or `auto` means every reviewer that is available, which is the default and needs no configuration. To pin the set:
+`MEGAVIBE_REVIEWERS` is an allow-list of reviewer ids — `gemini`, `codex`, and `reviewer` (the Claude subagent, which is **always** in the resolved set and cannot be switched off: it is the floor non-negotiable 4 rests on, costs no key, and has no script to gate it through). Unset, empty or `auto` is the DEFAULT: `reviewer` + `codex` where `codex exec` works, `reviewer` + `gemini` where it does not, and all three if the probe cannot answer at all. `all` names every reviewer explicitly and makes Gemini a peer again. To pin the set:
 
 ```
 megavibe reviewers                          # what is on, where it was set, what is available
-megavibe reviewers set reviewer gemini      # this user, all projects
+megavibe reviewers set all                  # all three in parallel
+megavibe reviewers set reviewer codex       # never gemini, not even as codex's fallback
 megavibe reviewers set --project reviewer   # this project only (uncommitted)
 megavibe reviewers set auto                 # back to the default
 ```
 
+`auto` and `all` used to be the same word for the same thing, because the default WAS all three. They are different now, so `set all` writes the literal value instead of clearing the setting. A pin written by the OLD command cannot be recovered — it cleared the setting, which is indistinguishable from never having chosen — so the session-start hook says once, per machine, that the default changed and how to get all three back.
+
 It writes `MEGAVIBE_REVIEWERS` into the `env` block of `~/.claude/settings.json`, or with `--project` into the project's uncommitted `.claude/settings.local.json`, which Claude Code applies to the session so hooks and Bash calls inherit it. `reviewers.sh` also reads those files directly, so a review script run from a plain terminal honours the same setting. Precedence: the exported variable, then `settings.local.json`, then the project's committed `settings.json`, then the user file — except that the committed project file may only **add** reviewers. It arrives with a clone, written by whoever wrote the repo, and a repo that can switch off the reviewers reading its own code is a hole, not a feature; a reducing pin there is ignored with a warning. `~/.megavibe/scripts/reviewers.sh list` prints the resolved set, `source` says which of them supplied it.
 
-**It gates the reviewer ROLE, not the backend.** `gemini-review.sh` and `codex-review.sh` are also the general Gemini/Codex transport — steps 1 and 3 of the fallback chain above, and what `/rehydrate` and `/prune-context` call — so they consult the allow-list **only when the caller passes `--as-reviewer`**. Pass that flag for the reviews of non-negotiable 4 and for nothing else: switching a reviewer off must not cost anyone context recovery. Getting this backwards is the bug the first cut shipped — `MEGAVIBE_REVIEWERS="reviewer"` silently stripped `/rehydrate` of both external backends.
+**It gates the reviewer ROLE, not the backend.** `gemini-review.sh` and `codex-review.sh` are also the general Codex/Gemini transport — steps 1 and 3 of the fallback chain above, and what `/rehydrate` and `/prune-context` call — so they consult the allow-list **only when the caller passes `--as-reviewer`**. Pass that flag for the reviews of non-negotiable 4 and for nothing else: switching a reviewer off must not cost anyone context recovery. Getting this backwards is the bug the first cut shipped — `MEGAVIBE_REVIEWERS="reviewer"` silently stripped `/rehydrate` of both external backends.
 
 Allow-list rather than ignore-list on purpose: the config states exactly what runs, where an ignore-list only says it relative to whatever happens to be installed on the machine. The cost is that a reviewer added to megavibe later is off for anyone who has pinned a list.
+
+**Every unclear path resolves to MORE review.** A settings file that exists but cannot be parsed — bad JSON, no `jq` — is ambiguous rather than absent, and returns all three. An unrecognised name invalidates the whole pin rather than being dropped from it, because `"gemini codx"` would otherwise switch codex off forever on a typo. A committed project `settings.json` is compared against what the machine would resolve WITHOUT it and ignored if it removes anything, which is why `auto` in a cloned repo cannot quietly take Gemini away from a user whose own file says `all`. The availability probe is bounded and, on a timeout, counts as unknown and returns all three. In the review scripts, exit status **1** from `reviewers.sh` is the only answer that switches a reviewer off; every other status is the helper failing to answer, and the review runs.
 
 Enforcement is in the scripts, not only here — under `--as-reviewer` they exit **4** with a `skip:` line when their reviewer is not in the set, before spending a token. Exit 4 means *switched off*, not *failed*: do not fall through the chain looking for a substitute, and do not report the review as degraded by a backend outage. Every unclear path fails OPEN to all reviewers — unreadable config, missing `jq`, an unrecognised value, a helper that crashes — because reviewing with fewer eyes than the user expects is the bad direction to fail in. A round that ends up with only the `reviewer` subagent is still a review; say so plainly in the synthesis.
 
@@ -129,7 +134,7 @@ If Codex is unavailable, fall back to Gemini (`gemini-review.sh`) → Claude sub
 
 ## Claude subagent protocols
 
-The `summarizer` subagent (`.claude/agents/summarizer.md`, model: sonnet) is the universal last-resort fallback. It runs on the same Claude subscription — no API key needed, always available.
+The `summarizer` subagent (`.claude/agents/summarizer.md`, model: sonnet) is the SECOND link in the chain, between Codex and Gemini. It runs on the same Claude subscription — no API key needed, always available.
 
 **When to use:** When Codex is unavailable or has failed. It sits ABOVE Gemini in the chain — its output is the best of the three on a context digest — but below Codex, because it draws on the same subscription quota the session itself is spending. Never for a review: `summarizer` is not `reviewer`, and non-negotiable 4 wants a fresh adversarial context, not a summary.
 

@@ -177,8 +177,17 @@ if [ -n "$ACTIVE_REVIEWERS" ]; then
     REVIEWER_ROW="
 | Reviewers (non-negotiable 4) | all three |"
   elif [ "$RV_SORTED" = "codex reviewer" ]; then
-    REVIEWER_ROW="
+    # "reviewer codex" as a deliberate pin and as the default resolve to the
+    # same MEMBERSHIP but not the same policy: the pin refuses gemini even as a
+    # fallback. Ask the policy rather than inferring it from the set, or the row
+    # advertises a fallback that exits 4 when something actually calls it.
+    if bash "$REVIEWERS_SH" fallback gemini >/dev/null 2>&1; then
+      REVIEWER_ROW="
 | Reviewers (non-negotiable 4) | reviewer + codex (default; gemini is codex's fallback) |"
+    else
+      REVIEWER_ROW="
+| Reviewers (non-negotiable 4) | reviewer + codex (pinned; gemini will NOT stand in) |"
+    fi
   elif [ "$RV_SORTED" = "gemini reviewer" ] && [ "$RV_DEFAULT" = "gemini reviewer" ]; then
     # Default on a machine where codex does not work. Also silent: the Codex
     # row above already says why, and there is nothing for the user to fix here.
@@ -191,6 +200,24 @@ if [ -n "$ACTIVE_REVIEWERS" ]; then
 
 Reviewers: only ${ACTIVE_REVIEWERS} are switched on. Do not ask any other one to review — \`--as-reviewer\` exits 4 for it, and that is a setting, not an outage. This limits REVIEWS only: Gemini and Codex stay available for /rehydrate, summaries and large-context work regardless. Change it with \`megavibe reviewers set\`."
   fi
+fi
+
+# The default reviewer set changed on 2026-09-18 from all three to reviewer +
+# codex. `megavibe reviewers set all` USED to clear the setting, so a user who
+# had explicitly asked for all three is indistinguishable from one who never
+# configured anything — both read as "no pin" and now resolve to two reviewers.
+# That cannot be recovered programmatically, so it is surfaced instead: once per
+# machine, only when the resolved set is the default and gemini is actually
+# usable (otherwise there is nothing to opt back into).
+REVIEWER_DEFAULT_NOTE=""
+_RV_STAMP="$HOME/.megavibe/.reviewer-default-notice"
+if [ -n "$ACTIVE_REVIEWERS" ] && [ ! -f "$_RV_STAMP" ] \
+   && [ "$RV_SORTED" = "codex reviewer" ] && [ -n "${GEMINI_API_KEY:-}" ] \
+   && bash "$REVIEWERS_SH" fallback gemini >/dev/null 2>&1; then
+  REVIEWER_DEFAULT_NOTE="
+
+Heads up, once: the default reviewer set is now the \`reviewer\` subagent + Codex, where it used to be all three. Gemini still reviews, but only as Codex's fallback when Codex fails that day. If you had run \`megavibe reviewers set all\` before, that wrote no setting at the time and cannot be told apart from never having chosen — run it again to get all three back."
+  mkdir -p "$(dirname "$_RV_STAMP")" 2>/dev/null && : > "$_RV_STAMP" 2>/dev/null || true
 fi
 
 # Playwright
@@ -211,10 +238,10 @@ SUBAGENT_STATUS="
 --- Subagent status ---
 | Backend | Status |
 |---------|--------|
-| Gemini | ${GEMINI_STATUS} |
 | Codex | ${CODEX_STATUS} |
+| Gemini | ${GEMINI_STATUS} |
 | Playwright | ${PLAYWRIGHT_STATUS} |
-| poma-memory | ${POMA_STATUS} |${REVIEWER_ROW}${REVIEWER_LINE}"
+| poma-memory | ${POMA_STATUS} |${REVIEWER_ROW}${REVIEWER_LINE}${REVIEWER_DEFAULT_NOTE}"
 
 CONTEXT="## Megavibe — project knowledge
 

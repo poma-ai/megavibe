@@ -9,7 +9,7 @@ into a named tmux session ('mvw-<sid12>'); cleaned up by on-session-end.sh.
 Loop (every --interval seconds, default 300):
   1. Read new turns from --transcript past .agent/LOGS/.flush-cursor.<sid>.
   2. If fewer than --min-new-turns, skip.
-  3. Send the slice + existing .agent/ files to a backend (Gemini → Codex).
+  3. Send the slice + existing .agent/ files to a backend (Codex → Gemini).
   4. Parse the JSON envelope. Substring-validate every verbatim_evidence
      against the slice. Lessons additionally require user-role evidence.
   5. Auto-apply narrative/lessons/tasks_patch under flock.
