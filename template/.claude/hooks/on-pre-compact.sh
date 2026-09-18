@@ -94,6 +94,49 @@ DECISIONS_LINES=$(echo "$DECISIONS_LINES" | tr -d ' ')
 LESSONS_LINES=$(wc -l < .agent/LESSONS.md 2>/dev/null || echo "0")
 LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
+# --- Register-currency check (I3) ---
+# Answers a question the line counts above cannot: are TASKS/BUGS still ABOUT
+# the state the repo is actually in? A register can be 700 lines, freshly
+# written, and still describe a release that shipped two tags ago. That is not
+# hypothetical: on 2026-09-18 TASKS §0 named v1.0.9 as live and v1.0.10 as a
+# release candidate while HEAD was on v1.1.0 — eleven days stale, through two
+# releases. Line counts and write-staleness both looked perfectly healthy, and
+# the post-compaction session repeated the stale state back to the user as
+# fact. Staleness of WRITES is not staleness of TRUTH; this checks the latter.
+_epoch_of_date() {  # YYYY-MM-DD -> epoch. GNU first, then BSD/macOS. Empty on failure.
+  date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || echo ""
+}
+REG_WARN=""
+if [ -f .agent/TASKS.md ]; then
+  S0_LINE=$(grep -m1 -E '^## 0[.b]? ' .agent/TASKS.md 2>/dev/null || echo "")
+  S0_DATE=$(printf '%s' "$S0_LINE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+  if [ -n "$S0_DATE" ]; then
+    T0=$(_epoch_of_date "$S0_DATE"); NOW_S=$(date +%s)
+    if [ -n "$T0" ] && [ "$T0" -gt 0 ] 2>/dev/null; then
+      AGE_D=$(( (NOW_S - T0) / 86400 ))
+      if [ "$AGE_D" -gt 3 ] 2>/dev/null; then
+        REG_WARN="${REG_WARN}
+- TASKS.md §0 (\"where we stand\") is dated ${S0_DATE} — ${AGE_D} days old."
+      fi
+    fi
+  else
+    REG_WARN="${REG_WARN}
+- TASKS.md §0 carries no date — cannot tell whether it is current."
+  fi
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    CUR_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+    if [ -n "$CUR_TAG" ]; then
+      S0_BODY=$(awk '/^## 0[.b]? /{f=1} f&&/^## [1-9]/{exit} f' .agent/TASKS.md 2>/dev/null)
+      if ! printf '%s' "$S0_BODY" | grep -qF "$CUR_TAG"; then
+        NAMED=$(printf '%s' "$S0_BODY" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -u | tr '\n' ' ')
+        REG_WARN="${REG_WARN}
+- TASKS.md §0 never mentions ${CUR_TAG}, the tag HEAD is on. It names: ${NAMED:-(no version at all)}"
+      fi
+    fi
+  fi
+fi
+
+
 MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 - FULL_CONTEXT.md: ${FC_LINES} lines
 - TASKS.md: ${TASKS_LINES} lines
@@ -104,6 +147,18 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 ⚠️ If ${COUNT} is high, context accumulated in this conversation may NOT be in the .agent/ files yet. The post-compaction recovery will only have what's on disk.
 
 After compaction, your only required action is: run /rehydrate (single command — it regenerates WORKING_CONTEXT.md via Codex, the Claude subagent, then Gemini). A 5-minute post-compact grace period suppresses stale-context nags while /rehydrate runs, so you won't get double-yelled-at during recovery. On auto-compactions the on-compact hook will additionally inline git state + DECISIONS/TASKS/LESSONS in its systemMessage — on manual /compact that orientation lives in this compaction summary instead."
+
+
+# Fold the register-currency warning into the compaction summary. This is the
+# one part of the message that can contradict the reassuring line counts above,
+# so it goes in the summary itself, not only to stderr.
+if [ -n "$REG_WARN" ]; then
+  MSG="$MSG
+
+🕗 REGISTER CURRENCY — the records may describe a state the repo has left:${REG_WARN}
+
+These files are what post-compaction recovery reads FIRST, and the line counts above say nothing about whether they are still TRUE. Before repeating anything from TASKS §0 or BUGS as current, re-read them against git (tags, recent commits). Treat a stale §0 as the first thing to fix after /rehydrate."
+fi
 
 # --- Optional /prune-context hint (appended only if FULL_CONTEXT.md is large) ---
 # Distinct from /compact: /prune-context trims redundant lines from the
