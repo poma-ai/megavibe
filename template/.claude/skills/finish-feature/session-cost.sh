@@ -18,8 +18,10 @@
 #   peak context  — the fullest single window. Comparable to a task
 #                   notification's `subagent_tokens` (measured within 4%).
 #   generated     — output tokens. What the model actually produced.
-#   new material  — input + cache creation + output. Distinct content that
-#                   entered the window. Compare THIS against an estimate.
+#   new material  — input + output + the cache creation that grew the window.
+#                   A prefix-cache rebuild reports the whole window as cache
+#                   creation again; that repeat is excluded. Distinct content
+#                   that entered the window. Compare THIS against an estimate.
 #   processed     — + cache reads. Everything the API saw, re-sent each turn, so
 #                   it scales with turn count rather than with work done.
 #
@@ -72,27 +74,68 @@ SID="$(basename "$T" .jsonl)"
 # "Login expired" — their context reads as 0 and would look like a compaction.
 read -r -d '' RESPONSES <<'JQ' || true
 def responses:
-  [ .[] | select(.type=="assistant" and .message.usage)
-        | select((.message.model // "") != "<synthetic>") ]
-  | to_entries
-  # Key on message.id, falling back to the row index. A shared literal fallback
-  # would collapse every response in a transcript that lacks ids into one.
-  # Assumes one id = one response: across 240 transcripts no id ever recurs
-  # non-contiguously, so first-occurrence position is the chronological slot.
-  | reduce .[] as $e ({order: [], by: {}};
-      $e.value as $m
-      | ($m.message.id // ("row-" + ($e.key|tostring))) as $id
-      | ($m.message.usage.output_tokens // 0) as $o
-      | if .by[$id] == null then
-          .order += [$id]
-          | .by[$id] = { i:  ($m.message.usage.input_tokens // 0),
-                         cc: ($m.message.usage.cache_creation_input_tokens // 0),
-                         cr: ($m.message.usage.cache_read_input_tokens // 0),
-                         o:  $o }
-        else
-          .by[$id].o = ([.by[$id].o, $o] | max)
-        end)
+  # Walk every entry in order. A `<synthetic>` assistant entry (interrupt, API
+  # error, expired login) carries zero usage and is dropped. A user entry with
+  # isCompactSummary:true is the compaction marker Claude Code writes: the next
+  # response after it opens a new window, so it is carried as `reset` on that
+  # response. Key on message.id, falling back to a row counter — a shared
+  # literal fallback would collapse every response in a transcript that lacks
+  # ids into one. Assumes one id = one response: across 240 transcripts no id
+  # ever recurs non-contiguously, so first-occurrence position is the slot.
+  reduce .[] as $m ({order: [], by: {}, reset: false, n: 0};
+      if ($m.isCompactSummary // false) == true then .reset = true
+      elif ($m.type == "assistant") and ($m.message.usage != null)
+           and (($m.message.model // "") != "<synthetic>") then
+        .n += 1
+        | ($m.message.id // ("row-" + (.n|tostring))) as $id
+        | ($m.message.usage.output_tokens // 0) as $o
+        | if .by[$id] == null then
+            .order += [$id]
+            | .by[$id] = { i:  ($m.message.usage.input_tokens // 0),
+                           cc: ($m.message.usage.cache_creation_input_tokens // 0),
+                           cr: ($m.message.usage.cache_read_input_tokens // 0),
+                           o:  $o,
+                           reset: .reset }
+            | .reset = false
+          else
+            .by[$id].o = ([.by[$id].o, $o] | max)
+          end
+      else . end)
   | . as $acc | [ $acc.order[] | $acc.by[.] ];
+
+# Split the responses into context windows and, in the same pass, add up the
+# material that actually entered them.
+#
+# Windows: a compaction discards the window and starts again, so one max
+# under-reports a session that compacted — the pre-compact window is simply
+# absent from it. The marker (isCompactSummary, carried as `reset`) is the
+# ground truth and is used whenever the transcript has one. Without any marker
+# the fallback is the drop itself: context collapsing below 60% of the previous
+# response. Measured across 233 transcripts, that ratio is NOT a clean
+# separator — prefix-cache rebuilds sit at 0.74–0.77 and a marker-confirmed
+# reset at 0.79 — which is why the marker wins wherever it exists. Both zero
+# guards stay: a zero must neither open a window nor be the next baseline.
+#
+# New material: cache_creation_input_tokens is not a per-turn delta. When the
+# prefix cache expires (about five idle minutes) the whole window is rewritten
+# and reported as cache creation, so summing it counts the same content again
+# on every rebuild — measured at 3–7x inflation on real sessions. Each
+# response's cache creation is therefore capped at the context growth since
+# the previous response (the whole context for the first response of a
+# window), which is the part that is genuinely new.
+def windows:
+  (any(.[]; .reset)) as $has_marker
+  | reduce .[] as $v ({segs: [], nm: 0};
+      ($v.i + $v.cr + $v.cc) as $ctx
+      | (if (.segs | length) == 0 then true
+         elif $v.reset and $has_marker then true
+         elif ($has_marker | not) and (.segs[-1][-1] > 0) and ($ctx > 0)
+              and ($ctx < (.segs[-1][-1] * 0.6)) then true
+         else false end) as $new
+      | (if $new then 0 else .segs[-1][-1] end) as $prev
+      | .nm += $v.i + $v.o + ([$v.cc, ([0, ($ctx - $prev)] | max)] | min)
+      | if $new then .segs += [[$ctx]]
+        else .segs = (.segs[0:-1] + [.segs[-1] + [$ctx]]) end);
 JQ
 
 STATS="$(jq -s "$RESPONSES"'
@@ -117,32 +160,8 @@ STATS="$(jq -s "$RESPONSES"'
   | [ .[] | select(.type=="assistant") | .message.content[]? | select(.type=="tool_use") ] as $t
   | [ .[] | .timestamp // empty ] as $ts
   | [ $r[] | (.i + .cr + .cc) ] as $ctx
-  # Compaction resets the window, so one max under-reports a session that
-  # compacted — the pre-compact window is simply absent from it. Split wherever
-  # context collapses below 60% of the previous response. Detecting the drop
-  # rather than a transcript marker means this holds however the harness records
-  # a compaction; no marker field exists in practice.
-  #
-  # Why 0.6, measured across 240 transcripts: context decreases only 12 times,
-  # in two physically different families. Nine are real resets, ratio 0.077 to
-  # 0.589. Three are prefix-cache expiry at 0.877 and above — cache_creation
-  # jumps to nearly the whole window while cache_read collapses, so the total
-  # barely moves and the conversation did NOT restart; splitting there would
-  # double-count. 0.6 sits in the empty band between the families. The margin is
-  # asymmetric: wide against false positives, 1.9% against false negatives, so a
-  # reset that discarded only 40% of a window would be missed. That error is
-  # one-directional — context_total can under-report, never over-report.
-  #
-  # Both zero guards are needed: a zero must neither open a window (as a value)
-  # nor be the baseline the next response is compared against. Unreachable while
-  # every zero-context response is <synthetic>, and back the moment one is not.
-  | ( $ctx
-      | to_entries
-      | reduce .[] as $e ([];
-          if (. | length) == 0 then [[$e.value]]
-          elif (.[-1][-1] > 0) and ($e.value > 0) and ($e.value < (.[-1][-1] * 0.6)) then . + [[$e.value]]
-          else (.[0:-1] + [.[-1] + [$e.value]])
-          end) ) as $segments
+  | ($r | windows) as $w
+  | $w.segs as $segments
   | {
       human_turns:   ($h | length),
       responses:     ($r | length),
@@ -158,7 +177,7 @@ STATS="$(jq -s "$RESPONSES"'
       started:       ($ts | first // ""),
       ended:         ($ts | last // "")
     }
-  | .new_material = (.fresh_input + .cache_created + .generated)
+  | .new_material = $w.nm
   | .processed    = (.fresh_input + .cache_created + .cache_read + .generated)
 ' "$T")"
 
@@ -172,7 +191,7 @@ for f in "$PDIR/$SID/subagents"/agent-*.jsonl; do
   [ -f "$f" ] || continue
   one="$(jq -s "$RESPONSES"'(responses) as $r | select(($r|length) > 0)
     | { generated:    ([$r[].o] | add // 0),
-        new_material: ([$r[] | (.i + .cc + .o)] | add // 0),
+        new_material: (($r | windows) | .nm),
         peak_context: ([$r[] | (.i + .cr + .cc)] | max // 0) }' "$f" 2>/dev/null)" || continue
   [ -n "$one" ] || continue
   runs=$((runs + 1))
@@ -215,7 +234,9 @@ if [ -n "$BASE" ]; then
       read -r f i d <<<"$(printf '%s\n' "$NUMSTAT" \
         | awk 'NF { if ($1 ~ /^[0-9]+$/) ins+=$1; if ($2 ~ /^[0-9]+$/) del+=$2; n++ } END { print n+0, ins+0, del+0 }')"
       # base...HEAD is commit-based, so work still in the tree is invisible.
-      DIRTY="$( { git -C "$PROJECT" status --porcelain 2>/dev/null || true; } | wc -l | tr -d ' ')"
+      # --untracked-files=no: a scratch file that will never be committed is
+      # not work missing from the diff, and "commit first" is wrong advice for it.
+      DIRTY="$( { git -C "$PROJECT" status --porcelain --untracked-files=no 2>/dev/null || true; } | wc -l | tr -d ' ')"
       DIFF="$(jq -n --arg b "$BASE" --argjson f "${f:-0}" --argjson i "${i:-0}" --argjson d "${d:-0}" \
         --argjson u "${DIRTY:-0}" '{base:$b, files:$f, insertions:$i, deletions:$d, uncommitted_paths:$u}')"
     else
