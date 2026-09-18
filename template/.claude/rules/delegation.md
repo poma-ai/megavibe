@@ -35,9 +35,19 @@ Nothing was invented by any of them; every specific claim in all four traced bac
 
 **Do not fan a job out to several cheap models instead of one good one.** The measured failure mode is shallow work, not too few opinions: models that cannot run the code agree with each other and still miss the P1. Depth first, then a second independent reader.
 
+## Two review tiers, and why
+
+Every round gets **one** reviewer — Codex, or the `reviewer` subagent where Codex is unavailable. The round that gates the ship, and anything critical, gets **both in parallel**. Critical means credentials or security, data loss or destructive paths, anything public or user-facing, the protocol and templates themselves, and anything the user names.
+
+The reason is cost asymmetry, measured. Codex draws on a separate plan; the `reviewer` subagent draws ~180-200K tokens of the SAME subscription the session is spending — in one session here, two invocations cost 386K tokens. Running both on every intermediate round spends the session's own context budget to re-check work that is still moving, and a defect introduced in round one is caught by the ship round anyway, because the ship round is the gate. Running only Codex on the last round, on the other hand, ships on a single unreproduced opinion.
+
+Iterating toward a fix is a normal round. The last one before merge is not. A change that goes through exactly one review round is having its ship round, so it gets both.
+
+**The floor is one independent reviewer, never zero.** On a machine with only a Claude subscription, that is the subagent on every round, because there is nothing else — the tiering removes the *second* reader on intermediate rounds, never the only one.
+
 ## Switching reviewers off
 
-`MEGAVIBE_REVIEWERS` is an allow-list of reviewer ids — `gemini`, `codex`, and `reviewer` (the Claude subagent, which is **always** in the resolved set and cannot be switched off: it is the floor non-negotiable 4 rests on, costs no key, and has no script to gate it through). Unset, empty or `auto` is the DEFAULT: `reviewer` + `codex` where `codex exec` works, `reviewer` + `gemini` where it does not, and all three if the probe cannot answer at all. `all` names every reviewer explicitly and makes Gemini a peer again. To pin the set:
+`MEGAVIBE_REVIEWERS` is an allow-list of reviewer ids — `gemini`, `codex`, and `reviewer` (the Claude subagent, which is **always** in the resolved set and cannot be switched off: it is the floor non-negotiable 4 rests on, costs no key, and has no script to gate it through). Being in the set is about eligibility, not cadence: the two tiers above decide which rounds actually call it. Unset, empty or `auto` is the DEFAULT: `reviewer` + `codex` where `codex exec` works, `reviewer` + `gemini` where it does not, and all three if the probe cannot answer at all. `all` names every reviewer explicitly and makes Gemini a peer again. To pin the set:
 
 ```
 megavibe reviewers                          # what is on, where it was set, what is available
@@ -70,7 +80,8 @@ Enforcement is in the scripts, not only here — under `--as-reviewer` they exit
 | Summarize text (any length/target) | Codex `--effort low` | Claude subagent | Gemini | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | Claude subagent | Literal, high-recall, structured markdown |
 | Research memo (multi-source, citations) | Codex (`--search` when freshness matters) | Gemini | Claude subagent | `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
-| **Independent review before shipping** (non-negotiable 4) | every reviewer in `MEGAVIBE_REVIEWERS` (default: `reviewer` + `codex`) — `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Codex `codex-review.sh --as-reviewer`, in parallel | Codex failed today → `gemini-review.sh --as-reviewer --fallback --pro` stands in, named as such in the synthesis | `reviewer` subagent alone | Ranked findings with file:line, failing input, outcome, fix; ship / do-not-ship verdict |
+| **Review, normal round** (non-negotiable 4) | Codex `codex-review.sh --as-reviewer` | `reviewer` subagent, where Codex is unavailable | `gemini-review.sh --as-reviewer --fallback --pro` when Codex failed today | Ranked findings with file:line, failing input, outcome, fix |
+| **Review, ship round or anything critical** | `reviewer` subagent (Opus; `general-purpose`+opus with the agent's text if not yet registered) **+** Codex, in parallel | whichever of the two is available | Gemini `--fallback --pro` stands in for Codex, named as such in the synthesis | Same, plus a ship / do-not-ship verdict |
 | Fast second opinion / alternative plan | Codex | Claude subagent | Gemini | Patch plan + test plan |
 | Quick fact check / web search | Codex | Gemini | Claude subagent | Claims with sources |
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | Screenshots/HTML → `.agent/ASSETS/` |

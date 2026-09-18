@@ -792,7 +792,7 @@ if [ "${1:-}" = "reviewers" ]; then
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"$PICKED\" in $SCOPE_FILE  (${SCOPE_NAME})"
           case " $PICKED " in
             *" reviewer "*) ;;
-            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent always runs on top of this — it is the floor non-negotiable 4 rests on and cannot be switched off." ;;
+            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent sits on top of this and cannot be switched off — it is the floor non-negotiable 4 rests on. It joins ship rounds and critical work, and reviews alone when no external backend is available." ;;
           esac
           echo "    Open sessions keep the old set until they restart."
           ;;

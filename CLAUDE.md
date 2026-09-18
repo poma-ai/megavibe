@@ -160,8 +160,9 @@ For hook changes, ask Codex — it runs the script under `--sandbox read-only` �
 
 | Scenario | Route | Why |
 |----------|-------|-----|
-| Reviewing protocol text changes | `reviewer` subagent + Codex `--as-reviewer` | Two readers that both run things; add `gemini-review.sh --as-reviewer --fallback --pro` only if Codex is down |
-| Reviewing hook shell scripts | `reviewer` subagent + Codex `--as-reviewer` | Both run the scripts. A reviewer that only reads them missed a P1 in every measured case |
+| Reviewing protocol text changes | `reviewer` subagent + Codex `--as-reviewer` | The protocol IS critical per non-negotiable 4, so always the full set — every round, not just the ship round |
+| Reviewing hook shell scripts | Codex `--as-reviewer` each round, + `reviewer` subagent on the ship round | Both run the scripts. A reviewer that only reads them missed a P1 in every measured case |
+| Intermediate round on ordinary code | Codex `--as-reviewer` alone | The subagent costs ~180-200K tokens of this session's own subscription; the ship round catches what an intermediate round misses |
 | Researching CLAUDE.md best practices, Claude Code features | Web search / Codex | Needs current community info |
 | Comparing megavibe to alternatives | Codex, or Gemini for a very large input | Second opinion on architecture |
 | README edits, prose polish, small script fixes | Handle directly | Not worth delegation overhead |
