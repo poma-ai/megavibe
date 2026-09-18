@@ -116,7 +116,7 @@ Write the comment from Step 4 — predicted versus actual size, predicted versus
 
 **If that PR is still open** → ask whether to merge it. Never merge without an explicit yes; it is outward-facing and it is other people's branch protection you would be spending. Check first, and **report instead of asking** in every one of these — the failure mode is offering a merge that should not have been offered, not declining one that was fine:
 
-- **No review.** Merging is shipping, and non-negotiable 4 requires a FULL-SET review of the final candidate before shipping — an intermediate, single-reviewer round does not qualify, and neither does a round run against an earlier state. **This session must have run that round, and run it on the commit you are about to merge**: compare the SHA you reviewed against `headRefOid`, and say in the pre-merge report which reviewers ran and against which SHA. A GitHub `reviewDecision` of `APPROVED` does NOT substitute — it says a human clicked approve, not that the full set read this head, and it is frequently stale by one push. Merge with `gh pr merge --match-head-commit <the SHA you reviewed>` so a push between the review and the merge fails the merge instead of silently shipping unreviewed code. Branch protection catches none of this in most repos, so check it here rather than trusting `BLOCKED` to appear.
+- **No review.** Merging is shipping, and non-negotiable 4 requires a FULL-SET review of the final candidate before shipping — an intermediate, single-reviewer round does not qualify, and neither does a round run against an earlier state. **This session must have run that round, and run it on the commit you are about to merge**: compare the SHA you reviewed against `headRefOid`, and say in the pre-merge report which reviewers ran and against which SHA. A GitHub `reviewDecision` of `APPROVED` does NOT substitute — it says a human clicked approve, not that the full set read this head, and it is frequently stale by one push. The merge command below carries `--match-head-commit` for this reason; do not drop it. Two rival templates in one checklist is how the guard went missing the first time, so this bullet deliberately does not restate the command. Branch protection catches none of this in most repos, so check it here rather than trusting `BLOCKED` to appear.
 - `isDraft` is true → say so. `state` is `OPEN` for a draft, and `gh pr merge` fails on one.
 - `mergeable` is `CONFLICTING` → say so
 - `mergeable` is `UNKNOWN` → GitHub computes mergeability asynchronously, so this is the normal answer right after a push. Re-poll once, then report if it is still unknown. Never offer a merge on an unknown.
@@ -127,9 +127,11 @@ Write the comment from Step 4 — predicted versus actual size, predicted versus
   ```
   Name the method in the question so the user is agreeing to a specific action, then run it with **the method you found**, not the one in this example:
   ```sh
-   gh pr merge <number> --<method>
+   gh pr merge <number> --<method> --match-head-commit <the SHA the full-set review ran against>
   ```
   A repo with squash disabled and rebase enabled will reject a pasted `--squash`.
+
+  `--match-head-commit` is not optional and it is the only part of the review gate that is actually armed. The `headRefOid` you read at the top of this step is already stale by the time the user answers: comparing it by hand compares two copies of the same old value, so a push that lands *during* the question — a collaborator, or another of this user's sessions in the same checkout — passes the manual check and merges unreviewed code. The flag makes GitHub refuse that merge instead.
 
 A closed or already-merged PR gets the comment and no question.
 
