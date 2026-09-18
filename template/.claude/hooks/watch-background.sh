@@ -70,6 +70,17 @@ STATE=".agent/LOGS/.bg-tasks.${SID}.jsonl"
 NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
 [ "$NOW" -gt 0 ] || exit 0
 
+task_file() {  # id -> path of the harness's output file for it, or ""
+  local uid f
+  uid=$(id -u 2>/dev/null || echo 0)
+  for f in "${TMPDIR:-/tmp}"/claude-"$uid"/*/*/tasks/"$1".output \
+           /private/tmp/claude-"$uid"/*/*/tasks/"$1".output \
+           /tmp/claude-"$uid"/*/*/tasks/"$1".output; do
+    [ -e "$f" ] && { printf '%s' "$f"; return 0; }
+  done
+  return 0
+}
+
 record() {  # id path kind
   jq -nc --arg id "$1" --arg p "$2" --arg k "$3" --argjson t "$NOW" \
     '{id:$id, path:$p, kind:$k, started:$t, covered:false, nudged:0}' >> "$STATE" 2>/dev/null || true
@@ -86,8 +97,14 @@ if [ "$EVENT" = "PostToolUse" ]; then
       ID=$(printf '%s' "$INPUT" | jq -r '.tool_response.backgroundTaskId // ""' 2>/dev/null || echo "")
       [ -n "$ID" ] || ID=$(printf '%s' "$RESP" | sed -n 's/.*background with ID: \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
       [ -n "$ID" ] || exit 0
+      # The "Output is being written to: <path>" sentence Claude sees is
+      # composed by the harness; the hook payload carries only the id and an
+      # empty stdout (measured). The file already exists at launch, under
+      # <tmp>/claude-<uid>/<cwd slug>/<launch id>/tasks/<id>.output, so find
+      # it by id. One glob per background start, not per tool call.
       OUT=$(printf '%s' "$RESP" | sed -n 's/.*written to: \([^ ]*\.output\).*/\1/p' | head -1)
-      [ -n "$OUT" ] || OUT="(see the tool result)"
+      [ -n "$OUT" ] || OUT=$(task_file "$ID")
+      [ -n "$OUT" ] || OUT="(the output file named in the tool result)"
       record "$ID" "$OUT" "bash"
       DESC=$(printf '%s' "$INPUT" | jq -r '.tool_input.description // "background task"' 2>/dev/null | cut -c1-80)
       LOOP="f='$OUT'; last=0; while sleep $BEAT_SECS; do s=\$(wc -c <\"\$f\" 2>/dev/null | tr -d ' ' || echo 0); printf 'bg $ID: %s bytes (+%s) | %s\\n' \"\$s\" \"\$((s-last))\" \"\$(tail -c 200 \"\$f\" 2>/dev/null | tr '\\n' ' ')\"; last=\$s; done"
