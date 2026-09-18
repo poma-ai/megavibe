@@ -39,6 +39,7 @@ GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/commits/main"
 VERSION_FILE="$MEGAVIBE_HOME/version"
 UPDATE_STAMP="$MEGAVIBE_HOME/.last-update-check"
 UPDATE_AVAILABLE_FILE="$MEGAVIBE_HOME/.update-available"
+CHANGELOG_FILE="$MEGAVIBE_HOME/.update-changelog"
 
 # ─── Atomic file install ─────────────────────────────────────────────
 #
@@ -191,6 +192,99 @@ check_for_update() {
   fi
 }
 
+# ─── Update changelog ────────────────────────────────────────────────
+#
+# Collects what an update actually changed as raw material for a Claude
+# session to summarize (announce-update.sh feeds it in at session start).
+# Nothing here renders for the user: a commit list is the input to the
+# summary, not the summary.
+#
+# The diffstat is restricted to the paths that get deployed into projects —
+# a template hook or rule changing is what alters behaviour for the user,
+# where a commit touching only README.md is noise the summary should drop.
+#
+# Never fails an update. Every path returns 0; a missing changelog file just
+# means no announcement.
+collect_changelog() {
+  local src="$1" old="$2" new="$3"
+  [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ] || return 0
+
+  # The range this changelog covers. Starts at $old and only moves backwards,
+  # when the chain below finds an un-announced predecessor to absorb.
+  local base="$old"
+
+  # Two updates with no session in between: the second would overwrite the
+  # first, and the announcement still says "since the last session". Chain
+  # instead — if the un-announced file ends exactly where this update starts,
+  # recompute from ITS base so the range stays continuous.
+  if [ -f "$CHANGELOG_FILE" ]; then
+    local prev_old prev_new hdr
+    hdr=$(head -1 "$CHANGELOG_FILE" 2>/dev/null || echo "")
+    prev_old=$(printf '%s' "$hdr" | sed -n 's/^megavibe updated: \([0-9a-f][0-9a-f]*\) -> \([0-9a-f][0-9a-f]*\).*/\1/p')
+    prev_new=$(printf '%s' "$hdr" | sed -n 's/^megavibe updated: \([0-9a-f][0-9a-f]*\) -> \([0-9a-f][0-9a-f]*\).*/\2/p')
+    if [ -n "$prev_old" ] && [ -n "$prev_new" ] \
+       && case "$old" in "$prev_new"*) true ;; *) false ;; esac; then
+      base="$prev_old"
+    fi
+  fi
+
+  local subjects="" files="" count=""
+  if is_git_source "$src"; then
+    # Every capture ends in `|| echo ""`. Under `set -euo pipefail` a bare
+    # assignment from a failing command aborts the function, and git fails here
+    # for an ordinary reason: $old is unreachable after a rebase or in a shallow
+    # clone. That abort would skip the `rm -f $UPDATE_AVAILABLE_FILE` at the end
+    # of do_update, leaving "Update available" pinned on every launch after a
+    # successful update.
+    subjects=$(git -C "$src" log --no-merges --format='%s' "$base..$new" 2>/dev/null | head -40 || echo "")
+    files=$(git -C "$src" diff --stat "$base" "$new" -- template/ scripts/ setup.sh init.sh megavibe 2>/dev/null | head -40 || echo "")
+    count=$(git -C "$src" rev-list --count --no-merges "$base..$new" 2>/dev/null || echo "")
+  else
+    # A curl install has no local history (--depth 1), so the log has to come
+    # from GitHub. The compare endpoint answers from the STORED old SHA, which
+    # 404s if history was rewritten — this repo has had that happen twice — so
+    # an empty answer must degrade to no changelog, never to an error.
+    local json
+    json=$(curl -sfL "https://api.github.com/repos/$GITHUB_REPO/compare/$base...$new" 2>/dev/null || echo "")
+    if [ -n "$json" ] && command -v jq &>/dev/null; then
+      subjects=$(printf '%s' "$json" | jq -r '.commits[]?.commit.message | split("\n")[0]' 2>/dev/null | head -40 || echo "")
+      files=$(printf '%s' "$json" | jq -r '.files[]? | select(.filename | test("^(template/|scripts/|setup\\.sh$|init\\.sh$|megavibe$)")) | "  \(.filename) (+\(.additions)/-\(.deletions))"' 2>/dev/null | head -40 || echo "")
+      count=$(printf '%s' "$json" | jq -r '.total_commits // empty' 2>/dev/null || echo "")
+    fi
+  fi
+
+  # A chained base can be unreachable (re-clone, gc, rebase) while the plain one
+  # is fine. Falling back keeps the shorter changelog instead of none.
+  if [ -z "$subjects" ] && [ "$base" != "$old" ]; then
+    base="$old"
+    if is_git_source "$src"; then
+      subjects=$(git -C "$src" log --no-merges --format='%s' "$base..$new" 2>/dev/null | head -40 || echo "")
+      files=$(git -C "$src" diff --stat "$base" "$new" -- template/ scripts/ setup.sh init.sh megavibe 2>/dev/null | head -40 || echo "")
+      count=$(git -C "$src" rev-list --count --no-merges "$base..$new" 2>/dev/null || echo "")
+    fi
+  fi
+
+  [ -n "$subjects" ] || return 0
+
+  {
+    printf 'megavibe updated: %s -> %s (%s commits)\n\n' \
+      "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$new" | cut -c1-8)" "${count:-?}"
+    printf 'Commits:\n%s\n' "$subjects"
+    case "$count" in
+      ''|*[!0-9]*) ;;
+      *) if [ "$count" -gt 40 ]; then printf '  ... and %s more (list truncated)\n' "$((count - 40))"; fi ;;
+    esac
+    if [ -n "$files" ]; then
+      printf '\nDeployed files changed:\n%s\n' "$files"
+      if [ "$(printf '%s\n' "$files" | wc -l | tr -d ' ')" -ge 40 ]; then
+        printf '  ... (file list truncated)\n'
+      fi
+    fi
+  } > "$CHANGELOG_FILE" 2>/dev/null || return 0
+
+  echo -e "  ${DIM}${count:-?} commit(s). Claude will summarize what changed at session start.${RESET}"
+}
+
 # Perform the actual update
 do_update() {
   local src
@@ -214,13 +308,15 @@ do_update() {
       echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
       # Signal running sessions that an update landed
       echo "$new_head" > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
+      collect_changelog "$src" "$old_head" "$new_head"
     fi
   else
     echo -e "${BOLD}Updating from GitHub...${RESET}"
     echo ""
     # Check if already at latest version before downloading
-    local old_hash new_hash
+    local old_hash new_hash cloned_hash
     old_hash=""
+    cloned_hash=""
     [ -f "$VERSION_FILE" ] && old_hash=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
     new_hash=$(curl -sfL -H "Accept: application/vnd.github.sha" "$GITHUB_API" 2>/dev/null || echo "")
     if [ -n "$old_hash" ] && [ -n "$new_hash" ] && [ "$old_hash" = "$new_hash" ]; then
@@ -240,6 +336,17 @@ do_update() {
         fi
         mv "$tmpdir/megavibe-main" "$tmpdir/megavibe"
       fi
+      # $new_hash came from the API BEFORE the download, so a commit landing in
+      # between recorded a version that was never installed — and the next
+      # update then computed its changelog from a base that does not match the
+      # files on disk. Prefer what actually arrived. The tarball fallback has no
+      # .git, so the API answer stays the best available there.
+      # --git-dir, not -C: `git -C <not-a-repo>` walks UP to an enclosing
+      # repository and answers from it. The tarball fallback leaves no .git, so
+      # with TMPDIR inside any checkout that recorded a foreign SHA as the
+      # installed version and poisoned every later changelog base.
+      cloned_hash=$(git --git-dir="$tmpdir/megavibe/.git" rev-parse HEAD 2>/dev/null || echo "")
+      if [ -n "$cloned_hash" ]; then new_hash="$cloned_hash"; fi
       echo "  Running setup..."
       bash "$tmpdir/megavibe/setup.sh"
       # Store the new version hash
@@ -250,6 +357,7 @@ do_update() {
       echo -e "  ${GREEN}Updated.${RESET} Changes will apply on next megavibe launch."
       # Signal running sessions that an update landed
       echo "$new_hash" > "$MEGAVIBE_HOME/.update-applied" 2>/dev/null || true
+      collect_changelog "$src" "$old_hash" "$new_hash"
     fi
   fi
   rm -f "$UPDATE_AVAILABLE_FILE"
