@@ -168,14 +168,29 @@ STATE_JSON=$(jq -sc 'map(select(type=="object"))' "$STATE" 2>/dev/null || echo "
 RESULT=$(jq -nc --argjson reg "$REG" --argjson st "$STATE_JSON" --argjson now "$NOW" --argjson secs "$CHECK_SECS" '
   ($reg | map(select(.status == "running"))) as $live
   | ($live | map(.id)) as $ids
+  # One row per id. A task re-registered under the same id (the harness
+  # adopts one after a worker restart) must keep the earliest start and the
+  # latest nudge, and the freshest path.
   | ($st | map(select(.id as $i | $ids | index($i)))
-        | group_by(.id) | map(max_by(.nudged))) as $rows
+        | group_by(.id)
+        | map({id: .[0].id, kind: .[0].kind,
+               path: (max_by(.started).path),
+               started: (map(.started) | min),
+               nudged: (map(.nudged) | max)})) as $base
+  | ($live | map({key: .id, value: (.command // "")}) | from_entries) as $cmd
   | ($live | map(.command // "")) as $cmds
-  | ($rows | map(
+  | ($base | map(
        . as $r
+       # Covered: the command of some running task names this one. That is what an
+       # armed heartbeat looks like from here.
        | .covered = ([$cmds[] | select(. != "" and (contains($r.id) or ($r.path != "" and contains($r.path))))] | length > 0)
+       # A watcher: the command of this task names another watched task — the
+       # documented fallback runs the heartbeat through run_in_background, and
+       # a watcher does not need a watcher.
+       | .watcher = ([$base[] | select(.id != $r.id) | . as $o
+                       | ($cmd[$r.id] // "") | select(. != "" and (contains($o.id) or ($o.path != "" and contains($o.path))))] | length > 0)
        | .age = ($now - .started)
-       | .due = ((.covered | not) and .age >= $secs and ($now - .nudged) >= $secs))) as $rows
+       | .due = ((.covered | not) and (.watcher | not) and .age >= $secs and ($now - .nudged) >= $secs))) as $rows
   | {rows: $rows, due: ($rows | map(select(.due)))}' 2>/dev/null) || exit 0
 [ -n "$RESULT" ] || exit 0
 
