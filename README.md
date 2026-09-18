@@ -244,7 +244,7 @@ Inside a megavibe session:
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
 | `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — three-reviewer (Claude `reviewer` subagent + Gemini + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
-| `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. The resumed session opens with a short summary of what the update actually changed |
+| `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |
 | `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
 
