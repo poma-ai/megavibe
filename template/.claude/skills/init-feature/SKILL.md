@@ -72,11 +72,11 @@ No code, no edits, no branch. If the description is ambiguous in a way that chan
 
 ## Step 3 — Complexity and token estimate
 
-Size from the Step 1 counts. Read the table **top down and stop at the first row where any criterion matches** — the rows are thresholds, not a partition, so order is what makes the answer unique. S is the fallback, so every input lands somewhere.
+Size from the Step 1 counts and the Step 2 unknowns. Read the table **top down and stop at the first row where any criterion matches** — the rows are thresholds, not a partition, so order is what makes the answer unique. S is the fallback, so every input lands somewhere.
 
 | Size | Any one of | Route it suggests |
 |------|------------|-------------------|
-| **XL** | >25 files · >2000 changed lines · unknowns outnumber knowns | spec, split into phases |
+| **XL** | >25 files · >2000 changed lines · 3 unknowns and none resolvable by one command | spec, split into phases |
 | **L** | >10 files · >600 changed lines · `CROSS` yes · 2+ new modules | spec |
 | **M** | >3 files · >150 changed lines · 1 new module · 2+ unknowns | vibe |
 | **S** | everything else | vibe |
@@ -154,7 +154,7 @@ Do not choose the route for the user and do not start work until they answer. Th
 **On yes**, write the body to a file and post it before either route starts, so the ticket number can go in the brief and `/finish-feature` can find it later. Commenting on the ticket the work came from:
 
 ```sh
- gh issue comment <ref> --body-file <path>
+ gh issue comment "<ref>" --body-file <path>
 ```
 
 Or opening a new one, when the input was prose:
