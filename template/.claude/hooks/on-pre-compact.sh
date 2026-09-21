@@ -165,44 +165,46 @@ if [ -n "$S0_LINE" ]; then
     # toplevel never matched under a symlinked path like /tmp, which silently
     # disabled this half for anyone working there.
     if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$(pwd -P)" ]; then
-      # Semver-shaped tags only, matched with explicit delimiters. Three
-      # rounds of tokenising prose produced a new false positive every time (a
-      # release URL collapsed to one token, a compare URL hid its endpoints, a
-      # slash split invented `releases` as a tag), and plain substring matching
-      # then fired on ordinary prose: a repo tagged `v2` warned on "v2 of the
-      # onboarding doc", and one tagged `2` warned on "2 open blockers".
+      # Semver-shaped references only, pulled out of the section in ONE pass
+      # and then intersected with the tag list. Two greps total, whatever the
+      # tag count: the previous shape ran one anchored grep PER TAG and took
+      # 7 SECONDS on a 2000-tag repo against 194 ms on a small one, which is not
+      # a thing to put in front of a compaction.
       #
-      # So the check understands ONE tag shape and says nothing about the rest.
+      # Why a fixed shape rather than tokenising prose: three rounds of
+      # tokenising produced a new false positive every time (a release URL
+      # collapsed into one token, a compare URL hid its endpoints, a slash split
+      # invented `releases` as a tag name), and plain substring matching then
+      # fired on ordinary prose — a repo tagged `v2` warned on "v2 of the
+      # onboarding doc", one tagged `2` warned on "2 open blockers" and on the
+      # digit inside the section's own date.
+      #
+      # The shape requires a dot, which is what excludes `v2`, `2` and the
+      # `2026-09-21` date stamp. Greedy digits mean `v1.1.01` yields itself and
+      # never `v1.1.0`, so a near-miss cannot read as a hit. Matches are
+      # non-overlapping, so `compare/v1.0.9...v1.1.0` yields both endpoints and
+      # `/releases/tag/v1.1.0` yields the tag.
+      #
       # A repo tagging `bake-18` or `release-3` gets the date half only. That is
-      # a real limitation, documented in the README, and it is the honest
-      # version: a heuristic that cannot tell a release reference from prose
-      # must not assert that a register is stale.
-      #
-      # Delimiters: a non-alphanumeric (or start) on the left, a NON-DIGIT (or
-      # end) on the right — so `v1.1.0` does not match inside `v1.1.01`, while
-      # `/tag/v1.1.0`, `compare/v1.0.9...v1.1.0` and `Running v1.1.0.` all do.
-      _names_tag() {  # $1 = tag; 0 if §0 names it
-        _esc=$(printf '%s' "$1" | sed 's/[][\.*^$(){}?+|/]/\\&/g')
-        printf '%s' "$S0_BODY" | grep -qE "(^|[^A-Za-z0-9])${_esc}([^0-9]|$)"
-      }
+      # a real limitation, stated in the README: a matcher that cannot tell a
+      # release reference from prose must not assert that a register is stale.
+      S0_VERS=$(printf '%s' "$S0_BODY" \
+                | grep -oE 'v?[0-9]+\.[0-9]+(\.[0-9]+)*' | sort -u || echo "")
       HEAD_TAGS=$(git tag --points-at HEAD 2>/dev/null || echo "")
-      if [ -n "$HEAD_TAGS" ]; then
+      if [ -n "$HEAD_TAGS" ] && [ -n "$S0_VERS" ]; then
+        # Named tags = the intersection of §0's version strings with real tags.
+        NAMED=$(git tag 2>/dev/null | grep -xF -f <(printf '%s\n' "$S0_VERS") 2>/dev/null \
+                | sort -u | tr '\n' ' ' || echo "")
         HEAD_NAMED=0
         for _t in $HEAD_TAGS; do
-          if _names_tag "$_t"; then HEAD_NAMED=1; break; fi
+          if printf '%s\n' "$S0_VERS" | grep -qxF -- "$_t"; then HEAD_NAMED=1; break; fi
         done
-        if [ "$HEAD_NAMED" = 0 ]; then
-          NAMED=""
-          for _t in $(git tag 2>/dev/null | grep -E '^v?[0-9]+\.[0-9]+' || echo ""); do
-            if _names_tag "$_t"; then NAMED="${NAMED}${_t} "; fi
-          done
-          # Silent when §0 names no semver release at all: a register that does
-          # not track releases, or tracks them under another scheme, is not
-          # thereby stale — and this cannot tell which.
-          if [ -n "$NAMED" ]; then
-            REG_WARN="${REG_WARN}
+        # Silent when §0 names no semver release that is actually a tag here: a
+        # register that does not track releases, or tracks them under another
+        # scheme, is not thereby stale — and this cannot tell which.
+        if [ "$HEAD_NAMED" = 0 ] && [ -n "$NAMED" ]; then
+          REG_WARN="${REG_WARN}
 - TASKS.md §0 names no tag that HEAD carries. HEAD: $(printf '%s' "$HEAD_TAGS" | tr '\n' ' ' | sed 's/ *$//'). §0 names: $(printf '%s' "$NAMED" | sed 's/ *$//')"
-          fi
         fi
       fi
     fi
