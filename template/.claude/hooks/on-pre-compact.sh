@@ -96,9 +96,21 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
 # --- Register-currency check ---
 # Answers a question the line counts above cannot: is TASKS §0 still ABOUT the
-# state the repo is actually in? A register can be 700 lines, freshly written,
-# and still describe a release that shipped two tags ago. Staleness of WRITES is
-# not staleness of TRUTH; this checks the latter.
+# state the repo is actually in? Staleness of WRITES is not staleness of TRUTH;
+# this checks the latter, by age alone.
+#
+# It USED to also compare the releases §0 names against the tags HEAD carries.
+# That was dropped after five review rounds found twelve distinct false-positive
+# modes in it, the last of which are undecidable by construction: "a version
+# string occurs in this text" and "this register claims that release" are the
+# same bytes, so a dependency pin, a language version, another project's release
+# — or the same release spelled `1.1.0` where the tag says `v1.1.0` — all read
+# as the register naming the wrong thing. The output lands in the compaction
+# summary, the one place the next session cannot check it, so a check that
+# occasionally asserts unfalsifiable staleness is worse there than no check.
+# The sound version is a different design: have the register record the release
+# as a machine-readable marker per non-negotiable 7 and compare THAT against
+# `git tag --points-at HEAD`. Exact by construction, nothing parsed out of prose.
 #
 # Every branch is built to stay SILENT unless it can make a true statement. A
 # warning that fires unconditionally is trained away within two compactions, and
@@ -135,14 +147,17 @@ if [ -n "$S0_LINE" ]; then
   # claim this whole feature is about.
   [ -n "$S0_BODY" ] || S0_OK=0
   if [ "$S0_OK" = 1 ]; then
-    # The register's own timestamp, taken from the HEADING only. Any date in the
-    # body might be "blocked since 2026-01-02" or a future deadline, and reading
-    # the first one found reported a register written today as 261 days old. An
-    # explicit "as of <date>" in the body counts, because that is a stamp; a
-    # bare date in prose does not.
-    S0_DATE=$(printf '%s' "$S0_LINE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+    # Only a date the register OFFERS as its stamp: bracketed in the heading,
+    # or line-initial "As of <date>" in the body. Any other date is something
+    # the register talks ABOUT — "freeze was 2026-08-01", "see INC-2026-08-01",
+    # "fixed as of 2026-08-01" — and reading those as the write time reported
+    # registers written today as fifty-one days old.
+    S0_DATE=$(printf '%s' "$S0_LINE" \
+              | grep -oE '[([][0-9]{4}-[0-9]{2}-[0-9]{2}[])]' \
+              | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
     if [ -z "$S0_DATE" ]; then
-      S0_DATE=$(printf '%s' "$S0_BODY" | grep -iEo 'as of[^0-9]{0,4}[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+      S0_DATE=$(printf '%s' "$S0_BODY" \
+                | grep -iEo '^[[:space:]]*as of[[:space:]:]+[0-9]{4}-[0-9]{2}-[0-9]{2}' \
                 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
     fi
     if [ -n "$S0_DATE" ]; then
@@ -155,56 +170,7 @@ if [ -n "$S0_LINE" ]; then
         case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=7 ;; esac
         if [ "$AGE_D" -gt "$MAX_AGE" ] 2>/dev/null; then
           REG_WARN="${REG_WARN}
-- TASKS.md §0 (\"where we stand\") is dated ${S0_DATE} — ${AGE_D} days old."
-        fi
-      fi
-    fi
-    # Only this project's OWN repo, compared on PHYSICAL paths: `git rev-parse
-    # --git-dir` succeeds from any subdirectory of any repo, so a project nested
-    # in a monorepo read the PARENT's tags; and `$PWD` against git's physical
-    # toplevel never matched under a symlinked path like /tmp, which silently
-    # disabled this half for anyone working there.
-    if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$(pwd -P)" ]; then
-      # Semver-shaped references only, pulled out of the section in ONE pass
-      # and then intersected with the tag list. Two greps total, whatever the
-      # tag count: the previous shape ran one anchored grep PER TAG and took
-      # 7 SECONDS on a 2000-tag repo against 194 ms on a small one, which is not
-      # a thing to put in front of a compaction.
-      #
-      # Why a fixed shape rather than tokenising prose: three rounds of
-      # tokenising produced a new false positive every time (a release URL
-      # collapsed into one token, a compare URL hid its endpoints, a slash split
-      # invented `releases` as a tag name), and plain substring matching then
-      # fired on ordinary prose — a repo tagged `v2` warned on "v2 of the
-      # onboarding doc", one tagged `2` warned on "2 open blockers" and on the
-      # digit inside the section's own date.
-      #
-      # The shape requires a dot, which is what excludes `v2`, `2` and the
-      # `2026-09-21` date stamp. Greedy digits mean `v1.1.01` yields itself and
-      # never `v1.1.0`, so a near-miss cannot read as a hit. Matches are
-      # non-overlapping, so `compare/v1.0.9...v1.1.0` yields both endpoints and
-      # `/releases/tag/v1.1.0` yields the tag.
-      #
-      # A repo tagging `bake-18` or `release-3` gets the date half only. That is
-      # a real limitation, stated in the README: a matcher that cannot tell a
-      # release reference from prose must not assert that a register is stale.
-      S0_VERS=$(printf '%s' "$S0_BODY" \
-                | grep -oE 'v?[0-9]+\.[0-9]+(\.[0-9]+)*' | sort -u || echo "")
-      HEAD_TAGS=$(git tag --points-at HEAD 2>/dev/null || echo "")
-      if [ -n "$HEAD_TAGS" ] && [ -n "$S0_VERS" ]; then
-        # Named tags = the intersection of §0's version strings with real tags.
-        NAMED=$(git tag 2>/dev/null | grep -xF -f <(printf '%s\n' "$S0_VERS") 2>/dev/null \
-                | sort -u | tr '\n' ' ' || echo "")
-        HEAD_NAMED=0
-        for _t in $HEAD_TAGS; do
-          if printf '%s\n' "$S0_VERS" | grep -qxF -- "$_t"; then HEAD_NAMED=1; break; fi
-        done
-        # Silent when §0 names no semver release that is actually a tag here: a
-        # register that does not track releases, or tracks them under another
-        # scheme, is not thereby stale — and this cannot tell which.
-        if [ "$HEAD_NAMED" = 0 ] && [ -n "$NAMED" ]; then
-          REG_WARN="${REG_WARN}
-- TASKS.md §0 names no tag that HEAD carries. HEAD: $(printf '%s' "$HEAD_TAGS" | tr '\n' ' ' | sed 's/ *$//'). §0 names: $(printf '%s' "$NAMED" | sed 's/ *$//')"
+- TASKS.md §0 carries the date ${S0_DATE} — ${AGE_D} days ago. Confirm it still describes the repo before repeating it."
         fi
       fi
     fi
