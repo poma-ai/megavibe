@@ -121,7 +121,23 @@ S0_LINE=""
 # compaction in every stock project, this repo included, with no way to silence
 # it short of inventing the section.
 if [ -n "$S0_LINE" ]; then
-  S0_DATE=$(printf '%s' "$S0_LINE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+  # The whole section, heading included, extracted ONCE and used for both the
+  # date and the tag comparison. The heading is part of the section: "## 0.
+  # Running v1.1.0 — 2026-09-21" carries both in the heading itself. `|| echo ""`
+  # because this assignment is NOT inside a conditional and the file can vanish
+  # between the -f test and here: an unguarded non-zero hits this hook's ERR
+  # trap, which exits 0 having emitted no compaction message at all.
+  S0_BODY=$(awk -v pat="$_S0_PAT" '
+    f && /^#+[[:space:]]/ { exit }
+    $0 ~ pat && !f { f=1 }
+    f { print }
+  ' .agent/TASKS.md 2>/dev/null || echo "")
+  # Searched across the SECTION, not just the heading line. "## 0. Where we
+  # stand" with "As of 2026-09-21:" in the body is an ordinary shape, and
+  # reading only the heading told that register it carried no date — forever,
+  # and MEGAVIBE_REGISTER_MAX_AGE_DAYS does not gate that branch, so there was
+  # no way to comply short of guessing an undocumented convention.
+  S0_DATE=$(printf '%s' "$S0_BODY" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
   if [ -n "$S0_DATE" ]; then
     T0=$(_epoch_of_date "$S0_DATE"); NOW_S=$(date +%s)
     if [ -n "$T0" ] && [ "$T0" -gt 0 ] 2>/dev/null; then
@@ -162,22 +178,24 @@ if [ -n "$S0_LINE" ]; then
       # assignment is NOT inside a conditional and the file can vanish between
       # the -f test and here: an unguarded non-zero hits this hook's ERR trap,
       # which exits 0 having emitted no compaction message at all.
-      # The heading is PART of the section: "## 0. Running v1.1.0 — 2026-09-21"
-      # names the current tag in the heading itself, and skipping that line
-      # reported the register as never mentioning it.
-      S0_BODY=$(awk -v pat="$_S0_PAT" '
-        f && /^#+[[:space:]]/ { exit }
-        $0 ~ pat && !f { f=1 }
-        f { print }
-      ' .agent/TASKS.md 2>/dev/null || echo "")
       # Whole tokens, not substrings: `grep -qF v1.1.0` also matches v1.1.01.
       # Dots and dashes stay in the token because tags contain them, so the
       # trailing sentence period has to come off afterwards — otherwise
       # "Running v1.0.0." yields the token `v1.0.0.` and never matches the tag.
       # `/` and `+` are legal in tag names (release/v1.1.0, v1.0.0+build.3) and
-      # splitting on them reported an explicitly named tag as absent.
+      # splitting on them reported an explicitly named tag as absent. But
+      # keeping `/` also makes a bare release URL ONE token, hiding the very tag
+      # it points at — and recording the release URL is exactly what
+      # non-negotiable 7 tells the author to do. So both forms are kept: the
+      # whole token, and the token re-split on `/`.
       S0_TOKENS=$(printf '%s' "$S0_BODY" | tr -cs 'A-Za-z0-9._/+-' '\n' \
                   | sed 's/^[._-]*//; s/[._-]*$//' || echo "")
+      S0_TOKENS=$(printf '%s\n%s\n' "$S0_TOKENS" \
+                  "$(printf '%s' "$S0_TOKENS" | tr '/' '\n')" || echo "")
+      # The section's own date stamp is not a tag. On a CalVer repo tagging
+      # YYYY-MM-DD, a heading dated today matched the tag on HEAD and silenced
+      # the check on a register that named no release at all.
+      S0_TOKENS=$(printf '%s\n' "$S0_TOKENS" | grep -vxF -- "${S0_DATE:-__no_date__}" || echo "")
       # Which of THIS repo's tags §0 actually names. A semver regex reported
       # "(no version at all)" for a register that plainly named bake-18.
       NAMED=$(git tag 2>/dev/null | grep -xF -f <(printf '%s\n' "$S0_TOKENS") 2>/dev/null | sort -u | tr '\n' ' ' || echo "")
