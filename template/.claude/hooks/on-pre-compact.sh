@@ -94,27 +94,43 @@ DECISIONS_LINES=$(echo "$DECISIONS_LINES" | tr -d ' ')
 LESSONS_LINES=$(wc -l < .agent/LESSONS.md 2>/dev/null || echo "0")
 LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
-# --- Register-currency check (I3) ---
-# Answers a question the line counts above cannot: are TASKS/BUGS still ABOUT
-# the state the repo is actually in? A register can be 700 lines, freshly
-# written, and still describe a release that shipped two tags ago. That is not
-# hypothetical: on 2026-09-18 TASKS §0 named v1.0.9 as live and v1.0.10 as a
-# release candidate while HEAD was on v1.1.0 — eleven days stale, through two
-# releases. Line counts and write-staleness both looked perfectly healthy, and
-# the post-compaction session repeated the stale state back to the user as
-# fact. Staleness of WRITES is not staleness of TRUTH; this checks the latter.
+# --- Register-currency check ---
+# Answers a question the line counts above cannot: is TASKS §0 still ABOUT the
+# state the repo is actually in? A register can be 700 lines, freshly written,
+# and still describe a release that shipped two tags ago. Staleness of WRITES is
+# not staleness of TRUTH; this checks the latter.
+#
+# Every branch here is built to stay SILENT unless it can make a true statement.
+# A warning that fires unconditionally is trained away within two compactions,
+# and it would land in the compaction summary — the one place post-compaction
+# Claude cannot check anything against. An unverified claim delivered there is
+# the exact failure non-negotiable 7 exists to prevent, so this must not be the
+# thing that commits it.
 _epoch_of_date() {  # YYYY-MM-DD -> epoch. GNU first, then BSD/macOS. Empty on failure.
   date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || echo ""
 }
+# Heading styles seen in real registers: "## 0 ", "## 0. ", "## 0: ", "## 0b. ",
+# and the occasional "###". Anchored so "## 10. " can never match.
+_S0_PAT='^#+[[:space:]]+0[a-z]?[.):]?[[:space:]]'
 REG_WARN=""
-if [ -f .agent/TASKS.md ]; then
-  S0_LINE=$(grep -m1 -E '^## 0[.b]? ' .agent/TASKS.md 2>/dev/null || echo "")
+S0_LINE=""
+[ -f .agent/TASKS.md ] && S0_LINE=$(grep -m1 -E "$_S0_PAT" .agent/TASKS.md 2>/dev/null || echo "")
+# GATED on the section existing. "§0 = where we stand" is one project's
+# convention, documented in no other file here, and the TASKS.md init.sh seeds
+# is a bare table with no §0 at all — so an ungated check warned on every
+# compaction in every stock project, this repo included, with no way to silence
+# it short of inventing the section.
+if [ -n "$S0_LINE" ]; then
   S0_DATE=$(printf '%s' "$S0_LINE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
   if [ -n "$S0_DATE" ]; then
     T0=$(_epoch_of_date "$S0_DATE"); NOW_S=$(date +%s)
     if [ -n "$T0" ] && [ "$T0" -gt 0 ] 2>/dev/null; then
       AGE_D=$(( (NOW_S - T0) / 86400 ))
-      if [ "$AGE_D" -gt 3 ] 2>/dev/null; then
+      # A §0 written on Friday should not nag on Tuesday for having been written
+      # on Friday. Seven days, and overridable.
+      MAX_AGE=${MEGAVIBE_REGISTER_MAX_AGE_DAYS:-7}
+      case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=7 ;; esac
+      if [ "$AGE_D" -gt "$MAX_AGE" ] 2>/dev/null; then
         REG_WARN="${REG_WARN}
 - TASKS.md §0 (\"where we stand\") is dated ${S0_DATE} — ${AGE_D} days old."
       fi
@@ -123,14 +139,41 @@ if [ -f .agent/TASKS.md ]; then
     REG_WARN="${REG_WARN}
 - TASKS.md §0 carries no date — cannot tell whether it is current."
   fi
-  if git rev-parse --git-dir >/dev/null 2>&1; then
-    CUR_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+  # Only this project's OWN repo. `git rev-parse --git-dir` succeeds from any
+  # subdirectory of any repo, so a project nested in a monorepo — or under a
+  # repo'd home directory — was being compared against the PARENT's tags.
+  if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$PWD" ]; then
+    # --points-at, not --abbrev=0. The latter returns the nearest REACHABLE tag,
+    # which on a HEAD forty commits past a release is not a tag HEAD is on at
+    # all — and the message said it was. Between releases this now says nothing,
+    # which is correct: an untagged HEAD is not evidence the register is stale.
+    CUR_TAG=$(git tag --points-at HEAD 2>/dev/null | head -1 || echo "")
     if [ -n "$CUR_TAG" ]; then
-      S0_BODY=$(awk '/^## 0[.b]? /{f=1} f&&/^## [1-9]/{exit} f' .agent/TASKS.md 2>/dev/null)
-      if ! printf '%s' "$S0_BODY" | grep -qF "$CUR_TAG"; then
-        NAMED=$(printf '%s' "$S0_BODY" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | sort -u | tr '\n' ' ')
+      # Bounded at the next heading of ANY level. `^## [1-9]` let an unnumbered
+      # "## Backlog" fall through, so §0 ran to EOF and a current tag mentioned
+      # anywhere below it hid a real mismatch. `|| echo ""` because this
+      # assignment is NOT inside a conditional and the file can vanish between
+      # the -f test and here: an unguarded non-zero hits this hook's ERR trap,
+      # which exits 0 having emitted no compaction message at all.
+      S0_BODY=$(awk -v pat="$_S0_PAT" '
+        f && /^#+[[:space:]]/ { exit }
+        $0 ~ pat && !f { f=1; next }
+        f { print }
+      ' .agent/TASKS.md 2>/dev/null || echo "")
+      # Whole tokens, not substrings: `grep -qF v1.1.0` also matches v1.1.01.
+      # Dots and dashes stay in the token because tags contain them, so the
+      # trailing sentence period has to come off afterwards — otherwise
+      # "Running v1.0.0." yields the token `v1.0.0.` and never matches the tag.
+      S0_TOKENS=$(printf '%s' "$S0_BODY" | tr -cs 'A-Za-z0-9._-' '\n' \
+                  | sed 's/^[._-]*//; s/[._-]*$//' || echo "")
+      # Which of THIS repo's tags §0 actually names. A semver regex reported
+      # "(no version at all)" for a register that plainly named bake-18.
+      NAMED=$(git tag 2>/dev/null | grep -xF -f <(printf '%s\n' "$S0_TOKENS") 2>/dev/null | sort -u | tr '\n' ' ' || echo "")
+      # Silent when §0 names no tag at all: a register that does not track
+      # releases is not thereby stale, and this check cannot tell the difference.
+      if [ -n "$NAMED" ] && ! printf '%s\n' "$S0_TOKENS" | grep -qxF -- "$CUR_TAG"; then
         REG_WARN="${REG_WARN}
-- TASKS.md §0 never mentions ${CUR_TAG}, the tag HEAD is on. It names: ${NAMED:-(no version at all)}"
+- TASKS.md §0 never mentions ${CUR_TAG}, the tag HEAD is on. It names: ${NAMED}"
       fi
     fi
   fi
