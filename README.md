@@ -137,7 +137,12 @@ When Claude runs out of memory and compacts, megavibe detects it and triggers re
 - **Normal projects**: Claude calls Codex to produce a focused ~400-line summary
 - **Empty context** (first compaction): instructs Claude to save the compaction summary before it's lost
 
-**Register currency (optional).** If your `.agent/TASKS.md` opens with a "where we stand" section numbered 0 — `## 0. Where we stand` — the pre-compact hook checks whether that section is still *about* the state the repo is in, and folds any warning into the compaction summary. It looks for an ISO date anywhere in the section and warns past seven days (`MEGAVIBE_REGISTER_MAX_AGE_DAYS` to change it), and it warns when the section names some of the repo's git tags but none of the tags `HEAD` currently carries. Line counts tell you a register was written recently; this tells you whether it is still true. Projects without a section 0 are unaffected — the check stays silent rather than asking you to adopt a convention you did not choose.
+**Register currency (optional).** If your `.agent/TASKS.md` opens with a "where we stand" section numbered 0 — `## 0. Where we stand (2026-09-21)` — the pre-compact hook checks whether that section is still *about* the state the repo is in, and folds any warning into the compaction summary. Two warnings, both deliberately quiet:
+
+- **Aged.** The section's date, taken from the heading or from an explicit "as of `<date>`" in the body, is more than seven days old. `MEGAVIBE_REGISTER_MAX_AGE_DAYS` changes the threshold. A section with no date at all produces nothing — unknown is not the same as stale.
+- **Behind the tags.** `HEAD` carries a git tag, the section names at least one other tag of this repo, and it names none of the tags `HEAD` carries.
+
+Everything else stays silent: projects with no section 0, sections that mention no releases, an untagged `HEAD`, a project nested inside another repo. The staleness counter above tells you when a register was last *written*; this tells you whether it is still *true*, which is a different question and the one that survives compaction badly.
 
 Recovery uses a fallback chain: ChatGPT/Codex → Claude subagent (always works, same subscription) → Gemini (API key). Measured on a 196 KB context log, Codex answers in 23 s on a small model at low effort, the subagent produces the richest summary but spends the session's own quota, and Gemini is the thinnest and the only one billed per token.
 

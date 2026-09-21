@@ -100,12 +100,13 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 # and still describe a release that shipped two tags ago. Staleness of WRITES is
 # not staleness of TRUTH; this checks the latter.
 #
-# Every branch here is built to stay SILENT unless it can make a true statement.
-# A warning that fires unconditionally is trained away within two compactions,
-# and it would land in the compaction summary — the one place post-compaction
-# Claude cannot check anything against. An unverified claim delivered there is
-# the exact failure non-negotiable 7 exists to prevent, so this must not be the
-# thing that commits it.
+# Every branch is built to stay SILENT unless it can make a true statement. A
+# warning that fires unconditionally is trained away within two compactions, and
+# it lands in the compaction summary — the one place the next session cannot
+# check anything against. An unverified claim delivered there is the exact
+# failure non-negotiable 7 exists to prevent, so this must not be the thing that
+# commits it. Four review rounds each found a new false positive here; the
+# design rule that finally held is: when in doubt, say nothing.
 _epoch_of_date() {  # YYYY-MM-DD -> epoch. GNU first, then BSD/macOS. Empty on failure.
   date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || echo ""
 }
@@ -114,102 +115,85 @@ _epoch_of_date() {  # YYYY-MM-DD -> epoch. GNU first, then BSD/macOS. Empty on f
 _S0_PAT='^#+[[:space:]]+0[a-z]?[.):]?[[:space:]]'
 REG_WARN=""
 S0_LINE=""
-[ -f .agent/TASKS.md ] && S0_LINE=$(grep -m1 -E "$_S0_PAT" .agent/TASKS.md 2>/dev/null || echo "")
 # GATED on the section existing. "§0 = where we stand" is one project's
-# convention, documented in no other file here, and the TASKS.md init.sh seeds
-# is a bare table with no §0 at all — so an ungated check warned on every
-# compaction in every stock project, this repo included, with no way to silence
-# it short of inventing the section.
+# convention and the TASKS.md init.sh seeds is a bare table with no §0 at all,
+# so an ungated check warned on every compaction in every stock project.
+[ -f .agent/TASKS.md ] && S0_LINE=$(grep -m1 -E "$_S0_PAT" .agent/TASKS.md 2>/dev/null || echo "")
 if [ -n "$S0_LINE" ]; then
-  # The whole section, heading included, extracted ONCE and used for both the
-  # date and the tag comparison. The heading is part of the section: "## 0.
-  # Running v1.1.0 — 2026-09-21" carries both in the heading itself. `|| echo ""`
-  # because this assignment is NOT inside a conditional and the file can vanish
-  # between the -f test and here: an unguarded non-zero hits this hook's ERR
-  # trap, which exits 0 having emitted no compaction message at all.
+  # The section, heading included, read ONCE. `|| echo ""` because this is not
+  # inside a conditional and the file can vanish between the -f test and here:
+  # an unguarded non-zero hits this hook's ERR trap, which exits 0 having
+  # emitted no compaction message at all.
+  S0_OK=1
   S0_BODY=$(awk -v pat="$_S0_PAT" '
     f && /^#+[[:space:]]/ { exit }
     $0 ~ pat && !f { f=1 }
     f { print }
-  ' .agent/TASKS.md 2>/dev/null || echo "")
-  # Searched across the SECTION, not just the heading line. "## 0. Where we
-  # stand" with "As of 2026-09-21:" in the body is an ordinary shape, and
-  # reading only the heading told that register it carried no date — forever,
-  # and MEGAVIBE_REGISTER_MAX_AGE_DAYS does not gate that branch, so there was
-  # no way to comply short of guessing an undocumented convention.
-  S0_DATE=$(printf '%s' "$S0_BODY" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
-  if [ -n "$S0_DATE" ]; then
-    T0=$(_epoch_of_date "$S0_DATE"); NOW_S=$(date +%s)
-    if [ -n "$T0" ] && [ "$T0" -gt 0 ] 2>/dev/null; then
-      AGE_D=$(( (NOW_S - T0) / 86400 ))
-      # A §0 written on Friday should not nag on Tuesday for having been written
-      # on Friday. Seven days, and overridable.
-      MAX_AGE=${MEGAVIBE_REGISTER_MAX_AGE_DAYS:-7}
-      case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=7 ;; esac
-      if [ "$AGE_D" -gt "$MAX_AGE" ] 2>/dev/null; then
-        REG_WARN="${REG_WARN}
+  ' .agent/TASKS.md 2>/dev/null) || S0_OK=0
+  # A read that FAILED is not a section that said nothing. Asserting "carries no
+  # date" because awk could not open the file is the same class of unverified
+  # claim this whole feature is about.
+  [ -n "$S0_BODY" ] || S0_OK=0
+  if [ "$S0_OK" = 1 ]; then
+    # The register's own timestamp, taken from the HEADING only. Any date in the
+    # body might be "blocked since 2026-01-02" or a future deadline, and reading
+    # the first one found reported a register written today as 261 days old. An
+    # explicit "as of <date>" in the body counts, because that is a stamp; a
+    # bare date in prose does not.
+    S0_DATE=$(printf '%s' "$S0_LINE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+    if [ -z "$S0_DATE" ]; then
+      S0_DATE=$(printf '%s' "$S0_BODY" | grep -iEo 'as of[^0-9]{0,4}[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+                | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+    fi
+    if [ -n "$S0_DATE" ]; then
+      T0=$(_epoch_of_date "$S0_DATE"); NOW_S=$(date +%s)
+      if [ -n "$T0" ] && [ "$T0" -gt 0 ] 2>/dev/null; then
+        AGE_D=$(( (NOW_S - T0) / 86400 ))
+        # A §0 written on Friday should not nag on Tuesday for being written on
+        # Friday. Seven days, overridable.
+        MAX_AGE=${MEGAVIBE_REGISTER_MAX_AGE_DAYS:-7}
+        case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=7 ;; esac
+        if [ "$AGE_D" -gt "$MAX_AGE" ] 2>/dev/null; then
+          REG_WARN="${REG_WARN}
 - TASKS.md §0 (\"where we stand\") is dated ${S0_DATE} — ${AGE_D} days old."
+        fi
       fi
     fi
-  else
-    REG_WARN="${REG_WARN}
-- TASKS.md §0 carries no date — cannot tell whether it is current."
-  fi
-  # Only this project's OWN repo. `git rev-parse --git-dir` succeeds from any
-  # subdirectory of any repo, so a project nested in a monorepo — or under a
-  # repo'd home directory — was being compared against the PARENT's tags.
-  # `pwd -P`, not $PWD: git reports the PHYSICAL toplevel, and on macOS a
-  # project reached through /tmp (a symlink to /private/tmp) compared a logical
-  # path against a physical one, never matched, and silently disabled the tag
-  # check for everyone working under a symlinked path.
-  if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$(pwd -P)" ]; then
-    # --points-at, not --abbrev=0. The latter returns the nearest REACHABLE tag,
-    # which on a HEAD forty commits past a release is not a tag HEAD is on at
-    # all — and the message said it was. Between releases this now says nothing,
-    # which is correct: an untagged HEAD is not evidence the register is stale.
-    # ALL tags at HEAD, not just the first. A release commit routinely carries
-    # an alias (`v1.1.0` plus `release-20260921`), and picking one at random
-    # warned that a register naming the other had missed it.
-    HEAD_TAGS=$(git tag --points-at HEAD 2>/dev/null || echo "")
-    if [ -n "$HEAD_TAGS" ]; then
-      # Bounded at the next heading of ANY level. `^## [1-9]` let an unnumbered
-      # "## Backlog" fall through, so §0 ran to EOF and a current tag mentioned
-      # anywhere below it hid a real mismatch. `|| echo ""` because this
-      # assignment is NOT inside a conditional and the file can vanish between
-      # the -f test and here: an unguarded non-zero hits this hook's ERR trap,
-      # which exits 0 having emitted no compaction message at all.
-      # Whole tokens, not substrings: `grep -qF v1.1.0` also matches v1.1.01.
-      # Dots and dashes stay in the token because tags contain them, so the
-      # trailing sentence period has to come off afterwards — otherwise
-      # "Running v1.0.0." yields the token `v1.0.0.` and never matches the tag.
-      # `/` and `+` are legal in tag names (release/v1.1.0, v1.0.0+build.3) and
-      # splitting on them reported an explicitly named tag as absent. But
-      # keeping `/` also makes a bare release URL ONE token, hiding the very tag
-      # it points at — and recording the release URL is exactly what
-      # non-negotiable 7 tells the author to do. So both forms are kept: the
-      # whole token, and the token re-split on `/`.
-      S0_TOKENS=$(printf '%s' "$S0_BODY" | tr -cs 'A-Za-z0-9._/+-' '\n' \
-                  | sed 's/^[._-]*//; s/[._-]*$//' || echo "")
-      S0_TOKENS=$(printf '%s\n%s\n' "$S0_TOKENS" \
-                  "$(printf '%s' "$S0_TOKENS" | tr '/' '\n')" || echo "")
-      # The section's own date stamp is not a tag. On a CalVer repo tagging
-      # YYYY-MM-DD, a heading dated today matched the tag on HEAD and silenced
-      # the check on a register that named no release at all.
-      S0_TOKENS=$(printf '%s\n' "$S0_TOKENS" | grep -vxF -- "${S0_DATE:-__no_date__}" || echo "")
-      # Which of THIS repo's tags §0 actually names. A semver regex reported
-      # "(no version at all)" for a register that plainly named bake-18.
-      NAMED=$(git tag 2>/dev/null | grep -xF -f <(printf '%s\n' "$S0_TOKENS") 2>/dev/null | sort -u | tr '\n' ' ' || echo "")
-      # Naming ANY tag HEAD carries is enough. Tag names cannot contain spaces,
-      # so word-splitting HEAD_TAGS here is safe.
-      HEAD_NAMED=0
-      for _t in $HEAD_TAGS; do
-        if printf '%s\n' "$S0_TOKENS" | grep -qxF -- "$_t"; then HEAD_NAMED=1; break; fi
-      done
-      # Silent when §0 names no tag at all: a register that does not track
-      # releases is not thereby stale, and this check cannot tell the difference.
-      if [ -n "$NAMED" ] && [ "$HEAD_NAMED" = 0 ]; then
-        REG_WARN="${REG_WARN}
-- TASKS.md §0 names no tag that HEAD carries. HEAD: $(printf '%s' "$HEAD_TAGS" | tr '\n' ' ' | sed 's/ *$//'). §0 names: ${NAMED}"
+    # Only this project's OWN repo, compared on PHYSICAL paths: `git rev-parse
+    # --git-dir` succeeds from any subdirectory of any repo, so a project nested
+    # in a monorepo read the PARENT's tags; and `$PWD` against git's physical
+    # toplevel never matched under a symlinked path like /tmp, which silently
+    # disabled this half for anyone working there.
+    if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$(pwd -P)" ]; then
+      # Plain substring matching, deliberately. Three rounds of tokenising prose
+      # for tag references produced a new false positive every time: a release
+      # URL collapsed to one token, a compare URL hid both endpoints, a slash
+      # split invented `releases` as a tag, a CalVer heading date impersonated a
+      # tag. Substring can only ever make this check MORE silent — a false
+      # warning needs the HEAD tag absent AND another tag present — so the
+      # failure direction is a missed warning, never a fabricated one.
+      #
+      # Candidate tags must contain a digit, so a repo with a `stable` or
+      # `latest` tag does not treat those words appearing in prose as the
+      # register naming a release.
+      HEAD_TAGS=$(git tag --points-at HEAD 2>/dev/null || echo "")
+      if [ -n "$HEAD_TAGS" ]; then
+        HEAD_NAMED=0
+        for _t in $HEAD_TAGS; do
+          case "$S0_BODY" in *"$_t"*) HEAD_NAMED=1; break ;; esac
+        done
+        if [ "$HEAD_NAMED" = 0 ]; then
+          NAMED=""
+          for _t in $(git tag 2>/dev/null | grep -E '[0-9]' || echo ""); do
+            case "$S0_BODY" in *"$_t"*) NAMED="${NAMED}${_t} " ;; esac
+          done
+          # Silent when §0 names no release at all: a register that does not
+          # track releases is not thereby stale, and this cannot tell which.
+          if [ -n "$NAMED" ]; then
+            REG_WARN="${REG_WARN}
+- TASKS.md §0 names no tag that HEAD carries. HEAD: $(printf '%s' "$HEAD_TAGS" | tr '\n' ' ' | sed 's/ *$//'). §0 names: $(printf '%s' "$NAMED" | sed 's/ *$//')"
+          fi
+        fi
       fi
     fi
   fi
