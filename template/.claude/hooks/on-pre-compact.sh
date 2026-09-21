@@ -94,6 +94,90 @@ DECISIONS_LINES=$(echo "$DECISIONS_LINES" | tr -d ' ')
 LESSONS_LINES=$(wc -l < .agent/LESSONS.md 2>/dev/null || echo "0")
 LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
+# --- Register-currency check ---
+# Answers a question the line counts above cannot: is TASKS §0 still ABOUT the
+# state the repo is actually in? Staleness of WRITES is not staleness of TRUTH;
+# this checks the latter, by age alone.
+#
+# It USED to also compare the releases §0 names against the tags HEAD carries.
+# That was dropped after five review rounds found twelve distinct false-positive
+# modes in it, the last of which are undecidable by construction: "a version
+# string occurs in this text" and "this register claims that release" are the
+# same bytes, so a dependency pin, a language version, another project's release
+# — or the same release spelled `1.1.0` where the tag says `v1.1.0` — all read
+# as the register naming the wrong thing. The output lands in the compaction
+# summary, the one place the next session cannot check it, so a check that
+# occasionally asserts unfalsifiable staleness is worse there than no check.
+# The sound version is a different design: have the register record the release
+# as a machine-readable marker per non-negotiable 7 and compare THAT against
+# `git tag --points-at HEAD`. Exact by construction, nothing parsed out of prose.
+#
+# Every branch is built to stay SILENT unless it can make a true statement. A
+# warning that fires unconditionally is trained away within two compactions, and
+# it lands in the compaction summary — the one place the next session cannot
+# check anything against. An unverified claim delivered there is the exact
+# failure non-negotiable 7 exists to prevent, so this must not be the thing that
+# commits it. Four review rounds each found a new false positive here; the
+# design rule that finally held is: when in doubt, say nothing.
+_epoch_of_date() {  # YYYY-MM-DD -> epoch. GNU first, then BSD/macOS. Empty on failure.
+  date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || echo ""
+}
+# Heading styles seen in real registers: "## 0 ", "## 0. ", "## 0: ", "## 0b. ",
+# and the occasional "###". Anchored so "## 10. " can never match.
+_S0_PAT='^#+[[:space:]]+0[a-z]?[.):]?[[:space:]]'
+REG_WARN=""
+S0_LINE=""
+# GATED on the section existing. "§0 = where we stand" is one project's
+# convention and the TASKS.md init.sh seeds is a bare table with no §0 at all,
+# so an ungated check warned on every compaction in every stock project.
+[ -f .agent/TASKS.md ] && S0_LINE=$(grep -m1 -E "$_S0_PAT" .agent/TASKS.md 2>/dev/null || echo "")
+if [ -n "$S0_LINE" ]; then
+  # The section, heading included, read ONCE. `|| echo ""` because this is not
+  # inside a conditional and the file can vanish between the -f test and here:
+  # an unguarded non-zero hits this hook's ERR trap, which exits 0 having
+  # emitted no compaction message at all.
+  S0_OK=1
+  S0_BODY=$(awk -v pat="$_S0_PAT" '
+    f && /^#+[[:space:]]/ { exit }
+    $0 ~ pat && !f { f=1 }
+    f { print }
+  ' .agent/TASKS.md 2>/dev/null) || S0_OK=0
+  # A read that FAILED is not a section that said nothing. Asserting "carries no
+  # date" because awk could not open the file is the same class of unverified
+  # claim this whole feature is about.
+  [ -n "$S0_BODY" ] || S0_OK=0
+  if [ "$S0_OK" = 1 ]; then
+    # Only a date the register OFFERS as its stamp: bracketed in the heading,
+    # or line-initial "As of <date>" in the body. Any other date is something
+    # the register talks ABOUT — "freeze was 2026-08-01", "see INC-2026-08-01",
+    # "fixed as of 2026-08-01" — and reading those as the write time reported
+    # registers written today as fifty-one days old.
+    S0_DATE=$(printf '%s' "$S0_LINE" \
+              | grep -oE '[([][0-9]{4}-[0-9]{2}-[0-9]{2}[])]' \
+              | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+    if [ -z "$S0_DATE" ]; then
+      S0_DATE=$(printf '%s' "$S0_BODY" \
+                | grep -iEo '^[[:space:]]*as of[[:space:]:]+[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+                | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+    fi
+    if [ -n "$S0_DATE" ]; then
+      T0=$(_epoch_of_date "$S0_DATE"); NOW_S=$(date +%s)
+      if [ -n "$T0" ] && [ "$T0" -gt 0 ] 2>/dev/null; then
+        AGE_D=$(( (NOW_S - T0) / 86400 ))
+        # A §0 written on Friday should not nag on Tuesday for being written on
+        # Friday. Seven days, overridable.
+        MAX_AGE=${MEGAVIBE_REGISTER_MAX_AGE_DAYS:-7}
+        case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=7 ;; esac
+        if [ "$AGE_D" -gt "$MAX_AGE" ] 2>/dev/null; then
+          REG_WARN="${REG_WARN}
+- TASKS.md §0 carries the date ${S0_DATE} — ${AGE_D} days ago. Confirm it still describes the repo before repeating it."
+        fi
+      fi
+    fi
+  fi
+fi
+
+
 MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 - FULL_CONTEXT.md: ${FC_LINES} lines
 - TASKS.md: ${TASKS_LINES} lines
@@ -104,6 +188,18 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 ⚠️ If ${COUNT} is high, context accumulated in this conversation may NOT be in the .agent/ files yet. The post-compaction recovery will only have what's on disk.
 
 After compaction, your only required action is: run /rehydrate (single command — it regenerates WORKING_CONTEXT.md via Codex, the Claude subagent, then Gemini). A 5-minute post-compact grace period suppresses stale-context nags while /rehydrate runs, so you won't get double-yelled-at during recovery. On auto-compactions the on-compact hook will additionally inline git state + DECISIONS/TASKS/LESSONS in its systemMessage — on manual /compact that orientation lives in this compaction summary instead."
+
+
+# Fold the register-currency warning into the compaction summary. This is the
+# one part of the message that can contradict the reassuring line counts above,
+# so it goes in the summary itself, not only to stderr.
+if [ -n "$REG_WARN" ]; then
+  MSG="$MSG
+
+🕗 REGISTER CURRENCY — the records may describe a state the repo has left:${REG_WARN}
+
+These files are what post-compaction recovery reads FIRST, and the line counts above say nothing about whether they are still TRUE. Before repeating anything from TASKS §0 or BUGS as current, re-read them against git (tags, recent commits). Treat a stale §0 as the first thing to fix after /rehydrate."
+fi
 
 # --- Optional /prune-context hint (appended only if FULL_CONTEXT.md is large) ---
 # Distinct from /compact: /prune-context trims redundant lines from the

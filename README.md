@@ -137,6 +137,12 @@ When Claude runs out of memory and compacts, megavibe detects it and triggers re
 - **Normal projects**: Claude calls Codex to produce a focused ~400-line summary
 - **Empty context** (first compaction): instructs Claude to save the compaction summary before it's lost
 
+**Register currency (optional).** If your `.agent/TASKS.md` opens with a "where we stand" section numbered 0, the pre-compact hook warns when that section's own date stamp is more than seven days old, and folds the warning into the compaction summary. `MEGAVIBE_REGISTER_MAX_AGE_DAYS` changes the threshold.
+
+It only reads a date the section *offers* as its stamp: bracketed in the heading — `## 0. Where we stand (2026-09-21)` — or a line beginning `As of 2026-09-21:`. Any other date is something the register talks about rather than when it was written, and reading "freeze was 2026-08-01" as a write time would report a register written today as fifty-one days old. A section with no stamp produces nothing; unknown is not the same as stale.
+
+Everything else stays silent, including projects with no section 0. The staleness counter above tells you when a register was last *written*; this tells you how long ago it claims to have been *true*, which is the question that survives compaction badly.
+
 Recovery uses a fallback chain: ChatGPT/Codex → Claude subagent (always works, same subscription) → Gemini (API key). Measured on a 196 KB context log, Codex answers in 23 s on a small model at low effort, the subagent produces the richest summary but spends the session's own quota, and Gemini is the thinnest and the only one billed per token.
 
 ### Semantic search augmentation
