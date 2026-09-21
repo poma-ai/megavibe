@@ -142,38 +142,56 @@ if [ -n "$S0_LINE" ]; then
   # Only this project's OWN repo. `git rev-parse --git-dir` succeeds from any
   # subdirectory of any repo, so a project nested in a monorepo — or under a
   # repo'd home directory — was being compared against the PARENT's tags.
-  if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$PWD" ]; then
+  # `pwd -P`, not $PWD: git reports the PHYSICAL toplevel, and on macOS a
+  # project reached through /tmp (a symlink to /private/tmp) compared a logical
+  # path against a physical one, never matched, and silently disabled the tag
+  # check for everyone working under a symlinked path.
+  if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$(pwd -P)" ]; then
     # --points-at, not --abbrev=0. The latter returns the nearest REACHABLE tag,
     # which on a HEAD forty commits past a release is not a tag HEAD is on at
     # all — and the message said it was. Between releases this now says nothing,
     # which is correct: an untagged HEAD is not evidence the register is stale.
-    CUR_TAG=$(git tag --points-at HEAD 2>/dev/null | head -1 || echo "")
-    if [ -n "$CUR_TAG" ]; then
+    # ALL tags at HEAD, not just the first. A release commit routinely carries
+    # an alias (`v1.1.0` plus `release-20260921`), and picking one at random
+    # warned that a register naming the other had missed it.
+    HEAD_TAGS=$(git tag --points-at HEAD 2>/dev/null || echo "")
+    if [ -n "$HEAD_TAGS" ]; then
       # Bounded at the next heading of ANY level. `^## [1-9]` let an unnumbered
       # "## Backlog" fall through, so §0 ran to EOF and a current tag mentioned
       # anywhere below it hid a real mismatch. `|| echo ""` because this
       # assignment is NOT inside a conditional and the file can vanish between
       # the -f test and here: an unguarded non-zero hits this hook's ERR trap,
       # which exits 0 having emitted no compaction message at all.
+      # The heading is PART of the section: "## 0. Running v1.1.0 — 2026-09-21"
+      # names the current tag in the heading itself, and skipping that line
+      # reported the register as never mentioning it.
       S0_BODY=$(awk -v pat="$_S0_PAT" '
         f && /^#+[[:space:]]/ { exit }
-        $0 ~ pat && !f { f=1; next }
+        $0 ~ pat && !f { f=1 }
         f { print }
       ' .agent/TASKS.md 2>/dev/null || echo "")
       # Whole tokens, not substrings: `grep -qF v1.1.0` also matches v1.1.01.
       # Dots and dashes stay in the token because tags contain them, so the
       # trailing sentence period has to come off afterwards — otherwise
       # "Running v1.0.0." yields the token `v1.0.0.` and never matches the tag.
-      S0_TOKENS=$(printf '%s' "$S0_BODY" | tr -cs 'A-Za-z0-9._-' '\n' \
+      # `/` and `+` are legal in tag names (release/v1.1.0, v1.0.0+build.3) and
+      # splitting on them reported an explicitly named tag as absent.
+      S0_TOKENS=$(printf '%s' "$S0_BODY" | tr -cs 'A-Za-z0-9._/+-' '\n' \
                   | sed 's/^[._-]*//; s/[._-]*$//' || echo "")
       # Which of THIS repo's tags §0 actually names. A semver regex reported
       # "(no version at all)" for a register that plainly named bake-18.
       NAMED=$(git tag 2>/dev/null | grep -xF -f <(printf '%s\n' "$S0_TOKENS") 2>/dev/null | sort -u | tr '\n' ' ' || echo "")
+      # Naming ANY tag HEAD carries is enough. Tag names cannot contain spaces,
+      # so word-splitting HEAD_TAGS here is safe.
+      HEAD_NAMED=0
+      for _t in $HEAD_TAGS; do
+        if printf '%s\n' "$S0_TOKENS" | grep -qxF -- "$_t"; then HEAD_NAMED=1; break; fi
+      done
       # Silent when §0 names no tag at all: a register that does not track
       # releases is not thereby stale, and this check cannot tell the difference.
-      if [ -n "$NAMED" ] && ! printf '%s\n' "$S0_TOKENS" | grep -qxF -- "$CUR_TAG"; then
+      if [ -n "$NAMED" ] && [ "$HEAD_NAMED" = 0 ]; then
         REG_WARN="${REG_WARN}
-- TASKS.md §0 never mentions ${CUR_TAG}, the tag HEAD is on. It names: ${NAMED}"
+- TASKS.md §0 names no tag that HEAD carries. HEAD: $(printf '%s' "$HEAD_TAGS" | tr '\n' ' ' | sed 's/ *$//'). §0 names: ${NAMED}"
       fi
     fi
   fi
