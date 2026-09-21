@@ -165,30 +165,40 @@ if [ -n "$S0_LINE" ]; then
     # toplevel never matched under a symlinked path like /tmp, which silently
     # disabled this half for anyone working there.
     if [ "$(git rev-parse --show-toplevel 2>/dev/null || echo "")" = "$(pwd -P)" ]; then
-      # Plain substring matching, deliberately. Three rounds of tokenising prose
-      # for tag references produced a new false positive every time: a release
-      # URL collapsed to one token, a compare URL hid both endpoints, a slash
-      # split invented `releases` as a tag, a CalVer heading date impersonated a
-      # tag. Substring can only ever make this check MORE silent — a false
-      # warning needs the HEAD tag absent AND another tag present — so the
-      # failure direction is a missed warning, never a fabricated one.
+      # Semver-shaped tags only, matched with explicit delimiters. Three
+      # rounds of tokenising prose produced a new false positive every time (a
+      # release URL collapsed to one token, a compare URL hid its endpoints, a
+      # slash split invented `releases` as a tag), and plain substring matching
+      # then fired on ordinary prose: a repo tagged `v2` warned on "v2 of the
+      # onboarding doc", and one tagged `2` warned on "2 open blockers".
       #
-      # Candidate tags must contain a digit, so a repo with a `stable` or
-      # `latest` tag does not treat those words appearing in prose as the
-      # register naming a release.
+      # So the check understands ONE tag shape and says nothing about the rest.
+      # A repo tagging `bake-18` or `release-3` gets the date half only. That is
+      # a real limitation, documented in the README, and it is the honest
+      # version: a heuristic that cannot tell a release reference from prose
+      # must not assert that a register is stale.
+      #
+      # Delimiters: a non-alphanumeric (or start) on the left, a NON-DIGIT (or
+      # end) on the right — so `v1.1.0` does not match inside `v1.1.01`, while
+      # `/tag/v1.1.0`, `compare/v1.0.9...v1.1.0` and `Running v1.1.0.` all do.
+      _names_tag() {  # $1 = tag; 0 if §0 names it
+        _esc=$(printf '%s' "$1" | sed 's/[][\.*^$(){}?+|/]/\\&/g')
+        printf '%s' "$S0_BODY" | grep -qE "(^|[^A-Za-z0-9])${_esc}([^0-9]|$)"
+      }
       HEAD_TAGS=$(git tag --points-at HEAD 2>/dev/null || echo "")
       if [ -n "$HEAD_TAGS" ]; then
         HEAD_NAMED=0
         for _t in $HEAD_TAGS; do
-          case "$S0_BODY" in *"$_t"*) HEAD_NAMED=1; break ;; esac
+          if _names_tag "$_t"; then HEAD_NAMED=1; break; fi
         done
         if [ "$HEAD_NAMED" = 0 ]; then
           NAMED=""
-          for _t in $(git tag 2>/dev/null | grep -E '[0-9]' || echo ""); do
-            case "$S0_BODY" in *"$_t"*) NAMED="${NAMED}${_t} " ;; esac
+          for _t in $(git tag 2>/dev/null | grep -E '^v?[0-9]+\.[0-9]+' || echo ""); do
+            if _names_tag "$_t"; then NAMED="${NAMED}${_t} "; fi
           done
-          # Silent when §0 names no release at all: a register that does not
-          # track releases is not thereby stale, and this cannot tell which.
+          # Silent when §0 names no semver release at all: a register that does
+          # not track releases, or tracks them under another scheme, is not
+          # thereby stale — and this cannot tell which.
           if [ -n "$NAMED" ]; then
             REG_WARN="${REG_WARN}
 - TASKS.md §0 names no tag that HEAD carries. HEAD: $(printf '%s' "$HEAD_TAGS" | tr '\n' ' ' | sed 's/ *$//'). §0 names: $(printf '%s' "$NAMED" | sed 's/ *$//')"

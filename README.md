@@ -140,7 +140,9 @@ When Claude runs out of memory and compacts, megavibe detects it and triggers re
 **Register currency (optional).** If your `.agent/TASKS.md` opens with a "where we stand" section numbered 0 — `## 0. Where we stand (2026-09-21)` — the pre-compact hook checks whether that section is still *about* the state the repo is in, and folds any warning into the compaction summary. Two warnings, both deliberately quiet:
 
 - **Aged.** The section's date, taken from the heading or from an explicit "as of `<date>`" in the body, is more than seven days old. `MEGAVIBE_REGISTER_MAX_AGE_DAYS` changes the threshold. A section with no date at all produces nothing — unknown is not the same as stale.
-- **Behind the tags.** `HEAD` carries a git tag, the section names at least one other tag of this repo, and it names none of the tags `HEAD` carries.
+- **Behind the tags.** `HEAD` carries a git tag, the section names at least one other **semver-shaped** tag of this repo (`v1.2.3`, `1.2`), and it names none of the tags `HEAD` carries. URLs count, so recording a release as `https://…/releases/tag/v1.1.0` satisfies it.
+
+The tag half understands semver only, on purpose. A repo tagging `bake-18` or `release-3` gets the date warning and nothing else: a matcher that cannot tell a release reference from ordinary prose would warn on "v2 of the onboarding doc", and a false warning in the compaction summary is worse than no warning, because the next session cannot check it against anything.
 
 Everything else stays silent: projects with no section 0, sections that mention no releases, an untagged `HEAD`, a project nested inside another repo. The staleness counter above tells you when a register was last *written*; this tells you whether it is still *true*, which is a different question and the one that survives compaction badly.
 
