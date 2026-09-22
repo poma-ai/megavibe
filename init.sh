@@ -106,36 +106,45 @@ atomic_install() {
     local d="$1" want="$2" t dd
     # `cp SRC DIR` copies INTO the directory; renaming would hide the temp
     # inside it and leave the intended name untouched. Refuse rather than
-    # half-work.
+    # half-work. This test MUST precede the `mv` below: GNU mv moves a file
+    # INTO a symlink-to-directory, and `[ -d ]` is true for such a link on
+    # both platforms, so this is what stops that.
     if [ -d "$d" ]; then return 1; fi
     dd="$(dirname "$d")"
     if [ ! -d "$dd" ]; then return 1; fi
     # The redirect belongs INSIDE the substitution: on the assignment it does
     # not suppress mktemp's stderr, and a refused destination then printed
-    # "Permission denied" on every launch — the same noise this fix removes.
+    # "Permission denied" on every launch.
     t="$(mktemp "$dd/.$(basename "$d").XXXXXX" 2>/dev/null)" || return 1
     [ -n "$t" ] || return 1
-    if ! cp "$src" "$t" 2>/dev/null; then rm -f "$t" 2>/dev/null; return 1; fi
+    if ! cp "$src" "$t" 2>/dev/null; then _ai_rm "$t"; return 1; fi
     # A forced mode that cannot be applied is a failed install, not a warning:
     # a 0644 hook is silently dead.
-    if [ -n "$want" ] && ! chmod "$want" "$t" 2>/dev/null; then rm -f "$t" 2>/dev/null; return 1; fi
+    if [ -n "$want" ] && ! chmod "$want" "$t" 2>/dev/null; then _ai_rm "$t"; return 1; fi
     # rename(2) over the path, so a symlinked destination is REPLACED rather
     # than written through, and the file appears atomically. Deliberately no
-    # `rm` first: unlinking before the rename opened a window where the hook
-    # did not exist, and made a later chmod/mv failure delete it outright.
-    if ! mv -f "$t" "$d" 2>/dev/null; then rm -f "$t" 2>/dev/null; return 1; fi
+    # `rm` first: unlinking before the rename opened a window where the file
+    # did not exist, and made a later failure delete it outright.
+    if ! mv -f "$t" "$d" 2>/dev/null; then _ai_rm "$t"; return 1; fi
     return 0
+  }
+  # A cleanup that is itself refused leaves a dot-file nobody will ever find,
+  # in a directory that may not even be listable. Say so.
+  _ai_rm() {
+    rm -f "$1" 2>/dev/null || echo "  note: could not remove temp file $1" >&2
   }
 
   # Mode is decided BEFORE any destination switch, from the resolved target
   # first. Reading it after switching picked up the source's mode instead, which
   # silently widened a 0600 settings.json to 0644 — this function's contract is
-  # that permissions are never widened by accident.
+  # that permissions are never widened by accident. The final `stat_mode "$src"`
+  # is a floor: without it a failing stat left the mode empty and the file kept
+  # mktemp's 0600, which is narrower than the destination had.
   m="$mode"
   if [ -z "$m" ]; then
     if [ -n "$dst" ] && [ -e "$dst" ]; then m="$(stat_mode "$dst" || true)"
-    elif [ -e "$dst_orig" ]; then m="$(stat_mode "$dst_orig" || true)"
-    else m="$(stat_mode "$src" || true)"; fi
+    elif [ -e "$dst_orig" ]; then m="$(stat_mode "$dst_orig" || true)"; fi
+    [ -n "$m" ] || m="$(stat_mode "$src" || true)"
   fi
 
   if [ -n "$dst" ] && _ai_attempt "$dst" "$m"; then return 0; fi
@@ -144,21 +153,36 @@ atomic_install() {
   # path instead, replacing the link with a real file.
   #
   # Why: resolve_link follows the link on purpose, so someone who symlinks a
-  # file somewhere deliberate keeps that layout. But a link can point into a
-  # location the OS refuses to write — a privacy-protected or synced directory —
-  # where the mode bits and access() both claim it is writable and only the
-  # write itself fails. That cannot be predicted, only attempted, and unfixed it
-  # broke every launch and left registered hooks unreadable. An unreadable hook
-  # does not run: it exits 126, silently.
+  # file somewhere deliberate keeps that layout. But a link can point at a file
+  # the OS refuses to give us — on macOS, an iCloud Drive file that has been
+  # EVICTED carries the `dataless` flag with `blocks=0`, and both reads and
+  # writes fail with EPERM while the mode bits and access() still report it
+  # readable and writable. That cannot be predicted, only attempted. Unfixed it
+  # broke every launch and left registered hooks unreadable, and an unreadable
+  # hook does not run: it exits 126, silently.
   #
-  # Safe for what goes through here because hook scripts, settings and the
-  # statusline are TEMPLATE-GENERATED: the content being installed is the
-  # authoritative copy, so replacing the link loses nothing and the old target
-  # is left untouched. Authored content is never installed through this path.
+  # Eviction is in principle transient (`brctl download <path>` rematerialises
+  # it), so replacing the link is a one-way response to a recoverable state.
+  # That trade is deliberate HERE because everything installed through this
+  # function is TEMPLATE-GENERATED — hooks, settings, statusline — so the
+  # content being written is the authoritative copy, replacing the link loses
+  # nothing, and the old target is left untouched for whoever wants it back.
+  # Authored content is never installed through this path.
+  #
+  # LIMITATION: only a symlinked LEAF is recovered. If the containing directory
+  # is itself a symlink into a refusing location, there is no link at this path
+  # to replace, and the install fails loudly below instead.
   if [ "$was_link" = 1 ] && _ai_attempt "$dst_orig" "$m"; then
-    echo "  note: $(basename "$dst_orig") was a symlink to a destination that refused the write — installed as a real file" >&2
+    if [ -z "$dst" ]; then
+      echo "  note: $(basename "$dst_orig") was an unresolvable symlink — installed as a real file" >&2
+    else
+      echo "  note: $(basename "$dst_orig") was a symlink to a destination that refused the write — installed as a real file" >&2
+    fi
     return 0
   fi
+  # Loud. Callers are bare under `set -e`, so a silent return 1 aborts the run
+  # without naming the file — which is how the original breakage went unnoticed.
+  echo "  ERROR: could not install $(basename "$dst_orig") at $dst_orig${dst:+ (resolved: $dst)}" >&2
   return 1
 }
 
@@ -209,7 +233,22 @@ copy_if_missing() {
 SETTINGS="$PROJECT/.claude/settings.json"
 TEMPLATE_SETTINGS="$TEMPLATE_DIR/.claude/settings.json"
 
-if [ -f "$SETTINGS" ]; then
+# `-f` passes on a file the OS will not let us READ. An evicted iCloud file
+# (dataless, blocks=0) stats fine and then fails EPERM on open, so the jq merge
+# below died under `pipefail` with rc=2, having installed ZERO hooks and leaving
+# a settings.json.tmp behind — and the wrapper calls this script bare, so that
+# aborted the whole launch. Probe the read, and fall through to the create
+# branch when it fails.
+if [ -f "$SETTINGS" ] && ! head -c1 "$SETTINGS" >/dev/null 2>&1; then
+  echo "  warning: $SETTINGS exists but cannot be read — writing a fresh one" >&2
+  echo "           (an evicted iCloud file? \`brctl download\` rematerialises it;" >&2
+  echo "            the unreadable original is left untouched)" >&2
+  rm -f "${SETTINGS}.tmp" 2>/dev/null || true
+  SETTINGS_UNREADABLE=1
+else
+  SETTINGS_UNREADABLE=0
+fi
+if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
   if command -v jq &>/dev/null; then
     # Always sync hooks from template (infrastructure — matches hook script overwrite policy)
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
@@ -240,7 +279,14 @@ else
   # bakes a symlink into settings.json and breaks every hook if it moves.
   ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
   jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
-    "$TEMPLATE_SETTINGS" > "$SETTINGS"
+    "$TEMPLATE_SETTINGS" > "${SETTINGS}.tmp"
+  # Through atomic_install, not a bare `> "$SETTINGS"`. A redirect FOLLOWS a
+  # symlink, so when this branch is reached because the existing settings.json
+  # is an unreadable symlink, the redirect writes the unreadable target and
+  # fails — aborting the run with zero hooks installed, which is the whole
+  # failure this is recovering from. atomic_install replaces the link instead.
+  atomic_install "${SETTINGS}.tmp" "$SETTINGS"
+  rm -f "${SETTINGS}.tmp" 2>/dev/null || true
   echo "  created: $SETTINGS"
 fi
 

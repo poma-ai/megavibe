@@ -130,6 +130,17 @@ cd /tmp && echo '{}' | /path/to/hooks/log-tool-event.sh  # exits silently
 For hook logic changes, test the specific scenario (counter nudge at 15 calls, rehydration flag set/clear, on-compact JSON output with special characters).
 
 ```bash
+# 5b. atomic_install is TRIPLICATED in init.sh, setup.sh and megavibe.
+# That triplication already caused one incident: a fix landed in init.sh only,
+# and the two stale copies kept aborting `megavibe` on the launch path. The
+# three function bodies must stay byte-identical — check it:
+for f in init.sh setup.sh megavibe; do
+  printf '%s %s\n' "$f" "$(sed -n '/^atomic_install()/,/^}/p' "$f" | md5 -q)"
+done   # all three hashes must match
+
+```
+
+```bash
 # 6. Update propagation: just re-run the scripts
 bash setup.sh                 # always updates protocol + statusline
 bash init.sh /path/to/project # always syncs hooks from template
