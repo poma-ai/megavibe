@@ -91,16 +91,49 @@ resolve_link() {
 # (falling back to the source's when creating), which is exactly what plain
 # `cp` did: user files never get silently widened.
 atomic_install() {
-  local src="$1" dst="$2" mode="${3:-}" tmp dstdir
+  local src="$1" dst="$2" mode="${3:-}" tmp dstdir dst_orig was_link=0
   if [ ! -f "$src" ]; then return 1; fi
+  dst_orig="$dst"
+  [ -L "$dst" ] && was_link=1
   dst="$(resolve_link "$dst")" || return 1
   # `cp SRC DIR` copies into the directory; renaming would hide the temp inside
   # it and leave the intended name untouched. Refuse rather than half-work.
   if [ -d "$dst" ]; then return 1; fi
   dstdir="$(dirname "$dst")"
   if [ ! -d "$dstdir" ]; then return 1; fi
-  tmp="$(mktemp "$dstdir/.$(basename "$dst").XXXXXX")" || return 1
-  if ! cp "$src" "$tmp"; then rm -f "$tmp"; return 1; fi
+  # A symlinked destination whose TARGET refuses writes is installed at the LINK
+  # path instead, replacing the link with a real file.
+  #
+  # Why: resolve_link follows the link on purpose, so a user who symlinks a file
+  # somewhere deliberate keeps that layout. But megavibe projects on this
+  # machine symlink .claude/hooks/* into ~/Documents, which macOS protects: the
+  # write fails with EPERM even though the mode bits and access() say it is
+  # writable, so this cannot be predicted, only attempted. Unfixed it broke
+  # every `megavibe` launch in 19 projects with a cp/rm error pair, and left up
+  # to 15 registered hooks per project unreadable — and an unreadable hook does
+  # not run, it exits 126, silently.
+  #
+  # Safe for these files specifically because hook scripts, settings and the
+  # statusline are TEMPLATE-GENERATED: the content being installed is the
+  # authoritative copy, so breaking the link loses nothing. Authored content
+  # (.agent/*.md) is never installed through here.
+  _ai_try() {
+    local d="$1" t
+    t="$(mktemp "$(dirname "$d")/.$(basename "$d").XXXXXX")" 2>/dev/null || return 1
+    if ! cp "$src" "$t" 2>/dev/null; then rm -f "$t" 2>/dev/null; return 1; fi
+    printf '%s' "$t"
+  }
+  tmp="$(_ai_try "$dst")" || tmp=""
+  if [ -z "$tmp" ] && [ "$was_link" = 1 ] && [ "$dst" != "$dst_orig" ]; then
+    dst="$dst_orig"
+    dstdir="$(dirname "$dst")"
+    tmp="$(_ai_try "$dst")" || tmp=""
+    if [ -n "$tmp" ]; then
+      rm -f "$dst" 2>/dev/null
+      echo "  note: $(basename "$dst") was a symlink to an unwritable target — installed as a real file" >&2
+    fi
+  fi
+  [ -n "$tmp" ] || return 1
   if [ -z "$mode" ]; then
     if [ -e "$dst" ]; then mode="$(stat_mode "$dst" || true)"; else mode="$(stat_mode "$src" || true)"; fi
   fi
