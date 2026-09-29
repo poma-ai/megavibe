@@ -1397,7 +1397,8 @@ if [ -n "$REPO_DIR" ]; then
   # before claude starts — a broken update turning into a broken launch.
   if [ -d "$REPO_DIR/scripts" ] && mkdir -p "$MEGAVIBE_HOME/scripts" 2>/dev/null; then
     for _s in "$REPO_DIR/scripts/"*.py "$REPO_DIR/scripts/gemini-review.sh" \
-              "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh"; do
+              "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh" \
+              "$REPO_DIR/scripts/disk-watch.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \

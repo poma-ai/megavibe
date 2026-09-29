@@ -109,6 +109,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/announce-update.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/disk-check.sh",
+            "timeout": 15
           }
         ]
       }
