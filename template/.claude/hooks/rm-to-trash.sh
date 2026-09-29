@@ -25,7 +25,8 @@ set -u
 # There is NO escape hatch: `\rm`, `/bin/rm` and `/usr/bin/rm` are rewritten too.
 # Bypassing the Trash to delete something "for real" is precisely the mistake this
 # hook exists to prevent (it cost a credential file on 2026-09-08). If a file must
-# be unrecoverable, delete it and empty the Trash, or use `shred`/`srm` explicitly.
+# be unrecoverable, use `shred`/`srm` explicitly. Emptying the Trash is blocked by
+# block-dangerous-bash.sh: it is the only undo, and only the user empties it.
 #
 # Runs in every project, not only megavibe ones — same reasoning as
 # block-dangerous-bash.sh (a recoverable delete is always good); documented as
