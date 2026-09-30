@@ -127,7 +127,7 @@ Write the comment from Step 4 — predicted versus actual size, predicted versus
   ```
   Name the method in the question so the user is agreeing to a specific action, then run it with **the method you found**, not the one in this example:
   ```sh
-   gh pr merge <number> --<method> --match-head-commit <the SHA the full-set review ran against>
+   gh pr merge <number> --<method> --match-head-commit <final verified head SHA — the reviewed SHA, or the head after a documented verification-only follow-up; compare it with headRefOid first>
   ```
   A repo with squash disabled and rebase enabled will reject a pasted `--squash`.
 
