@@ -204,7 +204,7 @@ Constraints on the design:
 - Drafters follow scope. Use only agents that exist — check `.claude/agents/`, `~/.claude/agents/`, and this session's available agent types before naming one.
 - Reviewers follow non-negotiable 4 and the `MEGAVIBE_REVIEWERS` allow-list. A reviewer that is switched off is absent, not failed; one that is unavailable is named as missing.
 - **Parallel drafters never share a file.** A spec is one document, so per `.claude/rules/spinouts.md` they cannot draft it concurrently: give each drafter its own section file under `.agent/PLANS/<slug>/` — or a `<slug>/` directory beside the spec where there is no `.agent/` — then merge serially in a final step. One drafter needs no wave at all.
-- Terminate at **2 review rounds**. Unresolved concerns go to the spec's Open Questions, not into another round.
+- After **2 review rounds**, record NON-blocking concerns in the spec's Open Questions instead of another round. If a blocker remains, keep fixing and re-reviewing, or pause and bring the approach to the user — never present the spec as approved with an open blocker.
 - Spec lands at `.agent/PLANS/YYYY-MM-DD-<slug>-spec.md`, or the project root if there is no `.agent/` — do not create one.
 
 ## Step 5b — Vibe path
