@@ -235,6 +235,29 @@ get_source_repo() {
   fi
 }
 
+# Name of the branch the source checkout is on, for messages only.
+source_branch() {
+  local b
+  b=$(git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null) && { echo "$b"; return 0; }
+  if git -C "$1" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "(detached HEAD)"
+  else
+    echo "(unknown)"
+  fi
+}
+
+# Whether `update` cannot fast-forward the source checkout: origin/main has
+# commits it lacks AND its HEAD is not an ancestor of origin/main. That is the
+# real condition -- a local branch that is merely behind main still fast-forwards
+# (as it always did), and one that is ahead is already up to date. Local refs
+# only; the caller fetches first.
+source_diverged() {
+  local behind
+  behind=$(git -C "$1" rev-list --count HEAD..origin/main 2>/dev/null) || return 1
+  [ "$behind" != "0" ] || return 1
+  ! git -C "$1" merge-base --is-ancestor HEAD origin/main 2>/dev/null
+}
+
 # Check for updates (non-blocking, writes result to .update-available)
 check_for_update() {
   local src
@@ -244,12 +267,18 @@ check_for_update() {
     # Git route: fetch and compare HEAD vs origin/main
     local local_hash remote_hash
     local_hash=$(git -C "$src" rev-parse HEAD 2>/dev/null || echo "unknown")
-    git -C "$src" fetch --quiet origin main 2>/dev/null || return 0
+    git -C "$src" fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null || return 0
     remote_hash=$(git -C "$src" rev-parse origin/main 2>/dev/null || echo "unknown")
     if [ "$local_hash" != "$remote_hash" ] && [ "$remote_hash" != "unknown" ]; then
       local behind
       behind=$(git -C "$src" rev-list --count HEAD..origin/main 2>/dev/null || echo "?")
-      echo "git:$behind" > "$UPDATE_AVAILABLE_FILE"
+      if [ "$behind" = "0" ]; then
+        rm -f "$UPDATE_AVAILABLE_FILE"     # ahead of main: nothing to pull
+      elif source_diverged "$src"; then
+        echo "diverged:$(source_branch "$src")" > "$UPDATE_AVAILABLE_FILE"
+      else
+        echo "git:$behind" > "$UPDATE_AVAILABLE_FILE"
+      fi
     else
       rm -f "$UPDATE_AVAILABLE_FILE"
     fi
@@ -380,12 +409,26 @@ do_update() {
     echo -e "${BOLD}Updating from git...${RESET}"
     echo ""
     local old_head new_head
+    # `pull --ff-only` cannot succeed on a checkout whose history has left main
+    # (typically a feature branch left checked out), and its failure used to be
+    # reported as "you may have local changes". Say what is actually wrong, and
+    # do not switch branches on the user's behalf.
+    if git -C "$src" fetch -q origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null && source_diverged "$src"; then
+      if [ "$(source_branch "$src")" = "main" ]; then
+        printf '  %bCannot update:%b %s is on main but has local commits that are not on origin/main, so it cannot fast-forward.\n' "$RED" "$RESET" "$src"
+        printf '  Inspect them with: git -C %q log origin/main..HEAD\n' "$src"
+      else
+        printf '  %bCannot update:%b %s is on %s, which has diverged from origin/main, so it cannot fast-forward.\n' "$RED" "$RESET" "$src" "$(source_branch "$src")"
+        printf '  Check for uncommitted work, then: git -C %q switch main\n' "$src"
+      fi
+      return 1
+    fi
     old_head=$(git -C "$src" rev-parse HEAD 2>/dev/null)
     # -q: git's own Fast-forward banner and diffstat are the commit list the
     # changelog summary exists to replace.
     git -C "$src" pull --ff-only -q origin main 2>&1 || {
       echo -e "  ${RED}Fast-forward failed.${RESET} You may have local changes."
-      echo "  cd $src && git pull manually."
+      printf '  cd %q && git pull manually.\n' "$src"
       return 1
     }
     new_head=$(git -C "$src" rev-parse HEAD 2>/dev/null)
@@ -456,7 +499,30 @@ show_update_notice() {
   if [ -f "$UPDATE_AVAILABLE_FILE" ]; then
     local info
     info=$(cat "$UPDATE_AVAILABLE_FILE")
-    if [[ "$info" == git:* ]]; then
+    if [[ "$info" == diverged:* ]]; then
+      # Re-evaluated now, not trusted: the flag is only refreshed every 24h, and
+      # "switch to main" is false the moment the user has done it.
+      local src behind
+      src=$(get_source_repo)
+      if [ -z "$src" ] || ! is_git_source "$src"; then
+        # The checkout the flag was written for is gone; `git -C ""` would
+        # interrogate whatever repository the user happens to be standing in.
+        rm -f "$UPDATE_AVAILABLE_FILE"
+      elif source_diverged "$src" && [ "$(source_branch "$src")" = "main" ]; then
+        printf '  %bCannot update:%b the source checkout is on main but has local commits that are not on origin/main. Inspect them with: %bgit -C %q log origin/main..HEAD%b\n' \
+          "$YELLOW" "$RESET" "$BOLD" "$src" "$RESET"
+      elif source_diverged "$src"; then
+        printf '  %bCannot update:%b the source checkout is on %s, which has diverged from origin/main. Run: %bgit -C %q switch main%b (check git status first), then %bmegavibe update%b\n' \
+          "$YELLOW" "$RESET" "$(source_branch "$src")" "$BOLD" "$src" "$RESET" "$BOLD" "$RESET"
+      else
+        behind=$(git -C "$src" rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
+        if [ "$behind" != "0" ]; then
+          echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
+        else
+          rm -f "$UPDATE_AVAILABLE_FILE"
+        fi
+      fi
+    elif [[ "$info" == git:* ]]; then
       local behind="${info#git:}"
       echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
     else
@@ -2327,6 +2393,9 @@ CLAUDE_EXTRA_ARGS=("$@")
 announce_prompt_args() {
   ANNOUNCE_ARGS=()
   [ -f "$CHANGELOG_FILE" ] && [ -d ".agent" ] && command -v jq &>/dev/null || return 0
+  # The hook claims the changelog; without it the prompt would spend a turn on
+  # "no update log" at every bare or --continue launch for the next 7 days.
+  [ -x ".claude/hooks/announce-update.sh" ] || return 0
   [ -z "$(find "$CHANGELOG_FILE" -mtime +7 2>/dev/null)" ] || return 0
   case "${#CLAUDE_EXTRA_ARGS[@]}:${CLAUDE_EXTRA_ARGS[0]:-}" in
     0:|1:--continue|1:-c) ;;
