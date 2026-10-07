@@ -2315,8 +2315,29 @@ fi
 RESTART_MARKER="$MEGAVIBE_HOME/.restart-session"
 CLAUDE_EXTRA_ARGS=("$@")
 
+# A SessionStart hook cannot start a turn, so the update summary announce-update.sh
+# asks for would wait for the user's first prompt (and never came on a /exit ->
+# --continue relaunch). Passing an initial prompt makes the summary appear on its
+# own. Only when the hook will actually fire and claim the changelog: same .agent,
+# jq and 7-day conditions as the hook, and only for launches that carry no prompt
+# or print-mode arg of their own (bare, --continue/-c). --resume never reaches
+# this loop: the IS_RESUME branch above launches claude itself and exits.
+# The `--` ends option parsing: `--remote-control [name]` takes an optional
+# value, so with no style args between them the prompt would become its name.
+announce_prompt_args() {
+  ANNOUNCE_ARGS=()
+  [ -f "$CHANGELOG_FILE" ] && [ -d ".agent" ] && command -v jq &>/dev/null || return 0
+  [ -z "$(find "$CHANGELOG_FILE" -mtime +7 2>/dev/null)" ] || return 0
+  case "${#CLAUDE_EXTRA_ARGS[@]}:${CLAUDE_EXTRA_ARGS[0]:-}" in
+    0:|1:--continue|1:-c) ;;
+    *) return 0 ;;
+  esac
+  ANNOUNCE_ARGS=(-- "Summarise the megavibe update from the update log in your session context, as instructed there. If there is no update log, reply with just: no update log.")
+}
+
 while true; do
-  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
+  announce_prompt_args
+  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} ${ANNOUNCE_ARGS[@]+"${ANNOUNCE_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
