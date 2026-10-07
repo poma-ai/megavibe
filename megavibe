@@ -523,8 +523,21 @@ show_update_notice() {
         fi
       fi
     elif [[ "$info" == git:* ]]; then
-      local behind="${info#git:}"
-      echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
+      local behind="${info#git:}" src live
+      # The flag is only refreshed every 24h, so it outlives the update that
+      # made it false: a checkout fast-forwarded by hand (or by another session)
+      # still announced "1 commit(s) behind" and `megavibe update` then said
+      # "Already up to date". Recount against the local refs -- cheap, no fetch.
+      src=$(get_source_repo)
+      if [ -n "$src" ] && is_git_source "$src" \
+         && live=$(git -C "$src" rev-list --count HEAD..origin/main 2>/dev/null); then
+        behind="$live"
+      fi
+      if [ "$behind" = "0" ]; then
+        rm -f "$UPDATE_AVAILABLE_FILE"
+      else
+        echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
+      fi
     else
       echo -e "  ${YELLOW}Update available.${RESET} Run: ${BOLD}megavibe update${RESET}"
     fi
