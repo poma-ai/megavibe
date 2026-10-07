@@ -494,6 +494,25 @@ do_update() {
   rm -f "$UPDATE_AVAILABLE_FILE"
 }
 
+# The "cannot fast-forward" notice, shared by the arms that discover divergence.
+print_diverged_notice() {
+  local src="$1"
+  if [ "$(source_branch "$src")" = "main" ]; then
+    printf '  %bCannot update:%b the source checkout is on main but has local commits that are not on origin/main. Inspect them with: %bgit -C %q log origin/main..HEAD%b\n' \
+      "$YELLOW" "$RESET" "$BOLD" "$src" "$RESET"
+  else
+    printf '  %bCannot update:%b the source checkout is on %s, which has diverged from origin/main. Run: %bgit -C %q switch main%b (check git status first), then %bmegavibe update%b\n' \
+      "$YELLOW" "$RESET" "$(source_branch "$src")" "$BOLD" "$src" "$RESET" "$BOLD" "$RESET"
+  fi
+}
+
+# Remove the update flag only if it still holds what this notice was decided
+# from: a background check may have rewritten it since, and deleting that fresh
+# answer would hide a real update until the next daily check.
+clear_update_flag_if_unchanged() {
+  [ "$(cat "$UPDATE_AVAILABLE_FILE" 2>/dev/null)" = "$1" ] && rm -f "$UPDATE_AVAILABLE_FILE" || true
+}
+
 # Show update notification if available
 show_update_notice() {
   if [ -f "$UPDATE_AVAILABLE_FILE" ]; then
@@ -507,19 +526,15 @@ show_update_notice() {
       if [ -z "$src" ] || ! is_git_source "$src"; then
         # The checkout the flag was written for is gone; `git -C ""` would
         # interrogate whatever repository the user happens to be standing in.
-        rm -f "$UPDATE_AVAILABLE_FILE"
-      elif source_diverged "$src" && [ "$(source_branch "$src")" = "main" ]; then
-        printf '  %bCannot update:%b the source checkout is on main but has local commits that are not on origin/main. Inspect them with: %bgit -C %q log origin/main..HEAD%b\n' \
-          "$YELLOW" "$RESET" "$BOLD" "$src" "$RESET"
+        clear_update_flag_if_unchanged "$info"
       elif source_diverged "$src"; then
-        printf '  %bCannot update:%b the source checkout is on %s, which has diverged from origin/main. Run: %bgit -C %q switch main%b (check git status first), then %bmegavibe update%b\n' \
-          "$YELLOW" "$RESET" "$(source_branch "$src")" "$BOLD" "$src" "$RESET" "$BOLD" "$RESET"
+        print_diverged_notice "$src"
       else
         behind=$(git -C "$src" rev-list --count HEAD..origin/main 2>/dev/null || echo "0")
         if [ "$behind" != "0" ]; then
           echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
         else
-          rm -f "$UPDATE_AVAILABLE_FILE"
+          clear_update_flag_if_unchanged "$info"
         fi
       fi
     elif [[ "$info" == git:* ]]; then
@@ -527,14 +542,21 @@ show_update_notice() {
       # The flag is only refreshed every 24h, so it outlives the update that
       # made it false: a checkout fast-forwarded by hand (or by another session)
       # still announced "1 commit(s) behind" and `megavibe update` then said
-      # "Already up to date". Recount against the local refs -- cheap, no fetch.
+      # "Already up to date". Recount against the local refs -- cheap, no fetch --
+      # and, like the diverged arm, do not announce an update that cannot apply.
       src=$(get_source_repo)
       if [ -n "$src" ] && is_git_source "$src" \
          && live=$(git -C "$src" rev-list --count HEAD..origin/main 2>/dev/null); then
         behind="$live"
+        if source_diverged "$src"; then
+          print_diverged_notice "$src"
+          behind=""
+        fi
       fi
-      if [ "$behind" = "0" ]; then
-        rm -f "$UPDATE_AVAILABLE_FILE"
+      if [ -z "$behind" ]; then
+        :   # the diverged notice above already said what there is to say
+      elif [ "$behind" = "0" ]; then
+        clear_update_flag_if_unchanged "$info"
       else
         echo -e "  ${YELLOW}Update available${RESET} (${behind} commit(s) behind). Run: ${BOLD}megavibe update${RESET}"
       fi
