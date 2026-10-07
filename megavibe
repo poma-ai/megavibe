@@ -515,9 +515,10 @@ clear_update_flag_if_unchanged() {
 
 # Show update notification if available
 show_update_notice() {
-  if [ -f "$UPDATE_AVAILABLE_FILE" ]; then
-    local info
-    info=$(cat "$UPDATE_AVAILABLE_FILE")
+  local info=""
+  # One guarded read: a background check may delete the flag between the test
+  # and the cat, and under `set -e` that used to abort the launch.
+  if [ -f "$UPDATE_AVAILABLE_FILE" ] && info=$(cat "$UPDATE_AVAILABLE_FILE" 2>/dev/null); then
     if [[ "$info" == diverged:* ]]; then
       # Re-evaluated now, not trusted: the flag is only refreshed every 24h, and
       # "switch to main" is false the moment the user has done it.
@@ -584,7 +585,10 @@ if [ "${1:-}" = "update" ]; then
       check_for_update
       if [ -f "$UPDATE_AVAILABLE_FILE" ]; then
         show_update_notice
-      else
+      fi
+      # show_update_notice clears a flag that turned out to be stale, so ask again
+      # rather than leaving "Checking for updates..." with no verdict.
+      if [ ! -f "$UPDATE_AVAILABLE_FILE" ]; then
         echo -e "  ${GREEN}Already up to date.${RESET}"
       fi
       ;;
