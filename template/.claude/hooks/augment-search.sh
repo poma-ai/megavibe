@@ -205,8 +205,8 @@ WRITES_LEDGER=".agent/LOGS/session-writes.${SID}.log"
 # is available without hashing, but at least the volume matches the primary path).
 _ephemeral_awk() {
   awk -v max="${MAX_RESULTS:-3}" '
-  function flush() { if (buf ~ /^--- Result/ && !skip && printed < max) { printf "%s", buf; printed++ } }
-  /^--- Result/ { flush(); buf = $0 "\n"; skip = 0; next }
+  function flush() { if (buf ~ /^--- Result / && !skip && printed < max) { printf "%s", buf; printed++ } }
+  /^--- Result / { flush(); buf = $0 "\n"; skip = 0; next }
   /^File:.*\.agent\/(LOGS|sessions)\// { skip = 1 }
   /^File:.*\.agent\/WORKING_CONTEXT\.md/ { skip = 1 }
   { buf = buf $0 "\n" }
@@ -227,7 +227,7 @@ if command -v python3 &>/dev/null; then
 import sys, re, os, hashlib
 inj_path = os.environ["INJ_LEDGER"]; writes_path = os.environ["WRITES_LEDGER"]
 maxn = int(os.environ["MAXN"]); raw = os.environ.get("RAW_RESULTS", "")
-blocks = [b for b in re.split(r'(?m)(?=^--- Result )', raw) if b.strip().startswith('--- Result')]
+blocks = [b for b in re.split(r'(?m)(?=^--- Result )', raw) if b.startswith('--- Result ')]
 # Each root is sorted within itself, but the roots are concatenated — so without
 # this the cap takes the cwd's first three survivors and a better-scoring hit
 # from another root never appears, which is exactly what MEGAVIBE_EXTRA_AGENT_DIRS
@@ -284,7 +284,7 @@ fi
 # user's transcript — on mobile/remote as a wall of "PreToolUse:Bash says:" —
 # which is decoration for the reader and, where the client also feeds
 # systemMessage to the model, the same tokens paid twice.
-N=$(printf '%s\n' "$RESULTS" | grep -c '^- \|^\[' 2>/dev/null || true); N=${N:-0}
+N=$(printf '%s\n' "$RESULTS" | grep -c '^--- Result ' 2>/dev/null || true); N=${N:-0}
 jq -n --arg ctx "Related project context from poma-memory (semantic search on .agent/):
 $RESULTS" --arg msg "megavibe: ${N:-some} .agent matches injected as context" '{
   hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: $ctx },
