@@ -39,7 +39,7 @@
 #
 # Model: gemini-flash-latest by default (≈$0.04 per 50K-token review on the
 # paid key). --pro = gemini-3.1-pro-preview at thinkingLevel medium (≈$0.15);
-# use it for reviews of protocol/template changes and anything user-facing.
+# use it for any reviewer-role call (--as-reviewer); non-review usage stays on flash.
 # Needs a key from a BILLED project in $GEMINI_API_KEY — the free tier is
 # 20 requests/day and trains on prompts.
 
