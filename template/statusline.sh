@@ -9,6 +9,28 @@ INPUT=$(cat)
 MODEL=$(echo "$INPUT" | jq -r '.model.display_name // "?"')
 PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1)
 
+# Subscription usage history for scripts/usage-route.sh. rate_limits.{five_hour,
+# seven_day}.{used_percentage,resets_at} is account-wide, present only for
+# subscribers and only after the first API response. One row per change or per
+# five minutes, a plain O_APPEND write (a row is far below PIPE_BUF). Every step
+# is allowed to fail: the statusline must never block on this.
+RL_OUT=$(echo "$INPUT" | jq -r --argjson t "$(date +%s)" --arg sid "$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | cut -c1-12)" '
+  select(.rate_limits != null)
+  | {t:$t, sid:$sid,
+     fh:{p:.rate_limits.five_hour.used_percentage, r:.rate_limits.five_hour.resets_at},
+     sd:{p:.rate_limits.seven_day.used_percentage, r:.rate_limits.seven_day.resets_at}} as $r
+  | ([$r.fh.p, $r.sd.p] | @csv), ($r | tojson)' 2>/dev/null) || RL_OUT=""
+if [ -n "$RL_OUT" ]; then
+  RL_KEY=${RL_OUT%%$'\n'*}; RL_ROW=${RL_OUT#*$'\n'}
+  RL_DIR="${MEGAVIBE_HOME:-$HOME/.megavibe}/usage"; RL_LAST="$RL_DIR/.claude-last"
+  RL_NOW=$(date +%s); RL_PREV=$(cat "$RL_LAST" 2>/dev/null || true)
+  if [ "${RL_PREV%% *}" != "$RL_KEY" ] || [ "$((RL_NOW - ${RL_PREV#* }))" -ge 300 ] 2>/dev/null; then
+    mkdir -p "$RL_DIR" 2>/dev/null \
+      && printf '%s\n' "$RL_ROW" >> "$RL_DIR/claude.jsonl" 2>/dev/null \
+      && printf '%s %s\n' "$RL_KEY" "$RL_NOW" > "$RL_LAST" 2>/dev/null || true
+  fi
+fi
+
 # Cache the real context_window_size for PostToolUse hooks (which can't see
 # this stdin). One write per change; reused by log-tool-event.sh tier math.
 WARN=""

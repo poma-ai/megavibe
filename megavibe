@@ -744,6 +744,50 @@ if [ "${1:-}" = "worktree" ]; then
   exit 0
 fi
 
+# Subscription-first launch routing (scripts/usage-route.sh reads the usage history
+# template/statusline.sh keeps). Sets ROUTER_ARGS (--model/--effort to add) and
+# ROUTER_NOTE (why, or why not). A fresh launch only: a resumed conversation keeps its
+# model, and anything the user chose stays: --model/--effort on the command line, a
+# model pinned in the project's settings, MEGAVIBE_ROUTER=0. No data means no effect.
+compute_router_args() {
+  ROUTER_ARGS=(); ROUTER_NOTE=""
+  local a ur="$MEGAVIBE_HOME/scripts/usage-route.sh" band model effort reason
+  [ "${MEGAVIBE_ROUTER:-1}" = "0" ] && { ROUTER_NOTE="off (MEGAVIBE_ROUTER=0)"; return 0; }
+  for a in "$@"; do
+    case "$a" in
+      --model|--model=*|--effort|--effort=*) ROUTER_NOTE="you passed $a: your choice stands"; return 0 ;;
+      --continue|-c|--resume|-r|--resume=*) ROUTER_NOTE="resumed conversation keeps its model"; return 0 ;;
+    esac
+  done
+  for a in .claude/settings.json .claude/settings.local.json; do
+    if [ -f "$a" ] && jq -e '.model // empty' "$a" >/dev/null 2>&1; then
+      ROUTER_NOTE="the project pins a model: that stands"; return 0
+    fi
+  done
+  [ -f "$ur" ] || { ROUTER_NOTE="usage-route.sh not installed"; return 0; }
+  IFS='|' read -r band model effort reason < <(bash "$ur" claude 2>/dev/null) || true
+  [ -n "${band:-}" ] || return 0
+  [ -n "$model" ] && ROUTER_ARGS+=(--model "$model")
+  [ -n "$effort" ] && ROUTER_ARGS+=(--effort "$effort")
+  case "$band" in
+    over|under)
+      if [ "${#ROUTER_ARGS[@]}" -gt 0 ]; then
+        ROUTER_NOTE="$band: Claude $reason -> ${ROUTER_ARGS[*]}"
+      else
+        ROUTER_NOTE="$band: Claude $reason (your defaults already fit)"
+      fi ;;
+    *) ROUTER_NOTE="normal: no change" ;;
+  esac
+}
+
+if [ "${1:-}" = "route" ]; then
+  shift
+  compute_router_args "$@"
+  echo -e "  ${BOLD}router:${RESET} ${ROUTER_NOTE:-no usage data yet (the statusline records it once a session has run)}"
+  [ "${#ROUTER_ARGS[@]}" -gt 0 ] && echo "  a launch would add: ${ROUTER_ARGS[*]}"
+  exit 0
+fi
+
 if [ "${1:-}" = "reviewers" ]; then
   shift
   RV="$MEGAVIBE_HOME/scripts/reviewers.sh"
@@ -1503,7 +1547,7 @@ if [ -n "$REPO_DIR" ]; then
   if [ -d "$REPO_DIR/scripts" ] && mkdir -p "$MEGAVIBE_HOME/scripts" 2>/dev/null; then
     for _s in "$REPO_DIR/scripts/"*.py "$REPO_DIR/scripts/gemini-review.sh" \
               "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh" \
-              "$REPO_DIR/scripts/disk-watch.sh"; do
+              "$REPO_DIR/scripts/disk-watch.sh" "$REPO_DIR/scripts/usage-route.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
@@ -1967,6 +2011,25 @@ if [ "$AUTH_LOGGED_IN" != "true" ]; then
   echo ""
 fi
 
+# Barred: a launch that would bill per token. The ANTHROPIC_API_KEY case is masked above;
+# this catches a console/API login and an apiKeyHelper, which the masking cannot reach.
+# The owner's rule is subscription first, and a surprise bill is the failure it prevents.
+_API_REASON=""
+case "$(echo "$AUTH_JSON" | jq -r '.authMethod // "claude.ai"' 2>/dev/null)" in
+  *api*|*console*|*Console*|*API*) _API_REASON="logged in with an API/console account" ;;
+esac
+case "$(echo "$AUTH_JSON" | jq -r '.apiProvider // "firstParty"' 2>/dev/null)" in
+  firstParty|"") ;;
+  *) _API_REASON="API provider $(echo "$AUTH_JSON" | jq -r '.apiProvider')" ;;
+esac
+[ -n "$(jq -r '.apiKeyHelper // empty' "$HOME/.claude/settings.json" 2>/dev/null)" ] && _API_REASON="apiKeyHelper is set in ~/.claude/settings.json"
+if [ -n "$_API_REASON" ] && [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" != "1" ]; then
+  echo ""
+  echo -e "  ${RED}Refusing to launch: ${_API_REASON} — that bills per token.${RESET}"
+  echo "  Log in with a subscription ('claude auth login'), or accept the billing with MEGAVIBE_ALLOW_API_BILLING=1."
+  exit 1
+fi
+
 # ─── Session lock (prevents accidental concurrent source edits) ──────
 #
 # Lock protects source files only. .agent/ is safe (append-only + flock).
@@ -2419,6 +2482,8 @@ fi
 # we update megavibe, sync hooks, and relaunch with --continue.
 RESTART_MARKER="$MEGAVIBE_HOME/.restart-session"
 CLAUDE_EXTRA_ARGS=("$@")
+compute_router_args "$@"
+[ -n "$ROUTER_NOTE" ] && [ "$ROUTER_NOTE" != "normal: no change" ] && echo -e "  ${DIM}router: ${ROUTER_NOTE}  (MEGAVIBE_ROUTER=0 to disable; --model/--effort to choose yourself)${RESET}"
 
 # A SessionStart hook cannot start a turn, so the update summary announce-update.sh
 # asks for would wait for the user's first prompt (and never came on a /exit ->
@@ -2445,7 +2510,7 @@ announce_prompt_args() {
 
 while true; do
   announce_prompt_args
-  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} ${ANNOUNCE_ARGS[@]+"${ANNOUNCE_ARGS[@]}"} &
+  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} ${ANNOUNCE_ARGS[@]+"${ANNOUNCE_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
@@ -2492,6 +2557,7 @@ while true; do
     fi
     export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
     CLAUDE_EXTRA_ARGS=(--continue)
+    ROUTER_ARGS=()
     continue
   fi
 

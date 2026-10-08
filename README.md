@@ -321,6 +321,18 @@ export GEMINI_API_KEY="your-key-here"
 export OPENAI_API_KEY="your-key-here"
 ```
 
+## Subscription-first routing
+
+Megavibe prefers the subscriptions you already pay for over anything billed per token, and uses what they report about themselves to spend them sensibly.
+
+- **API billing is barred.** A launch that would bill per token (a console/API login, a non-first-party provider, an `apiKeyHelper` in `~/.claude/settings.json`) stops with one line; `MEGAVIBE_ALLOW_API_BILLING=1` accepts it. An exported `ANTHROPIC_API_KEY` is masked for the session, as before.
+- **Usage history.** Claude Code has no usage API, but the statusline receives your account-wide five-hour and seven-day usage (`rate_limits`, subscribers only, after the first reply). `statusline.sh` appends a row to `~/.megavibe/usage/claude.jsonl` on a change or every five minutes. Nothing leaves the machine and nothing reads credentials.
+- **Launch.** `scripts/usage-route.sh` classifies the account as `over` (7-day use at 90% or projected past 100% of the week, or 5-hour use at 85%), `under` (week on pace to use less than 70%, or capacity about to reset unspent) or `normal`. `over` launches with `--model sonnet --effort medium` where your defaults are higher; `under` launches with `${MEGAVIBE_ROUTER_UP:-opus}` where your default is lower. Hysteresis holds `over` for 30 minutes and requires two readings 30 minutes apart for `under`. No data, stale data (6 hours inside a live window) or a reset window is `normal`, which changes nothing.
+- **Your choice wins.** `--model`/`--effort` on the command line, a `model` pinned in the project's `.claude/settings.json`, a resumed conversation (`--continue`) and `MEGAVIBE_ROUTER=0` all switch the router off. `megavibe route` prints what a launch would do.
+- **Mid-session.** `usage-advisory.sh` tells the session once per band how to spend subagents (pin `haiku`/`sonnet` when hot; let judgment-heavy ones inherit when capacity would be lost).
+
+A running session's model cannot be changed from outside, so the launch is the only place the router acts on the main thread. Codex usage is not yet an input (its weekly figure is in `~/.codex/sessions` rollouts) and neither is load-shifting between providers.
+
 ---
 
 ## Installed files and hooks

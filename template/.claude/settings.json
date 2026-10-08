@@ -114,6 +114,11 @@
             "type": "command",
             "command": ".claude/hooks/disk-check.sh",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/usage-advisory.sh",
+            "timeout": 10
           }
         ]
       }
@@ -228,6 +233,15 @@
           {
             "type": "command",
             "command": ".claude/hooks/read-coverage.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/usage-advisory.sh"
           }
         ]
       }
