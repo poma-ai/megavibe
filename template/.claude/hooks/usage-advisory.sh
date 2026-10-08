@@ -20,12 +20,12 @@ case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 
 BAND=$(bash "$UR" band 2>/dev/null)
 FLAG=".agent/LOGS/.usage-band.$SID"
-PREVBAND=$(cat "$FLAG" 2>/dev/null)
+PREVBAND=""; [ -f "$FLAG" ] && PREVBAND=$(cat "$FLAG" 2>/dev/null)   # regular files only: a FIFO here must not hang a hook
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal band: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the band changed.
 if [ "$EVENT" != "SessionStart" ] && [ "$BAND" = "$PREVBAND" ]; then exit 0; fi
 mkdir -p .agent/LOGS 2>/dev/null
-printf '%s' "$BAND" > "$FLAG" 2>/dev/null
+{ [ ! -e "$FLAG" ] || [ -f "$FLAG" ]; } && printf '%s' "$BAND" > "$FLAG" 2>/dev/null
 case "$BAND" in
   over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;;
   *) case "$PREVBAND" in

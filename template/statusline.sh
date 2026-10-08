@@ -32,6 +32,7 @@ if [ -n "$RL_OUT" ]; then
   case "$RL_NOW" in ''|*[!0-9]*) RL_NOW=0 ;; esac
   if [ "${RL_PREV%% *}" != "$RL_KEY" ] || [ "$((RL_NOW - RL_PTS))" -ge 300 ]; then
     mkdir -p "$RL_DIR" 2>/dev/null \
+      && { [ ! -e "$RL_DIR/claude.jsonl" ] || [ -f "$RL_DIR/claude.jsonl" ]; } \
       && printf '%s\n' "$RL_ROW" >> "$RL_DIR/claude.jsonl" 2>/dev/null \
       && printf '%s %s\n' "$RL_KEY" "$RL_NOW" > "$RL_LAST.$$" 2>/dev/null \
       && mv -f "$RL_LAST.$$" "$RL_LAST" 2>/dev/null || true

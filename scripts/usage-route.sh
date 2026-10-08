@@ -14,7 +14,8 @@
 # Hysteresis keeps it from flapping: `over` enters at once; it leaves 30 minutes after its
 # leave thresholds first hold (a remembered reading of 85% or more holds until the window
 # resets or the projection falls with elapsed time, and a fresh window still waits out the
-# 30 minutes); `under` needs two qualifying evaluations 30 minutes apart. Escape hatches:
+# 30 minutes); `under` needs two qualifying evaluations 30 minutes apart and lasts only while its
+# qualifying reading holds (the 5h window that justified it resetting ends it). Escape hatches:
 # MEGAVIBE_ROUTER=0, or delete route-state.json.
 # Missing, malformed or reset-window data is the normal band, so the router can only ever
 # change today's behaviour on evidence. A reading older than 6h inside a live window still
@@ -37,8 +38,8 @@ command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE"
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
 
 ROW=""
-[ -r "$FILE" ] && ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
-PREV=$(cat "$STATE" 2>/dev/null | jq -sc 'map(select(type == "object")) | last // empty' 2>/dev/null)
+[ -f "$FILE" ] && [ -r "$FILE" ] && ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
+PREV=$( [ -f "$STATE" ] && cat "$STATE" 2>/dev/null | jq -sc 'map(select(type == "object")) | last // empty' 2>/dev/null)
 [ -n "$ROW" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 [ -n "$PREV" ] || PREV='{}'
 
@@ -90,7 +91,6 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
        (if $cur == "under" then {b: "under", s: $since, p: 0, c: 0}
         elif $pend > 0 and ($now - $pend) >= 1800 then {b: "under", s: $now, p: 0, c: 0}
         else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: (if $pend > 0 then $pend else $now end), c: 0} end)
-     elif $cur == "under" and ($under_out | not) and ($now - $since) < 21600 then {b: "under", s: $since, p: 0, c: 0}
      else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: 0, c: 0} end) as $n
   | (if $n.b == "over" then (if $fh != null and $fh.used >= 85 then "5h" else "7d" end)
      elif ($sd != null and $sd.rem <= 129600 and $sd.used < 60) or ($sd != null and $sd.proj != null and $sd.proj < 70) then "7d" else "5h" end) as $which
@@ -105,10 +105,10 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
 BAND=$(jq -r '.band' <<<"$DECISION"); REASON=$(jq -r '.reason' <<<"$DECISION")
 NEWSTATE=$(jq -c '{band, since, pend, calm, mx}' <<<"$DECISION")
 # keep the history bounded: past 2 MB, keep the newest 5000 rows
-if [ "$PEEK" = 0 ] && [ "$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')" -gt 2097152 ] 2>/dev/null; then
+if [ "$PEEK" = 0 ] && [ -f "$FILE" ] && [ "$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')" -gt 2097152 ] 2>/dev/null; then
   tail -n 5000 "$FILE" > "$FILE.$$" 2>/dev/null && mv -f "$FILE.$$" "$FILE" 2>/dev/null || rm -f "$FILE.$$" 2>/dev/null
 fi
-if [ "$PEEK" = 0 ] && [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0), calm: (.calm // 0), mx: {fh: (.mx.fh? // null), sd: (.mx.sd? // null)}}' <<<"$PREV" 2>/dev/null)" ]; then
+if [ "$PEEK" = 0 ] && { [ ! -e "$STATE" ] || [ -f "$STATE" ]; } && [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0), calm: (.calm // 0), mx: {fh: (.mx.fh? // null), sd: (.mx.sd? // null)}}' <<<"$PREV" 2>/dev/null)" ]; then
   if mkdir -p "$(dirname "$STATE")" 2>/dev/null && printf '%s\n' "$NEWSTATE" > "$STATE.$$" 2>/dev/null; then
     mv -f "$STATE.$$" "$STATE" 2>/dev/null || rm -f "$STATE.$$" 2>/dev/null
   fi

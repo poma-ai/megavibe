@@ -753,6 +753,13 @@ fi
 # launch and not handled here; third-party and cloud providers only get a notice.
 bar_api_billing() {
   local aj="${1:-}" reason=""
+  # An exported key makes `claude auth status` report api_key; it is masked for what we launch
+  # (the main path does the same), so judge the subscription login without it.
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    echo -e "  ${DIM}(ANTHROPIC_API_KEY detected — masked for this session to use subscription)${RESET}"
+    unset ANTHROPIC_API_KEY
+    aj=""
+  fi
   [ -n "$aj" ] || aj=$(claude auth status 2>/dev/null || echo '{}')
   case "$(echo "$aj" | jq -r '.authMethod // "claude.ai"' 2>/dev/null)" in
     api_key|api_key_helper) reason="Claude Code is using an API key (authMethod api_key)" ;;
