@@ -201,14 +201,17 @@ if [ -n "$REG_WARN" ]; then
 These files are what post-compaction recovery reads FIRST, and the line counts above say nothing about whether they are still TRUE. Before repeating anything from TASKS §0 or BUGS as current, re-read them against git (tags, recent commits). Treat a stale §0 as the first thing to fix after /rehydrate."
 fi
 
-# --- Optional /prune-context hint (appended only if FULL_CONTEXT.md is large) ---
-# Distinct from /compact: /prune-context trims redundant lines from the
-# durable .agent/FULL_CONTEXT.md log. Keeps future rehydrations focused.
+# --- Optional fold hint (appended only if FULL_CONTEXT.md is large) ---
+# FULL_CONTEXT.md is RENDERED from the write-once event log, so its size is not a
+# problem in itself (/rehydrate reads a bounded slice). What accumulates is the number of
+# event files; agent-log.sh fold moves old ones into snapshot.md and the rendered view
+# stays identical. The old /prune-context skill, which asked an AI which lines to delete
+# from the rendered file, is superseded. Distinct from /compact (the live conversation).
 PRUNE_THRESHOLD=500
 if [ "$FC_LINES" -gt "$PRUNE_THRESHOLD" ] 2>/dev/null; then
   MSG="$MSG
 
-🧹 FULL_CONTEXT.md is ${FC_LINES} lines (above the ${PRUNE_THRESHOLD}-line pruning threshold). After /rehydrate, consider running /prune-context to let Codex (or the chain behind it) selectively remove redundant or superseded entries. This is distinct from /compact: /compact summarizes the live conversation, /prune-context cleans the durable .agent/FULL_CONTEXT.md log."
+🧹 FULL_CONTEXT.md is ${FC_LINES} lines (above the ${PRUNE_THRESHOLD}-line threshold). It is rendered from write-once events and /rehydrate reads a bounded slice, so the size alone is not a problem. If .agent/events/ has accumulated a lot of old entries, run .claude/hooks/agent-log.sh fold after /rehydrate: it moves events older than 30 days into .agent/snapshot.md, loses nothing, and FULL_CONTEXT.md renders identically before and after. This is distinct from /compact, which summarizes the live conversation."
 fi
 
 # --- User-visible alert ---

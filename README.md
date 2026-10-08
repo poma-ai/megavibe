@@ -255,7 +255,7 @@ Inside a megavibe session:
 |---------|------------|
 | `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook already inlines its output. |
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
-| `/prune-context` | When `.agent/FULL_CONTEXT.md` gets very large (rare); **distinct from `/compact`** (built-in conversation summarizer) |
+| `/prune-context` | **Superseded** by `.claude/hooks/agent-log.sh fold` (moves old events into `.agent/snapshot.md`; no content is lost); kept for old projects. **Distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — multi-reviewer (Claude `reviewer` subagent + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |
 | `/init-feature <description \| issue link>` | **Before starting a feature** — takes prose or a GitHub issue link; produces a scoped summary and a complexity/token estimate you confirm or send back, then you pick: write a spec or vibe it, and whether to post the result to that ticket or open a new one |

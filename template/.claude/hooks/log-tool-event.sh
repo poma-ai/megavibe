@@ -394,15 +394,15 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
-      # If FULL_CONTEXT.md is large, also hint at /prune-context.
-      # Distinct from /compact: /prune-context trims redundant lines from the
-      # durable .agent/FULL_CONTEXT.md log via AI. Tier-gated so wc -l runs
-      # at most once per tier per session.
+      # If FULL_CONTEXT.md is large, also hint at agent-log.sh fold (the superseded
+      # /prune-context asked an AI which lines to delete from the rendered file; fold
+      # moves old events into the snapshot and the rendered view stays identical).
+      # Distinct from /compact. Tier-gated so wc -l runs at most once per tier per session.
       FC_LINES_NUDGE=$(wc -l < .agent/FULL_CONTEXT.md 2>/dev/null | tr -d ' ' || echo "0")
       FC_LINES_NUDGE="${FC_LINES_NUDGE:-0}"
       if [ "$FC_LINES_NUDGE" -gt 500 ] 2>/dev/null; then
         COMPACT_NUDGE="${COMPACT_NUDGE}
-🧹 FULL_CONTEXT.md is ${FC_LINES_NUDGE} lines — after flushing, consider /prune-context (AI-driven line removal on the durable log; distinct from /compact)."
+🧹 FULL_CONTEXT.md is ${FC_LINES_NUDGE} lines — after flushing, you can tidy the event log with .claude/hooks/agent-log.sh fold (moves old events into the snapshot, loses nothing, the rendered view stays identical; distinct from /compact)."
       fi
     fi
   fi

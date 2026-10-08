@@ -18,7 +18,7 @@ Claude Code is the executor and orchestrator. **Codex is the primary subcontract
 
 3. **The context log is an event log — never edit it in place.** Write entries with `.claude/hooks/agent-log.sh append` (entry text on stdin). Each call creates one immutable file in `.agent/events/`; nothing ever rewrites an existing one. `.agent/FULL_CONTEXT.md` is the **rendered view** of `.agent/snapshot.md` plus every event in order — read it freely, never append to it, and expect it to be regenerated under you.
 
-   Why it works this way: a shared mutable file cannot be coordinated across machines. `flock` serialises writers on one Mac, and a file-level sync (iCloud, Dropbox, Drive) then resolves two Macs' versions by picking a whole-file winner — the other machine's entries vanish with no conflict copy and no error. Unique write-once files have nothing to reconcile on any transport. Compaction is `agent-log.sh fold`, which moves old entries into the snapshot; it never deletes.
+   Why it works this way: a shared mutable file cannot be coordinated across machines. `flock` serialises writers on one Mac, and a file-level sync (iCloud, Dropbox, Drive) then resolves two Macs' versions by picking a whole-file winner — the other machine's entries vanish with no conflict copy and no error. Unique write-once files have nothing to reconcile on any transport. Compaction is `agent-log.sh fold`, which moves old entries into the snapshot; it loses no content.
 
    Store research in `.agent/RESEARCH/`. Store screenshots/HTML/PDFs in `.agent/ASSETS/`.
 
@@ -128,7 +128,7 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 | Live conversation is long, context pressure rising | `/compact` (built-in) | Summarizes the live conversation in place |
 | After any compaction (manual or auto) | `/rehydrate` | Rebuilds `WORKING_CONTEXT.md` from `.agent/` + git |
 | Session feels stale mid-work | `/rehydrate` | Same |
-| `.agent/events/` has accumulated a lot of old entries | `agent-log.sh fold` | Moves entries older than 30 days into `.agent/snapshot.md`. Nothing is deleted, and `FULL_CONTEXT.md` renders identically before and after. |
+| `.agent/events/` has accumulated a lot of old entries | `agent-log.sh fold` | Moves entries older than 30 days into `.agent/snapshot.md`. No content is lost (the old event files are removed once copied into the snapshot), and `FULL_CONTEXT.md` renders identically before and after. |
 
 Size hints still fire from `on-pre-compact.sh` and from the tier nudges in `log-tool-event.sh` when `FULL_CONTEXT.md` exceeds 500 lines. Treat them as a prompt to `fold`, not to prune.
 
