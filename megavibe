@@ -776,7 +776,7 @@ compute_router_args() {
   # the project's own settings, found from its root and never the user's file (launched from
   # $HOME, `.claude/settings.json` IS ~/.claude/settings.json, the file `under` upgrades from)
   local root; root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-  for a in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
+  for a in "$root/.claude/settings.json" "$root/.claude/settings.local.json" "$PWD/.claude/settings.json" "$PWD/.claude/settings.local.json"; do
     [ -f "$a" ] || continue
     [ "$a" -ef "$HOME/.claude/settings.json" ] && continue
     jq -e '.model // .env.ANTHROPIC_MODEL // .env.ANTHROPIC_DEFAULT_MODEL // empty' "$a" >/dev/null 2>&1 && skip_model=1

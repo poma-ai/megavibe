@@ -45,23 +45,29 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
   # A window is live while its resets_at is ahead. Rows from idle sessions can be logged late
   # and carry an old window, so liveness (not append order) picks the window: the newest live
   # row names it, and usage only grows inside a window, so the highest reading of it is current.
+  # The highest reading of a live window is also kept in the state file, keyed by its reset
+  # time in seconds, so it survives the 50-row slice read here and a seconds/ms mismatch.
   def pick($k):
     [.[] | select(((.[$k].r? // null) | type) == "number" and ((.[$k].r | sec) > $now))] as $live
     | if ($live | length) == 0 then null
-      else ($live | last) as $l
-        | {p: ([$live[] | select(.[$k].r == $l[$k].r) | .[$k].p | select(type == "number")] | max),
-           r: $l[$k].r, t: ($l.t // 0)} end;
+      else ($live | last) as $l | ($l[$k].r | sec) as $rn
+        | ([$live[] | select((.[$k].r | sec) == $rn) | .[$k].p | select(type == "number")] | max) as $p0
+        | ($prev.mx[$k]? // null) as $m
+        | {p: (if ($m | type) == "object" and $m.r == $rn and ($m.p | type) == "number" then ([$p0, $m.p] | max) else $p0 end),
+           r: $rn, t: ($l.t // 0)} end;
   def win($w; $len):
     if ($w | type) != "object" or ($w.p | type) != "number" or ($w.r | type) != "number" then null
     else (($w.r | sec) - $now) as $rem
       | ((1 - $rem / $len) | if . < 0 then 0 elif . > 1 then 1 else . end) as $el
-      | {used: $w.p, rem: $rem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end),
+      | {r: ($w.r | sec), used: $w.p, rem: $rem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end),
          stale: (($now - ($w.t | tonumber? // 0)) > 21600)}      # old reading in a live window: still a floor for `over`, no basis for `under`
     end;
   def human($s): if $s >= 172800 then "\($s / 86400 | floor)d"
                  elif $s >= 3600 then "\($s / 3600 | floor)h" else "\([$s / 60 | floor, 1] | max)m" end;
   win(pick("fh"); 18000) as $fh | win(pick("sd"); 604800) as $sd
-  | ($prev.band // "normal") as $cur | ($prev.since // 0) as $since | ($prev.calm // 0) as $calm | ($prev.pend // 0 | if ($now - .) > 7200 then 0 else . end) as $pend    # a pending `under` evaluation lapses after 2h
+  | (if ($prev.band | type) == "string" then $prev.band else "normal" end) as $cur
+  | (($prev.since | numbers) // 0) as $since | (($prev.calm | numbers) // 0) as $calm   # a damaged state file is read as "no state"
+  | ((($prev.pend | numbers) // 0) | if ($now - .) > 7200 then 0 else . end) as $pend    # a pending `under` evaluation lapses after 2h
   | (($sd != null and ($sd.used >= 90 or ($sd.proj != null and $sd.proj > 100))) or ($fh != null and $fh.used >= 85)) as $over_in
   | (($sd == null or ($sd.used < 85 and ($sd.proj == null or $sd.proj < 90))) and ($fh == null or $fh.used < 70)) as $over_out
   | ($sd != null and ($sd.used >= 75 or ($sd.proj != null and $sd.proj > 85)
@@ -70,7 +76,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
      or ($fh != null and ($fh.stale | not) and $fh.rem <= 3600 and $fh.used < 50)) as $under_cand
   | ($under_cand and ($under_out | not)) as $under_in
   # c = when `over` first qualified to leave (readings below the leave thresholds); it resets whenever they stop qualifying
-  | (if ($fh == null and $sd == null) then {b: "normal", s: $now, p: 0, c: 0}        # no live window: no evidence at all
+  | (if ($fh == null and $sd == null) then {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: 0, c: 0}        # no live window: no evidence at all
      elif $over_in then {b: "over", s: $now, p: 0, c: 0}
      elif $cur == "over" and ($over_out | not) then {b: "over", s: $since, p: 0, c: 0}
      elif $cur == "over" and ($calm == 0 or ($now - $calm) < 1800) then {b: "over", s: $since, p: 0, c: (if $calm == 0 then $now else $calm end)}
@@ -85,17 +91,18 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
   | (if $which == "5h" then $fh else $sd end) as $w0
   | (if $w0 != null then [$which, $w0] elif $which == "5h" then ["7d", $sd] else ["5h", $fh] end) as $pair   # a held band may have lost its own window to a reset
   | {band: $n.b, since: $n.s, pend: $n.p, calm: $n.c,
+     mx: {fh: ($fh | if . == null then null else {r: .r, p: .used} end), sd: ($sd | if . == null then null else {r: .r, p: .used} end)},
      reason: (if $pair[1] == null then "" else "\($pair[0]) \($pair[1].used | floor)% used, resets in \(human($pair[1].rem))" end)}
 ' <<<"$ROW" 2>/dev/null)
 [ -n "$DECISION" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 
 BAND=$(jq -r '.band' <<<"$DECISION"); REASON=$(jq -r '.reason' <<<"$DECISION")
-NEWSTATE=$(jq -c '{band, since, pend, calm}' <<<"$DECISION")
+NEWSTATE=$(jq -c '{band, since, pend, calm, mx}' <<<"$DECISION")
 # keep the history bounded: past 2 MB, keep the newest 5000 rows
 if [ "$PEEK" = 0 ] && [ "$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')" -gt 2097152 ] 2>/dev/null; then
   tail -n 5000 "$FILE" > "$FILE.$$" 2>/dev/null && mv -f "$FILE.$$" "$FILE" 2>/dev/null || rm -f "$FILE.$$" 2>/dev/null
 fi
-if [ "$PEEK" = 0 ] && [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0), calm: (.calm // 0)}' <<<"$PREV" 2>/dev/null)" ]; then
+if [ "$PEEK" = 0 ] && [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0), calm: (.calm // 0), mx: {fh: (.mx.fh? // null), sd: (.mx.sd? // null)}}' <<<"$PREV" 2>/dev/null)" ]; then
   if mkdir -p "$(dirname "$STATE")" 2>/dev/null && printf '%s\n' "$NEWSTATE" > "$STATE.$$" 2>/dev/null; then
     mv -f "$STATE.$$" "$STATE" 2>/dev/null || rm -f "$STATE.$$" 2>/dev/null
   fi
