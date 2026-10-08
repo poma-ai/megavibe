@@ -764,7 +764,7 @@ bar_api_billing() {
   if [ -n "$reason" ] && [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" != "1" ]; then
     echo ""
     echo -e "  ${RED}Refusing to launch: ${reason} — that bills per token.${RESET}"
-    echo "  Log in with a subscription ('claude auth login'), or accept the billing with MEGAVIBE_ALLOW_API_BILLING=1."
+    echo "  Log in with a subscription ('claude auth login'; unset ANTHROPIC_API_KEY if it is exported), or accept the billing with MEGAVIBE_ALLOW_API_BILLING=1."
     exit 1
   fi
   return 0
@@ -1206,7 +1206,6 @@ if [ "${1:-}" = "remote" ]; then
     echo "  Re-run: bash setup.sh"
     exit 1
   fi
-  case "${1:-}" in --stop|--status) ;; *) bar_api_billing ;; esac   # the bot starts Claude sessions
 
   case "${1:-}" in
     --stop)
@@ -1251,6 +1250,7 @@ if [ "${1:-}" = "remote" ]; then
       fi
       case "${1:-status}" in
         on)
+          bar_api_billing   # else the login-time start would be refused where nobody sees it
           # launchd agents do NOT source your shell profile, so the bot's
           # secrets must be baked into the plist (written mode 600). Re-run
           # 'on' after rotating your token.
@@ -1264,6 +1264,10 @@ if [ "${1:-}" = "remote" ]; then
     <key>MEGAVIBE_TELEGRAM_USER_ID</key><string>${MEGAVIBE_TELEGRAM_USER_ID}</string>"
           [ -n "${OPENAI_API_KEY:-}" ] && ENV_XML="${ENV_XML}
     <key>OPENAI_API_KEY</key><string>${OPENAI_API_KEY}</string>"
+          if [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" = "1" ]; then
+            ENV_XML="${ENV_XML}
+    <key>MEGAVIBE_ALLOW_API_BILLING</key><string>1</string>"
+          fi
           ( umask 077; cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1328,6 +1332,7 @@ PLISTEOF
       esac
       ;;
     ""|--bg|--start)
+      bar_api_billing   # the bot starts Claude sessions: refuse before it exists (not in --supervise, which runs inside tmux without our env)
       # Default. Idempotent: ensure ONE supervised background bot is up, or
       # reuse the running one. Never start a second — two pollers on one token
       # trigger Telegram's "Conflict: terminated by other getUpdates" storm.
@@ -1353,7 +1358,7 @@ PLISTEOF
       # plain new-session would start the bot with no token → instant crash
       # loop. Pass them via -e so the supervised pane actually sees them.
       ENV_ARGS=()
-      for v in MEGAVIBE_TELEGRAM_TOKEN MEGAVIBE_TELEGRAM_USER_ID OPENAI_API_KEY; do
+      for v in MEGAVIBE_TELEGRAM_TOKEN MEGAVIBE_TELEGRAM_USER_ID OPENAI_API_KEY MEGAVIBE_ALLOW_API_BILLING; do
         [ -n "${!v:-}" ] && ENV_ARGS+=( -e "$v=${!v}" )
       done
       tmux new-session -d -s "$BOT_TMUX" -c "$MEGAVIBE_HOME" \
@@ -1384,6 +1389,7 @@ PLISTEOF
       done
       ;;
     --fg)
+      bar_api_billing
       # Foreground, for debugging — watch the bot's logs live in this terminal,
       # Ctrl+C to stop. Not the normal path: closing the terminal kills it.
       # Refuses to run alongside the supervised bot (would be a second poller).
