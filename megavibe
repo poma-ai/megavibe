@@ -745,21 +745,16 @@ if [ "${1:-}" = "worktree" ]; then
 fi
 
 # Subscription first: a launch that would bill per token is refused unless
-# MEGAVIBE_ALLOW_API_BILLING=1. Called before EVERY path that starts Claude (the main launch,
-# `megavibe assistant`, `megavibe remote`). $1 = `claude auth status` JSON, fetched if absent.
+# MEGAVIBE_ALLOW_API_BILLING=1. Called on the main launch only, after ANTHROPIC_API_KEY is
+# masked. `megavibe assistant|remote|nondev` start Claude by other routes (tmux, a bot, the
+# megawork engine) and are NOT covered yet, and neither is a key supplied through `--settings`
+# (your explicit choice; the login check cannot see it). $1 = `claude auth status` JSON.
 # authMethod is one of none | claude.ai | oauth_token | api_key | api_key_helper | third_party
 # (claude docs); oauth_token is a subscription token and stays allowed. Older CLIs report a
 # console key as claude.ai, and those slip through. The ANTHROPIC_API_KEY case is masked at
 # launch and not handled here; third-party and cloud providers only get a notice.
 bar_api_billing() {
   local aj="${1:-}" reason=""
-  # An exported key makes `claude auth status` report api_key; it is masked for what we launch
-  # (the main path does the same), so judge the subscription login without it.
-  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
-    echo -e "  ${DIM}(ANTHROPIC_API_KEY detected — masked for this session to use subscription)${RESET}"
-    unset ANTHROPIC_API_KEY
-    aj=""
-  fi
   [ -n "$aj" ] || aj=$(claude auth status 2>/dev/null || echo '{}')
   case "$(echo "$aj" | jq -r '.authMethod // "claude.ai"' 2>/dev/null)" in
     api_key|api_key_helper) reason="Claude Code is using an API key (authMethod api_key)" ;;
@@ -1257,7 +1252,6 @@ if [ "${1:-}" = "remote" ]; then
       fi
       case "${1:-status}" in
         on)
-          bar_api_billing   # else the login-time start would be refused where nobody sees it
           # launchd agents do NOT source your shell profile, so the bot's
           # secrets must be baked into the plist (written mode 600). Re-run
           # 'on' after rotating your token.
@@ -1271,10 +1265,6 @@ if [ "${1:-}" = "remote" ]; then
     <key>MEGAVIBE_TELEGRAM_USER_ID</key><string>${MEGAVIBE_TELEGRAM_USER_ID}</string>"
           [ -n "${OPENAI_API_KEY:-}" ] && ENV_XML="${ENV_XML}
     <key>OPENAI_API_KEY</key><string>${OPENAI_API_KEY}</string>"
-          if [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" = "1" ]; then
-            ENV_XML="${ENV_XML}
-    <key>MEGAVIBE_ALLOW_API_BILLING</key><string>1</string>"
-          fi
           ( umask 077; cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1339,7 +1329,6 @@ PLISTEOF
       esac
       ;;
     ""|--bg|--start)
-      bar_api_billing   # the bot starts Claude sessions: refuse before it exists (not in --supervise, which runs inside tmux without our env)
       # Default. Idempotent: ensure ONE supervised background bot is up, or
       # reuse the running one. Never start a second — two pollers on one token
       # trigger Telegram's "Conflict: terminated by other getUpdates" storm.
@@ -1365,7 +1354,7 @@ PLISTEOF
       # plain new-session would start the bot with no token → instant crash
       # loop. Pass them via -e so the supervised pane actually sees them.
       ENV_ARGS=()
-      for v in MEGAVIBE_TELEGRAM_TOKEN MEGAVIBE_TELEGRAM_USER_ID OPENAI_API_KEY MEGAVIBE_ALLOW_API_BILLING; do
+      for v in MEGAVIBE_TELEGRAM_TOKEN MEGAVIBE_TELEGRAM_USER_ID OPENAI_API_KEY; do
         [ -n "${!v:-}" ] && ENV_ARGS+=( -e "$v=${!v}" )
       done
       tmux new-session -d -s "$BOT_TMUX" -c "$MEGAVIBE_HOME" \
@@ -1396,7 +1385,6 @@ PLISTEOF
       done
       ;;
     --fg)
-      bar_api_billing
       # Foreground, for debugging — watch the bot's logs live in this terminal,
       # Ctrl+C to stop. Not the normal path: closing the terminal kills it.
       # Refuses to run alongside the supervised bot (would be a second poller).
@@ -1443,7 +1431,6 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
   # not up yet (detached, so it boots cleanly), then attach. Detach with C-b d;
   # the brain keeps running.
   if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
-    bar_api_billing
     echo "Starting the personal assistant (first run may take a few seconds)…"
     # Pre-accept workspace trust once, matching telegram-bot.py's start path.
     ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true

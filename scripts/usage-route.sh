@@ -54,7 +54,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
   # seconds/ms mismatch, cannot hide it. With no live row at all the remembered reading stands
   # alone and counts as stale (no basis for `under`).
   def pick($k):
-    [.[] | select(((.[$k].r? // null) | type) == "number" and ((.[$k].r | sec) > $now))] as $live
+    [.[] | select(((.[$k].r? // null) | type) == "number" and ((.[$k].p? // null) | type) == "number" and ((.[$k].r | sec) > $now))] as $live   # a row without a numeric reading is not evidence
     | (($prev.mx[$k]? // null) | if type == "object" and (.r | type) == "number" and (.p | type) == "number" and .r > $now then . else null end) as $alone
     | if ($live | length) == 0 then (if $alone == null then null else {p: $alone.p, r: $alone.r, t: 0} end)
       else ($live | last) as $l | ($l[$k].r | sec) as $rn
