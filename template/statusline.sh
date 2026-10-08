@@ -23,9 +23,12 @@ RL_OUT=$(echo "$INPUT" | jq -r --argjson t "$(date +%s)" --arg sid "$(echo "$INP
 if [ -n "$RL_OUT" ]; then
   RL_KEY=${RL_OUT%%$'\n'*}; RL_ROW=${RL_OUT#*$'\n'}
   RL_DIR="${MEGAVIBE_HOME:-$HOME/.megavibe}/usage"; RL_LAST="$RL_DIR/.claude-last"
-  RL_NOW=$(date +%s); RL_PREV=$(cat "$RL_LAST" 2>/dev/null || true)
+  RL_NOW=$(date +%s); RL_PREV=""
+  [ -f "$RL_LAST" ] && RL_PREV=$(cat "$RL_LAST" 2>/dev/null || true)   # -f: a FIFO planted here must not hang the statusline
   RL_PTS=${RL_PREV#* }
   case "$RL_PTS" in ''|*[!0-9]*) RL_PTS=0 ;; esac   # a damaged cache must not reach the arithmetic
+  [ "${#RL_PTS}" -gt 12 ] && RL_PTS=0
+  RL_PTS=$((10#$RL_PTS))                              # 08 is not an octal error
   case "$RL_NOW" in ''|*[!0-9]*) RL_NOW=0 ;; esac
   if [ "${RL_PREV%% *}" != "$RL_KEY" ] || [ "$((RL_NOW - RL_PTS))" -ge 300 ]; then
     mkdir -p "$RL_DIR" 2>/dev/null \

@@ -60,7 +60,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
         | ([$live[] | select((.[$k].r | sec) == $rn) | .[$k].p | select(type == "number")] | max) as $p0
         | ($prev.mx[$k]? // null) as $m
         | {p: (if ($m | type) == "object" and $m.r == $rn and ($m.p | type) == "number" then ([$p0, $m.p] | max) else $p0 end),
-           r: $rn, t: ($l.t // 0)} end;
+           r: $rn, t: ([$live[] | select((.[$k].r | sec) == $rn) | .t | select(type == "number")] | max // 0)} end;   # freshness = the newest row of that window
   def win($w; $len):
     if ($w | type) != "object" or ($w.p | type) != "number" or ($w.r | type) != "number" then null
     else (($w.r | sec) - $now) as $rem

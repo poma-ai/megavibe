@@ -744,6 +744,32 @@ if [ "${1:-}" = "worktree" ]; then
   exit 0
 fi
 
+# Subscription first: a launch that would bill per token is refused unless
+# MEGAVIBE_ALLOW_API_BILLING=1. Called before EVERY path that starts Claude (the main launch,
+# `megavibe assistant`, `megavibe remote`). $1 = `claude auth status` JSON, fetched if absent.
+# authMethod is one of none | claude.ai | oauth_token | api_key | api_key_helper | third_party
+# (claude docs); oauth_token is a subscription token and stays allowed. Older CLIs report a
+# console key as claude.ai, and those slip through. The ANTHROPIC_API_KEY case is masked at
+# launch and not handled here; third-party and cloud providers only get a notice.
+bar_api_billing() {
+  local aj="${1:-}" reason=""
+  [ -n "$aj" ] || aj=$(claude auth status 2>/dev/null || echo '{}')
+  case "$(echo "$aj" | jq -r '.authMethod // "claude.ai"' 2>/dev/null)" in
+    api_key|api_key_helper) reason="Claude Code is using an API key (authMethod api_key)" ;;
+    third_party) echo -e "  ${DIM}(Claude Code is using a third-party provider: billed by that provider, not by your subscription)${RESET}" ;;
+  esac
+  case "$(echo "$aj" | jq -r '.apiProvider // "firstParty"' 2>/dev/null)" in
+    bedrock|vertex|foundry) echo -e "  ${DIM}(Claude Code is using $(echo "$aj" | jq -r '.apiProvider'): billed by that cloud, not by a Claude subscription)${RESET}" ;;
+  esac
+  if [ -n "$reason" ] && [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" != "1" ]; then
+    echo ""
+    echo -e "  ${RED}Refusing to launch: ${reason} — that bills per token.${RESET}"
+    echo "  Log in with a subscription ('claude auth login'), or accept the billing with MEGAVIBE_ALLOW_API_BILLING=1."
+    exit 1
+  fi
+  return 0
+}
+
 # Subscription-first launch routing (scripts/usage-route.sh reads the usage history
 # template/statusline.sh keeps). Sets ROUTER_ARGS (--model/--effort to add) and
 # ROUTER_NOTE (why, or why not). A fresh launch only: a resumed conversation keeps its
@@ -1180,6 +1206,7 @@ if [ "${1:-}" = "remote" ]; then
     echo "  Re-run: bash setup.sh"
     exit 1
   fi
+  case "${1:-}" in --stop|--status) ;; *) bar_api_billing ;; esac   # the bot starts Claude sessions
 
   case "${1:-}" in
     --stop)
@@ -1403,6 +1430,7 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
   # not up yet (detached, so it boots cleanly), then attach. Detach with C-b d;
   # the brain keeps running.
   if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
+    bar_api_billing
     echo "Starting the personal assistant (first run may take a few seconds)…"
     # Pre-accept workspace trust once, matching telegram-bot.py's start path.
     ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true
@@ -2038,26 +2066,8 @@ if [ "$AUTH_LOGGED_IN" != "true" ]; then
   echo ""
 fi
 
-# Barred: a launch that would bill per token. The ANTHROPIC_API_KEY case is masked above;
-# this catches a console/API login and an apiKeyHelper, which the masking cannot reach.
-# Subscription first: a surprise per-token bill is the failure this prevents.
-_API_REASON=""
-# authMethod is one of none | claude.ai | oauth_token | api_key | api_key_helper | third_party
-# (claude docs); oauth_token is a subscription token and stays allowed. Older CLIs report a
-# console key as claude.ai, and those slip through.
-case "$(echo "$AUTH_JSON" | jq -r '.authMethod // "claude.ai"' 2>/dev/null)" in
-  api_key|api_key_helper) _API_REASON="Claude Code is using an API key (authMethod api_key)" ;;
-  third_party) echo -e "  ${DIM}(Claude Code is using a third-party provider: billed by that provider, not by your subscription)${RESET}" ;;
-esac
-case "$(echo "$AUTH_JSON" | jq -r '.apiProvider // "firstParty"' 2>/dev/null)" in
-  bedrock|vertex|foundry) echo -e "  ${DIM}(Claude Code is using $(echo "$AUTH_JSON" | jq -r '.apiProvider'): billed by that cloud, not by a Claude subscription)${RESET}" ;;
-esac
-if [ -n "$_API_REASON" ] && [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" != "1" ]; then
-  echo ""
-  echo -e "  ${RED}Refusing to launch: ${_API_REASON} — that bills per token.${RESET}"
-  echo "  Log in with a subscription ('claude auth login'), or accept the billing with MEGAVIBE_ALLOW_API_BILLING=1."
-  exit 1
-fi
+# Barred: a launch that would bill per token (see bar_api_billing).
+bar_api_billing "$AUTH_JSON"
 
 # ─── Session lock (prevents accidental concurrent source edits) ──────
 #
