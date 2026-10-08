@@ -20,7 +20,16 @@ set -u
 # Only `rm` in command position — never inside quotes, heredoc bodies, comments,
 # case patterns, `=`/`==` comparisons, or a `rm()` function definition. Targets
 # all under the temp dirs / node_modules / a volume's Trash keep real `rm`, as
-# does any `rm` carrying an option rmtrash can't do (`-P`, `-W`).
+# does any `rm` carrying an option rmtrash can't do (`-P`, `-W`). That skip is a
+# deliberate trade-off: scratch data in /tmp can then actually free disk, and
+# nothing durable should live there (macOS clears it on reboot or after days of
+# disuse). Targets are RESOLVED before matching (`..`, symlinks via realpath, a
+# literal leading `cd <dir>`, a well-formed `$TMPDIR`) and the skip roots must be
+# strictly inside. The hook only reasons about commands that are nothing but an
+# optional leading `cd` plus `rm` segments joined by `&&`/`;`; anything it cannot
+# prove (relative path with no cd, `~`, `$HOME`, other variables, braces, globs
+# through a symlink, pipes, redirects, substitutions, control flow, assignments)
+# goes to the Trash: a wrong real `rm` is unrecoverable, a wrong trash costs disk.
 #
 # There is NO escape hatch: `\rm`, `/bin/rm` and `/usr/bin/rm` are rewritten too.
 # Bypassing the Trash to delete something "for real" is precisely the mistake this
@@ -54,11 +63,18 @@ MV_CMD="$COMMAND" RMTRASH="$RMTRASH" python3 - > "$TMPOUT" 2>/dev/null <<'PY'
 import os, re, sys
 src = os.environ.get("MV_CMD", "")
 rmtrash = os.environ["RMTRASH"]
-tmp = (os.environ.get("TMPDIR", "") or "").rstrip("/")
+tmp_raw = os.environ.get("TMPDIR", "") or ""   # as the shell will substitute it, trailing slash included
+tmp = tmp_raw.rstrip("/")
 SKIP_PREFIX = ["/tmp", "/private/tmp", "/private/var/folders", "/var/folders"]
 if tmp:
     SKIP_PREFIX.append(tmp)
 SKIP_COMPONENT = ("node_modules", ".Trash", ".Trashes")
+# $TMPDIR is trusted (as a skip prefix AND for expansion) only in the standard
+# per-user form, so a hostile value (spaces, '~', a shallow dir) cannot widen it.
+TMP_OK = bool(re.fullmatch(r"/(private/)?var/folders/[A-Za-z0-9_]+/[A-Za-z0-9_]+/T|/tmp", tmp))
+if tmp and not TMP_OK:
+    SKIP_PREFIX = [p for p in SKIP_PREFIX if p != tmp]
+SKIP_REAL = SKIP_PREFIX + [os.path.realpath(p) for p in SKIP_PREFIX]
 
 # Words after which the next word is still command position.
 CMD_LEADERS = {"sudo", "exec", "time", "nice", "nohup", "xargs", "command", "builtin",
@@ -70,11 +86,125 @@ BOUNDARY = " \t\n;|&("
 RM_WORDS = ("rm", "\\rm", "/bin/rm", "/usr/bin/rm")
 n = len(src)
 
+# What this hook can PROVE about the shell, and nothing more. Shell is not a regular
+# language, so cwd and variables are trusted only for a command that is NOTHING BUT
+# an optional leading `cd <plain dir>` plus `rm` segments, joined by `&&` or `;` —
+# no pipes, redirects, substitutions, quotes in the cd, assignments, control flow or
+# any other command that could create a symlink, change directory or set a variable.
+# Anything else resolves absolute literal paths only; a relative path, `~`, `$VAR`
+# or brace expansion there goes to the Trash. A wrong real `rm` is unrecoverable; a
+# wrong trash only costs disk space. The hook's own cwd is deliberately NOT used: it
+# is not guaranteed to be the Bash tool's cwd.
+FORBIDDEN = re.compile(r"[|&<>`()\\\n]|\$\(")
+PATHW = r"[A-Za-z0-9_./~+@:,${}][A-Za-z0-9_./~+@:,${}-]*"   # never starts with '-', no quotes
+simple = False
+cwd = None
+
+def resolve_text(word):
+    """The literal path the shell will hand to rm, or None if we cannot be sure."""
+    if len(word) >= 2 and word[0] == "'" and word[-1] == "'" and "'" not in word[1:-1]:
+        return word[1:-1]
+    if len(word) >= 2 and word[0] == '"' and word[-1] == '"' and '"' not in word[1:-1]:
+        word = word[1:-1]
+    elif "'" in word or '"' in word:
+        return None
+    if "\\" in word or "`" in word:
+        return None
+    t = word
+    if "$" in t:
+        if not (simple and TMP_OK):
+            return None
+        t = re.sub(r"\$\{TMPDIR\}|\$TMPDIR(?![A-Za-z0-9_])", lambda m: tmp_raw, t)
+        if "$" in t:
+            return None
+    if t.startswith("~"):
+        return None                      # '~' is never expanded: HOME is not a scratch area
+    return t
+
+def cd_dir(word):
+    """Physical directory `cd <word>` lands in, or None if not provable."""
+    t = resolve_text(word)
+    if not t or not t.startswith("/") or ".." in t.split("/") or any(ch in t for ch in "*?[{"):
+        return None
+    # stat the pathname AS WRITTEN: the kernel's symlink-depth limit makes `cd` fail
+    # where realpath() happily resolves, and a cd that fails leaves rm in the old cwd.
+    if not (os.path.isdir(t) and os.access(t, os.X_OK)):
+        return None
+    return os.path.realpath(t)
+
+def analyze():
+    """Set `simple` and `cwd` for the whole command (see above)."""
+    global simple, cwd
+    segs = [x.strip(" \t") for x in re.split(r"&&|;", src)]
+    if any(FORBIDDEN.search(x) for x in segs):
+        return
+    if segs and segs[-1] == "":
+        segs.pop()
+    if not segs:
+        return
+    rest = segs
+    m = re.match(r"^cd[ \t]+(" + PATHW + r")$", segs[0])
+    if m:
+        rest = segs[1:]
+    for seg in rest:
+        w = re.split(r"[ \t]+", seg, 1)
+        if not w or w[0] not in RM_WORDS:
+            return
+    simple = True            # set before cd_dir: its path may use $TMPDIR / ~
+    if m:
+        cwd = cd_dir(m.group(1))
+
+def inside(path):
+    for root in ("/private/var/folders/", "/var/folders/"):
+        if path.startswith(root):         # <user>/<id>/T/<scratch>: not the per-user dirs themselves
+            c = path[len(root):].split("/")
+            return len(c) >= 4 and c[2] == "T"
+    return any(path.startswith(q + "/") for q in SKIP_REAL)
+
 def skip_target(word):
-    w = word.strip("'\"").rstrip("/")
-    if any(w == p or w.startswith(p + "/") for p in SKIP_PREFIX):
+    t = resolve_text(word)
+    if t is None or "{" in t:
+        return False
+    if t.endswith("/") and any(ch in t for ch in "*?["):
+        return False                                   # `l*/` matches (and follows) directory links
+    t = t.rstrip("/") or "/"
+    parts = t.split("/")
+    if any(ch in c for c in parts[:-1] for ch in "*?["):
+        return False                                   # a glob can walk through a symlink
+    if ".." in parts and any(ch in t for ch in "*?["):
+        return False
+    if t.startswith("/"):
+        # HACK: realpath is taken now, at hook time. A symlink created EARLIER IN THE SAME
+        # COMMAND LINE (ln -s, tar, git checkout ...) can still redirect an absolute path
+        # under /tmp. Pre-existing (the old lexical match had the same hole); closing it
+        # means trashing every compound command that deletes under /tmp.
+        p = t
+    elif cwd is not None:
+        p = cwd + "/" + t
+    else:
+        # relative and cwd unknown: only the component skip, and only without '..'
+        return ".." not in parts and any(c in parts for c in SKIP_COMPONENT)
+    # Inside the skip set LEXICALLY (what the shell is told) AND after symlink resolution
+    # (what it will touch). Either alone is not enough: a link that points into /tmp must
+    # not make a durable path look like scratch, and a /tmp path that points out is not.
+    lex = os.path.normpath(p)
+    rp = os.path.realpath(p)
+    if inside(lex) and inside(rp):
         return True
-    return any(p in w.split("/") for p in SKIP_COMPONENT)
+    return (any(c in lex.split("/") for c in SKIP_COMPONENT)
+            and any(c in rp.split("/") for c in SKIP_COMPONENT))
+
+def read_args(j):
+    args = []
+    while j < n and src[j] not in "\n;|&()<>`":
+        while j < n and src[j] in " \t":
+            j += 1
+        if j >= n or src[j] in "\n;|&()<>`":
+            break
+        if src[j] == "#" and src[j-1] in " \t":
+            break
+        ae = word_end(j); args.append(src[j:ae]); j = ae
+    return args
 
 def word_end(j):
     k = j
@@ -91,6 +221,7 @@ def word_end(j):
         k += 1
     return k
 
+analyze()
 out = []
 i = 0
 at_cmd = True          # next word is in command position
@@ -150,15 +281,7 @@ while i < n:
         # `rm)` (case pattern / argless rm) or `rm(` / `rm (` (function def): leave alone.
         if p < n and src[p] in ")(":
             out.append(word); i = k; at_cmd = False; continue
-        j = k; args = []
-        while j < n and src[j] not in "\n;|&()<>`":
-            while j < n and src[j] in " \t":
-                j += 1
-            if j >= n or src[j] in "\n;|&()<>`":
-                break
-            if src[j] == "#" and src[j-1] in " \t":
-                break
-            ae = word_end(j); args.append(src[j:ae]); j = ae
+        args = read_args(k)
         targets = []; opts_done = False; unsupported = False
         for a in args:
             if opts_done or a == "-" or not a.startswith("-"):
