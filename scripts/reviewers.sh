@@ -448,6 +448,28 @@ case "${1:-list}" in
     # bounded probe two rows below it in the same table.
     _codex_ok
     ;;
+  digest-chain)
+    # The order for NON-review work (/rehydrate, summaries, large context, the
+    # watcher): one answer for every caller instead of each skill re-deriving it.
+    #   codex works or is unknown -> "codex subagent"   (Gemini is not used for this)
+    #   codex answered "unusable"  -> "gemini subagent" when a key is set and the
+    #                                 daily Gemini cap is not 0, else "subagent"
+    # Gemini here is the metered alternative for machines WITHOUT codex
+    # (gemini-review.sh enforces the caps); the Claude subagent is always last.
+    _cx=0; _codex_ok || _cx=$?
+    # A cap that is set but zero or unreadable means general Gemini use is off (the
+    # script reads it the same way), so do not advertise a backend that will refuse.
+    _capoff() { [ -n "${1// /}" ] && awk -v v="$1" 'BEGIN{exit !(v+0 <= 0)}'; }
+    _key="${GEMINI_API_KEY:-}"; _key="${_key// /}"
+    # perl is required too: gemini-review.sh takes its ledger lock with it.
+    if [ "$_cx" = 1 ] && [ -n "$_key" ] && command -v perl >/dev/null 2>&1 && ! _capoff "${MEGAVIBE_GEMINI_DAILY_USD:-}" && ! _capoff "${MEGAVIBE_GEMINI_DAILY_CALLS:-}"; then
+      printf '%s\n' "gemini subagent"
+    elif [ "$_cx" = 1 ]; then
+      printf '%s\n' "subagent"
+    else
+      printf '%s\n' "codex subagent"
+    fi
+    ;;
   fallback)
     [ $# -ge 2 ] || { echo "usage: reviewers.sh fallback <reviewer>" >&2; exit 2; }
     want=$(printf '%s' "$2" | tr 'A-Z' 'a-z')
@@ -480,7 +502,7 @@ case "${1:-list}" in
     sed -n '2,55p' "$0"
     ;;
   *)
-    echo "usage: reviewers.sh [list|enabled <reviewer>|fallback <reviewer>|codex-ok|source]" >&2
+    echo "usage: reviewers.sh [list|enabled <reviewer>|fallback <reviewer>|codex-ok|digest-chain|source]" >&2
     exit 2
     ;;
 esac

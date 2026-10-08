@@ -1,11 +1,11 @@
 ---
 name: rehydrate
-description: Full AI-powered context recovery via Codex, the Claude subagent, or Gemini. Use after compaction or when context feels stale.
+description: Full AI-powered context recovery via Codex or (without Codex) capped Gemini, with the Claude subagent behind. Run `reviewers.sh digest-chain` for the order. Use after compaction or when context feels stale.
 ---
 
 # Re-hydrate Working Context
 
-Regenerate your session-scoped WORKING_CONTEXT.md from the durable `.agent/` files using Codex, the Claude subagent, or Gemini — in that order.
+Regenerate your session-scoped WORKING_CONTEXT.md from the durable `.agent/` files using the backends `reviewers.sh digest-chain` lists, in that order (Codex → Claude subagent; or, without Codex, capped Gemini → Claude subagent).
 
 This is the heavy-duty recovery tool — it calls an AI backend and writes a fresh working context. For quick orientation without AI calls at **session start**, use `/catchup` instead. After compaction you do NOT need `/catchup` — the `on-compact` hook already inlined that orientation into its systemMessage, so `/rehydrate` is the only slash command to run.
 
@@ -22,7 +22,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    - If the on-compact hook already told you, use that path.
    - Otherwise your session ID is in the hook stdin JSON (`session_id`); WORKING_CONTEXT lives at `.agent/sessions/{session_id}/WORKING_CONTEXT.md`.
 
-2. **Check backend availability** (standard chain): `codex exec --help` succeeds (→ `codex-review.sh`) → Claude subagent (always works) → `$GEMINI_API_KEY` set (→ `gemini-review.sh`).
+2. **Pick the backend order**: `bash ~/.megavibe/scripts/reviewers.sh digest-chain` prints it — `codex subagent` when `codex exec` works (or the probe cannot tell), `gemini subagent` on a machine without Codex that has `$GEMINI_API_KEY` (and a non-zero Gemini cap), else `subagent`. Try them left to right; the Claude subagent is always last and always works.
 
 3. **Assemble a BOUNDED input** via Bash (caps keep it well under any backend limit and fast):
 
@@ -64,7 +64,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    call fails rather than falling down the chain on a model name.
 
    - Non-zero exit (incl. the wrapper's 124 timeout) **or** an empty `$OUT` = that backend FAILED. Don't retry it — move down the chain.
-   - **Fallback order:** Codex (above) → **Claude subagent** (Agent tool, `subagent_type: summarizer` — internal, cannot hang, always finishes, and the best output of the three; it spends this subscription's own quota, ~125K tokens on an input this size, which is why it is second and not first) → **Gemini** (`perl -e 'alarm shift; exec @ARGV' 150 bash ~/.megavibe/scripts/gemini-review.sh --max 12000 --out "$OUT" --prompt "$INSTR" "$IN"`, then `rm -f "$OUT.raw.json"`) — every Gemini token is billed, and on a job this size `--max 12000` counts thinking too, so check `finishReason` in the `.err` before trusting a short answer. Never the Gemini CLI or `mcp__gemini-cli__ask-gemini` here: both run full thinking on a large input and stall.
+   - **Fallback order** is whatever `digest-chain` printed in step 2. With Codex: Codex (above) → **Claude subagent** (Agent tool, `subagent_type: summarizer` — internal, cannot hang, always finishes, and the best output of the three; it spends this subscription's own quota, ~125K tokens on an input this size, which is why it is second and not first). **Without Codex** (`gemini subagent`): Gemini first — `perl -e 'alarm shift; exec @ARGV' 150 bash ~/.megavibe/scripts/gemini-review.sh --max 12000 --out "$OUT" --prompt "$INSTR" "$IN"`, then `rm -f "$OUT.raw.json"` — then the subagent. Gemini here is the metered alternative: flash-lite only, never Pro, and `gemini-review.sh` itself refuses (exit 5) once today's call, dollar or input-size cap is reached, or (exit 4) while Codex is usable; treat both as "that backend failed" and move on to the subagent. Exit 3 (cut off) leaves a partial `$OUT`: discard it (`: > "$OUT"`) and move on to the subagent rather than loading it. Check `finishReason` in the `.err` before trusting a short answer. `gemini-review.sh --budget` shows today's spend. Never the Gemini CLI or `mcp__gemini-cli__ask-gemini` here: both run full thinking on a large input and stall.
 
 5. **Verify + load.** Confirm `$OUT` is non-empty and contains the requested sections, then Read it into your window. If every external backend failed AND the subagent is unavailable, hand-write a minimal WORKING_CONTEXT from TASKS.md + git state rather than leaving it empty.
 

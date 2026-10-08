@@ -143,7 +143,7 @@ It only reads a date the section *offers* as its stamp: bracketed in the heading
 
 Everything else stays silent, including projects with no section 0. The staleness counter above tells you when a register was last *written*; this tells you how long ago it claims to have been *true*, which is the question that survives compaction badly.
 
-Recovery uses a fallback chain: ChatGPT/Codex → Claude subagent (always works, same subscription) → Gemini (API key). Measured on a 196 KB context log, Codex answers in 23 s on a small model at low effort, the subagent produces the richest summary but spends the session's own quota, and Gemini is the thinnest and the only one billed per token.
+Recovery uses a fallback chain, and `~/.megavibe/scripts/reviewers.sh digest-chain` prints the order for this machine: ChatGPT/Codex → Claude subagent (always works, same subscription); on a machine without Codex, capped Gemini (API key) → Claude subagent. Measured on a 196 KB context log, Codex answers in 23 s on a small model at low effort, the subagent produces the richest summary but spends the session's own quota, and Gemini is the thinnest and the only one billed per token.
 
 ### Semantic search augmentation
 
@@ -194,7 +194,7 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 |-------------|-----|-----------------|
 | **Claude Code** (required) | Subscription | Core: editing, commands, memory, context recovery via built-in subagent |
 | **ChatGPT/Codex CLI** | Run `codex` to log in | The primary backend: reviews, context recovery, research with web search, second opinions |
-| **Gemini CLI** | Set `GEMINI_API_KEY` (a key from a **billed** project — the free tier is 20 req/day and trains on prompts) | Fallback backend; 1M-token window for very large inputs |
+| **Gemini CLI** | Set `GEMINI_API_KEY` (a key from a **billed** project — the free tier is 20 req/day and trains on prompts) | Codex's fallback reviewer; and, only on a machine without Codex, the metered backend for summaries and re-hydration (see below, inputs up to 300 KB) |
 | **Playwright** | Installed by setup | Browser automation, screenshots, UI testing |
 | **poma-memory** | Bundled (automatic) | Semantic search over project memory |
 | **Telegram bot** | Optional, see below | Personal assistant + project launcher from phone/Watch |
@@ -205,7 +205,9 @@ Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. Yo
 >
 > **Which key:** one from a Google Cloud project **with billing attached** — an admin mints it with `scripts/mint-gemini-key.sh --project <id> --name <person>` (billed is the default; `--free-tier` opts into the dropped mode). Per [Google's Gemini API terms](https://ai.google.dev/gemini-api/terms) that is the only way API prompts are excluded from training; the Workspace-account clause in those terms covers AI Studio, not the API. The free tier (measured 2026-09: 20 requests/day on the one model a new project can still call) is neither a backend nor private. Cost at a measured developer load is $2–6/month per Mac on flash; never pin a Pro model.
 >
-> **Reviews and summaries go through `~/.megavibe/scripts/gemini-review.sh`** (direct API, `thinkingLevel: low`): Gemini 3.x Flash thinks by default and the Gemini CLI — which the MCP tool wraps — cannot lower it, so long answers truncate or take minutes there.
+> **Gemini reviews, and summaries on a machine without Codex, go through `~/.megavibe/scripts/gemini-review.sh`** (direct API, `thinkingLevel: low`): Gemini 3.x Flash thinks by default and the Gemini CLI — which the MCP tool wraps — cannot lower it, so long answers truncate or take minutes there.
+>
+> **Gemini without Codex is rationed.** Outside a review the script refuses while Codex is usable, and otherwise runs flash-lite only (never Pro), with output capped at 12000 tokens, input at 300 KB, and at most 40 calls and an estimated $1.00 per local day; over any cap it exits 5 and the caller falls through to the Claude subagent. Every call is logged in `~/.megavibe/gemini-usage.jsonl` (`gemini-review.sh --budget` shows today's). Each call is reserved in the ledger under a lock before it is sent, an unreadable ledger refuses, the context watcher may use at most 60% of the day, and an unreadable cap value counts as 0. Tune with `MEGAVIBE_GEMINI_DAILY_CALLS`, `MEGAVIBE_GEMINI_DAILY_USD` (0 switches general use off), `MEGAVIBE_GEMINI_DIGEST_MODEL` (must be a flash-lite), `MEGAVIBE_GEMINI_MAX_INPUT_KB`, `MEGAVIBE_GEMINI_MAX_OUT`, `MEGAVIBE_GEMINI_PRICES`. The dollar figure is an estimate priced on the high side; your key's own project budget is the real ceiling. Reviews are never refused by the caps, only logged.
 >
 > **Antigravity CLI (Google's successor) is deliberately not the backend:** it works headlessly on a Workspace login, but it is an agent harness — ~13K tokens of system prompt per call, 2–4 minutes and 3–5x the tokens for the same review the API answers in 7 s, a weekly per-account compute quota with lockouts, and Workspace access is a Gemini Enterprise add-on. Measured 2026-09-06; revisit if Google ships a harness-free headless mode.
 

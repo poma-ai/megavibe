@@ -240,7 +240,7 @@ if [ -n "$ACTIVE_REVIEWERS" ]; then
 | Reviewers (non-negotiable 4) | ${ACTIVE_REVIEWERS} |"
     REVIEWER_LINE="
 
-Reviewers: only ${ACTIVE_REVIEWERS} are switched on. Do not ask any other one to review — \`--as-reviewer\` exits 4 for it, and that is a setting, not an outage. This limits REVIEWS only: Gemini and Codex stay available for /rehydrate, summaries and large-context work regardless. Change it with \`megavibe reviewers set\`."
+Reviewers: only ${ACTIVE_REVIEWERS} are switched on. Do not ask any other one to review — \`--as-reviewer\` exits 4 for it, and that is a setting, not an outage. This limits REVIEWS only: Codex stays available for /rehydrate, summaries and large-context work regardless; Gemini is used for those only on a machine without Codex, rationed by daily caps. Change it with \`megavibe reviewers set\`."
   fi
 fi
 
