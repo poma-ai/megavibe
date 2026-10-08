@@ -82,9 +82,10 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
      else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: 0, c: 0} end) as $n
   | (if $n.b == "over" then (if $fh != null and $fh.used >= 85 then "5h" else "7d" end)
      elif ($sd != null and $sd.rem <= 129600 and $sd.used < 60) or ($sd != null and $sd.proj != null and $sd.proj < 70) then "7d" else "5h" end) as $which
-  | (if $which == "5h" then $fh else $sd end) as $w
+  | (if $which == "5h" then $fh else $sd end) as $w0
+  | (if $w0 != null then [$which, $w0] elif $which == "5h" then ["7d", $sd] else ["5h", $fh] end) as $pair   # a held band may have lost its own window to a reset
   | {band: $n.b, since: $n.s, pend: $n.p, calm: $n.c,
-     reason: (if $w == null then "" else "\($which) \($w.used | floor)% used, resets in \(human($w.rem))" end)}
+     reason: (if $pair[1] == null then "" else "\($pair[0]) \($pair[1].used | floor)% used, resets in \(human($pair[1].rem))" end)}
 ' <<<"$ROW" 2>/dev/null)
 [ -n "$DECISION" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 

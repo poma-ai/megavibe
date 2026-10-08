@@ -3,8 +3,9 @@
 # Subscription-first routing, mid-session half: when Claude subscription usage is
 # running hot (or capacity will be lost at reset), tell the model once per band per
 # session how to spend subagents. The launch half is `megavibe` + scripts/usage-route.sh.
-# Triggered by: SessionStart (startup|resume) and PreToolUse (Agent), the moment the
-# subagent model is decided. Advisory only; never blocks, always exits 0.
+# Triggered by: SessionStart (startup|resume|clear|compact) and PreToolUse (Agent). The
+# PreToolUse context lands after that call chose its model, so it steers the calls after it.
+# Advisory only; never blocks, always exits 0.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
