@@ -24,10 +24,14 @@ if [ -n "$RL_OUT" ]; then
   RL_KEY=${RL_OUT%%$'\n'*}; RL_ROW=${RL_OUT#*$'\n'}
   RL_DIR="${MEGAVIBE_HOME:-$HOME/.megavibe}/usage"; RL_LAST="$RL_DIR/.claude-last"
   RL_NOW=$(date +%s); RL_PREV=$(cat "$RL_LAST" 2>/dev/null || true)
-  if [ "${RL_PREV%% *}" != "$RL_KEY" ] || [ "$((RL_NOW - ${RL_PREV#* }))" -ge 300 ] 2>/dev/null; then
+  RL_PTS=${RL_PREV#* }
+  case "$RL_PTS" in ''|*[!0-9]*) RL_PTS=0 ;; esac   # a damaged cache must not reach the arithmetic
+  case "$RL_NOW" in ''|*[!0-9]*) RL_NOW=0 ;; esac
+  if [ "${RL_PREV%% *}" != "$RL_KEY" ] || [ "$((RL_NOW - RL_PTS))" -ge 300 ]; then
     mkdir -p "$RL_DIR" 2>/dev/null \
       && printf '%s\n' "$RL_ROW" >> "$RL_DIR/claude.jsonl" 2>/dev/null \
-      && printf '%s %s\n' "$RL_KEY" "$RL_NOW" > "$RL_LAST" 2>/dev/null || true
+      && printf '%s %s\n' "$RL_KEY" "$RL_NOW" > "$RL_LAST.$$" 2>/dev/null \
+      && mv -f "$RL_LAST.$$" "$RL_LAST" 2>/dev/null || true
   fi
 fi
 

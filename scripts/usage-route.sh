@@ -11,8 +11,11 @@
 #
 # Bands: over (used up or running hot: cut model/effort, pin subagents down), normal
 # (no effect), under (capacity that will be lost at reset: upgrade the model).
-# Hysteresis keeps it from flapping: `over` enters at once and leaves after 30 minutes
-# of readings below the leave thresholds (timed from when they first qualified); `under` needs two qualifying evaluations 30 minutes apart.
+# Hysteresis keeps it from flapping: `over` enters at once; it leaves 30 minutes after its
+# leave thresholds first hold (a remembered reading of 85% or more holds until the window
+# resets or the projection falls with elapsed time, and a fresh window still waits out the
+# 30 minutes); `under` needs two qualifying evaluations 30 minutes apart. Escape hatches:
+# MEGAVIBE_ROUTER=0, or delete route-state.json.
 # Missing, malformed or reset-window data is the normal band, so the router can only ever
 # change today's behaviour on evidence. A reading older than 6h inside a live window still
 # counts toward `over` (usage only grows inside a window) but never toward `under`. Exit status is always 0.
@@ -35,7 +38,7 @@ case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band
 
 ROW=""
 [ -r "$FILE" ] && ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
-PREV=$(cat "$STATE" 2>/dev/null | jq -c 'select(type == "object")' 2>/dev/null)
+PREV=$(cat "$STATE" 2>/dev/null | jq -sc 'map(select(type == "object")) | last // empty' 2>/dev/null)
 [ -n "$ROW" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 [ -n "$PREV" ] || PREV='{}'
 
@@ -46,10 +49,13 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
   # and carry an old window, so liveness (not append order) picks the window: the newest live
   # row names it, and usage only grows inside a window, so the highest reading of it is current.
   # The highest reading of a live window is also kept in the state file, keyed by its reset
-  # time in seconds, so it survives the 50-row slice read here and a seconds/ms mismatch.
+  # time in seconds, so a flood of later rows outside the 50-row slice read here, or a
+  # seconds/ms mismatch, cannot hide it. With no live row at all the remembered reading stands
+  # alone and counts as stale (no basis for `under`).
   def pick($k):
     [.[] | select(((.[$k].r? // null) | type) == "number" and ((.[$k].r | sec) > $now))] as $live
-    | if ($live | length) == 0 then null
+    | (($prev.mx[$k]? // null) | if type == "object" and (.r | type) == "number" and (.p | type) == "number" and .r > $now then . else null end) as $alone
+    | if ($live | length) == 0 then (if $alone == null then null else {p: $alone.p, r: $alone.r, t: 0} end)
       else ($live | last) as $l | ($l[$k].r | sec) as $rn
         | ([$live[] | select((.[$k].r | sec) == $rn) | .[$k].p | select(type == "number")] | max) as $p0
         | ($prev.mx[$k]? // null) as $m
