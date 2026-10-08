@@ -18,7 +18,7 @@ set -u
 # - Always inject: DECISIONS.md + TASKS.md + LESSONS.md (structured, small)
 # - FULL_CONTEXT.md < 10KB: also inject raw (no AI needed)
 # - FULL_CONTEXT.md >= 10KB: inject rehydration instructions for Claude to
-#   call codex-review.sh → Claude subagent → gemini-review.sh (fallback chain)
+#   follow reviewers.sh digest-chain: codex-review.sh → Claude subagent, or without Codex gemini-review.sh (capped) → Claude subagent
 #
 # Improvements over v1:
 # - LESSONS.md injected (was missing)
@@ -234,8 +234,8 @@ FULL_CONTEXT on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FUL
 
 ## Post-compact recovery
 
-Run /rehydrate — it regenerates ${WC_PATH} via the Codex/Claude/Gemini fallback
-chain (full AI-powered recovery). That is the ONLY slash command you need
+Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
+(reviewers.sh digest-chain; full AI-powered recovery). That is the ONLY slash command you need
 to type; the catchup-equivalent (git state + .agent/ files) is inlined
 below so you already have the information /catchup would have produced.
 
@@ -269,8 +269,8 @@ and is likely still valid. Treat it as your source of truth — running
 /rehydrate now is OPTIONAL. If you decide carryover context is enough,
 just continue working; no nag will fire."
   else
-    REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the Codex/Claude/Gemini fallback
-chain (full AI-powered recovery). Do /rehydrate BEFORE resuming any other
+    REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
+(reviewers.sh digest-chain; full AI-powered recovery). Do /rehydrate BEFORE resuming any other
 work. Until it completes, stale-context nags are suppressed for ~5 minutes
 so you get a clean window."
   fi

@@ -9,7 +9,7 @@ into a named tmux session ('mvw-<sid12>'); cleaned up by on-session-end.sh.
 Loop (every --interval seconds, default 300):
   1. Read new turns from --transcript past .agent/LOGS/.flush-cursor.<sid>.
   2. If fewer than --min-new-turns, skip.
-  3. Send the slice + existing .agent/ files to a backend (Codex → Gemini).
+  3. Send the slice + existing .agent/ files to a backend (Codex; or, on a machine without Codex, capped Gemini via gemini-review.sh).
   4. Parse the JSON envelope. Substring-validate every verbatim_evidence
      against the slice. Lessons additionally require user-role evidence.
   5. Auto-apply narrative/lessons/tasks_patch under flock.
@@ -324,6 +324,10 @@ def parse_envelope(raw: str) -> dict[str, Any]:
 
 # ---------- backend dispatch with fallback ---------------------------------
 
+LAST_BACKEND = ""                 # which backend answered the last call
+args_backend_forced_gemini = False  # --backend gemini: the user chose it, skip the codex gate
+
+
 def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
     """Try preferred backend, then fall back. Raise if all fail.
 
@@ -342,13 +346,19 @@ def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
         # (measured 2026-09-18). Gemini stays as the fallback.
         order = ["codex", "gemini"]
 
+    global LAST_BACKEND, args_backend_forced_gemini
+    args_backend_forced_gemini = (preferred == "gemini")
     last_err = None
     for backend in order:
         try:
             if backend == "gemini":
-                return _call_gemini(prompt, timeout)
+                text = _call_gemini(prompt, timeout)
             elif backend == "codex":
-                return _call_codex(prompt, timeout)
+                text = _call_codex(prompt, timeout)
+            else:
+                continue
+            LAST_BACKEND = backend
+            return text
         except Exception as e:
             log(f"backend={backend} failed: {type(e).__name__}: {str(e)[:200]}")
             last_err = e
@@ -357,43 +367,59 @@ def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
 
 
 def _call_gemini(prompt: str, timeout: int) -> str:
-    """Direct generateContent with thinkingLevel=low.
+    """Gemini through gemini-review.sh, so the cost rails apply to the watcher too.
 
-    Not `gemini -p`: on Gemini 3.x Flash the CLI runs full thinking (15-40K
-    thought tokens on a prompt this size, measured 2026-09-06) and the call
-    times out — every watcher Gemini attempt in the logs failed that way. The
-    CLI is kept only as the fallback for a machine without a key in the env.
+    The alternative for machines WITHOUT codex, and the heaviest recurring caller
+    (one flush per session every few minutes): the script refuses while codex is
+    usable (exit 4), enforces the daily call/dollar/input caps (exit 5), records
+    every call in ~/.megavibe/gemini-usage.jsonl, and never uses Pro. A refusal
+    raises, so the cycle is logged as skipped and the session is unaffected. The
+    old direct API call and the `gemini -p` CLI fallback are gone: neither could be
+    metered, and the CLI stalls on 3.x thinking anyway.
     """
-    import json as _json
-    import urllib.request as _url
-    import urllib.error as _uerr
-    key = os.environ.get("GEMINI_API_KEY", "")
-    if not key:
-        r = subprocess.run(["gemini", "-p", prompt],
-                           capture_output=True, text=True, timeout=timeout)
-        if r.returncode != 0:
-            raise RuntimeError(f"gemini exit={r.returncode}: {r.stderr[:400]}")
-        return r.stdout
-    model = os.environ.get("MEGAVIBE_GEMINI_MODEL", "gemini-flash-latest")
-    body = _json.dumps({
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 8000, "temperature": 0.2,
-                             "thinkingConfig": {"thinkingLevel": "low"}},
-    }).encode()
-    req = _url.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        data=body, headers={"x-goog-api-key": key, "Content-Type": "application/json"})
+    import tempfile
+    script = Path(__file__).resolve().parent / "gemini-review.sh"
+    if not script.exists():
+        raise RuntimeError("gemini-review.sh not found next to the watcher")
+    env = dict(os.environ)
+    env["MEGAVIBE_GEMINI_CALLER"] = "watcher"   # rationed to a share of the day's caps
+    if args_backend_forced_gemini:        # --backend gemini is an explicit choice
+        env["MEGAVIBE_GEMINI_DIGEST"] = "1"
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(prompt)
+        pf = fh.name
     try:
-        resp = _json.load(_url.urlopen(req, timeout=timeout))
-    except _uerr.HTTPError as e:
-        raise RuntimeError(f"gemini http {e.code}: {e.read()[:300]!r}")
-    cands = resp.get("candidates") or []
-    if not cands or "content" not in cands[0]:
-        raise RuntimeError(f"gemini: no answer ({_json.dumps(resp.get('promptFeedback') or resp)[:200]})")
-    text = "".join(p.get("text", "") for p in cands[0]["content"].get("parts", []) if not p.get("thought"))
-    if cands[0].get("finishReason") not in (None, "STOP"):
-        raise RuntimeError(f"gemini: cut off ({cands[0].get('finishReason')})")
-    return text
+        # Own process group, so a timeout can take down curl as well as bash (bash alone
+        # would leave curl running, unrecorded, and its EXIT cleanup would never run).
+        global _ACTIVE_PGID
+        proc = subprocess.Popen(["bash", str(script), "--prompt-file", pf, "--max", "12000"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                env=env, start_new_session=True)
+        _ACTIVE_PGID = proc.pid
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            import signal as _sig
+            try:
+                os.killpg(proc.pid, _sig.SIGTERM)
+                try:
+                    proc.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, _sig.SIGKILL)
+                    proc.communicate()
+            except ProcessLookupError:
+                pass
+            raise RuntimeError(f"gemini timed out after {timeout}s")
+        finally:
+            _ACTIVE_PGID = None
+    finally:
+        try:
+            os.unlink(pf)
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        raise RuntimeError(f"gemini exit={proc.returncode}: {err.strip()[-300:]}")
+    return out
 
 
 def _call_codex(prompt: str, timeout: int) -> str:
@@ -634,9 +660,23 @@ SHUTDOWN_GRACE = 10
 # but-live session self-heals cheaply.
 REAP_AFTER = 1800  # 30 min
 
+_ACTIVE_PGID = None     # process group of an in-flight gemini-review.sh call, if any
+
+
+def _kill_active(sig=signal.SIGTERM):
+    """Take down an in-flight backend call (own session, so a plain exit would orphan it)."""
+    pg = _ACTIVE_PGID
+    if pg:
+        try:
+            os.killpg(pg, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def _handle_signal(signum, frame):
     global _stop
     _stop = True
+    _kill_active()          # an in-flight gemini call must not outlive the watcher
     try:
         signal.alarm(SHUTDOWN_GRACE)
     except (ValueError, OSError):
@@ -644,6 +684,7 @@ def _handle_signal(signum, frame):
 
 def _handle_alarm(signum, frame):
     # Last resort: a stop was requested but we're still alive (hung flush).
+    _kill_active(signal.SIGKILL)      # the hard deadline: no more asking
     os._exit(0)
 
 
@@ -777,9 +818,11 @@ def main() -> int:
             break
 
         # Sleep in small ticks so SIGTERM is responsive
+        # Half the flush rate while Gemini is the backend: it is metered per token.
+        wait = args.interval * (2 if LAST_BACKEND == "gemini" else 1)
         slept = 0
-        while slept < args.interval and not _stop:
-            time.sleep(min(2, args.interval - slept))
+        while slept < wait and not _stop:
+            time.sleep(min(2, wait - slept))
             slept += 2
 
     # final pass before exit (best-effort) — skipped when self-reaped (no point

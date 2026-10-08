@@ -2,7 +2,7 @@
 
 # Megavibe v3 Operating Rules
 
-Claude Code is the executor and orchestrator. **Codex is the primary subcontractor** — reviews, re-hydration, summaries, large context — reached through `~/.megavibe/scripts/`. Gemini is the fallback behind it, and no longer a peer reviewer — measured, with the numbers and the case against the change in `.claude/rules/delegation.md`. Codex has no MCP server at all (codex-cli 0.154.0 removed it); Gemini's MCP survives for short interactive questions only, since it truncates on 3.x thinking. Playwright handles UI automation. **Megavibe works with only a Claude Code subscription** — external backends improve quality but are never required.
+Claude Code is the executor and orchestrator. **Codex is the primary subcontractor** — reviews, re-hydration, summaries, large context — reached through `~/.megavibe/scripts/`. On a machine WITHOUT Codex, Gemini is the metered alternative for non-review work (capped; `reviewers.sh digest-chain` gives the order). Gemini is no longer a peer reviewer — measured, with the numbers and the case against the change in `.claude/rules/delegation.md`. Codex has no MCP server at all (codex-cli 0.154.0 removed it); Gemini's MCP survives for short interactive questions only, since it truncates on 3.x thinking. Playwright handles UI automation. **Megavibe works with only a Claude Code subscription** — external backends improve quality but are never required.
 
 **Context management rules (items 2–3 below) apply only when an `.agent/` directory exists in the project root.** The workflow, tool routing, and verification rules apply everywhere. Personal overrides go in `CLAUDE.local.md` (auto-gitignored).
 
@@ -71,7 +71,7 @@ Compaction has three phases, all hook-driven:
 **Proactive nudge** (safety net, only when context-watcher is OFF): A hook measures transcript token usage and nudges at three escalating tiers — 🟡 50% / 🟠 75% / 🔴 90% of the model's effective auto-compact threshold (Claude Code's native default, typically ~80% of model context). When the context-watcher daemon is alive for the session (the default), these nudges suppress entirely — the watcher keeps `.agent/` fresh between turns and the in-session nudges become noise. Set `autoCompactWindow` in `.claude/settings.json` or `$CLAUDE_CODE_AUTO_COMPACT_WINDOW` to impose a project- or user-level cap. Each tier fires at most once; the counter resets after an actual compaction.
 
 **Post-compact** (on-compact hook): After compaction, a hook injects `.agent/DECISIONS.md`, `.agent/TASKS.md`, `.agent/LESSONS.md`, the current git state, and the pre-compact `WORKING_CONTEXT.md` (as a stale hint) — i.e. everything `/catchup` would produce, inlined directly into the systemMessage. **Your only required action is:**
-1. Run `/rehydrate` — full AI-powered recovery via the Codex → Claude subagent → Gemini chain, writes a fresh `WORKING_CONTEXT.md`
+1. Run `/rehydrate` — full AI-powered recovery via the chain `reviewers.sh digest-chain` prints (Codex → Claude subagent; without Codex: capped Gemini → Claude subagent), writes a fresh `WORKING_CONTEXT.md`
 
 You do NOT need to run `/catchup` separately after compaction — the orientation is already in the hook's injected message. `/catchup` remains useful for session-start orientation (fresh launch, no compaction event). A 5-minute post-compact grace period suppresses stale-context nags while `/rehydrate` runs, so you won't get double-yelled-at during recovery.
 
@@ -114,7 +114,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 ## Skills
 
 Megavibe provides slash commands for common workflows. Type `/` to see them:
-- `/rehydrate` — regenerate WORKING_CONTEXT.md from .agent/ files via Codex (Claude subagent, then Gemini, behind it)
+- `/rehydrate` — regenerate WORKING_CONTEXT.md from .agent/ files via Codex, or capped Gemini where there is no Codex (Claude subagent behind either)
 - `/catchup` — orient yourself in a project at session start (reads .agent/ + git state)
 - `/init-feature <description|issue link>` — scope a feature before building, from prose or a GitHub ticket: a summary and estimate you confirm or send back, then a fork (write a spec, or vibe it)
 - `/finish-feature [base]` — measure what the finished feature actually cost (turns, tool calls, tokens, diff size), score it against that estimate, comment it on the PR and offer to merge
@@ -142,7 +142,7 @@ Keep CLAUDE.md a **rule index, not an encyclopedia.** When a section grows past 
 
 On every fresh session start, decide backend availability. **Codex is available iff `codex exec --help` succeeds** — probe the CLI, not an MCP tool; there is no Codex MCP server since codex-cli 0.154.0. Assert the subcommand rather than assuming it: an auto-updating npm-global CLI will keep removing things, and the resulting error never names the real cause. Reviews go through `~/.megavibe/scripts/codex-review.sh --as-reviewer`; re-hydration, memos and second opinions through the same script without the flag.
 
-**Gemini is available iff `$GEMINI_API_KEY` is set** (a key from a billed project — the free tier is 20 req/day and trains on prompts). It is the fallback for both roles, so a missing key costs nothing while Codex is up. The `mcp__gemini-cli__ping` result only gates the `ask-gemini` MCP tool, for short interactive questions; a failed ping does not make Gemini unavailable.
+**Gemini is available iff `$GEMINI_API_KEY` is set** (a key from a billed project — the free tier is 20 req/day and trains on prompts). It is Codex's fallback as a reviewer, and the alternative for non-review work only where Codex is absent — there `gemini-review.sh` meters every call (flash-lite only, never Pro; daily caps of 40 calls, $1 and 300 KB input; `--budget` shows today's spend), so a missing key costs nothing while Codex is up. The `mcp__gemini-cli__ping` result only gates the `ask-gemini` MCP tool, for short interactive questions; a failed ping does not make Gemini unavailable.
 
 For REVIEWS only, intersect availability with the `MEGAVIBE_REVIEWERS` allow-list (`megavibe reviewers`, or `~/.megavibe/scripts/reviewers.sh list`): available and asked-for are different questions, and the session-start table answers both. Every other use of these backends ignores the setting.
 

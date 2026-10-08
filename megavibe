@@ -12,7 +12,7 @@ set -euo pipefail
 #
 # Session management is handled entirely via slash commands inside Claude:
 #   /catchup  — review project state + open tasks from previous work
-#   /rehydrate — full context recovery via Codex/Claude/Gemini
+#   /rehydrate — full context recovery via Codex, or capped Gemini without Codex, then Claude
 
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 

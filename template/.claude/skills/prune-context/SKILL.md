@@ -1,6 +1,6 @@
 ---
 name: prune-context
-description: Selectively prune redundant lines from .agent/FULL_CONTEXT.md via AI (Codex, then the Claude subagent, then Gemini). Use when FULL_CONTEXT.md has grown large (500+ lines). Distinct from /compact (Claude Code built-in, which summarizes the live conversation).
+description: "Selectively prune redundant lines from .agent/FULL_CONTEXT.md via AI (the reviewers.sh digest-chain order: Codex then the Claude subagent, or capped Gemini then the subagent without Codex). Use when FULL_CONTEXT.md has grown large (500+ lines). Distinct from /compact (Claude Code built-in, which summarizes the live conversation)."
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Glob
 ---
@@ -13,7 +13,7 @@ Use Codex (or the standard fallback chain) to surgically remove redundant lines 
 
 ## Prerequisites
 
-- At least one backend must be available. Try in order: Codex (`codex-review.sh --effort low`) → Claude subagent → Gemini (`gemini-review.sh`)
+- At least one backend must be available. Try in the order `bash ~/.megavibe/scripts/reviewers.sh digest-chain` prints: Codex (`codex-review.sh --effort low`) → Claude subagent, or without Codex capped Gemini (`gemini-review.sh`) → Claude subagent
 - FULL_CONTEXT.md should be large enough to warrant compaction (500+ lines)
 - The Claude subagent has a 200K token window — for very large logs, it may need to process in chunks
 
