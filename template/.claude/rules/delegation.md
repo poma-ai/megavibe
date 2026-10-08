@@ -128,7 +128,7 @@ Proposed once: ping an idle session every ~50 min (under the 1h ephemeral cache 
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | Screenshots/HTML → `.agent/ASSETS/` |
 | Interpret screenshots or UI captures | Gemini | Codex | Claude subagent | Structured description |
 | Automatic .agent/ context augmentation | poma-memory (via Grep/Glob hook) | poma-memory MCP | — | Injected as systemMessage on every Grep/Glob |
-| Selective context compaction | Codex | Claude subagent | Gemini | See below |
+| Tidy a long event log | `agent-log.sh fold` (no backend) | — | — | See "Context compaction" below |
 
 ## Gemini / Codex / Claude subagent delegation protocols
 
@@ -154,18 +154,9 @@ Rules:
 - Never regenerate from an old WORKING_CONTEXT alone. Always re-derive from the full log + repo state.
 - Write WORKING_CONTEXT to the session-scoped path (`.agent/sessions/{sid}/WORKING_CONTEXT.md`), not the project root.
 
-### Selective context compaction
+### Context compaction (superseded: fold, not AI line removal)
 
-FULL_CONTEXT.md is append-only and has **no length limit** — let it grow. Do NOT preemptively truncate, archive, or summarize it.
-
-When FULL_CONTEXT.md becomes too large for the re-hydration backend to process in a single call (~750K words for Gemini), use the standard fallback chain for **selective line-level compaction**:
-
-1. Send FULL_CONTEXT.md to the backend with this prompt: "Read this entire context log. Identify lines that are redundant, superseded by later entries, or no longer relevant. Output ONLY the line numbers to remove, grouped by reason. Preserve: all decisions, all open task references, all lessons learned, all architectural context. Remove: duplicate status updates, resolved issue descriptions, stale progress notes."
-2. Archive the original to `.agent/LOGS/FULL_CONTEXT.pre-compact.md`
-3. Remove only the lines the backend identified
-4. Append a compaction note: `--- Compacted on YYYY-MM-DD: removed N lines (AI-selected) ---`
-
-This is a rare operation — most projects will never hit the limit. The Claude subagent fallback has a smaller context window (200K tokens vs Gemini's ~1M), so for very large logs it may need to process in chunks.
+`.agent/FULL_CONTEXT.md` is RENDERED from `.agent/snapshot.md` plus the write-once events in `.agent/events/`; it is never edited in place and needs no AI pruning. When `.agent/events/` has accumulated a lot of old entries, run `.claude/hooks/agent-log.sh fold`: it moves events older than 30 days into the snapshot (`--before YYYY-MM-DD` to choose the cutoff), no content is lost, and `FULL_CONTEXT.md` renders identically before and after. Re-hydration reads a bounded slice of it (`/rehydrate`), so the size of the rendered file is not a problem in itself. The old procedure (send the file to a backend, delete the lines it names, append a compaction note) is retired for exactly that reason; `/prune-context` is kept only for old projects that still hand-append to `FULL_CONTEXT.md`.
 
 ## Codex delegation protocols
 
