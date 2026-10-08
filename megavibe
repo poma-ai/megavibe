@@ -769,6 +769,10 @@ compute_router_args() {
      && jq -e '.env.ANTHROPIC_MODEL // .env.ANTHROPIC_DEFAULT_MODEL // empty' "$HOME/.claude/settings.json" >/dev/null 2>&1; then
     skip_model=1
   fi
+  if [ -f "$HOME/.claude/settings.json" ] \
+     && jq -e '.env.CLAUDE_CODE_EFFORT_LEVEL // empty' "$HOME/.claude/settings.json" >/dev/null 2>&1; then
+    skip_effort=1
+  fi
   for a in .claude/settings.json .claude/settings.local.json; do
     [ -f "$a" ] || continue
     jq -e '.model // .env.ANTHROPIC_MODEL // .env.ANTHROPIC_DEFAULT_MODEL // empty' "$a" >/dev/null 2>&1 && skip_model=1
@@ -2039,10 +2043,10 @@ _API_REASON=""
 # console key as claude.ai, and those slip through.
 case "$(echo "$AUTH_JSON" | jq -r '.authMethod // "claude.ai"' 2>/dev/null)" in
   api_key|api_key_helper) _API_REASON="Claude Code is using an API key (authMethod api_key)" ;;
-  third_party) _API_REASON="Claude Code is using a third-party provider (authMethod third_party)" ;;
+  third_party) echo -e "  ${DIM}(Claude Code is using a third-party provider: billed by that provider, not by your subscription)${RESET}" ;;
 esac
 case "$(echo "$AUTH_JSON" | jq -r '.apiProvider // "firstParty"' 2>/dev/null)" in
-  bedrock|vertex|foundry) _API_REASON="API provider $(echo "$AUTH_JSON" | jq -r '.apiProvider')" ;;
+  bedrock|vertex|foundry) echo -e "  ${DIM}(Claude Code is using $(echo "$AUTH_JSON" | jq -r '.apiProvider'): billed by that cloud, not by a Claude subscription)${RESET}" ;;
 esac
 if [ -n "$_API_REASON" ] && [ "${MEGAVIBE_ALLOW_API_BILLING:-0}" != "1" ]; then
   echo ""

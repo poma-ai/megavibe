@@ -13,8 +13,9 @@
 # (no effect), under (capacity that will be lost at reset: upgrade the model).
 # Hysteresis keeps it from flapping: `over` enters at once and leaves after 30 minutes
 # below the leave thresholds; `under` needs two qualifying evaluations 30 minutes apart.
-# Missing, stale, malformed or reset-window data is the normal band, so the router can
-# only ever change today's behaviour on evidence. Exit status is always 0.
+# Missing, malformed or reset-window data is the normal band, so the router can only ever
+# change today's behaviour on evidence. A reading older than 6h inside a live window still
+# counts toward `over` (usage only grows inside a window) but never toward `under`. Exit status is always 0.
 #
 # Test seams: MEGAVIBE_USAGE_FILE, MEGAVIBE_USAGE_STATE, MEGAVIBE_NOW,
 # MEGAVIBE_USER_SETTINGS. Tuning: MEGAVIBE_ROUTER_UP (model for `under`, default opus).
@@ -49,21 +50,22 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
   def win($w; $len; $t):
     if ($w | type) != "object" or ($w.p | type) != "number" or ($w.r | type) != "number" then null
     elif ($w.r | sec) <= $now then null               # that window already reset: fresh
-    elif ($now - $t) > 21600 then null                # a reading older than 6h inside a live window
     else (($w.r | sec) - $now) as $rem
       | ((1 - $rem / $len) | if . < 0 then 0 elif . > 1 then 1 else . end) as $el
-      | {used: $w.p, rem: $rem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end)}
+      | {used: $w.p, rem: $rem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end),
+         stale: (($now - $t) > 21600)}      # old reading in a live window: still a floor for `over`, no basis for `under`
     end;
   def human($s): if $s >= 172800 then "\($s / 86400 | floor)d"
                  elif $s >= 3600 then "\($s / 3600 | floor)h" else "\([$s / 60 | floor, 1] | max)m" end;
   (last | .t // 0) as $t
   | win(pick("fh"); 18000; $t) as $fh | win(pick("sd"); 604800; $t) as $sd
-  | ($prev.band // "normal") as $cur | ($prev.since // 0) as $since | ($prev.pend // 0) as $pend
+  | ($prev.band // "normal") as $cur | ($prev.since // 0) as $since | ($prev.pend // 0 | if ($now - .) > 7200 then 0 else . end) as $pend    # a pending `under` evaluation lapses after 2h
   | (($sd != null and ($sd.used >= 90 or ($sd.proj != null and $sd.proj > 100))) or ($fh != null and $fh.used >= 85)) as $over_in
   | (($sd == null or ($sd.used < 85 and ($sd.proj == null or $sd.proj < 90))) and ($fh == null or $fh.used < 70)) as $over_out
-  | ($sd != null and ($sd.used >= 75 or ($sd.proj != null and $sd.proj > 85))) as $under_out
-  | (($sd != null and (($sd.proj != null and $sd.proj < 70) or ($sd.rem <= 129600 and $sd.used < 60)))
-     or ($fh != null and $fh.rem <= 3600 and $fh.used < 50)) as $under_cand
+  | ($sd != null and ($sd.used >= 75 or ($sd.proj != null and $sd.proj > 85)
+                      or ($sd.el < 0.25 and $sd.used > 100 * $sd.el + 15))) as $under_out   # early week: no projection yet, so compare with a straight-line pace
+  | (($sd != null and ($sd.stale | not) and (($sd.proj != null and $sd.proj < 70) or ($sd.rem <= 129600 and $sd.used < 60)))
+     or ($fh != null and ($fh.stale | not) and $fh.rem <= 3600 and $fh.used < 50)) as $under_cand
   | ($under_cand and ($under_out | not)) as $under_in
   | (if $over_in then {b: "over", s: $now, p: 0}
      elif $cur == "over" and (($over_out | not) or ($now - $since) < 1800) then {b: "over", s: $since, p: 0}
@@ -83,6 +85,10 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
 
 BAND=$(jq -r '.band' <<<"$DECISION"); REASON=$(jq -r '.reason' <<<"$DECISION")
 NEWSTATE=$(jq -c '{band, since, pend}' <<<"$DECISION")
+# keep the history bounded: past 2 MB, keep the newest 5000 rows
+if [ "$PEEK" = 0 ] && [ "$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')" -gt 2097152 ] 2>/dev/null; then
+  tail -n 5000 "$FILE" > "$FILE.$$" 2>/dev/null && mv -f "$FILE.$$" "$FILE" 2>/dev/null || rm -f "$FILE.$$" 2>/dev/null
+fi
 if [ "$PEEK" = 0 ] && [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0)}' <<<"$PREV" 2>/dev/null)" ]; then
   if mkdir -p "$(dirname "$STATE")" 2>/dev/null && printf '%s\n' "$NEWSTATE" > "$STATE.$$" 2>/dev/null; then
     mv -f "$STATE.$$" "$STATE" 2>/dev/null || rm -f "$STATE.$$" 2>/dev/null
