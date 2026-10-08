@@ -121,6 +121,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/usage-advisory.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreCompact": [

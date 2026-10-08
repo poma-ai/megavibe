@@ -19,12 +19,19 @@ case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 
 BAND=$(bash "$UR" band 2>/dev/null)
 FLAG=".agent/LOGS/.usage-band.$SID"
-[ "$BAND" = "$(cat "$FLAG" 2>/dev/null)" ] && exit 0
+PREVBAND=$(cat "$FLAG" 2>/dev/null)
+# SessionStart (a fresh session, /clear, a compaction) always restates a non-normal band: the
+# model may have lost the earlier advisory. PreToolUse speaks only when the band changed.
+if [ "$EVENT" != "SessionStart" ] && [ "$BAND" = "$PREVBAND" ]; then exit 0; fi
 mkdir -p .agent/LOGS 2>/dev/null
 printf '%s' "$BAND" > "$FLAG" 2>/dev/null
-[ "$BAND" = "over" ] || [ "$BAND" = "under" ] || exit 0
-
-MSG=$(bash "$UR" advisory 2>/dev/null)
+case "$BAND" in
+  over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;;
+  *) case "$PREVBAND" in
+       over|under) MSG="usage router: Claude usage is back in the normal range. Subagent model pinning from the earlier usage advisory no longer applies." ;;
+       *) MSG="" ;;
+     esac ;;
+esac
 [ -n "$MSG" ] || exit 0
 jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null
 exit 0

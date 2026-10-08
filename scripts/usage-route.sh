@@ -26,32 +26,38 @@ STATE="${MEGAVIBE_USAGE_STATE:-$MV/usage/route-state.json}"
 NOW="${MEGAVIBE_NOW:-$(date +%s 2>/dev/null)}"
 SETTINGS="${MEGAVIBE_USER_SETTINGS:-$HOME/.claude/settings.json}"
 UP="${MEGAVIBE_ROUTER_UP:-opus}"
-MODE="${1:-claude}"
+MODE="${1:-claude}"; PEEK=0; [ "${2:-}" = "--peek" ] && PEEK=1   # --peek: report, never advance the hysteresis state
 
 none() { printf 'normal|||\n'; exit 0; }
 command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
 
 ROW=""
-[ -r "$FILE" ] && ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | tail -n 1)
+[ -r "$FILE" ] && ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
 PREV=$(cat "$STATE" 2>/dev/null | jq -c 'select(type == "object")' 2>/dev/null)
 [ -n "$ROW" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 [ -n "$PREV" ] || PREV='{}'
 
 # shellcheck disable=SC2016
 DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
+  def sec: if . > 100000000000 then . / 1000 else . end;      # a resets_at in milliseconds
+  # the newest row decides which window is live; sessions can log a stale reading late, and
+  # usage only grows inside a window, so the highest reading of that window is the current one
+  def pick($k): (last) as $l | ($l[$k]) as $lw
+    | if ($lw | type) != "object" or ($lw.r | type) != "number" then null
+      else {p: ([.[] | select((.[$k].r? // null) == $lw.r) | .[$k].p | select(type == "number")] | max), r: $lw.r} end;
   def win($w; $len; $t):
     if ($w | type) != "object" or ($w.p | type) != "number" or ($w.r | type) != "number" then null
-    elif $w.r <= $now then null                       # that window already reset: fresh
+    elif ($w.r | sec) <= $now then null               # that window already reset: fresh
     elif ($now - $t) > 21600 then null                # a reading older than 6h inside a live window
-    else ($w.r - $now) as $rem
+    else (($w.r | sec) - $now) as $rem
       | ((1 - $rem / $len) | if . < 0 then 0 elif . > 1 then 1 else . end) as $el
       | {used: $w.p, rem: $rem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end)}
     end;
   def human($s): if $s >= 172800 then "\($s / 86400 | floor)d"
                  elif $s >= 3600 then "\($s / 3600 | floor)h" else "\([$s / 60 | floor, 1] | max)m" end;
-  (.t // 0) as $t
-  | win(.fh; 18000; $t) as $fh | win(.sd; 604800; $t) as $sd
+  (last | .t // 0) as $t
+  | win(pick("fh"); 18000; $t) as $fh | win(pick("sd"); 604800; $t) as $sd
   | ($prev.band // "normal") as $cur | ($prev.since // 0) as $since | ($prev.pend // 0) as $pend
   | (($sd != null and ($sd.used >= 90 or ($sd.proj != null and $sd.proj > 100))) or ($fh != null and $fh.used >= 85)) as $over_in
   | (($sd == null or ($sd.used < 85 and ($sd.proj == null or $sd.proj < 90))) and ($fh == null or $fh.used < 70)) as $over_out
@@ -65,7 +71,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
        (if $cur == "under" then {b: "under", s: $since, p: 0}
         elif $pend > 0 and ($now - $pend) >= 1800 then {b: "under", s: $now, p: 0}
         else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: (if $pend > 0 then $pend else $now end)} end)
-     elif $cur == "under" and ($under_out | not) then {b: "under", s: $since, p: 0}
+     elif $cur == "under" and ($fh != null or $sd != null) and ($under_out | not) and ($now - $since) < 21600 then {b: "under", s: $since, p: 0}
      else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: 0} end) as $n
   | (if $n.b == "over" then (if $fh != null and $fh.used >= 85 then "5h" else "7d" end)
      elif ($sd != null and $sd.rem <= 129600 and $sd.used < 60) or ($sd != null and $sd.proj != null and $sd.proj < 70) then "7d" else "5h" end) as $which
@@ -77,7 +83,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson prev "$PREV" '
 
 BAND=$(jq -r '.band' <<<"$DECISION"); REASON=$(jq -r '.reason' <<<"$DECISION")
 NEWSTATE=$(jq -c '{band, since, pend}' <<<"$DECISION")
-if [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0)}' <<<"$PREV" 2>/dev/null)" ]; then
+if [ "$PEEK" = 0 ] && [ "$NEWSTATE" != "$(jq -c '{band: (.band // "normal"), since: (.since // 0), pend: (.pend // 0)}' <<<"$PREV" 2>/dev/null)" ]; then
   if mkdir -p "$(dirname "$STATE")" 2>/dev/null && printf '%s\n' "$NEWSTATE" > "$STATE.$$" 2>/dev/null; then
     mv -f "$STATE.$$" "$STATE" 2>/dev/null || rm -f "$STATE.$$" 2>/dev/null
   fi
@@ -86,6 +92,7 @@ fi
 if [ "$MODE" = band ]; then printf '%s\n' "$BAND"; exit 0; fi
 
 if [ "$MODE" = advisory ]; then
+  [ -n "$REASON" ] || exit 0
   case "$BAND" in
     over)  printf 'usage router: Claude %s. Pass model:"haiku" (digest, extract) or model:"sonnet" to every subagent and never let one inherit the session model; the reviewer subagent stays as pinned.\n' "$REASON" ;;
     under) printf 'usage router: Claude %s. Capacity left unused at reset is lost: let judgment-heavy subagents inherit the session model instead of pinning Sonnet.\n' "$REASON" ;;
