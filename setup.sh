@@ -22,14 +22,18 @@ fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 
 # sudo asks for its password on /dev/tty even when stdin is a pipe. With nobody
 # there to type it (an agent's or a script's shell) setup would wait forever, so
-# unless a human can see the prompt (the test the Gemini key prompt uses) it runs
-# with -n: fine when no password is needed, an immediate failure otherwise.
+# unless a human can see the prompt (the test the Gemini key prompt uses) sudo
+# runs only if it needs no password. Root runs the command directly.
 msudo() {
+  if [ "$(id -u)" = "0" ]; then "$@"; return; fi
   if [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; then
-    sudo "$@"
-  else
-    sudo -n "$@" || { local rc=$?; warn "sudo needs a password and no terminal is attached to type it: run setup.sh from a terminal, or install '$*' yourself"; return "$rc"; }
+    sudo "$@"; return
   fi
+  if command -v sudo &>/dev/null && ! sudo -n true 2>/dev/null; then
+    warn "sudo needs a password and no terminal is attached to type it: run setup.sh from a terminal, or run 'sudo $*' yourself"
+    return 1
+  fi
+  sudo -n "$@"
 }
 
 NEEDS_LOGIN=()
