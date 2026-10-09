@@ -839,6 +839,17 @@ compute_router_args() {
   [ -n "${band:-}" ] || return 0
   [ "$skip_model" = 1 ] && model=""
   [ "$skip_effort" = 1 ] && effort=""
+  # The upgrade to a bigger model (band `under`) is for a plan that can afford it: Max. A lower plan stays on what it
+  # chose (Sonnet unless it picked otherwise): Opus spends a Pro limit several times faster. An unknown plan gets no upgrade.
+  local plan_note=""
+  if [ "$band" = under ] && [ -n "$model" ]; then
+    local plan; plan=$(printf '%s' "${AUTH_JSON:-}" | jq -r '.subscriptionType // empty' 2>/dev/null)
+    [ -n "$plan" ] || plan=$(claude auth status 2>/dev/null | jq -r '.subscriptionType // empty' 2>/dev/null)
+    case "$plan" in
+      max|max_*) ;;
+      *) plan_note=" (the Opus upgrade is for Max plans; this one is ${plan:-unknown})"; model="" ;;
+    esac
+  fi
   [ -n "$model" ] && ROUTER_ARGS+=(--model "$model")
   [ -n "$effort" ] && ROUTER_ARGS+=(--effort "$effort")
   case "$band" in
@@ -846,7 +857,7 @@ compute_router_args() {
       if [ "${#ROUTER_ARGS[@]}" -gt 0 ]; then
         ROUTER_NOTE="$band: Claude $reason -> ${ROUTER_ARGS[*]}"
       else
-        ROUTER_NOTE="$band: Claude $reason (your defaults already fit)"
+        ROUTER_NOTE="$band: Claude $reason (your defaults already fit)${plan_note}"
       fi ;;
     *) ROUTER_NOTE="normal: no change" ;;
   esac
