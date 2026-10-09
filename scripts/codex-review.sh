@@ -189,17 +189,23 @@ perl -e '
   alarm 0;               # close the reaped-child / PID-reuse window
   exit(128 + ($st & 127)) if ($st & 127);
   exit($st >> 8);
-' "$TIMEOUT" codex "$@" < "$REQ" >/dev/null 2>"$REQ.err"
+' "$1" codex "${@:2}" < "$REQ" >/dev/null 2>"$REQ.err"
 }
-run_codex "${ARGS[@]}"
+T0=$(date +%s)
+run_codex "$TIMEOUT" "${ARGS[@]}"
 RC=$?
-# An effort the router added (not the caller) must never cost the review: if Codex rejects it (rc 1, not a
-# timeout), retry once with the config's own effort.
-if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ]; then
-  echo "note: codex failed with the auto-applied effort xhigh — retrying once with the configured effort" >&2
-  run_codex "${ARGS_NOEFF[@]}"
-  RC=$?
-  EFFORT=""   # the footer must not claim an effort that was not used
+# An effort the router added (not the caller) must never cost the review: if Codex REJECTS it (rc 1 and an error
+# that names the effort, not a timeout or an unrelated failure), retry once with the config's own effort, inside
+# the same overall deadline and with a fresh answer file (a half-written one from the first attempt is not an answer).
+if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ] && grep -qiE 'reasoning|effort|xhigh|unsupported|invalid value|unknown variant' "$REQ.err" 2>/dev/null; then
+  REM=$((TIMEOUT - ($(date +%s) - T0)))
+  if [ "$REM" -ge 60 ]; then
+    echo "note: codex rejected the auto-applied effort xhigh — retrying once with the configured effort (${REM}s left)" >&2
+    : > "$ANS"
+    run_codex "$REM" "${ARGS_NOEFF[@]}"
+    RC=$?
+    EFFORT=""   # the footer must not claim an effort that was not used
+  fi
 fi
 set -e
 

@@ -50,7 +50,7 @@ fi
 # Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six most recently written rollout files
 # of the last 8 days (by mtime, sorted over the whole list: a resumed session keeps appending to an old file).
 # Bounded: at most 1 MB read per file, and the result is cached for 2 minutes (the hook runs on every Agent call).
-# Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
+# Every usable row is kept (a slice could drop the window's highest reading). Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
 # future; a window listed twice keeps the HIGHER usage, so entry order can never turn 95% into spare capacity.
 codex_row() {
   local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache"
@@ -77,7 +77,7 @@ codex_row() {
                    | {key: (if .window_minutes == 10080 then "sd" elif .window_minutes == 300 then "fh" else empty end), value: {p: .used_percent, r: .resets_at}}) as $e
              ({}; .[$e.key] = (if .[$e.key] == null or $e.value.p > .[$e.key].p then $e.value else .[$e.key] end)))
       | select(length > 1)' 2>/dev/null \
-    | jq -sc 'select(length > 0) | sort_by(.t) | .[-12:]' 2>/dev/null)
+    | jq -sc 'select(length > 0) | sort_by(.t)' 2>/dev/null)
   # An empty result is cached too (an API-key login has rollouts and no rate_limits: do not re-walk the tree on every call).
   if [ -z "${MEGAVIBE_NOW:-}" ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
     { printf '%s\n' "$NOW"; printf '%s\n' "$rows"; } > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$" 2>/dev/null
@@ -214,7 +214,7 @@ if [ "$MODE" = codex ]; then
   EFF=""
   if [ "$BAND" = under ]; then
     CFG="${MEGAVIBE_CODEX_CONFIG:-${CODEX_HOME:-$HOME/.codex}/config.toml}"
-    CUR=$(sed -n 's/^model_reasoning_effort[[:space:]]*=[[:space:]]*"\([a-z]*\)".*/\1/p' "$CFG" 2>/dev/null | head -n 1)
+    CUR=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$CFG" 2>/dev/null)
     case "$CUR" in xhigh|max) ;; *) EFF="xhigh" ;; esac
   fi
   printf '%s||%s|%s\n' "$BAND" "$EFF" "$REASON"
