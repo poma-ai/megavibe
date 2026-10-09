@@ -49,24 +49,46 @@ fi
 
 # Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six most recently written rollout files
 # of the last 8 days (by mtime, sorted over the whole list: a resumed session keeps appending to an old file).
+# Bounded: at most 1 MB read per file, and the result is cached for 2 minutes (the hook runs on every Agent call).
+# Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
+# future; a window listed twice keeps the HIGHER usage, so entry order can never turn 95% into spare capacity.
 codex_row() {
-  local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f
+  local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache"
   [ -d "$root" ] || return 0
+  # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls.
+  if [ -z "${MEGAVIBE_NOW:-}" ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
+    local at; at=$(head -n 1 "$cache" 2>/dev/null)
+    case "$at" in ''|*[!0-9]*) ;; *) if [ "$((NOW - at))" -ge 0 ] && [ "$((NOW - at))" -lt 120 ]; then tail -n +2 "$cache" 2>/dev/null; return 0; fi ;; esac
+  fi
   local -a sf; if stat -c %Y / >/dev/null 2>&1; then sf=(-c '%Y %n'); else sf=(-f '%m %N'); fi
   # `find -exec ... +` runs the command once per chunk, so sorting INSIDE it (ls -t) is only right per chunk:
   # print "mtime path" per file and sort the whole list instead.
-  find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
+  local rows
+  rows=$(find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
     | sort -rn | head -6 | cut -d' ' -f2- | while IFS= read -r f; do
-    [ -f "$f" ] && tail -n 300 "$f" 2>/dev/null | grep '"rate_limits"' | tail -n 5
-done | jq -cR 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
+    [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep '"rate_limits"' | tail -n 200
+  done | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
-      | {t: ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0)}
-        + ([$rl.primary?, $rl.secondary?] | map(select(type == "object" and (.used_percent | type) == "number" and (.resets_at | type) == "number")
-             | {key: (if .window_minutes == 10080 then "sd" elif .window_minutes == 300 then "fh" else empty end), value: {p: .used_percent, r: .resets_at}}) | from_entries)' 2>/dev/null \
-    | jq -sc 'select(length > 0) | sort_by(.t)' 2>/dev/null
+      | ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) as $t
+      | select($t <= $now + 300)
+      | {t: $t}
+        + (reduce ([$rl.primary?, $rl.secondary?][]
+                   | select(type == "object" and (.used_percent | type) == "number" and .used_percent >= 0 and (.resets_at | type) == "number")
+                   | {key: (if .window_minutes == 10080 then "sd" elif .window_minutes == 300 then "fh" else empty end), value: {p: .used_percent, r: .resets_at}}) as $e
+             ({}; .[$e.key] = (if .[$e.key] == null or $e.value.p > .[$e.key].p then $e.value else .[$e.key] end)))
+      | select(length > 1)' 2>/dev/null \
+    | jq -sc 'select(length > 0) | sort_by(.t) | .[-12:]' 2>/dev/null)
+  [ -n "$rows" ] || return 0
+  if [ -z "${MEGAVIBE_NOW:-}" ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
+    { printf '%s\n' "$NOW"; printf '%s\n' "$rows"; } > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$" 2>/dev/null
+  fi
+  printf '%s\n' "$rows"
 }
 
-none() { printf 'normal|||\n'; exit 0; }
+none() {   # no evidence: the normal band, in the shape of the mode asked for
+  case "$MODE" in advisory) ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
+  exit 0
+}
 command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
 
@@ -119,7 +141,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
   # seconds/ms mismatch, cannot hide it. With no live row at all the remembered reading stands
   # alone and counts as stale (no basis for `under`).
   def pick($k):
-    [.[] | select(((.[$k].r? // null) | type) == "number" and ((.[$k].p? // null) | type) == "number" and ((.[$k].r | sec) > $now))] as $live   # a row without a numeric reading is not evidence
+    [.[] | select(((.[$k].r? // null) | type) == "number" and ((.[$k].p? // null) | type) == "number" and .[$k].p >= 0 and ((.t? // 0) | type) == "number" and (.t? // 0) <= $now + 300 and ((.[$k].r | sec) > $now))] as $live   # a row without a numeric, non-negative reading, or dated in the future, is not evidence
     | (($prev.mx[$k]? // null) | if type == "object" and (.r | type) == "number" and (.p | type) == "number" and .r > $now then . else null end) as $alone
     | if ($live | length) == 0 then (if $alone == null then null else {p: $alone.p, r: $alone.r, t: 0} end)
       else ($live | last) as $l | ($l[$k].r | sec) as $rn

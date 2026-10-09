@@ -80,6 +80,7 @@ case "$EFFORT" in ''|minimal|low|medium|high|xhigh) ;; *) echo "error: --effort 
 # Zero would CANCEL perl's alarm, silently turning the timeout contract off.
 case "$TIMEOUT" in ''|*[!0-9]*) echo "error: --timeout must be a number" >&2; exit 2 ;; esac
 [ "$TIMEOUT" -gt 0 ] || { echo "error: --timeout must be greater than 0 (0 disables the alarm)" >&2; exit 2; }
+TIMEOUT=$((10#$TIMEOUT))   # "0600" is decimal 600 here, not octal
 
 # Asked to REVIEW, and this reviewer is switched off? Refuse before spending
 # anything. The gate lives here, not only in the protocol text, so an agent that
