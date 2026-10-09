@@ -87,6 +87,8 @@ if [ "$MODE" = balance ]; then
     else if (xb == "over" && cb != "over") pref = "claude"
     else if (known && cj - xj >= 20) pref = "codex"
     else if (known && xj - cj >= 20) pref = "claude"
+    # Never lean on a subscription already projected to end near its limit.
+    if ((pref == "codex" && xj >= 85) || (pref == "claude" && cj >= 85)) pref = "-"
     # An old reading only under-states use (it grows inside a window): never send work to a subscription
     # whose figure is stale, only away from one.
     if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"

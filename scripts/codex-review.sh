@@ -110,12 +110,14 @@ fi
 # never over an explicit --effort or --model (a pinned model may not take xhigh), never when the
 # config already sits at xhigh, and MEGAVIBE_ROUTER=0 switches it off. After the reviewer gate, so
 # a switched-off Codex says nothing about spare capacity.
+AUTO_EFFORT=""
 if [ -n "$AS_REVIEWER" ] && [ -z "$EFFORT" ] && [ -z "$MODEL" ] && [ "${MEGAVIBE_ROUTER:-1}" != 0 ] && [ -f "$_RVDIR/usage-route.sh" ] \
    && [ "$TIMEOUT" -ge 600 ] 2>/dev/null; then
   IFS='|' read -r _ub _um _ue _ur < <(bash "$_RVDIR/usage-route.sh" codex 2>/dev/null) || true
   if [ "${_ub:-}" = under ] && [ "${_ue:-}" = xhigh ]; then
-    EFFORT=xhigh; TIMEOUT=$((TIMEOUT * 3 / 2))
-    echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review (timeout ${TIMEOUT}s)" >&2
+    EFFORT=xhigh; AUTO_EFFORT=1
+    _t=$((TIMEOUT * 3 / 2)); [ "$_t" -gt 900 ] && _t=900; [ "$_t" -gt "$TIMEOUT" ] && TIMEOUT=$_t
+    echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review (timeout ${TIMEOUT}s: run it in the background; retried once without xhigh if Codex rejects it)" >&2
   fi
 fi
 
@@ -143,6 +145,7 @@ trap 'rm -f "$REQ" "$REQ.err" "$ANS"' EXIT
 # has to be scraped out of the run's progress chrome.
 ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
+ARGS_NOEFF=("${ARGS[@]}" -)    # the same call with the config's own effort, for the one retry below
 [ -n "$EFFORT" ] && ARGS+=(-c "model_reasoning_effort=$EFFORT")
 ARGS+=(-)
 
@@ -157,6 +160,7 @@ ARGS+=(-)
 # process GROUP, and on timeout signal the whole group (TERM, then KILL) so
 # codex's own children die with it.
 set +e
+run_codex() {
 perl -e '
   my $t = shift;
   my $pid = fork();
@@ -181,8 +185,17 @@ perl -e '
   alarm 0;               # close the reaped-child / PID-reuse window
   exit(128 + ($st & 127)) if ($st & 127);
   exit($st >> 8);
-' "$TIMEOUT" codex "${ARGS[@]}" < "$REQ" >/dev/null 2>"$REQ.err"
+' "$TIMEOUT" codex "$@" < "$REQ" >/dev/null 2>"$REQ.err"
+}
+run_codex "${ARGS[@]}"
 RC=$?
+# An effort the router added (not the caller) must never cost the review: if Codex rejects it (rc 1, not a
+# timeout), retry once with the config's own effort.
+if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ]; then
+  echo "note: codex failed with the auto-applied effort xhigh — retrying once with the configured effort" >&2
+  run_codex "${ARGS_NOEFF[@]}"
+  RC=$?
+fi
 set -e
 
 if [ "$RC" -ne 0 ]; then
