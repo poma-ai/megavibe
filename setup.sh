@@ -187,7 +187,11 @@ if [ "$#" -gt 0 ]; then
   esac
 fi
 
-if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
+if [ "$NONINTERACTIVE_AUTO" -eq 0 ] && [ ! -t 0 ]; then
+  # No terminal to answer on: take the default, as the per-tool prompts below do.
+  # An open non-tty stdin (a pipe, an agent's shell) would otherwise block here forever.
+  NONINTERACTIVE_AUTO=1
+elif [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
   echo "  How do you want to install Megavibe?"
   echo "  1. Automatic (default) - all supported tools will be installed"
   echo "  2. Custom"
@@ -366,7 +370,7 @@ elif [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   echo "  You can do this now or later — megavibe works with just Claude."
   echo ""
-  read -p "  Press Enter to continue... " || true
+  [ ! -t 0 ] || read -p "  Press Enter to continue... " || true
 else
   echo ""
   info "2) Logins — all tools already installed, skipping"
@@ -395,12 +399,17 @@ elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo "  ONLY through a billed project — a Workspace login does not change that."
   echo "  Measured cost on flash is about \$2/month per active Mac. Never pin Pro."
   echo ""
-  # curl|bash pipes stdin, so fall back to /dev/tty; -s hides the key.
-  _gem_key=""
+  # curl|bash pipes stdin, so install.sh opts in (MEGAVIBE_TTY_PROMPT=1) to asking
+  # on /dev/tty; -s hides the key. Only when a human can see the prompt (stdout or
+  # stderr on a terminal): an agent's or a script's shell can often open /dev/tty
+  # too, and nobody there answers, so setup would wait forever.
+  _gem_key=""; _gem_asked=0
   if [ -t 0 ]; then
+    _gem_asked=1
     read -r -s -p "  Paste your GEMINI_API_KEY (Enter to skip): " _gem_key || _gem_key=""
     echo ""
-  elif ( : < /dev/tty ) 2>/dev/null; then
+  elif [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; } && ( : < /dev/tty ) 2>/dev/null; then
+    _gem_asked=1
     read -r -s -p "  Paste your GEMINI_API_KEY (Enter to skip): " _gem_key < /dev/tty || _gem_key=""
     echo ""
   fi
@@ -419,7 +428,8 @@ elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
     fi
     export GEMINI_API_KEY="$_gem_key"
   else
-    warn "No key entered — Gemini backend stays unavailable until you run:"
+    if [ "$_gem_asked" = 1 ]; then warn "No key entered — Gemini backend stays unavailable until you run:"
+    else warn "No terminal to ask for a key on — Gemini backend stays unavailable until you run:"; fi
     echo "        export GEMINI_API_KEY=\"<your key>\"    # and add it to your shell profile"
     echo "        bash ~/.megavibe/setup.sh              # then re-run setup"
   fi

@@ -260,8 +260,10 @@ if [ ! -f "$MEGAVIBE_SRC/setup.sh" ]; then
 fi
 
 # Run setup (installs CLIs, MCP servers, protocol, statusline)
-# Pass --auto-install: when piped via curl|bash there's no TTY for interactive prompts
-bash "$MEGAVIBE_SRC/setup.sh" --auto-install
+# Pass --auto-install: when piped via curl|bash there's no TTY for interactive prompts.
+# MEGAVIBE_TTY_PROMPT=1 still lets setup ask for the Gemini key on /dev/tty when a
+# human can see it; setup run any other way with a piped stdin never does.
+MEGAVIBE_TTY_PROMPT=1 bash "$MEGAVIBE_SRC/setup.sh" --auto-install
 
 # Store version hash so megavibe can check for updates later
 MEGAVIBE_HOME="$HOME/.megavibe"
