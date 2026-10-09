@@ -4,7 +4,7 @@ Where a session puts what the user will read, and how it asks for decisions. The
 
 ## The folder
 
-`megavibe-deliverables/` in the project root (created and gitignored by `init.sh`; a `megavibe worktree` shares it). Clean Markdown or HTML only: a report, a review synthesis, a plan, an analysis the user will rely on. Name files `YYYY-MM-DD-topic.md`. `.agent/` stays the machine-facing log (events, working context, research notes); a deliverable that matters is written to the folder, and `.agent/` may point at it. A hosted page (a claude.ai artifact, a doc) is for sharing with someone else on request, not the default; if you publish one, the folder still carries the source.
+`megavibe-deliverables/` in the project root (created and gitignored by `init.sh`; `megavibe worktree <name>` links it into the worktree; the automatic per-session worktree gets a folder of its own). Clean Markdown or HTML only: a report, a review synthesis, a plan, an analysis the user will rely on. Name files `YYYY-MM-DD-topic.md`. `.agent/` stays the machine-facing log (events, working context, research notes); a deliverable that matters is written to the folder, and `.agent/` may point at it. A hosted page (a claude.ai artifact, a doc) is for sharing with someone else on request, not the default; if you publish one, the folder still carries the source.
 
 ## `STATUS.md`: one live file, kept current
 

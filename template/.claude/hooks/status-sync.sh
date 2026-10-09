@@ -70,7 +70,8 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
     if (empty(a)) want = 1; else emit(a)
     next
   }
-  # an answer typed on the line BELOW an empty "Answer:" counts: the first plain line that is not a field of its own
+  want && !NF { want = 0 }                                          # only the line DIRECTLY below an empty Answer: counts
+  # an answer typed on the line BELOW an empty "Answer:" counts: the plain line that is not a field of its own
   want && id != "" && !got && NF && $0 !~ /^[A-Za-z][A-Za-z ]*:/ { a = clean($0); if (!empty(a)) emit(a); want = 0; next }
   want && /^[A-Za-z][A-Za-z ]*:/ { want = 0 }
   END { flush() }

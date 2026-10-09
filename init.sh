@@ -438,9 +438,15 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
   fi
   # A later negation (`!megavibe-deliverables/`) can override an exact rule that is already there: if git still
   # does not ignore the folder, append the rule again so the last match wins.
-  if [ -e "$PROJECT/.git" ] && ! git -C "$PROJECT" check-ignore -q --no-index -- megavibe-deliverables/STATUS.md 2>/dev/null; then
-    echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
-    echo "  added megavibe-deliverables to .gitignore again (a later rule had overridden it)"
+  # Only an exit status of exactly 1 means "not ignored": git answers 128 for a path behind a symlink (the folder
+  # IS a symlink in a `megavibe worktree`), and that must not read as "not ignored" on every launch.
+  if [ -e "$PROJECT/.git" ]; then
+    if [ -L "$PROJECT/megavibe-deliverables" ]; then _probe="megavibe-deliverables"; else _probe="megavibe-deliverables/STATUS.md"; fi
+    _rc=0; git -C "$PROJECT" check-ignore -q --no-index -- "$_probe" 2>/dev/null || _rc=$?   # (set -e: capture, never abort)
+    if [ "$_rc" -eq 1 ]; then
+      echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
+      echo "  added megavibe-deliverables to .gitignore again (a later rule had overridden it)"
+    fi
   fi
   if [ -n "$(git -C "$PROJECT" ls-files -- megavibe-deliverables 2>/dev/null | head -n 1)" ]; then
     echo "  warning: megavibe-deliverables/ is already tracked by git: .gitignore does not untrack it (git rm -r --cached megavibe-deliverables)" >&2
