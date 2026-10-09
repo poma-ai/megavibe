@@ -335,6 +335,16 @@ A running session's model cannot be changed from outside, so the launch is the o
 
 ---
 
+## Deliverables and open decisions
+
+A session hands you work in one visible place instead of burying it in the hidden `.agent/` directory or leaving it on a hosted page.
+
+- **`megavibe-deliverables/`** in each project root (created and gitignored by `init.sh`): reports, review syntheses and plans as clean Markdown or HTML. Nothing in it is committed; move a file out when it graduates.
+- **`megavibe-deliverables/STATUS.md`** is the live file: what is going on, and every decision you owe as a numbered `D<n>` block with options, a default the session proceeds on, and an `Answer:` line. Type an answer into the file at any time; `status-sync.sh` (session start and every prompt you send) hands new answers to the session, which acts on them and moves the block to "Decided".
+- The protocol bans open ends inline ("your call", "later", "say go"): an owed decision goes into STATUS.md, and the session continues on its stated default or says it is blocked on that D-number. Format: `.claude/rules/deliverables.md`.
+
+---
+
 ## Installed files and hooks
 
 ### Machine-wide (by setup)
@@ -352,14 +362,15 @@ A running session's model cannot be changed from outside, so the launch is the o
 
 | What | Where |
 |------|-------|
-| Hooks (30 scripts) | `.claude/hooks/` |
-| Rules (5 files) | `.claude/rules/` |
+| Hooks (31 scripts) | `.claude/hooks/` |
+| Rules (6 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (8 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |
 | Hook config | `.claude/settings.json` |
 | Context structure | `.agent/` |
 | Personal overrides | `CLAUDE.local.md` |
+| Deliverables and live decisions | `megavibe-deliverables/` (gitignored) |
 
 ---
 

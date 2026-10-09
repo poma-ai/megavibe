@@ -292,7 +292,7 @@ fi
 
 # --- Hook scripts (infrastructure — always overwrite) ---
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"
@@ -408,7 +408,7 @@ else
 fi
 
 # Add megavibe entries to .gitignore (idempotent)
-GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl")
+GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl" "megavibe-deliverables/")
 # Only add .claude/ subpaths if .claude/ isn't already gitignored as a whole
 CLAUDE_SUBPATH_ENTRIES=(".claude/hooks/" ".claude/rules/" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
 if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
@@ -424,6 +424,16 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
     fi
   done
 fi
+
+# --- megavibe-deliverables/: the visible, gitignored home for what a session hands the user ---
+# (STATUS.md with the live decisions; reports as clean Markdown/HTML). Existing files are never overwritten.
+mkdir -p "$PROJECT/megavibe-deliverables"
+for f in STATUS.md README.md; do
+  if [ -f "$TEMPLATE_DIR/megavibe-deliverables/$f" ] && [ ! -e "$PROJECT/megavibe-deliverables/$f" ]; then
+    atomic_install "$TEMPLATE_DIR/megavibe-deliverables/$f" "$PROJECT/megavibe-deliverables/$f"
+    echo "  created: megavibe-deliverables/$f"
+  fi
+done
 
 # .gitkeep files for empty dirs
 touch "$PROJECT/.agent/RESEARCH/.gitkeep"
