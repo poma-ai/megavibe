@@ -68,6 +68,8 @@ curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | 
 
 The installer detects your OS and package manager (Homebrew, apt, dnf, pacman, winget, choco) and installs everything needed — Node.js, Python, jq, AI tools — then walks you through each step. Takes about 5 minutes.
 
+Run unattended (stdin not a terminal, as in an agent's shell or a script), `install.sh` and `setup.sh` never wait for an answer: setup takes the automatic install and skips the Gemini key prompt, and both run `sudo` with `-n`, so a package install that would need a password fails at once with a hint instead of hanging (re-run from a terminal, or install that package yourself). The `curl | bash` installer sets `MEGAVIBE_TTY_PROMPT=1`, which lets setup's key and `sudo` prompts reach your terminal when its output is visible there.
+
 ### 3. Use it
 
 Navigate to any project and run:

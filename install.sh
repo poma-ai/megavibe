@@ -74,6 +74,25 @@ detect_pkg_manager() {
   fi
 }
 
+# sudo reads its password from /dev/tty even under curl | bash, which is how a
+# human types it here. With nobody watching (stdin and output all off a terminal,
+# as in an agent's or a script's shell) it would wait forever, so then sudo runs
+# only if it needs no password. Root runs the command directly. setup.sh has the
+# same helper.
+msudo() {
+  if [ "$(id -u)" = "0" ]; then "$@"; return; fi
+  if [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then
+    sudo "$@"; return
+  fi
+  # Always try the real command: NOPASSWD may cover it even when `sudo -n true` fails.
+  sudo -n "$@" && return 0
+  local rc=$?
+  if command -v sudo &>/dev/null && ! sudo -n true 2>/dev/null; then
+    warn "no terminal is attached to type a sudo password: if that is why 'sudo $*' failed, run the installer from a terminal or run it yourself"
+  fi
+  return "$rc"
+}
+
 # Install a package using the detected package manager
 # Usage: pkg_install <brew-name> <apt-name> [dnf-name] [pacman-name]
 pkg_install() {
@@ -83,10 +102,10 @@ pkg_install() {
 
   case "$mgr" in
     brew)   brew install "$brew_name" ;;
-    apt)    sudo apt-get update -qq && sudo apt-get install -y -qq "$apt_name" ;;
-    dnf)    sudo dnf install -y -q "$dnf_name" ;;
-    pacman) sudo pacman -S --noconfirm "$pacman_name" ;;
-    apk)    sudo apk add "$apt_name" ;;
+    apt)    msudo apt-get update -qq && msudo apt-get install -y -qq "$apt_name" ;;
+    dnf)    msudo dnf install -y -q "$dnf_name" ;;
+    pacman) msudo pacman -S --noconfirm "$pacman_name" ;;
+    apk)    msudo apk add "$apt_name" ;;
     winget) winget install --accept-source-agreements --accept-package-agreements "$brew_name" 2>/dev/null || true ;;
     choco)  choco install -y "$brew_name" ;;
     none)
