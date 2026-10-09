@@ -33,11 +33,12 @@ mkdir -p .agent/LOGS 2>/dev/null
 MSG=""
 case "$BAND" in over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;; esac
 [ -n "$BALMSG" ] && MSG="${MSG:+$MSG }$BALMSG"
-if [ -z "$MSG" ]; then
-  case "$PREVKEY" in
-    over*|under*|*:claude|*:codex) MSG="usage router: subscription usage is back in the normal range and balanced. Subagent model pinning and balance advice from the earlier usage advisory no longer apply." ;;
-  esac
-fi
+# A band that just ended must be retracted even when a balance sentence speaks in the same breath,
+# or the session keeps the earlier subagent pinning.
+case "$PREVKEY" in
+  over:*|under:*) [ "$BAND" = normal ] && MSG="usage router: Claude usage is back in the normal range; the earlier subagent model advice no longer applies.${MSG:+ $MSG}" ;;
+  *:claude|*:codex) [ -z "$MSG" ] && MSG="usage router: the earlier balance advice no longer applies; subscription usage is balanced." ;;
+esac
 [ -n "$MSG" ] || exit 0
 jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null
 exit 0

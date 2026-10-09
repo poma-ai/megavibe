@@ -856,15 +856,15 @@ if [ "${1:-}" = "route" ]; then
   shift
   if [ ! -s "${MEGAVIBE_USAGE_FILE:-$MEGAVIBE_HOME/usage/claude.jsonl}" ]; then
     echo -e "  ${BOLD}router:${RESET} no usage data yet (the statusline records it once a session has run); a launch changes nothing"
-    exit 0
+  else
+    ROUTER_PEEK=1 compute_router_args "$@"
+    echo -e "  ${BOLD}router:${RESET} ${ROUTER_NOTE:-no change}"
+    [ "${#ROUTER_ARGS[@]}" -gt 0 ] && echo "  a launch would add: ${ROUTER_ARGS[*]}"
   fi
-  ROUTER_PEEK=1 compute_router_args "$@"
-  echo -e "  ${BOLD}router:${RESET} ${ROUTER_NOTE:-no change}"
-  [ "${#ROUTER_ARGS[@]}" -gt 0 ] && echo "  a launch would add: ${ROUTER_ARGS[*]}"
   if [ -f "$MEGAVIBE_HOME/scripts/usage-route.sh" ]; then
     IFS='|' read -r _xb _xm _xe _xr < <(bash "$MEGAVIBE_HOME/scripts/usage-route.sh" codex --peek 2>/dev/null) || true
     [ -n "${_xr:-}" ] && echo -e "  ${BOLD}codex:${RESET} ${_xb:-normal}: ${_xr}${_xe:+ -> reviews at effort $_xe}"
-    _bal=$(bash "$MEGAVIBE_HOME/scripts/usage-route.sh" balance --peek 2>/dev/null); [ -n "${_bal#*|}" ] && echo "  ${_bal#*|}"
+    _bal=$(bash "$MEGAVIBE_HOME/scripts/usage-route.sh" balance --peek 2>/dev/null); case "${_bal%%|*}" in claude|codex) echo "  ${_bal#*|}" ;; esac
   fi
   exit 0
 fi

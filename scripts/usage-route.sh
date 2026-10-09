@@ -8,7 +8,7 @@
 #   usage-route.sh codex-band just the Codex band name
 #   usage-route.sh balance    one line: prefer|sentence — which subscription optional work (digests, exploration,
 #                             second opinions) should lean on; prefer is claude, codex or - (no preference)
-#   usage-route.sh status     band|used|proj|rem|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
+#   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
 # statusline's account-wide rate_limits (five_hour / seven_day used_percentage and
@@ -48,15 +48,19 @@ if [ "$PROVIDER" = codex ]; then
 fi
 
 # Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six most recently written rollout files
-# of the last 8 days (by mtime: a resumed session keeps appending to an old file).
+# of the last 8 days (by mtime, sorted over the whole list: a resumed session keeps appending to an old file).
 codex_row() {
   local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f
   [ -d "$root" ] || return 0
-  find "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec ls -t {} + 2>/dev/null | head -6 | while IFS= read -r f; do
+  local -a sf; if stat -c %Y / >/dev/null 2>&1; then sf=(-c '%Y %n'); else sf=(-f '%m %N'); fi
+  # `find -exec ... +` runs the command once per chunk, so sorting INSIDE it (ls -t) is only right per chunk:
+  # print "mtime path" per file and sort the whole list instead.
+  find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
+    | sort -rn | head -6 | cut -d' ' -f2- | while IFS= read -r f; do
     [ -f "$f" ] && tail -n 300 "$f" 2>/dev/null | grep '"rate_limits"' | tail -n 5
-  done | jq -cR 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
+done | jq -cR 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
-      | {t: ((.timestamp? // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0)}
+      | {t: ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0)}
         + ([$rl.primary?, $rl.secondary?] | map(select(type == "object" and (.used_percent | type) == "number" and (.resets_at | type) == "number")
              | {key: (if .window_minutes == 10080 then "sd" elif .window_minutes == 300 then "fh" else empty end), value: {p: .used_percent, r: .resets_at}}) | from_entries)' 2>/dev/null \
     | jq -sc 'select(length > 0) | sort_by(.t)' 2>/dev/null
@@ -69,17 +73,23 @@ case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band
 if [ "$MODE" = balance ]; then
   # Where should OPTIONAL work (digests, exploration, second opinions) lean? Each subscription's weekly
   # window projects its end-of-window use; spend the one with room. The reviewer floor never moves.
+  # HACK: no hysteresis on the 20-point rule, so two projections hovering near 20 apart can flip the advice;
+  # the hook speaks on each flip. Upgrade: remember the last preference in the state file and require 10.
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
-  IFS='|' read -r cb cu cp _ _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status $pk 2>/dev/null) || true
-  IFS='|' read -r xb xu xp _ _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status $pk 2>/dev/null) || true
-  awk -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" 'BEGIN {
+  IFS='|' read -r cb cu cp _ cs _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status $pk 2>/dev/null) || true
+  IFS='|' read -r xb xu xp _ xs _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status $pk 2>/dev/null) || true
+  awk -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" 'BEGIN {
     if (cu == "" || xu == "") { print "-|"; exit }
     cj = (cp == "" ? cu : cp) + 0; xj = (xp == "" ? xu : xp) + 0; known = (cp != "" && xp != "")
     pref = "-"
+    if (cb == "over" && xb == "over") { print "-|"; exit }          # nowhere to lean
     if (cb == "over" && xb != "over") pref = "codex"
     else if (xb == "over" && cb != "over") pref = "claude"
     else if (known && cj - xj >= 20) pref = "codex"
     else if (known && xj - cj >= 20) pref = "claude"
+    # An old reading only under-states use (it grows inside a window): never send work to a subscription
+    # whose figure is stale, only away from one.
+    if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"
     if (pref == "-") { print "-|"; exit }
     st = (cp == "" ? sprintf("Claude %d%% used", cu) : sprintf("Claude projects ~%d%%", cj)) " of its week, " (xp == "" ? sprintf("Codex %d%% used", xu) : sprintf("Codex ~%d%%", xj))
     hot = (cb == "over" || xb == "over") ? " (one is running hot)" : ""
@@ -151,7 +161,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
   | (if $w0 != null then [$which, $w0] elif $which == "5h" then ["7d", $sd] else ["5h", $fh] end) as $pair   # a held band may have lost its own window to a reset
   | {band: $n.b, since: $n.s, pend: $n.p, calm: $n.c,
      mx: {fh: ($fh | if . == null then null else {r: .r, p: .used} end), sd: ($sd | if . == null then null else {r: .r, p: .used} end)},
-     wk: ($sd | if . == null then null else {used, proj, rem} end),
+     wk: ($sd | if . == null then null else {used, proj, rem, stale} end),
      reason: (if $pair[1] == null then "" else "\($pair[0]) \($pair[1].used | floor)% used, resets in \(human($pair[1].rem))" end)}
 ' <<<"$ROW" 2>/dev/null)
 [ -n "$DECISION" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
@@ -169,7 +179,7 @@ if [ "$PEEK" = 0 ] && { [ ! -e "$STATE" ] || [ -f "$STATE" ]; } && [ "$NEWSTATE"
 fi
 
 if [ "$MODE" = status ]; then
-  jq -r --arg b "$BAND" --arg r "$REASON" '[$b, (.wk.used // "" | if type == "number" then floor else . end), (.wk.proj // "" | if type == "number" then floor else . end), (.wk.rem // ""), $r] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null
+  jq -r --arg b "$BAND" --arg r "$REASON" '[$b, (.wk.used // "" | if type == "number" then floor else . end), (.wk.proj // "" | if type == "number" then floor else . end), (.wk.rem // "" | if type == "number" then floor else . end), (.wk.stale // false | if . then 1 else 0 end), $r] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null
   exit 0
 fi
 if [ "$MODE" = codex-band ]; then printf '%s\n' "$BAND"; exit 0; fi

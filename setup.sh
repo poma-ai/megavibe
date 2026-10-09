@@ -648,7 +648,7 @@ pip_install_with_fallback() {
   local VENV="$MEGAVIBE_HOME/venv"
   if [ ! -d "$VENV" ]; then
     echo "  Creating ~/.megavibe/venv (system Python rejects external installs per PEP 668)..."
-    $PYTHON -m venv "$VENV" >>"$LOG" 2>&1 || { tail -n 4 "$LOG" 2>/dev/null | sed 's/^/    pip: /'; return 1; }
+    $PYTHON -m venv "$VENV" >>"$LOG" 2>&1 || { tail -n 4 "$LOG" 2>/dev/null | sed 's/^/    pip: /'; echo "    full log: $LOG"; return 1; }
     "$VENV/bin/pip" install --upgrade pip >>"$LOG" 2>&1 || true
   fi
   "$VENV/bin/pip" install "$@" >>"$LOG" 2>&1 || { tail -n 4 "$LOG" 2>/dev/null | sed 's/^/    pip: /'; echo "    full log: $LOG"; return 1; }

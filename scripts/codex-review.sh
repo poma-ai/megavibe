@@ -77,20 +77,6 @@ done
 # TOML literal.
 case "$EFFORT" in ''|minimal|low|medium|high|xhigh) ;; *) echo "error: --effort must be minimal, low, medium, high or xhigh" >&2; exit 2 ;; esac
 
-# Unspent Codex capacity is spent on thinking, never on skipping: when the weekly window is
-# projected to end well under its limit (usage-route.sh codex, band `under`), a REVIEW that
-# named no effort runs at xhigh. Only with the review-sized timeout (xhigh is slower, and a
-# timed-out review falls to the costlier subagent), never over an explicit --effort, never
-# when the config already sits at xhigh, and MEGAVIBE_ROUTER=0 switches it off.
-_RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-if [ -n "$AS_REVIEWER" ] && [ -z "$EFFORT" ] && [ "${MEGAVIBE_ROUTER:-1}" != 0 ] && [ -f "$_RVDIR/usage-route.sh" ] \
-   && [ "$TIMEOUT" -ge 600 ] 2>/dev/null; then
-  IFS='|' read -r _ub _um _ue _ur < <(bash "$_RVDIR/usage-route.sh" codex 2>/dev/null) || true
-  if [ "${_ub:-}" = under ] && [ "${_ue:-}" = xhigh ]; then
-    EFFORT=xhigh; echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review" >&2
-  fi
-fi
-
 # Zero would CANCEL perl's alarm, silently turning the timeout contract off.
 case "$TIMEOUT" in ''|*[!0-9]*) echo "error: --timeout must be a number" >&2; exit 2 ;; esac
 [ "$TIMEOUT" -gt 0 ] || { echo "error: --timeout must be greater than 0 (0 disables the alarm)" >&2; exit 2; }
@@ -114,6 +100,22 @@ if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
   if [ "$_rv_rc" -eq 1 ]; then
     echo "skip: codex is not in MEGAVIBE_REVIEWERS ($(bash "$_RVDIR/reviewers.sh" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'))" >&2
     exit 4
+  fi
+fi
+
+# Unspent Codex capacity is spent on thinking, never on skipping: when the weekly window is
+# projected to end well under its limit (usage-route.sh codex, band `under`), a REVIEW that
+# named no effort and no model runs at xhigh, with the timeout raised 1.5x (xhigh is slower, and a
+# timed-out review falls to the costlier subagent). Only with the review-sized --timeout 600+,
+# never over an explicit --effort or --model (a pinned model may not take xhigh), never when the
+# config already sits at xhigh, and MEGAVIBE_ROUTER=0 switches it off. After the reviewer gate, so
+# a switched-off Codex says nothing about spare capacity.
+if [ -n "$AS_REVIEWER" ] && [ -z "$EFFORT" ] && [ -z "$MODEL" ] && [ "${MEGAVIBE_ROUTER:-1}" != 0 ] && [ -f "$_RVDIR/usage-route.sh" ] \
+   && [ "$TIMEOUT" -ge 600 ] 2>/dev/null; then
+  IFS='|' read -r _ub _um _ue _ur < <(bash "$_RVDIR/usage-route.sh" codex 2>/dev/null) || true
+  if [ "${_ub:-}" = under ] && [ "${_ue:-}" = xhigh ]; then
+    EFFORT=xhigh; TIMEOUT=$((TIMEOUT * 3 / 2))
+    echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review (timeout ${TIMEOUT}s)" >&2
   fi
 fi
 
