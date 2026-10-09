@@ -27,7 +27,7 @@
 # So a summary call names a small model and low effort; a review leaves both to
 # the config, where the user has chosen the effort they pay for. One exception: while Codex's weekly window is
 # under-used (usage-route.sh codex, band `under`), a review that named neither --effort nor --model runs at xhigh
-# with its timeout raised to at most 900s (so run it in the background), and is retried once at the config's own
+# (only when you passed --timeout 900 or more, i.e. run it in the background), and is retried once at the config's own
 # effort if Codex rejects xhigh. MEGAVIBE_ROUTER=0 turns that off. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
 # is the ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's
 # general Codex path (/rehydrate, research memos, second opinions), which no
@@ -109,19 +109,19 @@ fi
 
 # Unspent Codex capacity is spent on thinking, never on skipping: when the weekly window is
 # projected to end well under its limit (usage-route.sh codex, band `under`), a REVIEW that
-# named no effort and no model runs at xhigh, with the timeout raised 1.5x (xhigh is slower, and a
-# timed-out review falls to the costlier subagent). Only with the review-sized --timeout 600+,
+# named no effort and no model runs at xhigh. Only when the caller passed --timeout 900 or more (xhigh is
+# slower, a timed-out review falls to the costlier subagent, and a caller that asks for 15 minutes is one
+# that runs the review in the background; a foreground Bash call cannot outlast 10),
 # never over an explicit --effort or --model (a pinned model may not take xhigh), never when the
 # config already sits at xhigh, and MEGAVIBE_ROUTER=0 switches it off. After the reviewer gate, so
 # a switched-off Codex says nothing about spare capacity.
 AUTO_EFFORT=""
 if [ -n "$AS_REVIEWER" ] && [ -z "$EFFORT" ] && [ -z "$MODEL" ] && [ "${MEGAVIBE_ROUTER:-1}" != 0 ] && [ -f "$_RVDIR/usage-route.sh" ] \
-   && [ "$TIMEOUT" -ge 600 ] 2>/dev/null; then
+   && [ "$TIMEOUT" -ge 900 ] 2>/dev/null; then
   IFS='|' read -r _ub _um _ue _ur < <(bash "$_RVDIR/usage-route.sh" codex 2>/dev/null) || true
   if [ "${_ub:-}" = under ] && [ "${_ue:-}" = xhigh ]; then
     EFFORT=xhigh; AUTO_EFFORT=1
-    _t=$((TIMEOUT * 3 / 2)); [ "$_t" -gt 900 ] && _t=900; [ "$_t" -gt "$TIMEOUT" ] && TIMEOUT=$_t
-    echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review (timeout ${TIMEOUT}s: run it in the background; retried once without xhigh if Codex rejects it)" >&2
+    echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review (timeout ${TIMEOUT}s; retried once without xhigh if Codex rejects it)" >&2
   fi
 fi
 
