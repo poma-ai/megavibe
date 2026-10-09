@@ -997,8 +997,8 @@ if [ "${1:-}" = "reviewers" ]; then
       echo ""
       echo -e "  Set by: ${BOLD}${SRC}${RESET}"
       echo ""
-      echo "  ON means ELIGIBLE, not called every round: the subagent joins ship rounds"
-      echo "  and critical work, and takes a normal round only when Codex is switched off,"
+      echo "  ON means ELIGIBLE, not called every round: the subagent joins the ship round"
+      echo "  (critical work included), and takes a normal round only when Codex is switched off,"
       echo "  absent, or its call failed."
       echo ""
       echo "  This limits REVIEWS only. Gemini and Codex stay available for /rehydrate,"
@@ -1058,8 +1058,8 @@ if [ "${1:-}" = "reviewers" ]; then
           rv_write "$SCOPE_FILE" "all"
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"all\" in $SCOPE_FILE  (${SCOPE_NAME})"
           echo "    All three are eligible, Gemini as a peer rather than Codex's fallback."
-          echo "    Ship rounds and critical work run them in parallel; an ordinary"
-          echo "    intermediate round still runs one reviewer."
+          echo "    The ship round runs them in parallel (critical work included); every"
+          echo "    intermediate round runs one reviewer."
           echo "    Open sessions keep the old set until they restart."
           ;;
         *)
@@ -1076,7 +1076,7 @@ if [ "${1:-}" = "reviewers" ]; then
           echo -e "  ${GREEN}✓${RESET} MEGAVIBE_REVIEWERS=\"$PICKED\" in $SCOPE_FILE  (${SCOPE_NAME})"
           case " $PICKED " in
             *" reviewer "*) ;;
-            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent sits on top of this and cannot be switched off — it is the floor non-negotiable 4 rests on. It joins ship rounds and critical work, and takes the normal round alone whenever Codex is switched off, absent, or its call fails." ;;
+            *) echo -e "  ${YELLOW}Note:${RESET} the Claude 'reviewer' subagent sits on top of this and cannot be switched off — it is the floor non-negotiable 4 rests on. It joins the ship round (critical work included), and takes the normal round alone whenever Codex is switched off, absent, or its call fails." ;;
           esac
           echo "    Open sessions keep the old set until they restart."
           ;;

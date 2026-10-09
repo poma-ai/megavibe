@@ -25,7 +25,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (30 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Summarization fallback (sonnet) — second in the chain, behind Codex and ahead of Gemini | Low — rarely changes |
-| `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called on ship rounds, on critical work, and whenever it is the only reader | Medium — affects every review |
+| `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called on the ship round (critical work included), and whenever it is the only reader | Medium — affects every review |
 | `scripts/provision-megawork.sh` | Admin: Megawork credentials and local config (gemini, ga4, github, grafana, db, toolbox, org) into the private overlay; identities in one project | Medium — touches IAM |
 | `scripts/reviewers.sh` | The `MEGAVIBE_REVIEWERS` allow-list — which of non-negotiable 4's reviewers are switched on. Consulted by the review scripts **only under `--as-reviewer`** (they are also the general Codex/Gemini transport), and by `on-session-start.sh`. Front end: `megavibe reviewers` | Medium — gates every review |
 | `scripts/gemini-review.sh` | Gemini via direct API with `thinkingLevel: low` — the only Gemini path that returns complete reviews on 3.x; installed to `~/.megavibe/scripts/`. `--fallback` is what lets it review at all in the default set. Outside a review it is the rationed no-Codex alternative: refuses while Codex is usable (exit 4), flash-lite only, reserved-before-sent daily call/$/input caps with a ledger (exit 5), `--budget` | Medium — spends money |
@@ -160,7 +160,7 @@ bash init.sh /path/to/project # always syncs hooks from template
 
 Changes to `template/CLAUDE.md` affect every downstream project. Before modifying:
 
-1. **Ask Codex to review** the proposed change (`codex-review.sh --as-reviewer`, alongside the `reviewer` subagent):
+1. **Ask Codex to review** the proposed change (`codex-review.sh --as-reviewer`; intermediate rounds Codex alone, and on the ship round alongside the `reviewer` subagent):
    - What could break for existing users?
    - Does it conflict with Claude Code built-in behavior?
    - Is the instruction clear enough that Claude will follow it?
@@ -173,9 +173,9 @@ For hook changes, ask Codex — it runs the script under `--sandbox read-only` �
 
 | Scenario | Route | Why |
 |----------|-------|-----|
-| Reviewing protocol text changes | `reviewer` subagent + Codex `--as-reviewer` | The protocol IS critical per non-negotiable 4, so always the full set — every round, not just the ship round |
-| Reviewing hook shell scripts | `reviewer` subagent + Codex `--as-reviewer`, every round | Hooks ARE templates, and several are security or destructive-path guards — critical on both counts, so the tiering never reduces them. Both run the scripts; a reviewer that only reads them missed a P1 in every measured case |
-| Intermediate round on ordinary code in a consuming project | Codex `--as-reviewer` alone, and only when that call actually succeeds — otherwise the `reviewer` subagent takes the round | The subagent costs ~180-200K tokens of the user's Claude subscription. Note almost nothing in THIS repo qualifies: protocol, templates, hooks and scripts are all critical |
+| Reviewing protocol text changes | Intermediate rounds: Codex `--as-reviewer` alone. Ship round: `reviewer` subagent + Codex | The protocol IS critical per non-negotiable 4, which means a full-set ship round; since 2026-10-09 (the owner's decision, measured) it no longer means a full set on every round |
+| Reviewing hook shell scripts | Intermediate rounds: Codex `--as-reviewer` alone, and it must run the scripts. Ship round: `reviewer` subagent + Codex | Hooks ARE templates, and several are security or destructive-path guards. Both readers run the scripts on the ship round; a reviewer that only reads them missed a P1 in every measured case |
+| Intermediate round on ordinary code in a consuming project | Codex `--as-reviewer` alone, and only when that call actually succeeds — otherwise the `reviewer` subagent takes the round | The subagent costs ~180-200K tokens of the user's Claude subscription. In THIS repo the same applies to protocol, templates, hooks and scripts: they are critical, so their ship round is full-set, and their intermediate rounds are not |
 | Researching CLAUDE.md best practices, Claude Code features | Web search / Codex | Needs current community info |
 | Comparing megavibe to alternatives | Codex, or Gemini for a very large input | Second opinion on architecture |
 | README edits, prose polish, small script fixes | Handle directly | Not worth delegation overhead |
