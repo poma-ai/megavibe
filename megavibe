@@ -839,6 +839,22 @@ compute_router_args() {
   [ -n "${band:-}" ] || return 0
   [ "$skip_model" = 1 ] && model=""
   [ "$skip_effort" = 1 ] && effort=""
+  # The upgrade to a bigger model (band `under`) is for a plan that can afford it: Max. A lower plan stays on what it
+  # chose (Sonnet unless it picked otherwise): Opus spends a Pro limit several times faster. An unknown plan gets no upgrade.
+  local plan_note=""
+  case "$model" in
+    *opus*|*fable*)   # only an upgrade TO the big models is plan-gated; a MEGAVIBE_ROUTER_UP=sonnet override is not
+      if [ "$band" = under ]; then
+        local plan=""
+        # (set -e + pipefail: `claude auth status` exits 1 when logged out, so every assignment here must tolerate failure)
+        plan=$(printf '%s' "${AUTH_JSON:-}" | jq -r '.subscriptionType // empty' 2>/dev/null) || plan=""
+        [ -n "$plan" ] || [ -n "${AUTH_JSON:-}" ] || plan=$(claude auth status 2>/dev/null | jq -r '.subscriptionType // empty' 2>/dev/null) || plan=""
+        case "$plan" in
+          max|max_*) ;;
+          *) plan_note=" (the upgrade to $model is for Max plans; this plan is ${plan:-unknown})"; model="" ;;
+        esac
+      fi ;;
+  esac
   [ -n "$model" ] && ROUTER_ARGS+=(--model "$model")
   [ -n "$effort" ] && ROUTER_ARGS+=(--effort "$effort")
   case "$band" in
@@ -846,7 +862,7 @@ compute_router_args() {
       if [ "${#ROUTER_ARGS[@]}" -gt 0 ]; then
         ROUTER_NOTE="$band: Claude $reason -> ${ROUTER_ARGS[*]}"
       else
-        ROUTER_NOTE="$band: Claude $reason (your defaults already fit)"
+        ROUTER_NOTE="$band: Claude $reason (your defaults already fit)${plan_note}"
       fi ;;
     *) ROUTER_NOTE="normal: no change" ;;
   esac
