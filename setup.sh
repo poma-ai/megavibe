@@ -1412,7 +1412,9 @@ register_gemini_mcp() {
   if ! command -v jq &>/dev/null; then
     warn "jq missing — cannot pin the Gemini model; an un-pinned key may bill for Pro"
   fi
-  if command -v jq &>/dev/null && [ -f "$GEMINI_SETTINGS" ] && jq -e . "$GEMINI_SETTINGS" &>/dev/null; then
+  # The probe needs a key; without one, the "not set" warning above already says so
+  # (and a bare $GEMINI_API_KEY here aborted setup under set -u).
+  if command -v jq &>/dev/null && [ -n "${GEMINI_API_KEY:-}" ] && [ -f "$GEMINI_SETTINGS" ] && jq -e . "$GEMINI_SETTINGS" &>/dev/null; then
     if [ "$(jq -r '.model.name // empty' "$GEMINI_SETTINGS")" = "" ]; then
       _model=$(bash "$SCRIPT_DIR/scripts/pick-gemini-model.sh" "$GEMINI_API_KEY" 2>/dev/null || echo "")
       if [ -n "$_model" ]; then
