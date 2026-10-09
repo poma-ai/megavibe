@@ -13,7 +13,7 @@
 # non-negotiable 4 are called the same way and neither is the awkward one.
 #
 # Usage:
-#   scripts/codex-review.sh [--as-reviewer] [--model M] [--effort minimal|low|medium|high]
+#   scripts/codex-review.sh [--as-reviewer] [--model M] [--effort minimal|low|medium|high|xhigh]
 #                           [--timeout N] [--out FILE] --prompt "text" FILE...
 #   scripts/codex-review.sh ... --prompt-file PROMPT.md FILE...
 #
@@ -75,7 +75,21 @@ done
 # Case-insensitive, and `minimal` accepted because codex accepts it. Validated
 # rather than passed through: the value lands in a `-c model_reasoning_effort=`
 # TOML literal.
-case "$EFFORT" in ''|minimal|low|medium|high) ;; *) echo "error: --effort must be minimal, low, medium or high" >&2; exit 2 ;; esac
+case "$EFFORT" in ''|minimal|low|medium|high|xhigh) ;; *) echo "error: --effort must be minimal, low, medium, high or xhigh" >&2; exit 2 ;; esac
+
+# Unspent Codex capacity is spent on thinking, never on skipping: when the weekly window is
+# projected to end well under its limit (usage-route.sh codex, band `under`), a REVIEW that
+# named no effort runs at xhigh. Only with the review-sized timeout (xhigh is slower, and a
+# timed-out review falls to the costlier subagent), never over an explicit --effort, never
+# when the config already sits at xhigh, and MEGAVIBE_ROUTER=0 switches it off.
+_RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+if [ -n "$AS_REVIEWER" ] && [ -z "$EFFORT" ] && [ "${MEGAVIBE_ROUTER:-1}" != 0 ] && [ -f "$_RVDIR/usage-route.sh" ] \
+   && [ "$TIMEOUT" -ge 600 ] 2>/dev/null; then
+  IFS='|' read -r _ub _um _ue _ur < <(bash "$_RVDIR/usage-route.sh" codex 2>/dev/null) || true
+  if [ "${_ub:-}" = under ] && [ "${_ue:-}" = xhigh ]; then
+    EFFORT=xhigh; echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review" >&2
+  fi
+fi
 
 # Zero would CANCEL perl's alarm, silently turning the timeout contract off.
 case "$TIMEOUT" in ''|*[!0-9]*) echo "error: --timeout must be a number" >&2; exit 2 ;; esac

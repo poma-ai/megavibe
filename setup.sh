@@ -637,16 +637,21 @@ fi
 # On venv fallback, switches PYTHON/PIP to the venv so subsequent installs and
 # the deployed python-cmd point at the right interpreter.
 pip_install_with_fallback() {
-  $PIP install --user "$@" 2>/dev/null && return 0
-  $PIP install "$@" 2>/dev/null && return 0
+  # Each attempt's output goes to one log; on total failure the tail is shown,
+  # because a silent "install failed" cannot be diagnosed (network? PEP 668?).
+  local LOG="$MEGAVIBE_HOME/logs/pip-install.log"
+  mkdir -p "$MEGAVIBE_HOME/logs" 2>/dev/null || LOG=/dev/null
+  : > "$LOG" 2>/dev/null || LOG=/dev/null
+  $PIP install --user "$@" >>"$LOG" 2>&1 && return 0
+  $PIP install "$@" >>"$LOG" 2>&1 && return 0
 
   local VENV="$MEGAVIBE_HOME/venv"
   if [ ! -d "$VENV" ]; then
     echo "  Creating ~/.megavibe/venv (system Python rejects external installs per PEP 668)..."
-    $PYTHON -m venv "$VENV" 2>/dev/null || return 1
-    "$VENV/bin/pip" install --upgrade pip 2>/dev/null || true
+    $PYTHON -m venv "$VENV" >>"$LOG" 2>&1 || { tail -n 4 "$LOG" 2>/dev/null | sed 's/^/    pip: /'; return 1; }
+    "$VENV/bin/pip" install --upgrade pip >>"$LOG" 2>&1 || true
   fi
-  "$VENV/bin/pip" install "$@" 2>/dev/null || return 1
+  "$VENV/bin/pip" install "$@" >>"$LOG" 2>&1 || { tail -n 4 "$LOG" 2>/dev/null | sed 's/^/    pip: /'; echo "    full log: $LOG"; return 1; }
 
   echo "$VENV/bin/python" > "$MEGAVIBE_HOME/python-cmd"
   PYTHON="$VENV/bin/python"
