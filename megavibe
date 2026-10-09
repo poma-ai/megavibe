@@ -706,7 +706,25 @@ if [ "${1:-}" = "worktree" ]; then
       # the worktree must not follow them — git does not, but say so plainly
       # because "rm -rf a directory containing a symlink to my project memory"
       # is exactly the sentence that should make someone check.
-      rm -f "$WT/.agent" "$WT/.claude" 2>/dev/null || true
+      # A REAL deliverables folder here (made by init.sh when the main checkout had none at creation time) may hold
+      # reports that exist nowhere else, and `git worktree remove --force` deletes it: refuse unless it still only
+      # holds the untouched template files.
+      if [ -d "$WT/megavibe-deliverables" ] && [ ! -L "$WT/megavibe-deliverables" ]; then
+        _keep=$(find "$WT/megavibe-deliverables" -mindepth 1 ! -path "$WT/megavibe-deliverables/README.md" ! -path "$WT/megavibe-deliverables/STATUS.md" 2>/dev/null | head -n 1)
+        for _f in README.md STATUS.md; do
+          [ -e "$WT/megavibe-deliverables/$_f" ] || continue
+          # only an UNTOUCHED template file may go: an edited one, or no template to compare with, is user content
+          if [ ! -f "$MEGAVIBE_HOME/template/megavibe-deliverables/$_f" ] || ! cmp -s "$WT/megavibe-deliverables/$_f" "$MEGAVIBE_HOME/template/megavibe-deliverables/$_f"; then
+            _keep="${_keep:-$WT/megavibe-deliverables/$_f}"
+          fi
+        done
+        if [ -n "$_keep" ]; then
+          echo "  Not removing $WT: $WT/megavibe-deliverables holds files git does not track (for example $_keep)."
+          echo "  Copy them out (or move them to the main checkout's megavibe-deliverables/), then run this again."
+          exit 1
+        fi
+      fi
+      rm -f "$WT/.agent" "$WT/.claude" "$WT/megavibe-deliverables" 2>/dev/null || true
       git worktree remove "$WT" --force && echo "  Removed $WT (branch kept)"
       ;;
 
@@ -730,6 +748,9 @@ if [ "${1:-}" = "worktree" ]; then
       ln -s "$AGENT_REAL" "$WT/.agent"
       if [ -d "$MAIN/.claude" ]; then
         ln -s "$(cd "$MAIN/.claude" && pwd -P)" "$WT/.claude"
+      fi
+      if [ -d "$MAIN/megavibe-deliverables" ]; then   # pwd -P resolves a worktree's own link to the shared folder
+        ln -s "$(cd "$MAIN/megavibe-deliverables" && pwd -P)" "$WT/megavibe-deliverables"
       fi
 
       echo ""
@@ -2294,6 +2315,7 @@ if [ -d "$LOCK_DIR" ]; then
       cd "$WORKTREE_DIR"
       echo -e "  ${BOLD}Working in:${RESET} $WORKTREE_DIR"
       echo -e "  ${BOLD}Branch:${RESET}     $BRANCH_NAME"
+      echo -e "  ${DIM}This session has its own megavibe-deliverables/ (decisions: $WORKTREE_DIR/megavibe-deliverables/STATUS.md)${RESET}"
       echo ""
       echo -e "  ${DIM}Resume this worktree later (copy-paste):${RESET}"
       echo -e "    ${BOLD}cd $WORKTREE_DIR && megavibe${RESET}"

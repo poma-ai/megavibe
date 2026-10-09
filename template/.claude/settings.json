@@ -16,6 +16,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/compaction-autopilot.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/status-sync.sh",
+            "timeout": 10
           }
         ]
       },
@@ -119,6 +124,11 @@
             "type": "command",
             "command": ".claude/hooks/usage-advisory.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/status-sync.sh",
+            "timeout": 10
           }
         ]
       },
@@ -128,6 +138,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/usage-advisory.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/status-sync.sh",
             "timeout": 10
           }
         ]
@@ -271,6 +286,18 @@
           {
             "type": "command",
             "command": ".claude/hooks/watch-background.sh"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/status-sync.sh",
+            "timeout": 10
           }
         ]
       }

@@ -250,7 +250,9 @@ else
 fi
 if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
   if command -v jq &>/dev/null; then
-    # Always sync hooks from template (infrastructure — matches hook script overwrite policy)
+    # Always sync hooks from template (infrastructure — matches hook script overwrite policy).
+    # One exception: UserPromptSubmit is union-merged (a project's own prompt hooks survive; megavibe's
+    # status-sync entry is replaced, not duplicated) because the template only started owning it with status-sync.
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
     # plansDirectory: default it fleet-wide (set-if-absent) so plans persist into
     # .agent/PLANS instead of the user-global ~/.claude/plans/, but never clobber a
@@ -263,7 +265,8 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
     # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
     # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
-    jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)' "$SETTINGS" "$TEMPLATE_SETTINGS" \
+    jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
+        | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(.hooks |= map(select(((.command // "") | test("^(\"[^\"]*\\.claude/hooks/status-sync\\.sh\"|[^ \"]*\\.claude/hooks/status-sync\\.sh)$")) | not))) | map(select((.hooks | length) > 0))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
       > "${SETTINGS}.tmp"
     atomic_install "${SETTINGS}.tmp" "$SETTINGS"
@@ -292,7 +295,7 @@ fi
 
 # --- Hook scripts (infrastructure — always overwrite) ---
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"
@@ -417,13 +420,48 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
   if ! grep -qxF '.claude/' "$PROJECT/.gitignore" && ! grep -qxF '.claude' "$PROJECT/.gitignore"; then
     GITIGNORE_ENTRIES+=("${CLAUDE_SUBPATH_ENTRIES[@]}")
   fi
+  # A last line without a newline would glue the next entry onto it (events.jsonlmegavibe-deliverables/).
+  if [ -s "$PROJECT/.gitignore" ] && [ -n "$(tail -c1 "$PROJECT/.gitignore" 2>/dev/null)" ]; then
+    echo >> "$PROJECT/.gitignore"
+  fi
   for entry in "${GITIGNORE_ENTRIES[@]}"; do
     if ! grep -qF "$entry" "$PROJECT/.gitignore"; then
       echo "$entry" >> "$PROJECT/.gitignore"
       echo "  added $entry to .gitignore"
     fi
   done
+  # The deliverables folder needs an EXACT rule (a comment or a negation that merely mentions the name is not one).
+  # No trailing slash: "name/" matches directories only, and in a worktree the folder is a symlink.
+  if ! grep -qxE '/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
+    echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
+    echo "  added megavibe-deliverables to .gitignore"
+  fi
+  # A later negation (`!megavibe-deliverables/`) can override an exact rule that is already there: if git still
+  # does not ignore the folder, append the rule again so the last match wins.
+  # Only an exit status of exactly 1 means "not ignored": git answers 128 for a path behind a symlink (the folder
+  # IS a symlink in a `megavibe worktree`), and that must not read as "not ignored" on every launch.
+  if [ -e "$PROJECT/.git" ]; then
+    if [ -L "$PROJECT/megavibe-deliverables" ]; then _probe="megavibe-deliverables"; else _probe="megavibe-deliverables/STATUS.md"; fi
+    _rc=0; git -C "$PROJECT" check-ignore -q --no-index -- "$_probe" 2>/dev/null || _rc=$?   # (set -e: capture, never abort)
+    if [ "$_rc" -eq 1 ]; then
+      echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
+      echo "  added megavibe-deliverables to .gitignore again (a later rule had overridden it)"
+    fi
+  fi
+  if [ -n "$(git -C "$PROJECT" ls-files -- megavibe-deliverables 2>/dev/null | head -n 1)" ]; then
+    echo "  warning: megavibe-deliverables/ is already tracked by git: .gitignore does not untrack it (git rm -r --cached megavibe-deliverables)" >&2
+  fi
 fi
+
+# --- megavibe-deliverables/: the visible, gitignored home for what a session hands the user ---
+# (STATUS.md with the live decisions; reports as clean Markdown/HTML). Existing files are never overwritten.
+mkdir -p "$PROJECT/megavibe-deliverables"
+for f in STATUS.md README.md; do
+  if [ -f "$TEMPLATE_DIR/megavibe-deliverables/$f" ] && [ ! -e "$PROJECT/megavibe-deliverables/$f" ]; then
+    atomic_install "$TEMPLATE_DIR/megavibe-deliverables/$f" "$PROJECT/megavibe-deliverables/$f"
+    echo "  created: megavibe-deliverables/$f"
+  fi
+done
 
 # .gitkeep files for empty dirs
 touch "$PROJECT/.agent/RESEARCH/.gitkeep"
