@@ -731,7 +731,7 @@ if [ "${1:-}" = "worktree" ]; then
       if [ -d "$MAIN/.claude" ]; then
         ln -s "$(cd "$MAIN/.claude" && pwd -P)" "$WT/.claude"
       fi
-      if [ -d "$MAIN/megavibe-deliverables" ] && [ ! -L "$MAIN/megavibe-deliverables" ]; then
+      if [ -d "$MAIN/megavibe-deliverables" ]; then   # pwd -P resolves a worktree's own link to the shared folder
         ln -s "$(cd "$MAIN/megavibe-deliverables" && pwd -P)" "$WT/megavibe-deliverables"
       fi
 

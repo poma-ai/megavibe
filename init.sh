@@ -266,7 +266,7 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
     # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
     jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
-        | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(select(([.. | .command? // empty | strings] | any(contains("status-sync.sh"))) | not))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
+        | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(.hooks |= map(select(((.command // "") | test("\\.claude/hooks/status-sync\\.sh\"?$")) | not))) | map(select((.hooks | length) > 0))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
       > "${SETTINGS}.tmp"
     atomic_install "${SETTINGS}.tmp" "$SETTINGS"
@@ -435,6 +435,12 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
   if ! grep -qxE '/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
     echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
     echo "  added megavibe-deliverables to .gitignore"
+  fi
+  # A later negation (`!megavibe-deliverables/`) can override an exact rule that is already there: if git still
+  # does not ignore the folder, append the rule again so the last match wins.
+  if [ -e "$PROJECT/.git" ] && ! git -C "$PROJECT" check-ignore -q --no-index -- megavibe-deliverables/STATUS.md 2>/dev/null; then
+    echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
+    echo "  added megavibe-deliverables to .gitignore again (a later rule had overridden it)"
   fi
   if [ -n "$(git -C "$PROJECT" ls-files -- megavibe-deliverables 2>/dev/null | head -n 1)" ]; then
     echo "  warning: megavibe-deliverables/ is already tracked by git: .gitignore does not untrack it (git rm -r --cached megavibe-deliverables)" >&2

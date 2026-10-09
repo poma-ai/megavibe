@@ -21,10 +21,22 @@ EVENT="${INFO%%$'\t'*}"; SID="${INFO#*$'\t'}"
 [ -n "$EVENT" ] || EVENT="UserPromptSubmit"
 case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 
+mkdir -p .agent/LOGS 2>/dev/null
 SEEN=".agent/LOGS/.status-seen.$SID"
+# State files are checked BEFORE they are read: a symlink or FIFO there is refused, and reads are bounded.
+[ -L "$SEEN" ] && exit 0
+{ [ ! -e "$SEEN" ] || [ -f "$SEEN" ]; } || exit 0
+# One delivery at a time per session (parallel tool calls run PostToolUse hooks at once): the loser leaves
+# the answer pending for its next run. A lock left by a crashed hook is broken after a minute.
+LOCK="$SEEN.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$LOCK" 2>/dev/null
+  mkdir "$LOCK" 2>/dev/null || exit 0
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 # Content signature, not stat: `stat -f` means different things on BSD and GNU. Capped read.
 SIG=$(head -c 1048576 "$F" 2>/dev/null | cksum 2>/dev/null | tr ' ' '-')
-PREVSIG=""; [ -f "$SEEN" ] && PREVSIG=$(head -n 1 "$SEEN" 2>/dev/null)
+PREVSIG=""; [ -f "$SEEN" ] && PREVSIG=$(head -n 1 "$SEEN" 2>/dev/null | cut -c1-64)
 # Cheap gate: an unchanged file says nothing new (SessionStart always looks, to count what is open).
 if [ "$EVENT" != "SessionStart" ] && [ -n "$SIG" ] && [ "$SIG" = "$PREVSIG" ]; then exit 0; fi
 
@@ -36,15 +48,15 @@ if git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then exit 0; fi
 # comment that starts a line is a comment. Each answer is flattened to one line of at most 300 characters,
 # with double quotes and backslashes replaced so it cannot forge another entry inside the framed message.
 PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
-  function flush() { if (insec && id != "" && !got) print "OPEN\t" id; id = ""; got = 0; want = 0 }
+  function flush() { if (insec && id != "" && !got) print "OPEN\t" id; id = ""; got = 0; want = 0; seen1 = 0 }
   function clean(x) { gsub(/[[:cntrl:]]/, " ", x); gsub(/\042/, "\047", x); gsub(/\134/, "/", x); gsub(/[[:space:]]+$/, "", x); return x }
   function empty(x) { return x ~ /^[*_…`[:space:]-]*$/ }
   function emit(x) { print id "\t" substr(x, 1, 300); got = 1; want = 0 }
-  /^[[:space:]]*```/ { fence = !fence; next }
-  fence { next }                                          # a fenced example is not a decision
-  /^[[:space:]]*<!--/ { inc = 1 }
-  inc { if ($0 ~ /-->/) inc = 0; next }
-  /^##[[:space:]]/ { flush(); insec = (tolower($0) ~ /^##[[:space:]]+decisions needed/); next }
+  fence { if ($0 ~ /^[[:space:]]*(```|~~~)/) fence = 0; next }       # inside a fenced example only its end matters
+  inc { if ($0 ~ /-->/) inc = 0; next }                               # inside an HTML comment only its end matters
+  /^[[:space:]]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
+  /^[[:space:]]*(```|~~~)/ { fence = 1; next }
+  /^#[[:space:]]/ || /^##[[:space:]]/ { flush(); insec = (tolower($0) ~ /^##[[:space:]]+decisions needed/); next }
   !insec { next }
   /^###[[:space:]]/ {
     flush(); h = $0; gsub(/[*_`:]/, "", h)
@@ -52,6 +64,8 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
     next
   }
   id != "" && !got && tolower($0) ~ /^[[:space:]>*_]*answer[[:space:]]*[*_]*:/ {
+    if (seen1) next                                                    # only the FIRST Answer: line of a block counts
+    seen1 = 1
     a = $0; sub(/^[^:]*:[*_]*[[:space:]]*/, "", a); a = clean(a)
     if (empty(a)) want = 1; else emit(a)
     next
@@ -64,7 +78,7 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
 
 ANSWERS=$(printf '%s\n' "$PARSED" | grep -v '^OPEN' | grep -v '^$')
 OPEN=$(printf '%s\n' "$PARSED" | grep -c '^OPEN')
-PREVANS=""; [ -f "$SEEN" ] && PREVANS=$(tail -n +2 "$SEEN" 2>/dev/null)
+PREVANS=""; [ -f "$SEEN" ] && PREVANS=$(head -c 262144 "$SEEN" 2>/dev/null | tail -n +2)
 
 NEW=$(printf '%s\n' "$ANSWERS" | grep -v '^$' | grep -vxF -f <(printf '%s\n' "$PREVANS") 2>/dev/null)
 MSG=""; RELAYED=""
@@ -91,10 +105,7 @@ fi
 # Persistence comes first and must succeed: a state file we cannot write would re-relay the same answer on every
 # prompt, so in that case say nothing and leave the answer pending. Never write through a symlinked state file;
 # write a temp file and rename it into place (atomic against overlapping hooks of the same session).
-[ -L "$SEEN" ] && exit 0
-{ [ ! -e "$SEEN" ] || [ -f "$SEEN" ]; } || exit 0
-mkdir -p .agent/LOGS 2>/dev/null
-TMPSEEN="$SEEN.$$"
+TMPSEEN=$(mktemp "$SEEN.XXXXXX" 2>/dev/null) || exit 0
 { printf "%s\n" "$SIG"; if [ -n "$SEENANS" ]; then printf "%s\n" "$SEENANS"; fi; } 2>/dev/null > "$TMPSEEN" || { rm -f "$TMPSEEN" 2>/dev/null; exit 0; }
 if [ -z "$MSG" ]; then mv -f "$TMPSEEN" "$SEEN" 2>/dev/null || rm -f "$TMPSEEN" 2>/dev/null; exit 0; fi
 OUT=$(jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null)
