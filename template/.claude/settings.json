@@ -16,6 +16,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/compaction-autopilot.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/status-sync.sh",
+            "timeout": 10
           }
         ]
       },

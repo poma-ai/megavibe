@@ -250,7 +250,9 @@ else
 fi
 if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
   if command -v jq &>/dev/null; then
-    # Always sync hooks from template (infrastructure — matches hook script overwrite policy)
+    # Always sync hooks from template (infrastructure — matches hook script overwrite policy).
+    # One exception: UserPromptSubmit is union-merged (a project's own prompt hooks survive; megavibe's
+    # status-sync entry is replaced, not duplicated) because the template only started owning it with status-sync.
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
     # plansDirectory: default it fleet-wide (set-if-absent) so plans persist into
     # .agent/PLANS instead of the user-global ~/.claude/plans/, but never clobber a
@@ -263,7 +265,8 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
     # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
     # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
-    jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)' "$SETTINGS" "$TEMPLATE_SETTINGS" \
+    jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
+        | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(select(([.. | .command? // empty | strings] | any(contains("status-sync.sh"))) | not))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
       > "${SETTINGS}.tmp"
     atomic_install "${SETTINGS}.tmp" "$SETTINGS"

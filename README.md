@@ -340,7 +340,7 @@ A running session's model cannot be changed from outside, so the launch is the o
 A session hands you work in one visible place instead of burying it in the hidden `.agent/` directory or leaving it on a hosted page.
 
 - **`megavibe-deliverables/`** in each project root (created and gitignored by `init.sh`): reports, review syntheses and plans as clean Markdown or HTML. Nothing in it is committed; move a file out when it graduates.
-- **`megavibe-deliverables/STATUS.md`** is the live file: what is going on, and every decision you owe as a numbered `D<n>` block with options, a default the session proceeds on, and an `Answer:` line. Type an answer into the file at any time; `status-sync.sh` (session start and every prompt you send) hands new answers to the session, which acts on them and moves the block to "Decided".
+- **`megavibe-deliverables/STATUS.md`** is the live file: what is going on, and every decision you owe as a numbered `D<n>` block with options, a default the session proceeds on, and an `Answer:` line. Type an answer into the file at any time; `status-sync.sh` (session start, every prompt you send, and every tool result while a session works) hands new answers to the session, which acts on them and moves the block to "Decided". The text is capped, is treated as a choice or short instruction (never as authorisation for a destructive action), and a `STATUS.md` that git tracks is ignored.
 - The protocol bans open ends inline ("your call", "later", "say go"): an owed decision goes into STATUS.md, and the session continues on its stated default or says it is blocked on that D-number. Format: `.claude/rules/deliverables.md`.
 
 ---

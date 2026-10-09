@@ -731,6 +731,9 @@ if [ "${1:-}" = "worktree" ]; then
       if [ -d "$MAIN/.claude" ]; then
         ln -s "$(cd "$MAIN/.claude" && pwd -P)" "$WT/.claude"
       fi
+      if [ -d "$MAIN/megavibe-deliverables" ] && [ ! -L "$MAIN/megavibe-deliverables" ]; then
+        ln -s "$(cd "$MAIN/megavibe-deliverables" && pwd -P)" "$WT/megavibe-deliverables"
+      fi
 
       echo ""
       echo -e "  ${GREEN}✓${RESET} ${BOLD}$WT${RESET}  on branch ${BOLD}$BRANCH${RESET}"
