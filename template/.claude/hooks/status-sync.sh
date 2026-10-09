@@ -81,7 +81,7 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | LC_ALL=C tr -d '\r' | LC_ALL=C awk '
     next
   }
   id != "" && !got && tolower($0) ~ /^[[:space:]>*_]*answer[[:space:]]*[*_]*:/ {
-    if (seen1) next                                                    # only the FIRST Answer: line of a block counts
+    if (seen1) { want = 0; next }                                      # only the FIRST Answer: line of a block counts (a later one also ends the wait for a next-line answer)
     seen1 = 1
     a = $0; sub(/^[^:]*:[*_]*[[:space:]]*/, "", a); a = clean(a)
     if (empty(a)) want = 1; else emit(a)
