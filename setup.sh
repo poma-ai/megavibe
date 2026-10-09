@@ -399,12 +399,14 @@ elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo "  ONLY through a billed project — a Workspace login does not change that."
   echo "  Measured cost on flash is about \$2/month per active Mac. Never pin Pro."
   echo ""
-  # curl|bash pipes stdin, so fall back to /dev/tty; -s hides the key.
+  # curl|bash pipes stdin, so fall back to /dev/tty; -s hides the key. Not in a
+  # Claude Code shell (CLAUDECODE): it can reach the user's tty too, and nobody
+  # there is watching for a hidden prompt, so setup would wait forever.
   _gem_key=""
   if [ -t 0 ]; then
     read -r -s -p "  Paste your GEMINI_API_KEY (Enter to skip): " _gem_key || _gem_key=""
     echo ""
-  elif ( : < /dev/tty ) 2>/dev/null; then
+  elif [ -z "${CLAUDECODE:-}" ] && ( : < /dev/tty ) 2>/dev/null; then
     read -r -s -p "  Paste your GEMINI_API_KEY (Enter to skip): " _gem_key < /dev/tty || _gem_key=""
     echo ""
   fi
