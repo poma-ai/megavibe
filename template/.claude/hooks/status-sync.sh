@@ -36,7 +36,7 @@ fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 # Content signature, not stat: `stat -f` means different things on BSD and GNU. Capped read.
 SIG=$(head -c 1048576 "$F" 2>/dev/null | cksum 2>/dev/null | tr ' ' '-')
-PREVSIG=""; [ -f "$SEEN" ] && PREVSIG=$(head -n 1 "$SEEN" 2>/dev/null | cut -c1-64)
+PREVSIG=""; [ -f "$SEEN" ] && PREVSIG=$(head -c 256 "$SEEN" 2>/dev/null | head -n 1 | cut -c1-64)
 # Cheap gate: an unchanged file says nothing new (SessionStart always looks, to count what is open).
 if [ "$EVENT" != "SessionStart" ] && [ -n "$SIG" ] && [ "$SIG" = "$PREVSIG" ]; then exit 0; fi
 
@@ -52,15 +52,19 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
   function clean(x) { gsub(/[[:cntrl:]]/, " ", x); gsub(/\042/, "\047", x); gsub(/\134/, "/", x); gsub(/[[:space:]]+$/, "", x); return x }
   function empty(x) { return x ~ /^[*_…`[:space:]-]*$/ }
   function emit(x) { print id "\t" substr(x, 1, 300); got = 1; want = 0 }
-  fence { if ($0 ~ /^[[:space:]]*(```|~~~)/) fence = 0; next }       # inside a fenced example only its end matters
+  # a fence line: sets fch (` or ~), fln (run length >= 3) and frest (what follows the run); 0 when it is not one
+  function isfence(x,   t, c, n) { t = x; sub(/^[[:space:]]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
+  # a line that is a field of its own ("Options:", "**Context:**", "  Note:"), after stripping indentation and decoration
+  function isfield(x,   t) { t = x; gsub(/^[[:space:]>*_`]+/, "", t); return t ~ /^[A-Za-z][A-Za-z ]*[*_`]*:/ }
+  fence { if (isfence($0) && fch == ofch && fln >= oln && frest ~ /^[[:space:]]*$/) fence = 0; next }   # only the matching end of a fence counts
   inc { if ($0 ~ /-->/) inc = 0; next }                               # inside an HTML comment only its end matters
   /^[[:space:]]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
-  /^[[:space:]]*(```|~~~)/ { fence = 1; next }
+  isfence($0) { fence = 1; ofch = fch; oln = fln; next }
   /^#[[:space:]]/ || /^##[[:space:]]/ { flush(); insec = (tolower($0) ~ /^##[[:space:]]+decisions needed/); next }
   !insec { next }
   /^###[[:space:]]/ {
     flush(); h = $0; gsub(/[*_`:]/, "", h)
-    if (h ~ /^###[[:space:]]+[Dd][0-9]+([[:space:]]|$)/) { split(h, t, /[[:space:]]+/); id = toupper(t[2]) }
+    if (h ~ /^###[[:space:]]+[Dd][0-9]+([[:space:]]|$)/) { split(h, t, /[[:space:]]+/); if (length(t[2]) <= 7 && nblocks < 200) { id = toupper(t[2]); nblocks++ } }   # at most 200 decisions, ids up to 6 digits
     next
   }
   id != "" && !got && tolower($0) ~ /^[[:space:]>*_]*answer[[:space:]]*[*_]*:/ {
@@ -72,8 +76,8 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
   }
   want && !NF { want = 0 }                                          # only the line DIRECTLY below an empty Answer: counts
   # an answer typed on the line BELOW an empty "Answer:" counts: the plain line that is not a field of its own
-  want && id != "" && !got && NF && $0 !~ /^[A-Za-z][A-Za-z ]*:/ { a = clean($0); if (!empty(a)) emit(a); want = 0; next }
-  want && /^[A-Za-z][A-Za-z ]*:/ { want = 0 }
+  want && id != "" && !got && NF && !isfield($0) && $0 !~ /^[[:space:]]*(#|\||<)/ { a = clean($0); if (!empty(a)) emit(a); want = 0; next }
+  want && isfield($0) { want = 0 }
   END { flush() }
 ')
 
