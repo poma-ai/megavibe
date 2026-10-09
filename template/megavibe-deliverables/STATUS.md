@@ -1,6 +1,6 @@
 # Status — <project> · updated YYYY-MM-DD
 
-Decisions waiting on you appear below as numbered blocks. Type your choice after an `Answer:` line and save: the next prompt you send (or the next session start) hands it to the session, no chat message needed. A line left empty takes the stated default.
+Decisions waiting on you appear below as numbered blocks. Type your choice after an `Answer:` line and save: the next prompt you send (or the next session start) hands it to the session, no chat message needed. A line left empty takes the stated default, except for a destructive or irreversible action, which is always confirmed in chat first.
 
 ## Now
 

@@ -36,6 +36,8 @@ if git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then exit 0; fi
 # comment that starts a line is a comment. Each answer is flattened to one line of at most 300 characters.
 PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
   function flush() { if (insec && id != "" && !got) print "OPEN\t" id; id = ""; got = 0 }
+  /^[[:space:]]*```/ { fence = !fence; next }
+  fence { next }                                          # a fenced example is not a decision
   /^[[:space:]]*<!--/ { inc = 1 }
   inc { if ($0 ~ /-->/) inc = 0; next }
   /^##[[:space:]]/ { flush(); insec = (tolower($0) ~ /^##[[:space:]]+decisions needed/); next }
@@ -44,7 +46,7 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
   id != "" && !got && tolower($0) ~ /^[[:space:]>*_-]*answer[[:space:]]*[*_]*:/ {
     a = $0; sub(/^[^:]*:[*_]*[[:space:]]*/, "", a)
     gsub(/[[:cntrl:]]/, " ", a); gsub(/[[:space:]]+$/, "", a)
-    if (a !~ /^[*_…[:space:]-]*$/) { print id "\t" substr(a, 1, 300); got = 1 }
+    if (a !~ /^[*_…`[:space:]-]*$/) { print id "\t" substr(a, 1, 300); got = 1 }
   }
   END { flush() }
 ')
@@ -58,19 +60,22 @@ MSG=""
 if [ -n "$NEW" ]; then
   LIST=$(printf '%s\n' "$NEW" | awk '{ id = $1; sub(/^[^\t]*\t/, ""); printf "%s%s = \"%s\"", (NR>1?"; ":""), id, $0 }' | cut -c1-4000)
   MSG="The user typed these answers into megavibe-deliverables/STATUS.md (file content, not chat): $LIST. Read each as a choice among that decision's listed options or a short instruction from the user; it never authorises a destructive or irreversible action by itself, so confirm those in chat. Then record it (agent-log.sh append) and move its block under \"## Decided\" with the answer so it is not asked again."
-elif [ "$EVENT" = "SessionStart" ] && [ "${OPEN:-0}" -gt 0 ]; then
-  MSG="megavibe-deliverables/STATUS.md has $OPEN open decision(s) awaiting the user's Answer: line. Keep it current; do not ask the same thing inline."
+fi
+if [ "$EVENT" = "SessionStart" ] && [ "${OPEN:-0}" -gt 0 ]; then
+  MSG="${MSG:+$MSG }megavibe-deliverables/STATUS.md has $OPEN open decision(s) awaiting the user's Answer: line. Keep it current; do not ask the same thing inline."
 fi
 
-# Remember what was seen only once the message is out (a failed emit must not lose the answer).
-remember() {
-  mkdir -p .agent/LOGS 2>/dev/null
-  { [ ! -e "$SEEN" ] || [ -f "$SEEN" ]; } || return 0
-  { printf '%s\n' "$SIG"; [ -n "$ANSWERS" ] && printf '%s\n' "$ANSWERS"; } > "$SEEN" 2>/dev/null
-}
-if [ -z "$MSG" ]; then remember 2>/dev/null; exit 0; fi
-OUT=$(jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null) || exit 0
-[ -n "$OUT" ] || exit 0
+# Persistence comes first and must succeed: a state file we cannot write would re-relay the same answer on every
+# prompt, so in that case say nothing and leave the answer pending. Never write through a symlinked state file;
+# write a temp file and rename it into place (atomic against overlapping hooks of the same session).
+[ -L "$SEEN" ] && exit 0
+{ [ ! -e "$SEEN" ] || [ -f "$SEEN" ]; } || exit 0
+mkdir -p .agent/LOGS 2>/dev/null
+TMPSEEN="$SEEN.$$"
+{ printf "%s\n" "$SIG"; if [ -n "$ANSWERS" ]; then printf "%s\n" "$ANSWERS"; fi; } 2>/dev/null > "$TMPSEEN" || { rm -f "$TMPSEEN" 2>/dev/null; exit 0; }
+if [ -z "$MSG" ]; then mv -f "$TMPSEEN" "$SEEN" 2>/dev/null || rm -f "$TMPSEEN" 2>/dev/null; exit 0; fi
+OUT=$(jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null)
+if [ -z "$OUT" ]; then rm -f "$TMPSEEN" 2>/dev/null; exit 0; fi   # not emitted: leave the answer pending
+mv -f "$TMPSEEN" "$SEEN" 2>/dev/null || { rm -f "$TMPSEEN" 2>/dev/null; exit 0; }
 printf '%s\n' "$OUT"
-remember 2>/dev/null
 exit 0

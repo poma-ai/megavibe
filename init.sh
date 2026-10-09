@@ -411,7 +411,7 @@ else
 fi
 
 # Add megavibe entries to .gitignore (idempotent)
-GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl" "megavibe-deliverables/")
+GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl")
 # Only add .claude/ subpaths if .claude/ isn't already gitignored as a whole
 CLAUDE_SUBPATH_ENTRIES=(".claude/hooks/" ".claude/rules/" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
 if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
@@ -420,12 +420,24 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
   if ! grep -qxF '.claude/' "$PROJECT/.gitignore" && ! grep -qxF '.claude' "$PROJECT/.gitignore"; then
     GITIGNORE_ENTRIES+=("${CLAUDE_SUBPATH_ENTRIES[@]}")
   fi
+  # A last line without a newline would glue the next entry onto it (events.jsonlmegavibe-deliverables/).
+  if [ -s "$PROJECT/.gitignore" ] && [ -n "$(tail -c1 "$PROJECT/.gitignore" 2>/dev/null)" ]; then
+    echo >> "$PROJECT/.gitignore"
+  fi
   for entry in "${GITIGNORE_ENTRIES[@]}"; do
     if ! grep -qF "$entry" "$PROJECT/.gitignore"; then
       echo "$entry" >> "$PROJECT/.gitignore"
       echo "  added $entry to .gitignore"
     fi
   done
+  # The deliverables folder needs an EXACT rule (a comment or a negation that merely mentions the name is not one).
+  if ! grep -qxE '/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
+    echo "megavibe-deliverables/" >> "$PROJECT/.gitignore"
+    echo "  added megavibe-deliverables/ to .gitignore"
+  fi
+  if [ -n "$(git -C "$PROJECT" ls-files -- megavibe-deliverables 2>/dev/null | head -n 1)" ]; then
+    echo "  warning: megavibe-deliverables/ is already tracked by git: .gitignore does not untrack it (git rm -r --cached megavibe-deliverables)" >&2
+  fi
 fi
 
 # --- megavibe-deliverables/: the visible, gitignored home for what a session hands the user ---
