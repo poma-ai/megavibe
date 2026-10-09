@@ -213,9 +213,17 @@ if [ "$MODE" = codex ]; then
   # `over` changes nothing here: the review floor does not drop, and a Codex that runs dry already falls to the subagent.
   EFF=""
   if [ "$BAND" = under ]; then
+    cfg_effort() { awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*["\047]?model_reasoning_effort["\047]?[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$1" 2>/dev/null; }
     CFG="${MEGAVIBE_CODEX_CONFIG:-${CODEX_HOME:-$HOME/.codex}/config.toml}"
-    CUR=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*["\047]?model_reasoning_effort["\047]?[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$CFG" 2>/dev/null)
+    CUR=$(cfg_effort "$CFG")
     case "$CUR" in ""|minimal|low|medium|high) EFF="xhigh" ;; esac   # xhigh, max, ultra, persistent or anything unknown: leave the config alone
+    # A trusted project's own .codex/config.toml (found walking up from here) overrides the user config, and
+    # an explicit `-c` would override IT: if the project sets an effort at all, we cannot know ours is higher.
+    _d="$PWD"; _n=0
+    while [ "$_n" -lt 8 ]; do
+      if [ -f "$_d/.codex/config.toml" ] && ! [ "$_d/.codex/config.toml" -ef "$CFG" ] && [ -n "$(cfg_effort "$_d/.codex/config.toml")" ]; then EFF=""; break; fi   # (the user config itself is not a project config)
+      [ "$_d" = "/" ] && break; _d=$(dirname "$_d"); _n=$((_n + 1))
+    done
   fi
   printf '%s||%s|%s\n' "$BAND" "$EFF" "$REASON"
   exit 0
