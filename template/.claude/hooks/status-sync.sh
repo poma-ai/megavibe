@@ -60,7 +60,7 @@ if git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then exit 0; fi
 # "OPEN <TAB> D<n>" for each without. Placeholders (only * _ - … or nothing) count as empty. Only a
 # comment that starts a line is a comment. Each answer is flattened to one line of at most 300 characters,
 # with double quotes and backslashes replaced so it cannot forge another entry inside the framed message.
-PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
+PARSED=$(head -c 1048576 "$F" 2>/dev/null | LC_ALL=C tr -d '\r' | awk '
   function flush() { if (insec && id != "" && !got) print "OPEN\t" id; id = ""; got = 0; want = 0; seen1 = 0 }
   function clean(x) { gsub(/[[:cntrl:]]/, " ", x); gsub(/\042/, "\047", x); gsub(/\134/, "/", x); gsub(/[[:space:]]+$/, "", x); return x }
   function empty(x) { return x ~ /^[*_…`[:space:]-]*$/ }
