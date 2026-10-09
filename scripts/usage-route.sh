@@ -66,15 +66,15 @@ codex_row() {
   local rows
   rows=$(find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
     | sort -rn | head -6 | cut -d' ' -f2- | while IFS= read -r f; do
-    [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep '"rate_limits"' | tail -n 200
+    [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n 200
   done | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
       | ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) as $t
       | select($t <= $now + 300)
       | {t: $t}
         + (reduce ([$rl.primary?, $rl.secondary?][]
-                   | select(type == "object" and (.used_percent | type) == "number" and .used_percent >= 0 and (.resets_at | type) == "number")
-                   | {key: (if .window_minutes == 10080 then "sd" elif .window_minutes == 300 then "fh" else empty end), value: {p: .used_percent, r: .resets_at}}) as $e
+                   | select(type == "object" and (.used_percent | type) == "number" and .used_percent >= 0 and .used_percent <= 1000 and (.resets_at | type) == "number")
+                   | {key: (if .window_minutes == 10080 then "sd" elif .window_minutes == 300 then "fh" else empty end), value: {p: .used_percent, r: ((.resets_at / 60 | floor) * 60)}}) as $e
              ({}; .[$e.key] = (if .[$e.key] == null or $e.value.p > .[$e.key].p then $e.value else .[$e.key] end)))
       | select(length > 1)' 2>/dev/null \
     | jq -sc 'select(length > 0) | sort_by(.t)' 2>/dev/null)
@@ -215,7 +215,7 @@ if [ "$MODE" = codex ]; then
   if [ "$BAND" = under ]; then
     CFG="${MEGAVIBE_CODEX_CONFIG:-${CODEX_HOME:-$HOME/.codex}/config.toml}"
     CUR=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$CFG" 2>/dev/null)
-    case "$CUR" in xhigh|max) ;; *) EFF="xhigh" ;; esac
+    case "$CUR" in ""|minimal|low|medium|high) EFF="xhigh" ;; esac   # xhigh, max, ultra, persistent or anything unknown: leave the config alone
   fi
   printf '%s||%s|%s\n' "$BAND" "$EFF" "$REASON"
   exit 0

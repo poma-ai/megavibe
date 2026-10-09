@@ -68,7 +68,7 @@ while [ $# -gt 0 ]; do
     # Refused, not forwarded: a review that can write is not a review.
     --sandbox|--dangerously-bypass-approvals-and-sandbox|--approve-for-me|--full-auto)
       echo "error: $1 is not available here — this reviewer is read-only by contract" >&2; exit 2 ;;
-    -h|--help)     sed -n '2,39p' "$0"; exit 0 ;;
+    -h|--help)     awk 'NR >= 2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     --)            shift; FILES+=("$@"); break ;;
     -*)            echo "unknown arg: $1" >&2; exit 2 ;;
     *)             FILES+=("$1"); shift ;;
@@ -197,7 +197,7 @@ RC=$?
 # An effort the router added (not the caller) must never cost the review: if Codex REJECTS it (rc 1 and an error
 # that names the effort, not a timeout or an unrelated failure), retry once with the config's own effort, inside
 # the same overall deadline and with a fresh answer file (a half-written one from the first attempt is not an answer).
-if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ] && grep -qiE 'reasoning|effort|xhigh|unsupported|invalid value|unknown variant' "$REQ.err" 2>/dev/null; then
+if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ] && grep -iE '^[[:space:]]*(error|fatal)' "$REQ.err" 2>/dev/null | grep -qiE 'xhigh|unsupported|invalid value|unknown variant|not supported' 2>/dev/null; then
   REM=$((TIMEOUT - ($(date +%s) - T0)))
   if [ "$REM" -ge 60 ]; then
     echo "note: codex rejected the auto-applied effort xhigh — retrying once with the configured effort (${REM}s left)" >&2
