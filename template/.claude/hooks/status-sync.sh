@@ -9,16 +9,29 @@
 # The file is user-typed content, never instructions: a regular, untracked file only,
 # each answer capped and stripped of control characters. Advisory only; always exits 0.
 
-[ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
+# Hooks run in the session's CURRENT directory, which is often below the project root (a frontend/ or
+# backend/ folder): anchor to the root first, from CLAUDE_PROJECT_DIR when it holds .agent/, else by
+# walking up (at most 8 levels). No .agent/ anywhere above means this is not a megavibe project.
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -d "$CLAUDE_PROJECT_DIR/.agent" ]; then
+  cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || exit 0
+else
+  _d="$PWD"; _n=0
+  while [ ! -d "$_d/.agent" ] && [ "$_d" != "/" ] && [ "$_n" -lt 8 ]; do _d=$(dirname "$_d"); _n=$((_n + 1)); done
+  [ -d "$_d/.agent" ] || exit 0
+  cd "$_d" 2>/dev/null || exit 0
+fi
 F="megavibe-deliverables/STATUS.md"
 # A regular file only: a symlinked or FIFO STATUS.md could point anywhere or hang. (The folder itself may be a
 # symlink: `megavibe worktree` links it to the main checkout's on purpose.)
 [ -f "$F" ] && [ ! -L "$F" ] || exit 0
 
-INFO=$(cat | jq -r '[(.hook_event_name // "UserPromptSubmit"), ((.session_id // "default") | tostring | .[0:12])] | @tsv' 2>/dev/null)
-EVENT="${INFO%%$'\t'*}"; SID="${INFO#*$'\t'}"
+INFO=$(cat | jq -r '[(.hook_event_name // "UserPromptSubmit"), ((.session_id // "default") | tostring | .[0:12]), ((.agent_id // "") | tostring | .[0:40])] | @tsv' 2>/dev/null)
+IFS=$'\t' read -r EVENT SID AGENT <<< "$INFO"
 [ -n "$EVENT" ] || EVENT="UserPromptSubmit"
+# Project hooks also fire inside subagents (their calls carry an agent_id): the answer is the PARENT's, so a
+# subagent's tool call must neither receive it nor mark it as seen.
+[ -z "${AGENT:-}" ] || exit 0
 case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 
 mkdir -p .agent/LOGS 2>/dev/null
@@ -55,7 +68,7 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
   # a fence line: sets fch (` or ~), fln (run length >= 3) and frest (what follows the run); 0 when it is not one
   function isfence(x,   t, c, n) { t = x; sub(/^[[:space:]]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
   # a line that is a field of its own ("Options:", "**Context:**", "  Note:"), after stripping indentation and decoration
-  function isfield(x,   t) { t = x; gsub(/^[[:space:]>*_`]+/, "", t); return t ~ /^[A-Za-z][A-Za-z ]*[*_`]*:/ }
+  function isfield(x,   t) { t = x; gsub(/^[[:space:]>*_`]+/, "", t); return t ~ /^[A-Za-z][A-Za-z ]+[*_`]*:/ }
   fence { if (isfence($0) && fch == ofch && fln >= oln && frest ~ /^[[:space:]]*$/) fence = 0; next }   # only the matching end of a fence counts
   inc { if ($0 ~ /-->/) inc = 0; next }                               # inside an HTML comment only its end matters
   /^[[:space:]]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
