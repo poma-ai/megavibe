@@ -197,7 +197,7 @@ RC=$?
 # An effort the router added (not the caller) must never cost the review: if Codex REJECTS it (rc 1 and an error
 # that names the effort, not a timeout or an unrelated failure), retry once with the config's own effort, inside
 # the same overall deadline and with a fresh answer file (a half-written one from the first attempt is not an answer).
-if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ] && grep -iE '^[[:space:]]*(error|fatal)' "$REQ.err" 2>/dev/null | grep -qiE 'xhigh|unsupported|invalid value|unknown variant|not supported' 2>/dev/null; then
+if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ] && grep -iE '^[[:space:]]*(error|fatal)' "$REQ.err" 2>/dev/null | grep -iE 'xhigh|effort|reasoning' | grep -qiE 'unsupported|not supported|invalid|unknown|not available|must be one of' 2>/dev/null; then
   REM=$((TIMEOUT - ($(date +%s) - T0)))
   if [ "$REM" -ge 60 ]; then
     echo "note: codex rejected the auto-applied effort xhigh — retrying once with the configured effort (${REM}s left)" >&2

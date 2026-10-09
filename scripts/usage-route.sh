@@ -64,7 +64,7 @@ codex_row() {
   # `find -exec ... +` runs the command once per chunk, so sorting INSIDE it (ls -t) is only right per chunk:
   # print "mtime path" per file and sort the whole list instead.
   local rows
-  rows=$(find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
+  rows=$(perl -e 'alarm 3; exec @ARGV' find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
     | sort -rn | head -6 | cut -d' ' -f2- | while IFS= read -r f; do
     [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n 200
   done | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
@@ -214,7 +214,7 @@ if [ "$MODE" = codex ]; then
   EFF=""
   if [ "$BAND" = under ]; then
     CFG="${MEGAVIBE_CODEX_CONFIG:-${CODEX_HOME:-$HOME/.codex}/config.toml}"
-    CUR=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*model_reasoning_effort[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$CFG" 2>/dev/null)
+    CUR=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*["\047]?model_reasoning_effort["\047]?[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$CFG" 2>/dev/null)
     case "$CUR" in ""|minimal|low|medium|high) EFF="xhigh" ;; esac   # xhigh, max, ultra, persistent or anything unknown: leave the config alone
   fi
   printf '%s||%s|%s\n' "$BAND" "$EFF" "$REASON"
