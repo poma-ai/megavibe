@@ -187,7 +187,11 @@ if [ "$#" -gt 0 ]; then
   esac
 fi
 
-if [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
+if [ "$NONINTERACTIVE_AUTO" -eq 0 ] && [ ! -t 0 ]; then
+  # No terminal to answer on: take the default, as the per-tool prompts below do.
+  # An open non-tty stdin (a pipe, an agent's shell) would otherwise block here forever.
+  NONINTERACTIVE_AUTO=1
+elif [ "$NONINTERACTIVE_AUTO" -eq 0 ]; then
   echo "  How do you want to install Megavibe?"
   echo "  1. Automatic (default) - all supported tools will be installed"
   echo "  2. Custom"
@@ -366,7 +370,7 @@ elif [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   echo "  You can do this now or later — megavibe works with just Claude."
   echo ""
-  read -p "  Press Enter to continue... " || true
+  [ ! -t 0 ] || read -p "  Press Enter to continue... " || true
 else
   echo ""
   info "2) Logins — all tools already installed, skipping"
