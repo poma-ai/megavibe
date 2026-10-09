@@ -20,6 +20,18 @@ skip()  { echo -e "  ${YELLOW}skip${RESET} $1 (already installed)"; }
 warn()  { echo -e "  ${YELLOW}!${RESET} $1"; }
 fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 
+# sudo asks for its password on /dev/tty even when stdin is a pipe. With nobody
+# there to type it (an agent's or a script's shell) setup would wait forever, so
+# unless a human can see the prompt (the test the Gemini key prompt uses) it runs
+# with -n: fine when no password is needed, an immediate failure otherwise.
+msudo() {
+  if [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; then
+    sudo "$@"
+  else
+    sudo -n "$@" || { local rc=$?; warn "sudo needs a password and no terminal is attached to type it: run setup.sh from a terminal, or install '$*' yourself"; return "$rc"; }
+  fi
+}
+
 NEEDS_LOGIN=()
 
 # ─── npm global prefix (Linux/WSL: avoid EACCES on /usr/local) ─────
@@ -132,13 +144,13 @@ if [ -n "$PYTHON" ]; then
   if [ -z "$PIP" ]; then
     if command -v apt-get &>/dev/null; then
       echo "  Installing python3-pip via apt..."
-      sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip
+      msudo apt-get update -qq && msudo apt-get install -y -qq python3-pip
     elif command -v dnf &>/dev/null; then
       echo "  Installing python3-pip via dnf..."
-      sudo dnf install -y -q python3-pip
+      msudo dnf install -y -q python3-pip
     elif command -v pacman &>/dev/null; then
       echo "  Installing python-pip via pacman..."
-      sudo pacman -S --noconfirm python-pip
+      msudo pacman -S --noconfirm python-pip
     elif command -v brew &>/dev/null; then
       # macOS: pip comes with Homebrew python, but just in case
       echo "  Reinstalling python3 via brew (to get pip)..."
@@ -266,13 +278,13 @@ jq_install() {
     if command -v brew &>/dev/null; then
       brew install jq
     elif command -v apt-get &>/dev/null; then
-      sudo apt-get update -qq && sudo apt-get install -y -qq jq
+      msudo apt-get update -qq && msudo apt-get install -y -qq jq
     elif command -v dnf &>/dev/null; then
-      sudo dnf install -y -q jq
+      msudo dnf install -y -q jq
     elif command -v pacman &>/dev/null; then
-      sudo pacman -S --noconfirm jq
+      msudo pacman -S --noconfirm jq
     elif command -v apk &>/dev/null; then
-      sudo apk add jq
+      msudo apk add jq
     elif command -v winget &>/dev/null; then
       winget install --accept-source-agreements jqlang.jq 2>/dev/null || true
     elif command -v choco &>/dev/null; then
