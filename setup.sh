@@ -29,11 +29,13 @@ msudo() {
   if [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; then
     sudo "$@"; return
   fi
+  # Always try the real command: NOPASSWD may cover it even when `sudo -n true` fails.
+  sudo -n "$@" && return 0
+  local rc=$?
   if command -v sudo &>/dev/null && ! sudo -n true 2>/dev/null; then
-    warn "sudo needs a password and no terminal is attached to type it: run setup.sh from a terminal, or run 'sudo $*' yourself"
-    return 1
+    warn "no terminal is attached to type a sudo password: if that is why 'sudo $*' failed, run setup.sh from a terminal or run it yourself"
   fi
-  sudo -n "$@"
+  return "$rc"
 }
 
 NEEDS_LOGIN=()
