@@ -78,11 +78,12 @@ codex_row() {
              ({}; .[$e.key] = (if .[$e.key] == null or $e.value.p > .[$e.key].p then $e.value else .[$e.key] end)))
       | select(length > 1)' 2>/dev/null \
     | jq -sc 'select(length > 0) | sort_by(.t) | .[-12:]' 2>/dev/null)
-  [ -n "$rows" ] || return 0
+  # An empty result is cached too (an API-key login has rollouts and no rate_limits: do not re-walk the tree on every call).
   if [ -z "${MEGAVIBE_NOW:-}" ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
     { printf '%s\n' "$NOW"; printf '%s\n' "$rows"; } > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$" 2>/dev/null
   fi
-  printf '%s\n' "$rows"
+  [ -n "$rows" ] && printf '%s\n' "$rows"
+  return 0
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
@@ -95,20 +96,20 @@ case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band
 if [ "$MODE" = balance ]; then
   # Where should OPTIONAL work (digests, exploration, second opinions) lean? Each subscription's weekly
   # window projects its end-of-window use; spend the one with room. The reviewer floor never moves.
-  # HACK: no hysteresis on the 20-point rule, so two projections hovering near 20 apart can flip the advice;
-  # the hook speaks on each flip. Upgrade: remember the last preference in the state file and require 10.
+  # Hysteresis: a preference is entered at a 20-point gap and kept until the gap falls under 10. The caller (the
+  # advisory hook) passes its last preference in MEGAVIBE_BALANCE_PREV; without it the rule is a plain 20.
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
   IFS='|' read -r cb cu cp _ cs _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status $pk 2>/dev/null) || true
   IFS='|' read -r xb xu xp _ xs _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status $pk 2>/dev/null) || true
-  awk -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" 'BEGIN {
+  awk -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" 'BEGIN {
     if (cu == "" || xu == "") { print "-|"; exit }
     cj = (cp == "" ? cu : cp) + 0; xj = (xp == "" ? xu : xp) + 0; known = (cp != "" && xp != "")
     pref = "-"
     if (cb == "over" && xb == "over") { print "-|"; exit }          # nowhere to lean
     if (cb == "over" && xb != "over") pref = "codex"
     else if (xb == "over" && cb != "over") pref = "claude"
-    else if (known && cj - xj >= 20) pref = "codex"
-    else if (known && xj - cj >= 20) pref = "claude"
+    else if (known && cj - xj >= (prev == "codex" ? 10 : 20)) pref = "codex"     # enter at 20 points, leave at 10
+    else if (known && xj - cj >= (prev == "claude" ? 10 : 20)) pref = "claude"
     # Never lean on a subscription already projected to end near its limit.
     if ((pref == "codex" && xj >= 85) || (pref == "claude" && cj >= 85)) pref = "-"
     # An old reading only under-states use (it grows inside a window): never send work to a subscription

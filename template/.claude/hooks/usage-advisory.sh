@@ -19,12 +19,15 @@ SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 
 BAND=$(bash "$UR" band 2>/dev/null)
-# Which subscription should optional work lean on? "prefer|sentence", prefer = claude | codex | -
-BAL=$(bash "$UR" balance 2>/dev/null); PREF="${BAL%%|*}"; BALMSG="${BAL#*|}"
-case "$PREF" in claude|codex) ;; *) PREF="-"; BALMSG="" ;; esac
-KEY="$BAND:$PREF"
 FLAG=".agent/LOGS/.usage-band.$SID"
 PREVKEY=""; [ -f "$FLAG" ] && PREVKEY=$(cat "$FLAG" 2>/dev/null)   # regular files only: a FIFO here must not hang a hook
+case "$PREVKEY" in *:*) ;; ?*) PREVKEY="$PREVKEY:-" ;; esac     # a flag from before the balance existed is a bare band
+PB="${PREVKEY%%:*}"; PP="${PREVKEY#*:}"
+# Which subscription should optional work lean on? "prefer|sentence", prefer = claude | codex | -
+# (the last preference goes in, so the rule can hold it until the gap really closes)
+BAL=$(MEGAVIBE_BALANCE_PREV="$PP" bash "$UR" balance 2>/dev/null); PREF="${BAL%%|*}"; BALMSG="${BAL#*|}"
+case "$PREF" in claude|codex) ;; *) PREF="-"; BALMSG="" ;; esac
+KEY="$BAND:$PREF"
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal state: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the state changed.
 if [ "$EVENT" != "SessionStart" ] && [ "$KEY" = "$PREVKEY" ]; then exit 0; fi
@@ -35,8 +38,6 @@ case "$BAND" in over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;; esac
 [ -n "$BALMSG" ] && MSG="${MSG:+$MSG }$BALMSG"
 # Retract what no longer holds, band and balance independently: a band that just ended (or a balance
 # preference that is gone) must not linger in the session. A flag from before the balance existed is a bare band.
-case "$PREVKEY" in *:*) ;; ?*) PREVKEY="$PREVKEY:-" ;; esac
-PB="${PREVKEY%%:*}"; PP="${PREVKEY#*:}"
 RETRACT=""
 case "$PB" in over|under) [ "$BAND" = normal ] && RETRACT="Claude usage is back in the normal range; the earlier subagent model advice no longer applies." ;; esac
 case "$PP" in claude|codex) [ "$PREF" = "-" ] && RETRACT="${RETRACT:+$RETRACT }The earlier balance advice (which subscription optional work should lean on) no longer applies." ;; esac

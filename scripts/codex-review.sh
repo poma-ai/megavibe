@@ -25,7 +25,10 @@
 # (0-94 reasoning tokens at every level — summarising does not reason) while the
 # model sets the time and the length, gpt-5.6-terra 23 s / gpt-6-astra 100 s.
 # So a summary call names a small model and low effort; a review leaves both to
-# the config, where the user has chosen the effort they pay for. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
+# the config, where the user has chosen the effort they pay for. One exception: while Codex's weekly window is
+# under-used (usage-route.sh codex, band `under`), a review that named neither --effort nor --model runs at xhigh
+# with its timeout raised to at most 900s (so run it in the background), and is retried once at the config's own
+# effort if Codex rejects xhigh. MEGAVIBE_ROUTER=0 turns that off. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
 # is the ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's
 # general Codex path (/rehydrate, research memos, second opinions), which no
 # reviewer setting should be able to switch off.
@@ -196,6 +199,7 @@ if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ]; then
   echo "note: codex failed with the auto-applied effort xhigh — retrying once with the configured effort" >&2
   run_codex "${ARGS_NOEFF[@]}"
   RC=$?
+  EFFORT=""   # the footer must not claim an effort that was not used
 fi
 set -e
 

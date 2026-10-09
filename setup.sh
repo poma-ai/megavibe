@@ -640,8 +640,8 @@ pip_install_with_fallback() {
   # Each attempt's output goes to one log; on total failure the tail is shown,
   # because a silent "install failed" cannot be diagnosed (network? PEP 668?).
   local LOG="$MEGAVIBE_HOME/logs/pip-install.log"
-  mkdir -p "$MEGAVIBE_HOME/logs" 2>/dev/null || LOG=$(mktemp -t pip-install 2>/dev/null || echo /dev/null)
-  : > "$LOG" 2>/dev/null || LOG=$(mktemp -t pip-install 2>/dev/null || echo /dev/null)
+  mkdir -p "$MEGAVIBE_HOME/logs" 2>/dev/null || LOG=$(mktemp -t pip-install.XXXXXX 2>/dev/null || echo /dev/null)
+  : > "$LOG" 2>/dev/null || LOG=$(mktemp -t pip-install.XXXXXX 2>/dev/null || echo /dev/null)
   $PIP install --user "$@" >>"$LOG" 2>&1 && return 0
   $PIP install "$@" >>"$LOG" 2>&1 && return 0
 
