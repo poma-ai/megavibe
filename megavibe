@@ -710,9 +710,14 @@ if [ "${1:-}" = "worktree" ]; then
       # reports that exist nowhere else, and `git worktree remove --force` deletes it: refuse unless it still only
       # holds the untouched template files.
       if [ -d "$WT/megavibe-deliverables" ] && [ ! -L "$WT/megavibe-deliverables" ]; then
-        _keep=$(find "$WT/megavibe-deliverables" -type f ! -name README.md ! -name STATUS.md 2>/dev/null | head -n 1)
-        if [ -z "$_keep" ] && [ -f "$WT/megavibe-deliverables/STATUS.md" ] && [ -f "$MEGAVIBE_HOME/template/megavibe-deliverables/STATUS.md" ] \
-           && ! cmp -s "$WT/megavibe-deliverables/STATUS.md" "$MEGAVIBE_HOME/template/megavibe-deliverables/STATUS.md"; then _keep="$WT/megavibe-deliverables/STATUS.md"; fi
+        _keep=$(find "$WT/megavibe-deliverables" -mindepth 1 ! -path "$WT/megavibe-deliverables/README.md" ! -path "$WT/megavibe-deliverables/STATUS.md" 2>/dev/null | head -n 1)
+        for _f in README.md STATUS.md; do
+          [ -e "$WT/megavibe-deliverables/$_f" ] || continue
+          # only an UNTOUCHED template file may go: an edited one, or no template to compare with, is user content
+          if [ ! -f "$MEGAVIBE_HOME/template/megavibe-deliverables/$_f" ] || ! cmp -s "$WT/megavibe-deliverables/$_f" "$MEGAVIBE_HOME/template/megavibe-deliverables/$_f"; then
+            _keep="${_keep:-$WT/megavibe-deliverables/$_f}"
+          fi
+        done
         if [ -n "$_keep" ]; then
           echo "  Not removing $WT: $WT/megavibe-deliverables holds files git does not track (for example $_keep)."
           echo "  Copy them out (or move them to the main checkout's megavibe-deliverables/), then run this again."

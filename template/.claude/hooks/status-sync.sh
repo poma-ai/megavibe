@@ -71,8 +71,8 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | LC_ALL=C tr -d '\r' | awk '
   function isfield(x,   t) { t = x; gsub(/^[[:space:]>*_`]+/, "", t); return t ~ /^[A-Za-z][A-Za-z ]+[*_`]*:/ }
   fence { if (isfence($0) && fch == ofch && fln >= oln && frest ~ /^[[:space:]]*$/) fence = 0; next }   # only the matching end of a fence counts
   inc { if ($0 ~ /-->/) inc = 0; next }                               # inside an HTML comment only its end matters
-  /^[[:space:]]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
-  isfence($0) { fence = 1; ofch = fch; oln = fln; next }
+  /^[[:space:]]*<!--/ { if ($0 !~ /-->/) inc = 1; want = 0; next }
+  isfence($0) { fence = 1; ofch = fch; oln = fln; want = 0; next }
   /^#[[:space:]]/ || /^##[[:space:]]/ { flush(); insec = (tolower($0) ~ /^##[[:space:]]+decisions needed/); next }
   !insec { next }
   /^###[[:space:]]/ {
@@ -90,7 +90,7 @@ PARSED=$(head -c 1048576 "$F" 2>/dev/null | LC_ALL=C tr -d '\r' | awk '
   want && !NF { want = 0 }                                          # only the line DIRECTLY below an empty Answer: counts
   # an answer typed on the line BELOW an empty "Answer:" counts: the plain line that is not a field of its own
   want && id != "" && !got && NF && !isfield($0) && $0 !~ /^[[:space:]]*(#|\||<)/ { a = clean($0); if (!empty(a)) emit(a); want = 0; next }
-  want && isfield($0) { want = 0 }
+  want && (isfield($0) || $0 ~ /^[[:space:]]*(#|\||<)/) { want = 0 }   # any heading, table row, comment or field ends the wait for a next-line answer
   END { flush() }
 ')
 
