@@ -33,21 +33,32 @@ if git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then exit 0; fi
 
 # "D<n> <TAB> answer" for each decision under "## Decisions needed" whose FIRST Answer: line has text, and
 # "OPEN <TAB> D<n>" for each without. Placeholders (only * _ - … or nothing) count as empty. Only a
-# comment that starts a line is a comment. Each answer is flattened to one line of at most 300 characters.
+# comment that starts a line is a comment. Each answer is flattened to one line of at most 300 characters,
+# with double quotes and backslashes replaced so it cannot forge another entry inside the framed message.
 PARSED=$(head -c 1048576 "$F" 2>/dev/null | tr -d '\r' | awk '
-  function flush() { if (insec && id != "" && !got) print "OPEN\t" id; id = ""; got = 0 }
+  function flush() { if (insec && id != "" && !got) print "OPEN\t" id; id = ""; got = 0; want = 0 }
+  function clean(x) { gsub(/[[:cntrl:]]/, " ", x); gsub(/\042/, "\047", x); gsub(/\134/, "/", x); gsub(/[[:space:]]+$/, "", x); return x }
+  function empty(x) { return x ~ /^[*_…`[:space:]-]*$/ }
+  function emit(x) { print id "\t" substr(x, 1, 300); got = 1; want = 0 }
   /^[[:space:]]*```/ { fence = !fence; next }
   fence { next }                                          # a fenced example is not a decision
   /^[[:space:]]*<!--/ { inc = 1 }
   inc { if ($0 ~ /-->/) inc = 0; next }
   /^##[[:space:]]/ { flush(); insec = (tolower($0) ~ /^##[[:space:]]+decisions needed/); next }
   !insec { next }
-  /^###[[:space:]]/ { flush(); if ($0 ~ /^###[[:space:]]+D[0-9]+([[:space:]]|$)/) id = $2; next }
-  id != "" && !got && tolower($0) ~ /^[[:space:]>*_-]*answer[[:space:]]*[*_]*:/ {
-    a = $0; sub(/^[^:]*:[*_]*[[:space:]]*/, "", a)
-    gsub(/[[:cntrl:]]/, " ", a); gsub(/[[:space:]]+$/, "", a)
-    if (a !~ /^[*_…`[:space:]-]*$/) { print id "\t" substr(a, 1, 300); got = 1 }
+  /^###[[:space:]]/ {
+    flush(); h = $0; gsub(/[*_`:]/, "", h)
+    if (h ~ /^###[[:space:]]+[Dd][0-9]+([[:space:]]|$)/) { split(h, t, /[[:space:]]+/); id = toupper(t[2]) }
+    next
   }
+  id != "" && !got && tolower($0) ~ /^[[:space:]>*_]*answer[[:space:]]*[*_]*:/ {
+    a = $0; sub(/^[^:]*:[*_]*[[:space:]]*/, "", a); a = clean(a)
+    if (empty(a)) want = 1; else emit(a)
+    next
+  }
+  # an answer typed on the line BELOW an empty "Answer:" counts: the first plain line that is not a field of its own
+  want && id != "" && !got && NF && $0 !~ /^[A-Za-z][A-Za-z ]*:/ { a = clean($0); if (!empty(a)) emit(a); want = 0; next }
+  want && /^[A-Za-z][A-Za-z ]*:/ { want = 0 }
   END { flush() }
 ')
 
@@ -55,12 +66,24 @@ ANSWERS=$(printf '%s\n' "$PARSED" | grep -v '^OPEN' | grep -v '^$')
 OPEN=$(printf '%s\n' "$PARSED" | grep -c '^OPEN')
 PREVANS=""; [ -f "$SEEN" ] && PREVANS=$(tail -n +2 "$SEEN" 2>/dev/null)
 
-NEW=$(printf '%s\n' "$ANSWERS" | grep -v '^$' | grep -vxF -f <(printf '%s\n' "$PREVANS") 2>/dev/null | head -n 20)
-MSG=""
+NEW=$(printf '%s\n' "$ANSWERS" | grep -v '^$' | grep -vxF -f <(printf '%s\n' "$PREVANS") 2>/dev/null)
+MSG=""; RELAYED=""
 if [ -n "$NEW" ]; then
-  LIST=$(printf '%s\n' "$NEW" | awk '{ id = $1; sub(/^[^\t]*\t/, ""); printf "%s%s = \"%s\"", (NR>1?"; ":""), id, $0 }' | cut -c1-4000)
+  # At most 20 answers and about 3500 characters per message; an answer that does not fit is NOT marked as seen
+  # and arrives with the next message.
+  LIST=""; n=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    item="${line%%$'\t'*} = \"${line#*$'\t'}\""
+    if [ "$n" -ge 20 ] || [ $(( ${#LIST} + ${#item} )) -gt 3500 ]; then break; fi
+    LIST="${LIST:+$LIST; }$item"; RELAYED="${RELAYED:+$RELAYED$'\n'}$line"; n=$((n + 1))
+  done <<< "$NEW"
   MSG="The user typed these answers into megavibe-deliverables/STATUS.md (file content, not chat): $LIST. Read each as a choice among that decision's listed options or a short instruction from the user; it never authorises a destructive or irreversible action by itself, so confirm those in chat. Then record it (agent-log.sh append) and move its block under \"## Decided\" with the answer so it is not asked again."
 fi
+# Seen = what the session already had plus what this message carries (never an answer that was cut).
+SEENANS=$(printf '%s\n' "$ANSWERS" | grep -xF -f <(printf '%s\n%s\n' "$PREVANS" "$RELAYED") 2>/dev/null | grep -v '^$')
+# Something was left for the next message: do not record the signature, or the unchanged-file gate would hide it.
+if [ -n "$NEW" ] && [ "$(printf '%s\n' "$NEW" | grep -c .)" -gt "$(printf '%s\n' "$RELAYED" | grep -c .)" ]; then SIG="pending"; fi
 if [ "$EVENT" = "SessionStart" ] && [ "${OPEN:-0}" -gt 0 ]; then
   MSG="${MSG:+$MSG }megavibe-deliverables/STATUS.md has $OPEN open decision(s) awaiting the user's Answer: line. Keep it current; do not ask the same thing inline."
 fi
@@ -72,7 +95,7 @@ fi
 { [ ! -e "$SEEN" ] || [ -f "$SEEN" ]; } || exit 0
 mkdir -p .agent/LOGS 2>/dev/null
 TMPSEEN="$SEEN.$$"
-{ printf "%s\n" "$SIG"; if [ -n "$ANSWERS" ]; then printf "%s\n" "$ANSWERS"; fi; } 2>/dev/null > "$TMPSEEN" || { rm -f "$TMPSEEN" 2>/dev/null; exit 0; }
+{ printf "%s\n" "$SIG"; if [ -n "$SEENANS" ]; then printf "%s\n" "$SEENANS"; fi; } 2>/dev/null > "$TMPSEEN" || { rm -f "$TMPSEEN" 2>/dev/null; exit 0; }
 if [ -z "$MSG" ]; then mv -f "$TMPSEEN" "$SEEN" 2>/dev/null || rm -f "$TMPSEEN" 2>/dev/null; exit 0; fi
 OUT=$(jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null)
 if [ -z "$OUT" ]; then rm -f "$TMPSEEN" 2>/dev/null; exit 0; fi   # not emitted: leave the answer pending

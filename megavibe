@@ -706,7 +706,7 @@ if [ "${1:-}" = "worktree" ]; then
       # the worktree must not follow them — git does not, but say so plainly
       # because "rm -rf a directory containing a symlink to my project memory"
       # is exactly the sentence that should make someone check.
-      rm -f "$WT/.agent" "$WT/.claude" 2>/dev/null || true
+      rm -f "$WT/.agent" "$WT/.claude" "$WT/megavibe-deliverables" 2>/dev/null || true
       git worktree remove "$WT" --force && echo "  Removed $WT (branch kept)"
       ;;
 

@@ -431,9 +431,10 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
     fi
   done
   # The deliverables folder needs an EXACT rule (a comment or a negation that merely mentions the name is not one).
+  # No trailing slash: "name/" matches directories only, and in a worktree the folder is a symlink.
   if ! grep -qxE '/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
-    echo "megavibe-deliverables/" >> "$PROJECT/.gitignore"
-    echo "  added megavibe-deliverables/ to .gitignore"
+    echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
+    echo "  added megavibe-deliverables to .gitignore"
   fi
   if [ -n "$(git -C "$PROJECT" ls-files -- megavibe-deliverables 2>/dev/null | head -n 1)" ]; then
     echo "  warning: megavibe-deliverables/ is already tracked by git: .gitignore does not untrack it (git rm -r --cached megavibe-deliverables)" >&2
