@@ -90,37 +90,25 @@ case "$REMIND_EVERY" in ''|*[!0-9]*) REMIND_EVERY=25 ;; esac
 # log-tool-event.sh clears it the moment WORKING_CONTEXT.md is written. So the
 # flag being gone is proof the work happened, not a promise that it will.
 REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
-R_NUDGE="${LOGDIR}/.rehydrate-nudge.${SID}"
 R_BLOCKED="${LOGDIR}/.rehydrate-blocked.${SID}"
 REHYDRATE_TASK='Run /rehydrate NOW, before anything else. The last compaction
 left the working context stale, and every answer until it is rebuilt is guesswork
 dressed as recall.'
 
-# Once the Stop escalation has fired, the session has been told twice and chose
-# to carry on: stand down and let the close-out logic below run again. The flag
-# itself stays until a WORKING_CONTEXT write clears it (log-tool-event.sh no
-# longer auto-clears it), so without this a session that never rehydrated would
-# have silenced its own close-out for good.
-if [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ]; then
-  if [ "$EVENT" = "PostToolUse" ]; then
-    if [ ! -f "$R_NUDGE" ]; then
-      : > "$R_NUDGE" 2>/dev/null || true
-      jq -n --arg c "$REHYDRATE_TASK" \
-        '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
-    fi
-    exit 0
-  fi
-  if [ "$EVENT" = "Stop" ]; then
-    ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
-    [ "$ACTIVE" = "true" ] && exit 0
-    # Only escalate once the soft nudge has actually been delivered. Blocking on
-    # the first Stop after a compaction would fire before /rehydrate has had a
-    # single turn to run — and it spawns Gemini or Codex, which takes one.
-    [ -f "$R_NUDGE" ] || exit 0
-    : > "$R_BLOCKED" 2>/dev/null || true
-    jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
-    exit 0
-  fi
+# One reminder policy, not two: the soft reminders come from log-tool-event.sh,
+# which honours the 5-minute grace window and skips the rehydration's own tool
+# calls. This hook adds only the hard stage: one blocked Stop, and only after at
+# least one of those reminders was delivered (its count file exists), so it can
+# never fire before /rehydrate has had a turn. After that block the session has
+# been told and chose to carry on: stand down. The flag itself stays until a
+# WORKING_CONTEXT write clears it, and a pending rehydrate never silences the
+# close-out logic below.
+R_NAGCOUNT="${LOGDIR}/.rehydrate-nagcount.${SID}"
+if [ "$EVENT" = "Stop" ] && [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ] && [ -s "$R_NAGCOUNT" ]; then
+  ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
+  [ "$ACTIVE" = "true" ] && exit 0
+  : > "$R_BLOCKED" 2>/dev/null || true
+  jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
   exit 0
 fi
 

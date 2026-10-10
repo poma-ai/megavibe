@@ -59,9 +59,15 @@ mkdir -p "$LOGDIR" 2>/dev/null || true
 _PC_KEYS=$(printf '%s' "$INPUT" | jq -c 'keys' 2>/dev/null || echo "?")
 _PC_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
 _PC_TP=$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
-echo "$(date -u +%FT%TZ) sid=${SID} agent_id=${_PC_AGENT:+set} subagent_path=$(case "$_PC_TP" in */subagents/*) echo yes;; *) echo no;; esac) keys=${_PC_KEYS}" \
+# Anchored on THIS session's own subagent directory (<id>/subagents/), never a
+# bare "subagents" component: a config or home path can contain one, and a false
+# match here silently disables the whole recovery for a real compaction.
+_PC_SIDF=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+_PC_SUBPATH=no
+[ -n "$_PC_SIDF" ] && case "$_PC_TP" in */"$_PC_SIDF"/subagents/agent-*.jsonl) _PC_SUBPATH=yes ;; esac
+echo "$(date -u +%FT%TZ) sid=${SID} agent_id=${_PC_AGENT:+set} subagent_path=${_PC_SUBPATH} keys=${_PC_KEYS}" \
   >> "${LOGDIR}/pre-compact-inputs.log" 2>/dev/null || true
-case "$_PC_TP" in */subagents/*) _PC_AGENT="${_PC_AGENT:-subagent-path}" ;; esac
+[ "$_PC_SUBPATH" = yes ] && _PC_AGENT="${_PC_AGENT:-subagent-path}"
 IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 
 # --- Stamp the grace-period cooldown and rehydration flag ---
@@ -72,13 +78,13 @@ IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 [ "$IS_SUBAGENT" -eq 0 ] && { date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true; }
 # Mark that rehydration is needed. on-compact.sh normally sets this too,
 # but it won't fire for manual /compact — so we set it here as the floor.
-# Written as a count of 0, not touched: log-tool-event.sh keeps its nag count in
-# this file, and a touch would keep an old count from an earlier compaction.
-# The autopilot's once-per-compaction rehydrate flags are re-armed here too,
+# The nag count (log-tool-event.sh) restarts with each compaction.
+# The autopilot's once-per-fill-cycle flags (rehydrate AND close-out) are re-armed here too,
 # because on-compact.sh (which also does it) may not run for a manual /compact.
 if [ "$IS_SUBAGENT" -eq 0 ]; then
   echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
-  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" 2>/dev/null || true
+  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" \
+        "${LOGDIR}/.closeout-done.${SID}" "${LOGDIR}/.closeout-blocked.${SID}" "${LOGDIR}/.closeout-count.${SID}" 2>/dev/null || true
 fi
 
 # --- Invalidate the read-delta re-Read cache ---
@@ -231,9 +237,9 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 After compaction, the only required action is: run /rehydrate (it regenerates WORKING_CONTEXT.md via the chain reviewers.sh digest-chain prints: Codex then the Claude subagent, or capped Gemini then the subagent where there is no Codex). The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
 
 
-# Fold the register-currency warning into the compaction summary. This is the
-# one part of the message that can contradict the reassuring line counts above,
-# so it goes in the summary itself, not only to stderr.
+# Add the register-currency warning to the report. This is the one part of it
+# that can contradict the reassuring line counts above, which is why it is also
+# written to .reg-warn.<sid> below for the post-compact message.
 if [ -n "$REG_WARN" ]; then
   MSG="$MSG
 
