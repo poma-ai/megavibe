@@ -63,6 +63,11 @@ EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null) || ex
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 SID="${SID:-default}"
 
+# A subagent's tool calls (same session_id, agent_id set) must not run the
+# PARENT's close-out: they measured the subagent's transcript against the
+# parent's window and could tell the subagent to mark the parent closed out.
+[ -z "$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null)" ] || exit 0
+
 LOGDIR=".agent/LOGS"
 mkdir -p "$LOGDIR" 2>/dev/null || true
 DONE_FLAG="${LOGDIR}/.closeout-done.${SID}"
@@ -96,7 +101,7 @@ left the working context stale, and every answer until it is rebuilt is guesswor
 dressed as recall.'
 
 # One reminder policy, not two: the soft reminders come from log-tool-event.sh,
-# which honours the 5-minute grace window and skips the rehydration's own tool
+# which honours the 5-minute grace window and ignores subagents' tool
 # calls. This hook adds only the hard stage: one blocked Stop, and only after at
 # least one of those reminders was delivered (its count file exists), so it can
 # never fire before /rehydrate has had a turn. After that block the session has
@@ -107,7 +112,10 @@ R_NAGCOUNT="${LOGDIR}/.rehydrate-nagcount.${SID}"
 if [ "$EVENT" = "Stop" ] && [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ] && [ -s "$R_NAGCOUNT" ]; then
   ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
   [ "$ACTIVE" = "true" ] && exit 0
-  : > "$R_BLOCKED" 2>/dev/null || true
+  # Block only if the once-only marker was actually written: a marker that
+  # cannot be persisted (permissions, full disk) would make this block every
+  # turn, and an infrastructure failure must never trap the session.
+  : > "$R_BLOCKED" 2>/dev/null || exit 0
   jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
   exit 0
 fi
@@ -158,7 +166,7 @@ if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then
   ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
   [ "$ACTIVE" = "true" ] && exit 0
   [ -f "$BLOCKED_FLAG" ] && exit 0          # once per session, never a loop
-  : > "$BLOCKED_FLAG" 2>/dev/null || true
+  : > "$BLOCKED_FLAG" 2>/dev/null || exit 0   # same rule as the rehydrate block
   jq -n --arg r "Context is at ${PCT}%. ${CLOSEOUT_TASK}" \
     '{decision:"block", reason:$r}' 2>/dev/null || true
   exit 0

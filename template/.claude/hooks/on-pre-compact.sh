@@ -23,7 +23,8 @@ set -u
 # - Read the tool-call counter to assess staleness
 # - Stamp .compact-ts.$SID and .needs-rehydration.$SID so post-compact
 #   log-tool-event.sh honors the grace period even on manual /compact
-#   (SessionStart:compact only fires on AUTO-compaction, so on-compact.sh
+#   (SessionStart:compact is documented for both, but has not always fired
+#   for a manual /compact, so on-compact.sh
 #   cannot be relied on to stamp these files — PreCompact is the only
 #   hook that reliably fires for both manual and automatic compactions)
 # - Drop this session's read-delta cache, whose rows would otherwise claim
@@ -81,8 +82,22 @@ IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 # The nag count (log-tool-event.sh) restarts with each compaction.
 # The autopilot's once-per-fill-cycle flags (rehydrate AND close-out) are re-armed here too,
 # because on-compact.sh (which also does it) may not run for a manual /compact.
+# Not when a non-empty WORKING_CONTEXT (full-id or legacy 12-char directory) was
+# written within the hour: on-compact.sh applies the same rule, but it may not
+# run for a manual /compact, and then nothing would take the flag back down.
+_PC_FRESH=0
+# session_id becomes a path component below: same safe-charset gate as on-compact.sh.
+case "$_PC_SIDF" in ''|.|..|*[!A-Za-z0-9._-]*) _PC_SIDF="none" ;; esac
+for _wc in ".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
+  if [ -s "$_wc" ]; then
+    _m=$(stat -f %m "$_wc" 2>/dev/null || stat -c %Y "$_wc" 2>/dev/null || echo 0)
+    case "$_m" in ''|*[!0-9]*) _m=0 ;; esac
+    [ $(( $(date +%s) - _m )) -lt 3600 ] && _PC_FRESH=1
+  fi
+done
 if [ "$IS_SUBAGENT" -eq 0 ]; then
-  echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
+  if [ "$_PC_FRESH" -eq 1 ]; then rm -f "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
+  else echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true; fi
   rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" \
         "${LOGDIR}/.closeout-done.${SID}" "${LOGDIR}/.closeout-blocked.${SID}" "${LOGDIR}/.closeout-count.${SID}" 2>/dev/null || true
 fi

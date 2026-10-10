@@ -71,6 +71,12 @@ case "$SID_FULL" in
   ''|.|..|*[!A-Za-z0-9._-]*) SID_FULL="default" ;;
 esac
 
+# A subagent's tool calls carry the parent's session_id plus an agent_id. Every
+# nudge below is for the MAIN thread: a subagent call must not consume a
+# one-shot nudge (tier, 8-call threshold) or count toward the rehydrate
+# reminders, and must not receive them either.
+_TE_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+
 # Session-scoped paths (prevent concurrent session races)
 LOGFILE="${LOGDIR}/tool-events.${SID}.jsonl"
 COUNTER_FILE="${LOGDIR}/.tool-call-counter.${SID}"
@@ -291,7 +297,7 @@ if command -v tmux >/dev/null 2>&1 && tmux has-session -t "mvw-${SID}" 2>/dev/nu
   WATCHER_ACTIVE=1
 fi
 
-if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
+if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     TOTAL_TOKENS=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
@@ -489,7 +495,7 @@ fi
 # Threshold nudge (first hit) — suppressed during post-compact grace AND
 # when the context-watcher is alive (the watcher writes .agent/ between
 # turns; nagging Claude to flush is redundant and noisy).
-if [ "$POST_COMPACT_GRACE" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
+if [ "$POST_COMPACT_GRACE" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   if [ "$COUNT" -eq "$NUDGE_THRESHOLD" ] 2>/dev/null; then
     NUDGE_MSG="⚠️ $COUNT tool calls since last .agent/ update. Record current state now: .claude/hooks/agent-log.sh append (never edit FULL_CONTEXT.md, it is rendered), plus DECISIONS.md and TASKS.md where they changed."
   # Repeat nudge
@@ -515,7 +521,6 @@ fi
 # is for the main thread, and counting them would arm its Stop block early.
 NAG_FILE="${LOGDIR}/.rehydrate-nagcount.${SID}"
 [ -f "$REHYDRATE_FLAG" ] || rm -f "$NAG_FILE" 2>/dev/null || true
-_TE_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
 if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   NAG_COUNT=$(cat "$NAG_FILE" 2>/dev/null | tr -d ' \n')
   case "$NAG_COUNT" in ''|*[!0-9]*) NAG_COUNT=0 ;; esac

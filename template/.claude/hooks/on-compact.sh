@@ -200,6 +200,20 @@ echo "FULL_CONTEXT: ${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines" >&2
 
 # --- Build additionalContext based on size ---
 
+# One freshness-dependent instruction, used by every strategy below and by the
+# short message, so the orientation file never contradicts it.
+if [ "$WC_FRESH" -eq 1 ]; then
+  REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_READ}) was written within the last hour
+and is likely still valid. Treat it as your source of truth — running
+/rehydrate now is OPTIONAL. If you decide carryover context is enough,
+just continue working; the hooks will not remind you."
+else
+  REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
+(reviewers.sh digest-chain; full AI-powered recovery). Do /rehydrate BEFORE resuming any other
+work. Until it completes, stale-context nags are suppressed for ~5 minutes
+so you get a clean window."
+fi
+
 if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
   # === BOOTSTRAP: .agent/ files are empty ===
   echo "Strategy: bootstrap (empty .agent/ files)" >&2
@@ -241,7 +255,7 @@ elif [ "$FULL_CONTEXT_SIZE" -lt 10240 ]; then
   echo "Strategy: small log included in the orientation file (${FULL_CONTEXT_SIZE} bytes < 10KB)" >&2
   FULL_CONTEXT=$(cat .agent/FULL_CONTEXT.md 2>/dev/null || echo "")
 
-  CONTEXT="✅ CONTEXT WAS COMPACTED — orientation below. Your only required action is /rehydrate.
+  CONTEXT="✅ CONTEXT WAS COMPACTED — orientation below.
 
 Session: ${SID_FULL}
 WORKING_CONTEXT path: ${WC_PATH}
@@ -249,13 +263,10 @@ FULL_CONTEXT on disk: .agent/FULL_CONTEXT.md (${FULL_CONTEXT_LINES} lines, ${FUL
 
 ## Post-compact recovery
 
-Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
-(reviewers.sh digest-chain; full AI-powered recovery). That is the ONLY slash command you need
-to type; the catchup-equivalent (git state + .agent/ files) is inlined
-below so you already have the information /catchup would have produced.
+${REHYDRATE_HINT}
 
-Do /rehydrate BEFORE resuming any other work. Until it completes,
-stale-context nags are suppressed for ~5 minutes so you get a clean window.
+The catchup-equivalent (git state + .agent/ files) is included below, so
+/catchup is not needed.
 
 ${GIT_STATE}
 
@@ -277,17 +288,6 @@ else
   # === NORMAL: instruct Claude to call the backend chain for a focused summary ===
   echo "Strategy: rehydration instructions (${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines, wc_fresh=${WC_FRESH})" >&2
 
-  if [ "$WC_FRESH" -eq 1 ]; then
-    REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_READ}) was written within the last hour
-and is likely still valid. Treat it as your source of truth — running
-/rehydrate now is OPTIONAL. If you decide carryover context is enough,
-just continue working; the hooks will not remind you."
-  else
-    REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
-(reviewers.sh digest-chain; full AI-powered recovery). Do /rehydrate BEFORE resuming any other
-work. Until it completes, stale-context nags are suppressed for ~5 minutes
-so you get a clean window."
-  fi
 
   CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED
 
@@ -344,7 +344,6 @@ $CONTEXT
 INSTREOF
 echo "Wrote rehydration instructions to ${INSTRUCTIONS_FILE}" >&2
 
-GIT_HEAD=$(git log --oneline -3 2>/dev/null || echo "(no commits)")
 if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
   SHORT="CONTEXT WAS JUST COMPACTED, and .agent/ is nearly empty: the compaction summary is your only record of this session. Before anything else:
 1. Record the summary's essentials (goal, decisions, files changed, current state) with \`.claude/hooks/agent-log.sh append\` (text on stdin).
@@ -357,11 +356,11 @@ elif [ "$WC_FRESH" -eq 1 ]; then
 else
   SHORT="CONTEXT WAS JUST COMPACTED. Run /rehydrate before any other work: it rebuilds ${WC_PATH} from .agent/ and git. Then Read that file in full."
 fi
+# No branch name or commit subjects here: they are text a cloned repo controls,
+# and this channel is read as instructions. They are in the orientation file.
 SHORT="${SHORT}
 
 Session: ${SID_FULL}
-Branch: ${GIT_BRANCH}
-${GIT_HEAD}
 
 Full orientation (git state, DECISIONS, TASKS, LESSONS, the pre-compact WORKING_CONTEXT): Read ${INSTRUCTIONS_FILE}. Use it if /rehydrate cannot run; /catchup is not needed."
 # The register-currency warning on-pre-compact.sh found, if any: the one part of
