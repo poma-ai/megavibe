@@ -151,8 +151,8 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 # string occurs in this text" and "this register claims that release" are the
 # same bytes, so a dependency pin, a language version, another project's release
 # — or the same release spelled `1.1.0` where the tag says `v1.1.0` — all read
-# as the register naming the wrong thing. The output lands in the compaction
-# summary, the one place the next session cannot check it, so a check that
+# as the register naming the wrong thing. The output lands in the post-compact
+# message, where the next session takes it on trust, so a check that
 # occasionally asserts unfalsifiable staleness is worse there than no check.
 # The sound version is a different design: have the register record the release
 # as a machine-readable marker per non-negotiable 7 and compare THAT against
@@ -160,8 +160,7 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 #
 # Every branch is built to stay SILENT unless it can make a true statement. A
 # warning that fires unconditionally is trained away within two compactions, and
-# it lands in the compaction summary — the one place the next session cannot
-# check anything against. An unverified claim delivered there is the exact
+# it lands in the post-compact message, which the next session takes on trust. An unverified claim delivered there is the exact
 # failure non-negotiable 7 exists to prevent, so this must not be the thing that
 # commits it. Four review rounds each found a new false positive here; the
 # design rule that finally held is: when in doubt, say nothing.

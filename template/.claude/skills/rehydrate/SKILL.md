@@ -30,7 +30,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    SID="<your-session-id>"
    IN=".agent/LOGS/rehydrate-input.${SID}.md"
    {
-     echo "# git";    git status --short --branch 2>&1 | head -40; git diff --stat 2>&1 | tail -30
+     echo "# git";    git status --short --branch 2>&1 | head -40 | head -c 8000; echo; git diff --stat 2>&1 | tail -30 | tail -c 4000
      echo; echo "# TASKS.md (whole up to 60 KB, else first and last 30 KB: the top is the where-we-stand section)"
      if [ "$(wc -c < .agent/TASKS.md 2>/dev/null || echo 0)" -le 60000 ]; then cat .agent/TASKS.md 2>/dev/null
      else head -c 30000 .agent/TASKS.md; echo; echo "...[middle elided — see file]..."; tail -c 30000 .agent/TASKS.md; fi

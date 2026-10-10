@@ -34,9 +34,10 @@ set -u
 #
 # Session isolation: rehydration flag and WORKING_CONTEXT are session-scoped.
 
-# Only act if this is a Megavibe-initialized project (checked before the
-# redirect below, which would otherwise complain outside one)
+# Only act if this is a Megavibe-initialized project with jq (both checked
+# before the redirect below, which would otherwise touch files outside one)
 [ -d ".agent" ] || exit 0
+command -v jq &>/dev/null || exit 0
 
 # Redirect stderr to debug log (avoids confusing Claude Code's hook capture)
 mkdir -p ".agent/LOGS" 2>/dev/null || true
@@ -202,7 +203,6 @@ echo "FULL_CONTEXT: ${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines" >&2
 if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
   # === BOOTSTRAP: .agent/ files are empty ===
   echo "Strategy: bootstrap (empty .agent/ files)" >&2
-  if [ "$WC_FRESH" -eq 0 ]; then echo 0 > ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; rm -f ".agent/LOGS/.rehydrate-nagcount.${SID}" 2>/dev/null || true; else rm -f ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; fi
 
   CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED — .agent/ FILES ARE EMPTY
 
@@ -237,8 +237,8 @@ ${TASKS}
 ${LESSONS}"
 
 elif [ "$FULL_CONTEXT_SIZE" -lt 10240 ]; then
-  # === SMALL: inject raw FULL_CONTEXT directly (no AI needed) ===
-  echo "Strategy: raw injection (${FULL_CONTEXT_SIZE} bytes < 10KB)" >&2
+  # === SMALL: the orientation file carries the whole FULL_CONTEXT ===
+  echo "Strategy: small log included in the orientation file (${FULL_CONTEXT_SIZE} bytes < 10KB)" >&2
   FULL_CONTEXT=$(cat .agent/FULL_CONTEXT.md 2>/dev/null || echo "")
 
   CONTEXT="✅ CONTEXT WAS COMPACTED — orientation below. Your only required action is /rehydrate.
@@ -276,10 +276,9 @@ ${FULL_CONTEXT}"
 else
   # === NORMAL: instruct Claude to call the backend chain for a focused summary ===
   echo "Strategy: rehydration instructions (${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines, wc_fresh=${WC_FRESH})" >&2
-  if [ "$WC_FRESH" -eq 0 ]; then echo 0 > ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; rm -f ".agent/LOGS/.rehydrate-nagcount.${SID}" 2>/dev/null || true; else rm -f ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; fi
 
   if [ "$WC_FRESH" -eq 1 ]; then
-    REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_PATH}) was written within the last hour
+    REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_READ}) was written within the last hour
 and is likely still valid. Treat it as your source of truth — running
 /rehydrate now is OPTIONAL. If you decide carryover context is enough,
 just continue working; the hooks will not remind you."
@@ -318,6 +317,18 @@ ${LESSONS}
 ${OLD_WC}"
 fi
 
+# --- Rehydration flag: one policy for every size ---
+# Pending unless a non-empty WORKING_CONTEXT was written within the hour (then
+# /rehydrate is optional and nothing reminds). An empty .agent/ always needs the
+# recording steps, so the bootstrap case never counts as fresh. The nag count
+# restarts with each compaction.
+rm -f ".agent/LOGS/.rehydrate-nagcount.${SID}" 2>/dev/null || true
+if [ "$FULL_CONTEXT_LINES" -gt 10 ] && [ "$WC_FRESH" -eq 1 ]; then
+  rm -f ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true
+else
+  echo 0 > ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true
+fi
+
 # --- Record cooldown for proactive compaction ---
 # log-tool-event.sh checks this timestamp to suppress nudges post-compaction
 date +%s > ".agent/LOGS/.compact-ts.${SID}" 2>/dev/null || true
@@ -339,10 +350,12 @@ if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
 1. Record the summary's essentials (goal, decisions, files changed, current state) with \`.claude/hooks/agent-log.sh append\` (text on stdin).
 2. Update .agent/DECISIONS.md and .agent/TASKS.md from it.
 3. Run /rehydrate (it writes ${WC_PATH})."
-elif [ "$FULL_CONTEXT_SIZE" -lt 10240 ] || [ "$WC_FRESH" -eq 0 ]; then
-  SHORT="CONTEXT WAS JUST COMPACTED. Run /rehydrate before any other work: it rebuilds ${WC_PATH} from .agent/ and git. Then Read that file in full."
+elif [ "$WC_FRESH" -eq 1 ]; then
+  # WC_READ, not WC_PATH: a session from before the full-id fix keeps its WC in
+  # the 12-character directory, and that is the file that was found fresh.
+  SHORT="CONTEXT WAS JUST COMPACTED. Your WORKING_CONTEXT (${WC_READ}) was written within the last hour: Read it in full and continue. /rehydrate is optional (it writes ${WC_PATH})."
 else
-  SHORT="CONTEXT WAS JUST COMPACTED. Your WORKING_CONTEXT (${WC_PATH}) was written within the last hour: Read it in full and continue. /rehydrate is optional."
+  SHORT="CONTEXT WAS JUST COMPACTED. Run /rehydrate before any other work: it rebuilds ${WC_PATH} from .agent/ and git. Then Read that file in full."
 fi
 SHORT="${SHORT}
 

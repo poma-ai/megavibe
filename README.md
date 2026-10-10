@@ -256,7 +256,7 @@ Inside a megavibe session:
 | Command | When to use |
 |---------|------------|
 | `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook writes the same orientation to `.agent/LOGS/rehydration-instructions.<session>.md`. |
-| `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; until it has run, the hooks remind the session on the 1st, 10th and 30th tool call after a 5-minute grace window and then block one Stop. |
+| `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; until it has run, the hooks remind the session on the 1st, 10th and 30th tool call after a 5-minute grace window, and block one Stop at the first turn end after a reminder. |
 | `/prune-context` | **Superseded** by `.claude/hooks/agent-log.sh fold` (moves old events into `.agent/snapshot.md`; no content is lost); kept for old projects. **Distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — multi-reviewer (Claude `reviewer` subagent + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |

@@ -180,7 +180,9 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
   # like one that did.
   if [ -f "$REHYDRATE_FLAG" ] \
      && [[ "$FILE_PATH" =~ (^|/)\.agent/sessions/([^/]+)/WORKING_CONTEXT\.md$ ]] \
-     && { [ "${BASH_REMATCH[2]}" = "$SID_FULL" ] || [ "${BASH_REMATCH[2]}" = "$SID" ]; }; then
+     && { [ "${BASH_REMATCH[2]}" = "$SID_FULL" ] || [ "${BASH_REMATCH[2]}" = "$SID" ]; } \
+     && [ -s ".agent/sessions/${BASH_REMATCH[2]}/WORKING_CONTEXT.md" ]; then
+    # (-s: an empty write is not a rehydrate; the mtime clear above uses -s too)
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 
@@ -506,24 +508,20 @@ fi
 # then deleted the flag, so after a compaction while idle all three fired within
 # a minute of the user's return and the Stop escalation never got its chance:
 # 4 of 20 real compactions (2026-10-01..10) were never rehydrated that way.
-# Calls that ARE the rehydration (the skill, its input build, the WORKING_CONTEXT
-# write) are not nagged.
+# A reminder that lands while /rehydrate is running is harmless, so there is no
+# attempt to recognise the rehydration's own calls (two review rounds showed a
+# pattern for that is always too broad or too narrow). A SUBAGENT's tool calls
+# (same session_id, agent_id set) neither count nor get reminded: the reminder
+# is for the main thread, and counting them would arm its Stop block early.
 NAG_FILE="${LOGDIR}/.rehydrate-nagcount.${SID}"
 [ -f "$REHYDRATE_FLAG" ] || rm -f "$NAG_FILE" 2>/dev/null || true
-if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ]; then
+_TE_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   NAG_COUNT=$(cat "$NAG_FILE" 2>/dev/null | tr -d ' \n')
   case "$NAG_COUNT" in ''|*[!0-9]*) NAG_COUNT=0 ;; esac
   NAG_COUNT=$((10#$NAG_COUNT))   # "08" is octal to bash arithmetic otherwise
   REHYDRATE_MSG=""
-  # Recovery calls, recognised by structured fields rather than a substring of
-  # the whole input (which also matched app code that merely mentions the words):
-  # the rehydrate skill, the skill's own commands, and the recovery files.
-  _IS_RECOVERY=$(printf '%s' "$INPUT" | jq -r '
-    ((.tool_name // "") == "Skill" and ((.tool_input.skill // "") | test("rehydrate")))
-    or ((.tool_input.command // "") | test("rehydrate-input\\.|reviewers\\.sh digest-chain|\\.agent/sessions/[^ ]*/WORKING_CONTEXT\\.md"))
-    or ((.tool_input.file_path // "") | test("\\.agent/(sessions/[^/]+/WORKING_CONTEXT\\.md|LOGS/(rehydration-instructions|rehydrate-input)\\.)"))
-  ' 2>/dev/null || echo false)
-  if [ "$NAG_COUNT" -lt 30 ] && [ "$_IS_RECOVERY" != "true" ]; then
+  if [ "$NAG_COUNT" -lt 30 ]; then
     NEW_COUNT=$((NAG_COUNT + 1))
     echo "$NEW_COUNT" > "$NAG_FILE" 2>/dev/null || true
     case "$NEW_COUNT" in
