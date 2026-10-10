@@ -25,10 +25,10 @@
 # (0-94 reasoning tokens at every level — summarising does not reason) while the
 # model sets the time and the length, gpt-5.6-terra 23 s / gpt-6-astra 100 s.
 # So a summary call names a small model and low effort; a review leaves both to
-# the config, where the user has chosen the effort they pay for. One exception: while Codex's weekly window is
-# under-used (usage-route.sh codex, band `under`), a review that named neither --effort nor --model runs at xhigh
-# (only when you passed --timeout 900 or more, i.e. run it in the background), and is retried once at the config's own
-# effort if Codex rejects xhigh. MEGAVIBE_ROUTER=0 turns that off. --as-reviewer marks this call as one of non-negotiable 4's reviews, and
+# the config, where the user has chosen the effort they pay for. (Until 2026-10-11 an under-used Codex week raised
+# an unspecified review to xhigh. Removed: a blind benchmark found xhigh no better at twice the time, and in real use
+# both auto-xhigh reviews of large PRs timed out at 900s where the config's effort answered in about 8 minutes.)
+# --as-reviewer marks this call as one of non-negotiable 4's reviews, and
 # is the ONLY mode MEGAVIBE_REVIEWERS gates: without it this is just megavibe's
 # general Codex path (/rehydrate, research memos, second opinions), which no
 # reviewer setting should be able to switch off.
@@ -107,24 +107,6 @@ if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
   fi
 fi
 
-# Unspent Codex capacity is spent on thinking, never on skipping: when the weekly window is
-# projected to end well under its limit (usage-route.sh codex, band `under`), a REVIEW that
-# named no effort and no model runs at xhigh. Only when the caller passed --timeout 900 or more (xhigh is
-# slower, a timed-out review falls to the costlier subagent, and a caller that asks for 15 minutes is one
-# that runs the review in the background; a foreground Bash call cannot outlast 10),
-# never over an explicit --effort or --model (a pinned model may not take xhigh), never when the
-# config already sits at xhigh, and MEGAVIBE_ROUTER=0 switches it off. After the reviewer gate, so
-# a switched-off Codex says nothing about spare capacity.
-AUTO_EFFORT=""
-if [ -n "$AS_REVIEWER" ] && [ -z "$EFFORT" ] && [ -z "$MODEL" ] && [ "${MEGAVIBE_ROUTER:-1}" != 0 ] && [ -f "$_RVDIR/usage-route.sh" ] \
-   && [ "$TIMEOUT" -ge 900 ] 2>/dev/null; then
-  IFS='|' read -r _ub _um _ue _ur < <(bash "$_RVDIR/usage-route.sh" codex 2>/dev/null) || true
-  if [ "${_ub:-}" = under ] && [ "${_ue:-}" = xhigh ]; then
-    EFFORT=xhigh; AUTO_EFFORT=1
-    echo "note: Codex $_ur — spending the spare capacity on effort xhigh for this review (timeout ${TIMEOUT}s; retried once without xhigh if Codex rejects it)" >&2
-  fi
-fi
-
 command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1; }
 [ -n "$PROMPT" ] || [ -n "$PROMPT_FILE" ] || { echo "error: --prompt or --prompt-file is required" >&2; exit 2; }
 [ -n "$PROMPT_FILE" ] && PROMPT=$(cat -- "$PROMPT_FILE")
@@ -149,7 +131,6 @@ trap 'rm -f "$REQ" "$REQ.err" "$ANS"' EXIT
 # has to be scraped out of the run's progress chrome.
 ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
-ARGS_NOEFF=("${ARGS[@]}" -)    # the same call with the config's own effort, for the one retry below
 [ -n "$EFFORT" ] && ARGS+=(-c "model_reasoning_effort=$EFFORT")
 ARGS+=(-)
 
@@ -191,22 +172,8 @@ perl -e '
   exit($st >> 8);
 ' "$1" codex "${@:2}" < "$REQ" >/dev/null 2>"$REQ.err"
 }
-T0=$(date +%s)
 run_codex "$TIMEOUT" "${ARGS[@]}"
 RC=$?
-# An effort the router added (not the caller) must never cost the review: if Codex REJECTS it (rc 1 and an error
-# that names the effort, not a timeout or an unrelated failure), retry once with the config's own effort, inside
-# the same overall deadline and with a fresh answer file (a half-written one from the first attempt is not an answer).
-if [ "$RC" -eq 1 ] && [ -n "$AUTO_EFFORT" ] && grep -iE '^[[:space:]]*(error|fatal)' "$REQ.err" 2>/dev/null | grep -iE 'xhigh|effort|reasoning' | grep -qiE 'unsupported|not supported|invalid|unknown|not available|must be one of' 2>/dev/null; then
-  REM=$((TIMEOUT - ($(date +%s) - T0)))
-  if [ "$REM" -ge 60 ]; then
-    echo "note: codex rejected the auto-applied effort xhigh — retrying once with the configured effort (${REM}s left)" >&2
-    : > "$ANS"
-    run_codex "$REM" "${ARGS_NOEFF[@]}"
-    RC=$?
-    EFFORT=""   # the footer must not claim an effort that was not used
-  fi
-fi
 set -e
 
 if [ "$RC" -ne 0 ]; then
