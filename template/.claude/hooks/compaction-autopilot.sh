@@ -69,15 +69,66 @@ DONE_FLAG="${LOGDIR}/.closeout-done.${SID}"
 BLOCKED_FLAG="${LOGDIR}/.closeout-blocked.${SID}"
 COUNT_FILE="${LOGDIR}/.closeout-count.${SID}"
 
-# Already closed out this session: nothing to do on any event.
-[ -f "$DONE_FLAG" ] && exit 0
-
 SOFT_PCT="${MEGAVIBE_CLOSEOUT_SOFT_PCT:-85}"
 HARD_PCT="${MEGAVIBE_CLOSEOUT_HARD_PCT:-95}"
 REMIND_EVERY="${MEGAVIBE_CLOSEOUT_REMIND_EVERY:-25}"
 case "$SOFT_PCT" in ''|*[!0-9]*) SOFT_PCT=85 ;; esac
 case "$HARD_PCT" in ''|*[!0-9]*) HARD_PCT=95 ;; esac
 case "$REMIND_EVERY" in ''|*[!0-9]*) REMIND_EVERY=25 ;; esac
+
+# --- REHYDRATE comes first, always -----------------------------------------
+# Before the context measurement on purpose: it acts on a flag, not on a guess
+# about window size, so a session whose size cannot be read still gets it (it
+# used to sit behind the measurement and silently never fire there).
+# Sequencing, deliberate: right after a compaction the window is nearly empty,
+# so the close-out thresholds cannot be met and these two can never contend for
+# the same Stop. The precedence is stated anyway, because "they cannot collide"
+# is exactly the assumption that stops being true after someone tunes a
+# threshold. Rehydrate wins; if it fires, this hook does nothing else.
+#
+# on-compact.sh sets .needs-rehydration when the working context is stale;
+# log-tool-event.sh clears it the moment WORKING_CONTEXT.md is written. So the
+# flag being gone is proof the work happened, not a promise that it will.
+REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
+R_NUDGE="${LOGDIR}/.rehydrate-nudge.${SID}"
+R_BLOCKED="${LOGDIR}/.rehydrate-blocked.${SID}"
+REHYDRATE_TASK='Run /rehydrate NOW, before anything else. The last compaction
+left the working context stale, and every answer until it is rebuilt is guesswork
+dressed as recall.'
+
+# Once the Stop escalation has fired, the session has been told twice and chose
+# to carry on: stand down and let the close-out logic below run again. The flag
+# itself stays until a WORKING_CONTEXT write clears it (log-tool-event.sh no
+# longer auto-clears it), so without this a session that never rehydrated would
+# have silenced its own close-out for good.
+if [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ]; then
+  if [ "$EVENT" = "PostToolUse" ]; then
+    if [ ! -f "$R_NUDGE" ]; then
+      : > "$R_NUDGE" 2>/dev/null || true
+      jq -n --arg c "$REHYDRATE_TASK" \
+        '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
+    fi
+    exit 0
+  fi
+  if [ "$EVENT" = "Stop" ]; then
+    ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
+    [ "$ACTIVE" = "true" ] && exit 0
+    # Only escalate once the soft nudge has actually been delivered. Blocking on
+    # the first Stop after a compaction would fire before /rehydrate has had a
+    # single turn to run — and it spawns Gemini or Codex, which takes one.
+    [ -f "$R_NUDGE" ] || exit 0
+    : > "$R_BLOCKED" 2>/dev/null || true
+    jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
+    exit 0
+  fi
+  exit 0
+fi
+
+# Already closed out this fill cycle: no close-out work left. (After the
+# rehydrate block on purpose: a stale .closeout-done from before a manual
+# /compact, which on-compact.sh may not see, must not swallow the rehydrate
+# escalation.)
+[ -f "$DONE_FLAG" ] && exit 0
 
 # --- measure, fresh, every time -------------------------------------------
 # Not the .token-mark file: on the session that motivated this hook, that mark
@@ -100,47 +151,6 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
 fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
-
-# --- REHYDRATE comes first, always -----------------------------------------
-# Sequencing, deliberate: right after a compaction the window is nearly empty,
-# so the close-out thresholds cannot be met and these two can never contend for
-# the same Stop. The precedence is stated anyway, because "they cannot collide"
-# is exactly the assumption that stops being true after someone tunes a
-# threshold. Rehydrate wins; if it fires, this hook does nothing else.
-#
-# on-compact.sh sets .needs-rehydration when the working context is stale;
-# log-tool-event.sh clears it the moment WORKING_CONTEXT.md is written. So the
-# flag being gone is proof the work happened, not a promise that it will.
-REHYDRATE_FLAG="${LOGDIR}/.needs-rehydration.${SID}"
-R_NUDGE="${LOGDIR}/.rehydrate-nudge.${SID}"
-R_BLOCKED="${LOGDIR}/.rehydrate-blocked.${SID}"
-REHYDRATE_TASK='Run /rehydrate NOW, before anything else. The last compaction
-left the working context stale, and every answer until it is rebuilt is guesswork
-dressed as recall.'
-
-if [ -f "$REHYDRATE_FLAG" ]; then
-  if [ "$EVENT" = "PostToolUse" ]; then
-    if [ ! -f "$R_NUDGE" ]; then
-      : > "$R_NUDGE" 2>/dev/null || true
-      jq -n --arg c "$REHYDRATE_TASK" \
-        '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
-    fi
-    exit 0
-  fi
-  if [ "$EVENT" = "Stop" ]; then
-    ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
-    [ "$ACTIVE" = "true" ] && exit 0
-    # Only escalate once the soft nudge has actually been delivered. Blocking on
-    # the first Stop after a compaction would fire before /rehydrate has had a
-    # single turn to run — and it spawns Gemini or Codex, which takes one.
-    [ -f "$R_NUDGE" ] || exit 0
-    [ -f "$R_BLOCKED" ] && exit 0
-    : > "$R_BLOCKED" 2>/dev/null || true
-    jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
-    exit 0
-  fi
-  exit 0
-fi
 
 CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
 1. Append the decisions of this session to .agent/DECISIONS.md — each with the

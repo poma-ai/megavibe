@@ -50,5 +50,5 @@ Fast, read-only orientation. No backend calls — this should finish in seconds.
 
 ## When NOT to use
 
-- **Right after compaction — the `on-compact` hook already inlined `/catchup`'s output (git state + DECISIONS + TASKS + LESSONS + pre-compact WORKING_CONTEXT) into its systemMessage. Just run `/rehydrate` — that's the only slash command needed post-compact.**
+- **Right after compaction — the `on-compact` hook already wrote `/catchup`'s output (git state + DECISIONS + TASKS + LESSONS + pre-compact WORKING_CONTEXT) to `.agent/LOGS/rehydration-instructions.<session>.md` and named it in its message. Just run `/rehydrate` — that's the only slash command needed post-compact.**
 - If you just need to continue exactly where you left off — use `megavibe --resume`

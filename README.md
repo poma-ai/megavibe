@@ -139,7 +139,7 @@ When Claude runs out of memory and compacts, megavibe detects it and triggers re
 - **Normal projects**: Claude calls Codex to produce a focused ~400-line summary
 - **Empty context** (first compaction): instructs Claude to save the compaction summary before it's lost
 
-**Register currency (optional).** If your `.agent/TASKS.md` opens with a "where we stand" section numbered 0, the pre-compact hook warns when that section's own date stamp is more than seven days old, and folds the warning into the compaction summary. `MEGAVIBE_REGISTER_MAX_AGE_DAYS` changes the threshold.
+**Register currency (optional).** If your `.agent/TASKS.md` opens with a "where we stand" section numbered 0, the pre-compact hook warns when that section's own date stamp is more than seven days old, and carries the warning into the message the session gets after the compaction. `MEGAVIBE_REGISTER_MAX_AGE_DAYS` changes the threshold.
 
 It only reads a date the section *offers* as its stamp: bracketed in the heading — `## 0. Where we stand (2026-09-21)` — or a line beginning `As of 2026-09-21:`. Any other date is something the register talks about rather than when it was written, and reading "freeze was 2026-08-01" as a write time would report a register written today as fifty-one days old. A section with no stamp produces nothing; unknown is not the same as stale.
 
@@ -255,8 +255,8 @@ Inside a megavibe session:
 
 | Command | When to use |
 |---------|------------|
-| `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook already inlines its output. |
-| `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; a 5-minute grace period suppresses stale-context nags while it runs. |
+| `/catchup` | **Starting a new session** — reviews open tasks, git state, decisions (no AI calls). **Not needed after compaction** — the `on-compact` hook writes the same orientation to `.agent/LOGS/rehydration-instructions.<session>.md`. |
+| `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; until it has run, the hooks remind the session on the 1st, 10th and 30th tool call and block one Stop. |
 | `/prune-context` | **Superseded** by `.claude/hooks/agent-log.sh fold` (moves old events into `.agent/snapshot.md`; no content is lost); kept for old projects. **Distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — multi-reviewer (Claude `reviewer` subagent + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |

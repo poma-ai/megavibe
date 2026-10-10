@@ -51,6 +51,13 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 
 echo "on-compact.sh fired at $(date -u +%Y-%m-%dT%H:%M:%SZ)" >&2
 
+# A subagent's compaction is not this session's: same guard as on-pre-compact.sh
+# (subagents share the parent's session_id; the docs do not say whether this
+# event fires for them, so both documented-adjacent signals are checked).
+_OC_AGENT=$(echo "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+case "$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)" in */subagents/*) _OC_AGENT="${_OC_AGENT:-subagent-path}" ;; esac
+if [ -n "$_OC_AGENT" ]; then echo "subagent compaction (${_OC_AGENT}): nothing to do" >&2; exit 0; fi
+
 # Extract session ID for scoping
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' | cut -c1-12)
 # Same gate as SID_FULL. `cut` bounds the LENGTH but not the content: a
@@ -116,9 +123,9 @@ if [ -f "$WC_READ" ]; then
   [ "$WC_AGE" -lt 3600 ] 2>/dev/null && WC_FRESH=1
 fi
 
-# --- Read structured files (capped to fit under Claude Code's hook
-# systemMessage inline limit; ~32KB triggers persist-to-disk + 2KB preview,
-# which hides everything past the header from post-compact Claude). DECISIONS
+# --- Read structured files (capped by bytes; they go into the orientation file
+# below, which Claude reads on demand — NOT into the hook output, see the end
+# of this script). DECISIONS
 # in particular grows unbounded — at ~140KB it crowds out git state, tasks,
 # and lessons entirely. Cap each section by BYTES (line-based tail is
 # unbounded when individual lines are long, as they are in DECISIONS tables).
@@ -188,7 +195,7 @@ echo "FULL_CONTEXT: ${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines" >&2
 if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
   # === BOOTSTRAP: .agent/ files are empty ===
   echo "Strategy: bootstrap (empty .agent/ files)" >&2
-  [ "$WC_FRESH" -eq 0 ] && { touch ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; }
+  if [ "$WC_FRESH" -eq 0 ]; then echo 0 > ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; else rm -f ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; fi
 
   CONTEXT="⚠️ CONTEXT WAS JUST COMPACTED — .agent/ FILES ARE EMPTY
 
@@ -198,9 +205,10 @@ WORKING_CONTEXT path: ${WC_PATH}
 The .agent/ context files were never populated during this session. The
 compaction summary above is your ONLY source of context. Before continuing:
 
-1. IMMEDIATELY write a summary of the compaction above to .agent/FULL_CONTEXT.md
-   (append after the header). Include: goal, key decisions, files changed,
-   current state, what was being worked on.
+1. IMMEDIATELY record a summary of the compaction above with
+   \`.claude/hooks/agent-log.sh append\` (entry text on stdin; never edit
+   FULL_CONTEXT.md, it is rendered). Include: goal, key decisions, files
+   changed, current state, what was being worked on.
 2. Update .agent/DECISIONS.md with any decisions from the summary.
 3. Update .agent/TASKS.md with pending tasks from the summary.
 4. Then run /rehydrate — this is your only required slash command. It will
@@ -261,7 +269,7 @@ ${FULL_CONTEXT}"
 else
   # === NORMAL: instruct Claude to call the backend chain for a focused summary ===
   echo "Strategy: rehydration instructions (${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines, wc_fresh=${WC_FRESH})" >&2
-  [ "$WC_FRESH" -eq 0 ] && { touch ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; }
+  if [ "$WC_FRESH" -eq 0 ]; then echo 0 > ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; else rm -f ".agent/LOGS/.needs-rehydration.${SID}" 2>/dev/null || true; fi
 
   if [ "$WC_FRESH" -eq 1 ]; then
     REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_PATH}) was written within the last hour
@@ -307,13 +315,51 @@ fi
 # log-tool-event.sh checks this timestamp to suppress nudges post-compaction
 date +%s > ".agent/LOGS/.compact-ts.${SID}" 2>/dev/null || true
 
-# --- Write durable backup (in case systemMessage injection fails) ---
+# --- Write the full orientation to a file ---
+# This file, not the hook output, carries the orientation. Measured on 20 real
+# compactions (2026-10-01..10): the full text was 19-28 KB, and Claude Code saved
+# every one of them to disk and showed the model a 2 KB preview, so DECISIONS,
+# TASKS, LESSONS and the old WORKING_CONTEXT never reached it. The output below
+# stays small enough to be delivered whole and points here.
 cat > "$INSTRUCTIONS_FILE" << INSTREOF
 $CONTEXT
 INSTREOF
 echo "Wrote rehydration instructions to ${INSTRUCTIONS_FILE}" >&2
 
-echo "Emitting systemMessage (${#CONTEXT} chars)" >&2
+GIT_HEAD=$(git log --oneline -3 2>/dev/null || echo "(no commits)")
+if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
+  SHORT="CONTEXT WAS JUST COMPACTED, and .agent/ is nearly empty: the compaction summary is your only record of this session. Before anything else:
+1. Record the summary's essentials (goal, decisions, files changed, current state) with \`.claude/hooks/agent-log.sh append\` (text on stdin).
+2. Update .agent/DECISIONS.md and .agent/TASKS.md from it.
+3. Run /rehydrate (it writes ${WC_PATH})."
+elif [ "$FULL_CONTEXT_SIZE" -lt 10240 ] || [ "$WC_FRESH" -eq 0 ]; then
+  SHORT="CONTEXT WAS JUST COMPACTED. Run /rehydrate before any other work: it rebuilds ${WC_PATH} from .agent/ and git. Then Read that file in full."
+else
+  SHORT="CONTEXT WAS JUST COMPACTED. Your WORKING_CONTEXT (${WC_PATH}) was written within the last hour: Read it in full and continue. /rehydrate is optional."
+fi
+SHORT="${SHORT}
 
-# Return as systemMessage (authoritative — Claude treats it as system-level instruction)
-jq -n --arg msg "$CONTEXT" '{systemMessage: $msg}'
+Session: ${SID_FULL}
+Branch: ${GIT_BRANCH}
+${GIT_HEAD}
+
+Full orientation (git state, DECISIONS, TASKS, LESSONS, the pre-compact WORKING_CONTEXT): Read ${INSTRUCTIONS_FILE}. Use it if /rehydrate cannot run; /catchup is not needed."
+# The register-currency warning on-pre-compact.sh found, if any: the one part of
+# its report that can contradict the records the model is about to trust.
+REG_WARN_FILE=".agent/LOGS/.reg-warn.${SID}"
+if [ -s "$REG_WARN_FILE" ]; then
+  SHORT="${SHORT}
+
+REGISTER CURRENCY: the records may describe a state the repo has left:$(head -c 1200 "$REG_WARN_FILE" 2>/dev/null)
+Re-read TASKS §0 against git before repeating it as current."
+fi
+# Hard bound: a line that grows past it would put us back behind the preview.
+[ "${#SHORT}" -le 3000 ] || SHORT="${SHORT:0:2990}
+[...]"
+
+echo "Emitting additionalContext (${#SHORT} chars; full orientation ${#CONTEXT} chars in file)" >&2
+
+# additionalContext is what reaches the model; systemMessage is shown to the user
+# only (the same split disk-check.sh and announce-update.sh use).
+jq -n --arg ctx "$SHORT" --arg msg "megavibe: context compacted; orientation saved to ${INSTRUCTIONS_FILE}" \
+  '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
