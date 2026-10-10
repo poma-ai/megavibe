@@ -4,7 +4,7 @@
 #   usage-route.sh claude     one line: band|model|effort|reason (| not tab: read collapses empty tab fields)
 #   usage-route.sh advisory   one sentence for a session, or nothing in the normal band
 #   usage-route.sh band       just the band name (over | normal | under)
-#   usage-route.sh codex      the same line for Codex: band||effort|reason (effort only in `under`, for reviews)
+#   usage-route.sh codex      the same line for Codex: band||effort|reason (effort is always empty: reviews use the config's own)
 #   usage-route.sh codex-band just the Codex band name
 #   usage-route.sh balance    one line: prefer|sentence — which subscription optional work (digests, exploration,
 #                             second opinions) should lean on; prefer is claude, codex or - (no preference)
@@ -31,7 +31,7 @@
 # counts toward `over` (usage only grows inside a window) but never toward `under`. Exit status is always 0.
 #
 # Test seams: MEGAVIBE_USAGE_FILE, MEGAVIBE_USAGE_STATE, MEGAVIBE_NOW,
-# MEGAVIBE_USER_SETTINGS, MEGAVIBE_CODEX_HOME, MEGAVIBE_CODEX_STATE, MEGAVIBE_CODEX_CONFIG. Tuning: MEGAVIBE_ROUTER_UP (model for `under`, default opus).
+# MEGAVIBE_USER_SETTINGS, MEGAVIBE_CODEX_HOME, MEGAVIBE_CODEX_STATE. Tuning: MEGAVIBE_ROUTER_UP (model for `under`, default opus).
 set -uo pipefail
 
 MV="${MEGAVIBE_HOME:-$HOME/.megavibe}"
@@ -209,22 +209,10 @@ if [ "$MODE" = status ]; then
 fi
 if [ "$MODE" = codex-band ]; then printf '%s\n' "$BAND"; exit 0; fi
 if [ "$MODE" = codex ]; then
-  # `under` is the only band that acts: reviews think harder with capacity that would reset unspent.
-  # `over` changes nothing here: the review floor does not drop, and a Codex that runs dry already falls to the subagent.
+  # Advice only: the band and its reason. The effort field stays empty since 2026-10-11 (the automatic
+  # xhigh for reviews was removed: no better in a blind benchmark, and it timed out on real large reviews);
+  # the field is kept so callers that read four fields keep working.
   EFF=""
-  if [ "$BAND" = under ]; then
-    cfg_effort() { awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*["\047]?model_reasoning_effort["\047]?[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*["\047]?/, "", v); if (match(v, /^[a-z]+/)) { print substr(v, 1, RLENGTH); exit } }' "$1" 2>/dev/null; }
-    CFG="${MEGAVIBE_CODEX_CONFIG:-${CODEX_HOME:-$HOME/.codex}/config.toml}"
-    CUR=$(cfg_effort "$CFG")
-    case "$CUR" in ""|minimal|low|medium|high) EFF="xhigh" ;; esac   # xhigh, max, ultra, persistent or anything unknown: leave the config alone
-    # A trusted project's own .codex/config.toml (found walking up from here) overrides the user config, and
-    # an explicit `-c` would override IT: if the project sets an effort at all, we cannot know ours is higher.
-    _d="$PWD"; _n=0
-    while [ "$_n" -lt 8 ]; do
-      if [ -f "$_d/.codex/config.toml" ] && ! [ "$_d/.codex/config.toml" -ef "$CFG" ] && [ -n "$(cfg_effort "$_d/.codex/config.toml")" ]; then EFF=""; break; fi   # (the user config itself is not a project config)
-      [ "$_d" = "/" ] && break; _d=$(dirname "$_d"); _n=$((_n + 1))
-    done
-  fi
   printf '%s||%s|%s\n' "$BAND" "$EFF" "$REASON"
   exit 0
 fi
