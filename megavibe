@@ -1478,10 +1478,24 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
     # on this directory, so its hooks stayed at whatever setup.sh first wrote
     # (found 4 months stale, without rm-to-trash, on a session that runs with
     # --dangerously-skip-permissions). Only here, before a fresh start: a live
-    # session keeps the hooks it registered at its own start.
+    # session keeps the hooks it registered at its own start. The Telegram bot
+    # runs the same step, so both take one lock, and both are bounded (the
+    # alarm is armed before the lock wait and survives the exec). The lock fd
+    # must survive exec too, hence $^F. Output goes to a file, not $( ): a hung
+    # grandchild would hold a command substitution open past the alarm.
+    # Note: init.sh replaces the project's hooks block and synced rules
+    # wholesale; anything authored there is overwritten, as in any project.
     if [ -f "$MEGAVIBE_HOME/init.sh" ]; then
-      bash "$MEGAVIBE_HOME/init.sh" "$PERSONAL_DIR" </dev/null >/dev/null 2>&1 \
-        || echo "Warning: init.sh failed on $PERSONAL_DIR; starting with its existing hooks."
+      _pi_log="$MEGAVIBE_HOME/personal-init.log"
+      _pi_cmd=(bash "$MEGAVIBE_HOME/init.sh" "$PERSONAL_DIR")
+      if command -v perl >/dev/null 2>&1; then
+        _pi_cmd=(perl -MFcntl=:flock -e '$^F = 255; my ($lk, $secs) = splice(@ARGV, 0, 2); alarm $secs; open(my $l, ">>", $lk) or die "lock: $!\n"; flock($l, LOCK_EX) or die "lock: $!\n"; exec @ARGV or die "exec: $!\n"' \
+          "$MEGAVIBE_HOME/.personal-init.lock" 120 "${_pi_cmd[@]}")
+      fi
+      if ! "${_pi_cmd[@]}" </dev/null >"$_pi_log" 2>&1; then
+        echo "Warning: init.sh failed on $PERSONAL_DIR; starting with its existing hooks. Log: $_pi_log"
+        tail -n 3 "$_pi_log" 2>/dev/null | sed 's/^/  /' || true
+      fi
     fi
     # Pre-accept workspace trust once, matching telegram-bot.py's start path.
     ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true

@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -204,13 +205,24 @@ def start_personal_session():
 
     # Sync hooks, skills and settings before a fresh start; nothing else runs
     # init.sh on this directory (see the same step in `megavibe assistant`).
+    # Same lock and bound as the launcher, so the two never run it at once.
     init_sh = MEGAVIBE_HOME / "init.sh"
     if init_sh.is_file():
+        cmd = ["bash", str(init_sh), str(PERSONAL_DIR)]
+        if shutil.which("perl"):
+            cmd = ["perl", "-MFcntl=:flock", "-e",
+                   '$^F = 255; my ($lk, $secs) = splice(@ARGV, 0, 2); alarm $secs; '
+                   'open(my $l, ">>", $lk) or die "lock: $!\\n"; flock($l, LOCK_EX) or die "lock: $!\\n"; '
+                   'exec @ARGV or die "exec: $!\\n"',
+                   str(MEGAVIBE_HOME / ".personal-init.lock"), "120"] + cmd
+        log_path = MEGAVIBE_HOME / "personal-init.log"
         try:
-            r = subprocess.run(["bash", str(init_sh), str(PERSONAL_DIR)],
-                               stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+            with open(log_path, "wb") as out:
+                r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=out,
+                                   stderr=subprocess.STDOUT, timeout=150)
             if r.returncode != 0:
-                log.warning("init.sh on personal dir exited %d; starting with existing hooks", r.returncode)
+                log.warning("init.sh on personal dir exited %d; starting with existing hooks (log: %s)",
+                            r.returncode, log_path)
         except (subprocess.TimeoutExpired, OSError) as e:
             log.warning("init.sh on personal dir failed (%s); starting with existing hooks", e)
 
@@ -392,7 +404,9 @@ async def wait_for_response(jsonl_path: Path, after_timestamp: float,
 async def ask_personal(text: str, is_voice: bool = False) -> str:
     """Send a message to the personal Claude session and wait for response."""
     if not is_personal_session_alive():
-        start_personal_session()
+        # In a thread: it runs init.sh, the trust check and tmux, which can
+        # take tens of seconds, and must not stall the bot's event loop.
+        await asyncio.to_thread(start_personal_session)
         await asyncio.sleep(5)  # extra time for first start
 
     # Append brevity hint for Watch/voice

@@ -231,6 +231,11 @@ copy_if_missing() {
 
 # --- Merge hooks into .claude/settings.json (first time only) ---
 SETTINGS="$PROJECT/.claude/settings.json"
+# Per process: two init.sh runs on one project (a launcher and the Telegram bot
+# starting the personal assistant together) shared one fixed .tmp name, so one
+# truncated the file the other was installing and aborted.
+SETTINGS_TMP="${SETTINGS}.tmp.$$"
+trap 'rm -f "$SETTINGS_TMP" 2>/dev/null || true' EXIT
 TEMPLATE_SETTINGS="$TEMPLATE_DIR/.claude/settings.json"
 
 # `-f` passes on a file the OS will not let us READ. An evicted iCloud file
@@ -268,9 +273,9 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
         | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(.hooks |= map(select(((.command // "") | test("^(\"[^\"]*\\.claude/hooks/status-sync\\.sh\"|[^ \"]*\\.claude/hooks/status-sync\\.sh)$")) | not))) | map(select((.hooks | length) > 0))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
-      > "${SETTINGS}.tmp"
-    atomic_install "${SETTINGS}.tmp" "$SETTINGS"
-    rm -f "${SETTINGS}.tmp"
+      > "$SETTINGS_TMP"
+    atomic_install "$SETTINGS_TMP" "$SETTINGS"
+    rm -f "$SETTINGS_TMP"
     echo "  synced: .claude/settings.json (hooks)"
   else
     echo "  warning: .claude/settings.json exists but jq is not available to sync hooks"
@@ -282,14 +287,14 @@ else
   # bakes a symlink into settings.json and breaks every hook if it moves.
   ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
   jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
-    "$TEMPLATE_SETTINGS" > "${SETTINGS}.tmp"
+    "$TEMPLATE_SETTINGS" > "$SETTINGS_TMP"
   # Through atomic_install, not a bare `> "$SETTINGS"`. A redirect FOLLOWS a
   # symlink, so when this branch is reached because the existing settings.json
   # is an unreadable symlink, the redirect writes the unreadable target and
   # fails — aborting the run with zero hooks installed, which is the whole
   # failure this is recovering from. atomic_install replaces the link instead.
-  atomic_install "${SETTINGS}.tmp" "$SETTINGS"
-  rm -f "${SETTINGS}.tmp" 2>/dev/null || true
+  atomic_install "$SETTINGS_TMP" "$SETTINGS"
+  rm -f "$SETTINGS_TMP" 2>/dev/null || true
   echo "  created: $SETTINGS"
 fi
 
@@ -327,12 +332,12 @@ if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
            .hooks |= with_entries(
              .value |= ( map(.hooks |= map(select(((.command // "") | contains($b)) | not)))
                        | map(select((.hooks | length) > 0)) )
-           )' "$SETTINGS" > "${SETTINGS}.tmp" 2>/dev/null; then
-      atomic_install "${SETTINGS}.tmp" "$SETTINGS"
-      rm -f "${SETTINGS}.tmp"
+           )' "$SETTINGS" > "$SETTINGS_TMP" 2>/dev/null; then
+      atomic_install "$SETTINGS_TMP" "$SETTINGS"
+      rm -f "$SETTINGS_TMP"
       echo "  unregistered: $_base (no such hook in the template)"
     else
-      rm -f "${SETTINGS}.tmp"
+      rm -f "$SETTINGS_TMP"
       echo "  ⚠  $_base is registered but missing, and could not be repaired" >&2
     fi
   done
