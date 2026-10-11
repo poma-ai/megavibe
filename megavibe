@@ -1729,14 +1729,33 @@ fi
 # settings.json and the synced rules, skills and agents wholesale.
 if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.claude/settings.json" ] \
    && [ -f "$MEGAVIBE_HOME/init.sh" ] && [ -d "$MEGAVIBE_HOME/template" ]; then
-  _ps_sum=$(cd "$MEGAVIBE_HOME" && find init.sh template -type f -print0 2>/dev/null \
+  # -L: template/ or init.sh may be symlinks (the installer preserves that layout).
+  _ps_sum=$(cd "$MEGAVIBE_HOME" && find -L init.sh template -type f -print0 2>/dev/null \
               | LC_ALL=C sort -z | xargs -0 cksum | cksum || true)
   _ps_stamp="$MEGAVIBE_HOME/.personal-synced"
-  if [ -n "$_ps_sum" ] && [ "$(cat "$_ps_stamp" 2>/dev/null || true)" != "$_ps_sum" ]; then
+  # A matching stamp is not enough on its own: an older run that stalled
+  # mid-install and was killed after a newer one finished can leave an old file
+  # behind under a new stamp. So the installed hooks, rules and agents are also
+  # compared with the template (about 40 cmp calls), and any difference is due.
+  _ps_due=0
+  [ "$(cat "$_ps_stamp" 2>/dev/null || true)" = "$_ps_sum" ] || _ps_due=1
+  if [ "$_ps_due" = 0 ]; then
+    for _ps_t in "$MEGAVIBE_HOME/template/.claude/hooks/"*.sh \
+                 "$MEGAVIBE_HOME/template/.claude/rules/"*.md \
+                 "$MEGAVIBE_HOME/template/.claude/agents/"*.md; do
+      [ -f "$_ps_t" ] || continue
+      _ps_rel="${_ps_t#"$MEGAVIBE_HOME/template/"}"
+      cmp -s "$_ps_t" "$MEGAVIBE_HOME/personal/$_ps_rel" || { _ps_due=1; break; }
+    done
+  fi
+  if [ -n "$_ps_sum" ] && [ "$_ps_due" = 1 ]; then
     echo "  Syncing the personal assistant's hooks..." >&2
     if MEGAVIBE_INIT_SKIP_HEAL=1 bash "$MEGAVIBE_HOME/init.sh" "$MEGAVIBE_HOME/personal" </dev/null \
          >"$MEGAVIBE_HOME/personal-init.log" 2>&1; then
-      printf '%s\n' "$_ps_sum" > "$_ps_stamp" 2>/dev/null || true
+      # Without jq, init.sh exits 0 but cannot merge settings.json: not a sync.
+      if command -v jq >/dev/null 2>&1; then
+        printf '%s\n' "$_ps_sum" > "$_ps_stamp" 2>/dev/null || true
+      fi
     else
       echo "Warning: syncing the personal assistant's hooks failed; will retry next launch. Log: $MEGAVIBE_HOME/personal-init.log" >&2
     fi
