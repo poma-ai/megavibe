@@ -142,7 +142,7 @@ for _wc in ".agent/sessions/${SID_FULL}/WORKING_CONTEXT.md" ".agent/sessions/${S
   # later — and it produced three false nags then a false auto-clear, plus the
   # forced Stop turn this whole change exists to remove. Equality means fresh:
   # on-compact.sh only sets the flag when the WC is over an hour old.
-  if [ -s "$_wc" ] && [ ! "$REHYDRATE_FLAG" -nt "$_wc" ]; then
+  if [ -f "$_wc" ] && [ -s "$_wc" ] && [ ! "$REHYDRATE_FLAG" -nt "$_wc" ]; then
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 done
@@ -187,6 +187,7 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
   if [ -f "$REHYDRATE_FLAG" ] \
      && [[ "$FILE_PATH" =~ (^|/)\.agent/sessions/([^/]+)/WORKING_CONTEXT\.md$ ]] \
      && { [ "${BASH_REMATCH[2]}" = "$SID_FULL" ] || [ "${BASH_REMATCH[2]}" = "$SID" ]; } \
+     && [ -f ".agent/sessions/${BASH_REMATCH[2]}/WORKING_CONTEXT.md" ] \
      && [ -s ".agent/sessions/${BASH_REMATCH[2]}/WORKING_CONTEXT.md" ]; then
     # (-s: an empty write is not a rehydrate; the mtime clear above uses -s too)
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true

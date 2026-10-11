@@ -125,7 +125,7 @@ INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 WC_FRESH=0
 # -s, not -f: /rehydrate's own failure path leaves an EMPTY WORKING_CONTEXT, and
 # an empty file written a minute ago is not a working context.
-if [ -s "$WC_READ" ]; then
+if [ -f "$WC_READ" ] && [ -s "$WC_READ" ]; then
   WC_MTIME=$(stat -c %Y "$WC_READ" 2>/dev/null || stat -f %m "$WC_READ" 2>/dev/null || echo 0)
   NOW_TS=$(date +%s)
   WC_AGE=$(( NOW_TS - WC_MTIME ))

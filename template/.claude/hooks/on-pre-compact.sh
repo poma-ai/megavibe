@@ -89,7 +89,7 @@ _PC_FRESH=0
 # session_id becomes a path component below: same safe-charset gate as on-compact.sh.
 case "$_PC_SIDF" in ''|.|..|*[!A-Za-z0-9._-]*) _PC_SIDF="none" ;; esac
 for _wc in ".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
-  if [ -s "$_wc" ]; then
+  if [ -f "$_wc" ] && [ -s "$_wc" ]; then
     _m=$(stat -c %Y "$_wc" 2>/dev/null || stat -f %m "$_wc" 2>/dev/null || echo 0)
     case "$_m" in ''|*[!0-9]*) _m=0 ;; esac
     [ $(( $(date +%s) - _m )) -lt 3600 ] && _PC_FRESH=1
