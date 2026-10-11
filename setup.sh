@@ -784,10 +784,10 @@ fi
 # (set -u would already catch it, but this is cheap belt-and-suspenders
 # given the rm -rf that follows).
 [ -n "${MEGAVIBE_HOME:-}" ] || { err "MEGAVIBE_HOME is empty — refusing to rm -rf"; exit 1; }
+# Mark the personal assistant's folder due for these templates, before they
+# land; the next `megavibe` launch runs init.sh on it (see the launcher).
+date +%s.$$ > "$MEGAVIBE_HOME/.personal-sync-due" 2>/dev/null || true
 atomic_install_dir "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
-# Mark the personal assistant's folder due for these templates; the next
-# `megavibe` launch runs init.sh on it (see the launcher).
-: > "$MEGAVIBE_HOME/.personal-sync-due" 2>/dev/null || true
 # The Megawork profile ships with the install too — the curl installer clones to a
 # temp dir and deletes it, so without this `megavibe megawork` would have nothing
 # to run and the documented setup path would be broken for every quickstart user.

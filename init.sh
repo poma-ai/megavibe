@@ -492,7 +492,9 @@ xattr -rd com.apple.quarantine "$PROJECT/.claude/hooks/" 2>/dev/null || true
 # rebuild it scoped to THIS .agent/ only — never a parent dir (that caused the pollution).
 # Safe: marker-gated (idempotent), no-op without poma-memory, never aborts init.
 HEAL_MARKER="$PROJECT/.agent/LOGS/.poma-heal-v1"
-if command -v poma-memory &>/dev/null && [ ! -f "$HEAL_MARKER" ]; then
+# MEGAVIBE_INIT_SKIP_HEAL=1: the launcher's background sync of the personal
+# assistant's folder sets it, because that session may be live and reading the db.
+if [ "${MEGAVIBE_INIT_SKIP_HEAL:-0}" != 1 ] && command -v poma-memory &>/dev/null && [ ! -f "$HEAL_MARKER" ]; then
   echo "  healing poma-memory index (one-time clean rebuild)..."
   mkdir -p "$PROJECT/.agent/LOGS"
   DB="$PROJECT/.agent/.poma-memory.db"
