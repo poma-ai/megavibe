@@ -202,6 +202,18 @@ def start_personal_session():
         log.info("Personal tmux session already running")
         return
 
+    # Sync hooks, skills and settings before a fresh start; nothing else runs
+    # init.sh on this directory (see the same step in `megavibe assistant`).
+    init_sh = MEGAVIBE_HOME / "init.sh"
+    if init_sh.is_file():
+        try:
+            r = subprocess.run(["bash", str(init_sh), str(PERSONAL_DIR)],
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+            if r.returncode != 0:
+                log.warning("init.sh on personal dir exited %d; starting with existing hooks", r.returncode)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            log.warning("init.sh on personal dir failed (%s); starting with existing hooks", e)
+
     # Pre-accept workspace trust (run claude once to establish trust)
     log.info("Ensuring workspace trust for personal dir...")
     subprocess.run(

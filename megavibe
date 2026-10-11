@@ -1474,6 +1474,15 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
   # the brain keeps running.
   if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
     echo "Starting the personal assistant (first run may take a few seconds)…"
+    # Sync its hooks, skills and settings first. Nothing else ever ran init.sh
+    # on this directory, so its hooks stayed at whatever setup.sh first wrote
+    # (found 4 months stale, without rm-to-trash, on a session that runs with
+    # --dangerously-skip-permissions). Only here, before a fresh start: a live
+    # session keeps the hooks it registered at its own start.
+    if [ -f "$MEGAVIBE_HOME/init.sh" ]; then
+      bash "$MEGAVIBE_HOME/init.sh" "$PERSONAL_DIR" </dev/null >/dev/null 2>&1 \
+        || echo "Warning: init.sh failed on $PERSONAL_DIR; starting with its existing hooks."
+    fi
     # Pre-accept workspace trust once, matching telegram-bot.py's start path.
     ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true
     # Race: `megavibe remote` boots the bot, which runs the SAME
