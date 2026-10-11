@@ -1631,9 +1631,6 @@ if [ -n "$REPO_DIR" ]; then
   fi
   # Sync init.sh
   if ! diff -q "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" &>/dev/null 2>&1; then
-    # A new init.sh changes what a sync installs, so the personal folder is due
-    # too (see "personal assistant's folder" below).
-    date +%s.$$ > "$MEGAVIBE_HOME/.personal-sync-due" 2>/dev/null || true
     atomic_install "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" 755
   fi
   # Sync scripts/ — the review CLI and the reviewer allow-list. Without this a
@@ -1683,9 +1680,6 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
     fi
     # Sync template to ~/.megavibe/. Guard before rm -rf.
     [ -n "${MEGAVIBE_HOME:-}" ] || { echo "ERROR: MEGAVIBE_HOME is empty — refusing to rm -rf" >&2; exit 1; }
-    # Mark the personal folder due BEFORE the templates change, so a launch
-    # interrupted after this point still leaves it due (see below).
-    date +%s.$$ > "$MEGAVIBE_HOME/.personal-sync-due" 2>/dev/null || true
     atomic_install_dir "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template"
 
     # Surgical-replace the protocol block in ~/.claude/CLAUDE.md only when
@@ -1711,36 +1705,41 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
 fi
 
 # The personal assistant's folder ($MEGAVIBE_HOME/personal) is a project too,
-# but nothing launches `megavibe` in it, so its hooks stayed at whatever
-# setup.sh first wrote: found four months stale, without rm-to-trash, on a
-# session that runs with --dangerously-skip-permissions. Sync it here, where
-# the templates themselves are synced, never at assistant start (racing the
-# Telegram bot's start was where the first attempt, #50, kept breaking). A
-# template or init.sh change (or setup.sh) marks it due before the new files land,
-# and it stays due until a run succeeds; a run clears the mark only if no newer
-# template change re-marked it meanwhile. It runs whether or not the assistant is up: that session is meant
-# to live for weeks, and waiting for it to be down meant never. A live session
-# picks up changed hook scripts on their next call (each install is an atomic
-# rename, and init.sh installs hook files before settings.json names them);
-# newly registered hooks wait for its next restart. Two launches inside the
-# same second after an update can both run it; installs are atomic, so the
-# overlap costs time, not state.
-# The poma-memory heal is skipped: it moves the index db aside, which a live
-# session may be reading. As in every project, init.sh replaces the hooks block
-# of settings.json and the synced rules, skills and agents wholesale.
-PERSONAL_SYNC_DUE="$MEGAVIBE_HOME/.personal-sync-due"
-if [ -f "$PERSONAL_SYNC_DUE" ] && [ -d "$MEGAVIBE_HOME/personal/.agent" ] \
-   && [ -f "$MEGAVIBE_HOME/init.sh" ]; then
-  _psd_token=$(cat "$PERSONAL_SYNC_DUE" 2>/dev/null || true)
-  echo "  Syncing the personal assistant's hooks..."
-  if MEGAVIBE_INIT_SKIP_HEAL=1 bash "$MEGAVIBE_HOME/init.sh" "$MEGAVIBE_HOME/personal" </dev/null \
-       >"$MEGAVIBE_HOME/personal-init.log" 2>&1; then
-    if [ "$(cat "$PERSONAL_SYNC_DUE" 2>/dev/null || true)" = "$_psd_token" ]; then
-      rm -f "$PERSONAL_SYNC_DUE" 2>/dev/null || true
+# but nothing launches `megavibe` in it, so its hooks stayed at whatever an
+# earlier init.sh run wrote: found four months stale, without rm-to-trash, on a
+# session that runs with --dangerously-skip-permissions. Sync it here, after
+# the templates and init.sh are synced, never at assistant start (racing the
+# Telegram bot's start was where the first attempt, #50, kept breaking).
+#
+# "Due" is a comparison, not a flag: a checksum of the installed init.sh and
+# template tree against the one recorded by the last successful sync. The sum
+# is taken BEFORE init.sh runs, so files that change during a run leave a
+# mismatch and the next launch syncs again; an interrupted or failed run
+# records nothing. Overlapping launches can both sync, and one may record an
+# older sum, which again only costs one more sync. Nothing can be lost.
+#
+# It runs whether or not the assistant is up: that session lives for weeks. A
+# live session picks up changed hook scripts on their next call (each install
+# is an atomic rename, and init.sh installs hook files before settings.json
+# names them); newly registered hooks take effect after its next restart (or a
+# /hooks review). Only a folder init.sh has set up before is synced: a fresh
+# one is left for the user to opt in (`bash ~/.megavibe/init.sh <dir>`). The poma-memory
+# heal is skipped, since it moves the index db aside under a possibly live
+# reader. As in every project, init.sh replaces the hooks block of
+# settings.json and the synced rules, skills and agents wholesale.
+if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.claude/settings.json" ] \
+   && [ -f "$MEGAVIBE_HOME/init.sh" ] && [ -d "$MEGAVIBE_HOME/template" ]; then
+  _ps_sum=$(cd "$MEGAVIBE_HOME" && find init.sh template -type f -print0 2>/dev/null \
+              | LC_ALL=C sort -z | xargs -0 cksum | cksum || true)
+  _ps_stamp="$MEGAVIBE_HOME/.personal-synced"
+  if [ -n "$_ps_sum" ] && [ "$(cat "$_ps_stamp" 2>/dev/null || true)" != "$_ps_sum" ]; then
+    echo "  Syncing the personal assistant's hooks..." >&2
+    if MEGAVIBE_INIT_SKIP_HEAL=1 bash "$MEGAVIBE_HOME/init.sh" "$MEGAVIBE_HOME/personal" </dev/null \
+         >"$MEGAVIBE_HOME/personal-init.log" 2>&1; then
+      printf '%s\n' "$_ps_sum" > "$_ps_stamp" 2>/dev/null || true
+    else
+      echo "Warning: syncing the personal assistant's hooks failed; will retry next launch. Log: $MEGAVIBE_HOME/personal-init.log" >&2
     fi
-    echo "  Personal assistant hooks synced."
-  else
-    echo "Warning: syncing the personal assistant's hooks failed; will retry next launch. Log: $MEGAVIBE_HOME/personal-init.log" >&2
   fi
 fi
 
