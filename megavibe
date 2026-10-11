@@ -1681,6 +1681,7 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
     # Sync template to ~/.megavibe/. Guard before rm -rf.
     [ -n "${MEGAVIBE_HOME:-}" ] || { echo "ERROR: MEGAVIBE_HOME is empty — refusing to rm -rf" >&2; exit 1; }
     atomic_install_dir "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template"
+    TEMPLATE_SYNCED=1
 
     # Surgical-replace the protocol block in ~/.claude/CLAUDE.md only when
     # CLAUDE.md itself changed (preserves user edits outside the markers).
@@ -1701,6 +1702,35 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
         echo "  Protocol updated."
       fi
     fi
+  fi
+fi
+
+# The personal assistant's folder ($MEGAVIBE_HOME/personal) is a project too,
+# but nothing launches `megavibe` in it, so its hooks stayed at whatever
+# setup.sh first wrote: found four months stale, without rm-to-trash, on a
+# session that runs with --dangerously-skip-permissions. Sync it here, where
+# the templates themselves are synced, never at assistant start (racing the
+# Telegram bot's start was where the first attempt, #50, kept breaking). A
+# template change (or setup.sh) marks it due, and it stays due until a run
+# succeeds. It runs whether or not the assistant is up: that session is meant
+# to live for weeks, and waiting for it to be down meant never. A live session
+# picks up changed hook scripts on their next call (each install is an atomic
+# rename, and init.sh installs hook files before settings.json names them);
+# newly registered hooks wait for its next restart. Two launches inside the
+# same second after an update can both run it; installs are atomic, so the
+# overlap costs time, not state.
+PERSONAL_SYNC_DUE="$MEGAVIBE_HOME/.personal-sync-due"
+if [ "${TEMPLATE_SYNCED:-0}" = 1 ]; then
+  : > "$PERSONAL_SYNC_DUE" 2>/dev/null || true
+fi
+if [ -f "$PERSONAL_SYNC_DUE" ] && [ -d "$MEGAVIBE_HOME/personal/.agent" ] \
+   && [ -f "$MEGAVIBE_HOME/init.sh" ]; then
+  if bash "$MEGAVIBE_HOME/init.sh" "$MEGAVIBE_HOME/personal" </dev/null \
+       >"$MEGAVIBE_HOME/personal-init.log" 2>&1; then
+    rm -f "$PERSONAL_SYNC_DUE" 2>/dev/null || true
+    echo "  Personal assistant hooks synced."
+  else
+    echo "Warning: syncing the personal assistant's hooks failed; will retry next launch. Log: $MEGAVIBE_HOME/personal-init.log" >&2
   fi
 fi
 
