@@ -253,9 +253,6 @@ SETTINGS_TMP="${SETTINGS}.tmp.$$"
 trap 'rm -f "$SETTINGS_TMP" 2>/dev/null || true' EXIT
 # A SIGKILLed run skips the trap; sweep its leftovers once they are clearly stale.
 find "$PROJECT/.claude/" -maxdepth 1 \( -name 'settings.json.tmp.*' -o -name 'settings.json.tmp' \) -mmin +10 -exec rm -f {} + 2>/dev/null || true
-# atomic_install stages each file as a hidden ".<name>.XXXXXX" beside it; a
-# killed run leaves those in the hooks dir, so sweep stale ones there too.
-find "$PROJECT/.claude/hooks/" -maxdepth 1 -name '.*.??????' -type f -mmin +10 -exec rm -f {} + 2>/dev/null || true
 TEMPLATE_SETTINGS="$TEMPLATE_DIR/.claude/settings.json"
 
 # `-f` passes on a file the OS will not let us READ. An evicted iCloud file
@@ -497,7 +494,7 @@ xattr -rd com.apple.quarantine "$PROJECT/.claude/hooks/" 2>/dev/null || true
 # rebuild it scoped to THIS .agent/ only — never a parent dir (that caused the pollution).
 # Safe: marker-gated (idempotent), no-op without poma-memory, never aborts init.
 HEAL_MARKER="$PROJECT/.agent/LOGS/.poma-heal-v1"
-# MEGAVIBE_INIT_SKIP_HEAL=1: the launcher's background sync of the personal
+# MEGAVIBE_INIT_SKIP_HEAL=1: the launcher's sync of the personal
 # assistant's folder sets it, because that session may be live and reading the db.
 if [ "${MEGAVIBE_INIT_SKIP_HEAL:-0}" != 1 ] && command -v poma-memory &>/dev/null && [ ! -f "$HEAL_MARKER" ]; then
   echo "  healing poma-memory index (one-time clean rebuild)..."

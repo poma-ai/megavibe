@@ -1718,7 +1718,10 @@ fi
 # records nothing. Overlapping launches can both sync, and one may record an
 # older sum, which again only costs one more sync. Nothing can be lost.
 #
-# It runs whether or not the assistant is up: that session lives for weeks. A
+# It runs whether or not the assistant is up: that session lives for weeks.
+# This departs on purpose from the older rule (DECISIONS, and the resume path
+# below) never to touch hooks under a live session: that rule predates atomic
+# installs and the hooks-before-settings order in init.sh, which make it safe. A
 # live session picks up changed hook scripts on their next call (each install
 # is an atomic rename, and init.sh installs hook files before settings.json
 # names them); newly registered hooks take effect after its next restart (or a
@@ -1753,13 +1756,18 @@ if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.cla
       cmp -s "$_ps_t" "$MEGAVIBE_HOME/personal/$_ps_rel" || { _ps_due=1; break; }
     done
   fi
+  # Full commands, expanded the way init.sh writes them (quoted absolute path
+  # under the canonical folder), so a moved ~/.megavibe whose settings still
+  # point at the old location is due too.
   if [ "$_ps_due" = 0 ] && command -v jq >/dev/null 2>&1; then
-    jq -e -n --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
+    _ps_root=$(cd "$MEGAVIBE_HOME/personal" && pwd -P) || _ps_due=1
+    jq -e -n --arg root "${_ps_root:-}/" \
+          --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
           --slurpfile p "$MEGAVIBE_HOME/personal/.claude/settings.json" '
-        def regs(x): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
-                      | .hooks[]? | (.command // "") | capture("\\.claude/hooks/(?<b>[A-Za-z0-9._-]+\\.sh)")?
-                      | "\($e)\t\($m)\t\(.b)"] | unique;
-        (regs($t[0]) - regs($p[0])) | length == 0' >/dev/null 2>&1 || _ps_due=1
+        def regs(x; f): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
+                         | .hooks[]? | (.command // "" | f) as $c | "\($e)\t\($m)\t\($c)"] | unique;
+        def expand: if startswith(".claude/hooks/") then "\"" + $root + . + "\"" else . end;
+        (regs($t[0]; expand) - regs($p[0]; .)) | length == 0' >/dev/null 2>&1 || _ps_due=1
   fi
   if [ -n "$_ps_sum" ] && [ "$_ps_due" = 1 ]; then
     echo "  Syncing the personal assistant's hooks..." >&2
