@@ -20,11 +20,9 @@ set -u
 # concept search). A search reading repo files (`rg x`, `grep -rn x src/`) fires.
 #
 # When Claude searches for something, this hook silently runs a poma-memory
-# search with the same query and injects any relevant .agent/ context as a
-# systemMessage. Claude sees both native results + semantic matches.
-#
-# systemMessage is more authoritative than additionalContext — Claude treats
-# it as system-level instruction rather than advisory annotation.
+# search with the same query and injects any relevant .agent/ context as
+# additionalContext. Claude sees both native results + semantic matches.
+# (systemMessage is shown to the user only; it never reaches the model.)
 #
 # Performance: model2vec semantic search on <10K vectors takes <10ms.
 # No timeout needed (macOS lacks `timeout` command — was silently breaking this hook).

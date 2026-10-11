@@ -28,8 +28,8 @@ set -u
 #     sanctioned breadcrumbs, not violations.
 #   * Dedupes once per session (no nag-spam). The CLAUDE.md rule carries the
 #     standing norm; this hook is just a spot reminder.
-#   * Emits systemMessage via JSON stdout (the advisory channel, per the
-#     nudge-native-tools convention).
+#   * Emits hookSpecificOutput.additionalContext: the nudge is addressed to
+#     the model, and systemMessage is shown to the user only.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
@@ -80,6 +80,8 @@ fi
 # Per-session dedup — nudge at most once per session.
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 SID="${SID:-default}"
+# A path component below: `cut` bounds the length, not the content.
+case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 NUDGE_DIR=".agent/LOGS"
 mkdir -p "$NUDGE_DIR" 2>/dev/null || true
 SEEN_FLAG="${NUDGE_DIR}/.nudge-quiet-bash.${SID}"
@@ -90,6 +92,6 @@ touch "$SEEN_FLAG" 2>/dev/null || true
 
 MSG="[megavibe] This shell narrates its own steps to stdout (banners / progress / 'step complete' chatter). On bypass the only reader is you next turn — and you wrote the script, so this costs tokens twice (authored in + re-ingested) and tells you nothing the source didn't. Quiet by default: emit only errors, computed values, and an explicit verification verdict (quiet != correct — print the check, don't infer success from silence). Gate real breadcrumbs behind VERBOSE=1 or send them to stderr/a log. (One-time nudge per session — call still runs.)"
 
-jq -n --arg msg "$MSG" '{systemMessage: $msg}' 2>/dev/null || true
+jq -n --arg msg "$MSG" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}' 2>/dev/null || true
 
 exit 0

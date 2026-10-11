@@ -131,7 +131,7 @@ Proposed once: ping an idle session every ~50 min (under the 1h ephemeral cache 
 | Quick fact check / web search | Codex | Gemini | Claude subagent | Claims with sources |
 | JS-heavy site, auth flow, DOM extraction | Playwright | — | — | Screenshots/HTML → `.agent/ASSETS/` |
 | Interpret screenshots or UI captures | Gemini | Codex | Claude subagent | Structured description |
-| Automatic .agent/ context augmentation | poma-memory (via Grep/Glob hook) | poma-memory MCP | — | Injected as systemMessage on every Grep/Glob |
+| Automatic .agent/ context augmentation | poma-memory (via Grep/Glob hook) | poma-memory MCP | — | Injected as additionalContext on every Grep/Glob |
 | Tidy a long event log | `agent-log.sh fold` (no backend) | — | — | See "Context compaction" below |
 
 ## Gemini / Codex / Claude subagent delegation protocols

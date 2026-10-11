@@ -287,19 +287,57 @@ SUBAGENT_STATUS="
 | Playwright | ${PLAYWRIGHT_STATUS} |
 | poma-memory | ${POMA_STATUS} |${REVIEWER_ROW}${REVIEWER_LINE}${REVIEWER_DEFAULT_NOTE}"
 
-CONTEXT="## Megavibe — project knowledge
+# The model reads hookSpecificOutput.additionalContext; systemMessage is shown
+# to the user only, so this block used to reach nobody it was written for. And
+# a string over 10,000 characters reaches the model only as a 2,000-character
+# preview, while a whole LESSONS.md is often far larger. So the full block goes
+# to a file, and the model gets the head (session, backends, reviewers) plus as
+# much of the newest LESSONS and DECISIONS as fits, and a pointer to the rest.
+HEAD="## Megavibe — project knowledge
 
 Your session ID is: ${SID_FULL}
 WORKING_CONTEXT path: .agent/sessions/${SID_FULL}/WORKING_CONTEXT.md
 
 ${TASK_HINT}
-${SUBAGENT_STATUS}
+${SUBAGENT_STATUS}"
+LESSONS_ALL=$(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')
+DECISIONS_TAIL=$(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')
+FULL="${HEAD}
 
 --- LESSONS.md ---
-$(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')
+${LESSONS_ALL}
 
 --- DECISIONS.md (last 20 lines) ---
-$(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')${POMA_CONTEXT}"
+${DECISIONS_TAIL}${POMA_CONTEXT}"
+KNOW_FILE=".agent/LOGS/session-start.${SID}.md"
+mkdir -p .agent/LOGS 2>/dev/null || true
+POINTER=""
+printf '%s\n' "$FULL" > "$KNOW_FILE" 2>/dev/null && POINTER="
+Full block (all of LESSONS.md, DECISIONS tail, memory hits): ${KNOW_FILE}"
+# Budget in characters, under the 10,000 limit with room for the pointer. The
+# newest lessons sit at the end of the file, so the excerpt keeps the tail.
+BUDGET=$(( 9000 - ${#HEAD} - ${#DECISIONS_TAIL} - ${#POINTER} - 200 ))
+LESSONS_PART=""
+if [ "$BUDGET" -gt 500 ]; then
+  if [ "${#LESSONS_ALL}" -le "$BUDGET" ]; then
+    LESSONS_PART="
+--- LESSONS.md ---
+${LESSONS_ALL}"
+  else
+    LESSONS_PART="
+--- LESSONS.md (newest ${BUDGET} characters; read the file for the rest) ---
+...${LESSONS_ALL: -$BUDGET}"
+  fi
+fi
+SHORT="${HEAD}
+${LESSONS_PART}
 
-# Emit as systemMessage (authoritative — Claude treats it as system-level instruction)
-jq -n --arg msg "$CONTEXT" '{systemMessage: $msg}'
+--- DECISIONS.md (last 20 lines) ---
+${DECISIONS_TAIL}${POINTER}"
+# Last resort if the head or DECISIONS lines alone are huge.
+[ "${#SHORT}" -le 9800 ] || SHORT="${SHORT:0:9500}
+...[cut]${POINTER}"
+USER_MSG="megavibe: project knowledge loaded"
+[ -n "$REVIEWER_DEFAULT_NOTE" ] && USER_MSG="${USER_MSG}${REVIEWER_DEFAULT_NOTE}"
+jq -n --arg ctx "$SHORT" --arg msg "$USER_MSG" \
+  '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

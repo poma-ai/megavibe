@@ -20,7 +20,8 @@ set -u
 #   * Only nudges on SIMPLE invocations — anything with a pipe, redirect,
 #     subshell, or shell operator is left alone (legit shell use).
 #   * Dedupes once per category per session (no nag-spam).
-#   * Emits systemMessage via JSON stdout (authoritative per decision 65).
+#   * Emits hookSpecificOutput.additionalContext: systemMessage reaches the
+#     user only, never the model the nudge is addressed to.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
@@ -70,6 +71,8 @@ esac
 # Per-session dedup — only nudge once per category per session.
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 SID="${SID:-default}"
+# A path component below: `cut` bounds the length, not the content.
+case "$SID" in ''|.|..|*[!A-Za-z0-9._-]*) SID="default" ;; esac
 NUDGE_DIR=".agent/LOGS"
 mkdir -p "$NUDGE_DIR" 2>/dev/null || true
 SEEN_FLAG="${NUDGE_DIR}/.nudge-native-${CATEGORY}.${SID}"
@@ -78,8 +81,8 @@ if [ -f "$SEEN_FLAG" ]; then
 fi
 touch "$SEEN_FLAG" 2>/dev/null || true
 
-# Emit nudge as systemMessage. The Bash call still runs — this is advisory.
+# The Bash call still runs — this is advisory.
 jq -n --arg msg "[megavibe] $SUGGEST (Bash allowed — this is a one-time nudge per category per session.)" \
-  '{systemMessage: $msg}' 2>/dev/null || true
+  '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}' 2>/dev/null || true
 
 exit 0
