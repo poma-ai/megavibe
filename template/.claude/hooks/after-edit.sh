@@ -36,8 +36,15 @@ command -v jq &>/dev/null || exit 0
 INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
+# A PostToolUse hook's plain stdout and its stderr on exit 0 reach neither the
+# model nor, by default, the user, so a failing verify.sh used to go unseen.
+# Its failure goes to the model as additionalContext (tail-capped well under
+# the 10,000-character limit) and to the user as a one-line systemMessage.
 if [ -n "$FILE_PATH" ]; then
-  if ! "$VERIFY_SCRIPT" "$FILE_PATH" 2>&1; then
-    echo "verify.sh failed for: $FILE_PATH" >&2
+  if ! VOUT=$("$VERIFY_SCRIPT" "$FILE_PATH" 2>&1); then
+    VOUT=$(printf '%s' "$VOUT" | tail -c 4000)
+    jq -n --arg ctx "verify.sh failed for ${FILE_PATH}. Fix this before moving on. Output (last 4000 bytes):
+${VOUT}" --arg msg "megavibe: verify.sh failed for ${FILE_PATH}" \
+      '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $ctx}}' 2>/dev/null || true
   fi
 fi

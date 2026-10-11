@@ -81,7 +81,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 
 **Explore** (read-only)
 - Read tools, grep/glob, targeted reads.
-- When you Grep or Glob, a hook automatically searches `.agent/` context via poma-memory and injects relevant matches as a system message. No action needed — just search normally and you'll see project context alongside results.
+- When you Grep or Glob, a hook automatically searches `.agent/` context via poma-memory and injects relevant matches into your context. No action needed — just search normally and you'll see project context alongside results.
 - Large explorations: delegate to Explore subagent or Gemini. **Pass `model: "sonnet"`** — `Explore` has no model of its own and otherwise inherits the parent session's (see `.claude/rules/spinouts.md` for the measurement); file-finding and keyword search don't need Opus/Fable-grade judgment.
 
 **Plan**

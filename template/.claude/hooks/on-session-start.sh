@@ -208,6 +208,7 @@ fi
 # off is exactly what silently degrades every later review.
 REVIEWER_ROW=""
 REVIEWER_LINE=""
+REVIEWER_USER=""   # a pin the user should see; the default stays silent
 if [ -n "$ACTIVE_REVIEWERS" ]; then
   RV_SORTED=$(printf '%s\n' $ACTIVE_REVIEWERS | sort | tr '\n' ' ' | sed 's/ *$//')
   # MEGAVIBE_REVIEWERS=auto in the environment beats every settings file
@@ -229,6 +230,8 @@ if [ -n "$ACTIVE_REVIEWERS" ]; then
     else
       REVIEWER_ROW="
 | Reviewers (non-negotiable 4) | reviewer + codex (pinned; gemini will NOT stand in) |"
+      REVIEWER_USER="
+Reviewers: reviewer + codex (pinned; gemini will NOT stand in)"
     fi
   elif [ "$RV_SORTED" = "gemini reviewer" ] && [ "$RV_DEFAULT" = "gemini reviewer" ]; then
     # Default on a machine where codex does not work. Also silent: the Codex
@@ -287,19 +290,64 @@ SUBAGENT_STATUS="
 | Playwright | ${PLAYWRIGHT_STATUS} |
 | poma-memory | ${POMA_STATUS} |${REVIEWER_ROW}${REVIEWER_LINE}${REVIEWER_DEFAULT_NOTE}"
 
-CONTEXT="## Megavibe — project knowledge
+# The model reads hookSpecificOutput.additionalContext; systemMessage is shown
+# to the user only, so this block used to reach nobody it was written for. And
+# a string over 10,000 characters reaches the model only as a 2,000-character
+# preview, while a whole LESSONS.md is often far larger. So the full block goes
+# to a file, and the model gets the head (session, backends, reviewers) plus as
+# much of the newest LESSONS and DECISIONS as fits, and a pointer to the rest.
+HEAD="## Megavibe — project knowledge
 
 Your session ID is: ${SID_FULL}
 WORKING_CONTEXT path: .agent/sessions/${SID_FULL}/WORKING_CONTEXT.md
 
 ${TASK_HINT}
-${SUBAGENT_STATUS}
+${SUBAGENT_STATUS}"
+LESSONS_ALL=$(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')
+DECISIONS_TAIL=$(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')
+FULL="${HEAD}
 
 --- LESSONS.md ---
-$(cat .agent/LESSONS.md 2>/dev/null || echo '(empty)')
+${LESSONS_ALL}
 
 --- DECISIONS.md (last 20 lines) ---
-$(tail -20 .agent/DECISIONS.md 2>/dev/null || echo '(empty)')${POMA_CONTEXT}"
+${DECISIONS_TAIL}${POMA_CONTEXT}"
+KNOW_FILE=".agent/LOGS/session-start.${SID}.md"
+mkdir -p .agent/LOGS 2>/dev/null || true
+POINTER=""
+printf '%s\n' "$FULL" > "$KNOW_FILE" 2>/dev/null && POINTER="
+Full block (all of LESSONS.md, DECISIONS tail, memory hits): ${KNOW_FILE}"
+# Budget in characters, under the 10,000 limit with room for the pointer. The
+# newest lessons sit at the end of the file, so the excerpt keeps the tail.
+BUDGET=$(( 9000 - ${#HEAD} - ${#DECISIONS_TAIL} - ${#POINTER} - 200 ))
+LESSONS_PART="
+--- LESSONS.md: no room here; read the file named below ---"
+if [ "$BUDGET" -gt 500 ]; then
+  if [ "${#LESSONS_ALL}" -le "$BUDGET" ]; then
+    LESSONS_PART="
+--- LESSONS.md ---
+${LESSONS_ALL}"
+  else
+    LESSONS_PART="
+--- LESSONS.md (newest ${BUDGET} characters; read the file for the rest) ---
+...${LESSONS_ALL: -$BUDGET}"
+  fi
+fi
+SHORT="${HEAD}
+${LESSONS_PART}
 
-# Emit as systemMessage (authoritative — Claude treats it as system-level instruction)
-jq -n --arg msg "$CONTEXT" '{systemMessage: $msg}'
+--- DECISIONS.md (last 20 lines) ---
+${DECISIONS_TAIL}${POINTER}"
+# Last resort if the head or DECISIONS lines alone are huge.
+[ "${#SHORT}" -le 9800 ] || SHORT="${SHORT:0:9500}
+...[cut]${POINTER}"
+# The user keeps what they need to act on: a backend that is broken and a
+# reviewer pin, which used to be visible in the full block shown to them.
+USER_MSG="megavibe: project knowledge loaded"
+case "$CODEX_STATUS" in INSTALLED*) USER_MSG="${USER_MSG}
+Codex: ${CODEX_STATUS}" ;; esac
+[ -n "$REVIEWER_USER" ] && USER_MSG="${USER_MSG}${REVIEWER_USER}"
+[ -n "$REVIEWER_LINE" ] && USER_MSG="${USER_MSG}${REVIEWER_LINE}"
+[ -n "$REVIEWER_DEFAULT_NOTE" ] && USER_MSG="${USER_MSG}${REVIEWER_DEFAULT_NOTE}"
+jq -n --arg ctx "$SHORT" --arg msg "$USER_MSG" \
+  '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

@@ -39,6 +39,8 @@ if [ -d ".agent/LOGS" ]; then
   find .agent/LOGS -maxdepth 1 -name 'read-cache.*.jsonl' -mtime +1 -delete 2>/dev/null || true
   find .agent/LOGS -maxdepth 1 -name '.bg-tasks.*.jsonl' -mtime +1 -delete 2>/dev/null || true
   find .agent/LOGS -maxdepth 1 -name '.read-delta-shape.*' -mtime +1 -delete 2>/dev/null || true
+  # on-session-start.sh's full knowledge block, one per session.
+  find .agent/LOGS -maxdepth 1 -name 'session-start.*.md' -mtime +7 -delete 2>/dev/null || true
 fi
 
 command -v tmux &>/dev/null || exit 0
