@@ -83,6 +83,7 @@ touch "$SEEN_FLAG" 2>/dev/null || true
 
 # The Bash call still runs — this is advisory.
 jq -n --arg msg "[megavibe] $SUGGEST (Bash allowed — this is a one-time nudge per category per session.)" \
-  '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}' 2>/dev/null || true
+  --arg u "megavibe: nudged Claude toward the native ${CATEGORY} tool (once per session)" \
+  '{systemMessage: $u, hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}' 2>/dev/null || true
 
 exit 0

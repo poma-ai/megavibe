@@ -92,6 +92,7 @@ touch "$SEEN_FLAG" 2>/dev/null || true
 
 MSG="[megavibe] This shell narrates its own steps to stdout (banners / progress / 'step complete' chatter). On bypass the only reader is you next turn — and you wrote the script, so this costs tokens twice (authored in + re-ingested) and tells you nothing the source didn't. Quiet by default: emit only errors, computed values, and an explicit verification verdict (quiet != correct — print the check, don't infer success from silence). Gate real breadcrumbs behind VERBOSE=1 or send them to stderr/a log. (One-time nudge per session — call still runs.)"
 
-jq -n --arg msg "$MSG" '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}' 2>/dev/null || true
+jq -n --arg msg "$MSG" --arg u "megavibe: nudged Claude to keep shell output quiet (once per session)" \
+  '{systemMessage: $u, hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $msg}}' 2>/dev/null || true
 
 exit 0

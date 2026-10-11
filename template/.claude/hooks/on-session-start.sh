@@ -317,7 +317,8 @@ Full block (all of LESSONS.md, DECISIONS tail, memory hits): ${KNOW_FILE}"
 # Budget in characters, under the 10,000 limit with room for the pointer. The
 # newest lessons sit at the end of the file, so the excerpt keeps the tail.
 BUDGET=$(( 9000 - ${#HEAD} - ${#DECISIONS_TAIL} - ${#POINTER} - 200 ))
-LESSONS_PART=""
+LESSONS_PART="
+--- LESSONS.md: no room here; read the file named below ---"
 if [ "$BUDGET" -gt 500 ]; then
   if [ "${#LESSONS_ALL}" -le "$BUDGET" ]; then
     LESSONS_PART="
@@ -337,7 +338,12 @@ ${DECISIONS_TAIL}${POINTER}"
 # Last resort if the head or DECISIONS lines alone are huge.
 [ "${#SHORT}" -le 9800 ] || SHORT="${SHORT:0:9500}
 ...[cut]${POINTER}"
+# The user keeps what they need to act on: a backend that is broken and a
+# reviewer pin, which used to be visible in the full block shown to them.
 USER_MSG="megavibe: project knowledge loaded"
+case "$CODEX_STATUS" in INSTALLED*) USER_MSG="${USER_MSG}
+Codex: ${CODEX_STATUS}" ;; esac
+[ -n "$REVIEWER_LINE" ] && USER_MSG="${USER_MSG}${REVIEWER_LINE}"
 [ -n "$REVIEWER_DEFAULT_NOTE" ] && USER_MSG="${USER_MSG}${REVIEWER_DEFAULT_NOTE}"
 jq -n --arg ctx "$SHORT" --arg msg "$USER_MSG" \
   '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
