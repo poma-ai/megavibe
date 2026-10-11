@@ -71,6 +71,12 @@ case "$SID_FULL" in
   ''|.|..|*[!A-Za-z0-9._-]*) SID_FULL="default" ;;
 esac
 
+# A subagent's tool calls carry the parent's session_id plus an agent_id. Every
+# nudge below is for the MAIN thread: a subagent call must not consume a
+# one-shot nudge (tier, 8-call threshold) or count toward the rehydrate
+# reminders, and must not receive them either.
+_TE_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+
 # Session-scoped paths (prevent concurrent session races)
 LOGFILE="${LOGDIR}/tool-events.${SID}.jsonl"
 COUNTER_FILE="${LOGDIR}/.tool-call-counter.${SID}"
@@ -136,7 +142,7 @@ for _wc in ".agent/sessions/${SID_FULL}/WORKING_CONTEXT.md" ".agent/sessions/${S
   # later — and it produced three false nags then a false auto-clear, plus the
   # forced Stop turn this whole change exists to remove. Equality means fresh:
   # on-compact.sh only sets the flag when the WC is over an hour old.
-  if [ -s "$_wc" ] && [ ! "$REHYDRATE_FLAG" -nt "$_wc" ]; then
+  if [ -f "$_wc" ] && [ -s "$_wc" ] && [ ! "$REHYDRATE_FLAG" -nt "$_wc" ]; then
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 done
@@ -180,7 +186,10 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
   # like one that did.
   if [ -f "$REHYDRATE_FLAG" ] \
      && [[ "$FILE_PATH" =~ (^|/)\.agent/sessions/([^/]+)/WORKING_CONTEXT\.md$ ]] \
-     && { [ "${BASH_REMATCH[2]}" = "$SID_FULL" ] || [ "${BASH_REMATCH[2]}" = "$SID" ]; }; then
+     && { [ "${BASH_REMATCH[2]}" = "$SID_FULL" ] || [ "${BASH_REMATCH[2]}" = "$SID" ]; } \
+     && [ -f ".agent/sessions/${BASH_REMATCH[2]}/WORKING_CONTEXT.md" ] \
+     && [ -s ".agent/sessions/${BASH_REMATCH[2]}/WORKING_CONTEXT.md" ]; then
+    # (-s: an empty write is not a rehydrate; the mtime clear above uses -s too)
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi
 
@@ -233,7 +242,7 @@ esac
 # Skip if mtime-reset already fired — this call IS the writer, don't re-bump
 # it back above zero on the very same invocation.
 COUNT=0
-if [ "$IMPL_TOOL" -eq 1 ] && [ "$MTIME_RESET" -eq 0 ]; then
+if [ "$IMPL_TOOL" -eq 1 ] && [ "$MTIME_RESET" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   (
     flock -x 200 2>/dev/null
     COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
@@ -289,7 +298,7 @@ if command -v tmux >/dev/null 2>&1 && tmux has-session -t "mvw-${SID}" 2>/dev/nu
   WATCHER_ACTIVE=1
 fi
 
-if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
+if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
   if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     TOTAL_TOKENS=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null \
@@ -389,8 +398,8 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
     if [ "$CURRENT_TIER" -gt "$LAST_TIER" ] 2>/dev/null; then
       case "$CURRENT_TIER" in
         1) COMPACT_NUDGE="🟡 Context ~${TOK_K}K (advisory). ${RUNWAY_DESC}. Start flushing decisions, tasks, and lessons to .agent/ continuously; every line saved is a recovery line later." ;;
-        2) COMPACT_NUDGE="🟠 Context ~${TOK_K}K — ${RUNWAY_DESC}. Flush ALL pending state to .agent/ NOW and run /compact at the next clean break. The threshold is deterministic — it WILL fire." ;;
-        3) COMPACT_NUDGE="🔴 Context ~${TOK_K}K — ${RUNWAY_DESC}. /compact NOW. If the harness fires first it picks the moment (likely mid-tool-call); post-compact Claude only sees the summary." ;;
+        2) COMPACT_NUDGE="🟠 Context ~${TOK_K}K — ${RUNWAY_DESC}. Flush ALL pending state to .agent/ NOW (agent-log.sh append, DECISIONS.md, TASKS.md) and suggest /compact to the user at the next clean break: only the user can run it. The threshold is deterministic — it WILL fire." ;;
+        3) COMPACT_NUDGE="🔴 Context ~${TOK_K}K — ${RUNWAY_DESC}. Flush state to .agent/ now and tell the user to run /compact (you cannot run it yourself). If the harness fires first it picks the moment (likely mid-tool-call); post-compact Claude only sees the summary." ;;
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
@@ -487,38 +496,49 @@ fi
 # Threshold nudge (first hit) — suppressed during post-compact grace AND
 # when the context-watcher is alive (the watcher writes .agent/ between
 # turns; nagging Claude to flush is redundant and noisy).
-if [ "$POST_COMPACT_GRACE" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ]; then
+if [ "$POST_COMPACT_GRACE" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   if [ "$COUNT" -eq "$NUDGE_THRESHOLD" ] 2>/dev/null; then
-    NUDGE_MSG="⚠️ $COUNT tool calls since last .agent/ update. Write current state to FULL_CONTEXT.md, DECISIONS.md, and TASKS.md now."
+    NUDGE_MSG="⚠️ $COUNT tool calls since last .agent/ update. Record current state now: .claude/hooks/agent-log.sh append (never edit FULL_CONTEXT.md, it is rendered), plus DECISIONS.md and TASKS.md where they changed."
   # Repeat nudge
   elif [ "$COUNT" -gt "$NUDGE_THRESHOLD" ] 2>/dev/null && [ $((COUNT % NUDGE_REPEAT)) -eq 0 ] 2>/dev/null; then
-    NUDGE_MSG="⚠️ $COUNT tool calls without .agent/ update. Context files are going stale — write to them NOW or rehydration will have nothing to work with."
+    NUDGE_MSG="⚠️ $COUNT tool calls without .agent/ update. Context files are going stale — record state now (agent-log.sh append, DECISIONS.md, TASKS.md) or rehydration will have nothing to work with."
   fi
 fi
 
-# Re-hydration nag — suppressed during grace. Capped at REHYDRATE_NAG_MAX
-# fires per flag: if Claude has been told 3 times and still hasn't written
-# a fresh WORKING_CONTEXT, it's an informed choice (carryover context is
-# enough, or the user moved on). Auto-clear after the cap and emit one
-# final notice — repeating the same warning on every tool call indefinitely
-# is noise, not signal.
-REHYDRATE_NAG_MAX=3
-if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ]; then
-  NAG_COUNT=$(cat "$REHYDRATE_FLAG" 2>/dev/null | tr -d ' \n')
-  NAG_COUNT="${NAG_COUNT:-0}"
+# Re-hydration nag — suppressed during grace, and spaced out: it fires on the
+# 1st, 10th and 30th tool call after the grace window, then stays quiet. The count
+# lives in its own file, NOT in the flag: rewriting the flag on every call kept
+# its mtime newer than a WORKING_CONTEXT written in an earlier second, so the
+# mtime-based clear above could miss a real rehydrate. The flag is NOT cleared here: only a fresh WORKING_CONTEXT
+# write clears it, and compaction-autopilot.sh escalates once at a Stop and then
+# stands down by itself. The old version nagged on three CONSECUTIVE calls and
+# then deleted the flag, so after a compaction while idle all three fired within
+# a minute of the user's return and the Stop escalation never got its chance:
+# 4 of 20 real compactions (2026-10-01..10) were never rehydrated that way.
+# A reminder that lands while /rehydrate is running is harmless, so there is no
+# attempt to recognise the rehydration's own calls (two review rounds showed a
+# pattern for that is always too broad or too narrow). A SUBAGENT's tool calls
+# (same session_id, agent_id set) neither count nor get reminded: the reminder
+# is for the main thread, and counting them would arm its Stop block early.
+NAG_FILE="${LOGDIR}/.rehydrate-nagcount.${SID}"
+[ -f "$REHYDRATE_FLAG" ] || rm -f "$NAG_FILE" 2>/dev/null || true
+if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
+  NAG_COUNT=$(cat "$NAG_FILE" 2>/dev/null | tr -d ' \n')
+  case "$NAG_COUNT" in ''|*[!0-9]*) NAG_COUNT=0 ;; esac
+  NAG_COUNT=$((10#$NAG_COUNT))   # "08" is octal to bash arithmetic otherwise
   REHYDRATE_MSG=""
-  if [ "$NAG_COUNT" -ge "$REHYDRATE_NAG_MAX" ] 2>/dev/null; then
-    rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
-    REHYDRATE_MSG="ℹ️ Rehydration flag auto-cleared after ${REHYDRATE_NAG_MAX} nags. Continuing with carryover context. /rehydrate is still available if you want a fresh WORKING_CONTEXT.md."
-  else
+  if [ "$NAG_COUNT" -lt 30 ]; then
     NEW_COUNT=$((NAG_COUNT + 1))
-    echo "$NEW_COUNT" > "$REHYDRATE_FLAG" 2>/dev/null || true
-    INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
-    if [ -f "$INSTRUCTIONS_FILE" ]; then
-      REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Read ${INSTRUCTIONS_FILE} for instructions, OR ignore if your carryover context is sufficient — flag auto-clears after ${REHYDRATE_NAG_MAX} nags."
-    else
-      REHYDRATE_MSG="⚠️ Context was compacted but re-hydration hasn't completed (nag ${NEW_COUNT}/${REHYDRATE_NAG_MAX}). Follow reviewers.sh digest-chain (Codex then the Claude subagent; capped Gemini then the subagent without Codex) to regenerate WORKING_CONTEXT.md, or ignore if carryover context is enough."
-    fi
+    echo "$NEW_COUNT" > "$NAG_FILE" 2>/dev/null || true
+    case "$NEW_COUNT" in
+      1|10|30)
+        INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
+        REHYDRATE_MSG="⚠️ Context was compacted and /rehydrate has not run yet (reminder at call ${NEW_COUNT} after the 5-minute grace window). Run /rehydrate now; it rebuilds .agent/sessions/${SID_FULL}/WORKING_CONTEXT.md."
+        # Only an orientation file from THIS compaction (a manual /compact may
+        # not run on-compact.sh, leaving the previous one behind).
+        [ -f "$INSTRUCTIONS_FILE" ] && ! [ "$COOLDOWN_TS_FILE" -nt "$INSTRUCTIONS_FILE" ] && REHYDRATE_MSG="${REHYDRATE_MSG} Orientation: ${INSTRUCTIONS_FILE}."
+        ;;
+    esac
   fi
   if [ -n "$REHYDRATE_MSG" ]; then
     if [ -n "$NUDGE_MSG" ]; then
@@ -551,18 +571,25 @@ if [ -f "$UPDATE_APPLIED_FILE" ] && [ -n "${MEGAVIBE_LAUNCH_VERSION:-}" ] && [ "
     if [ ! -f "$SEEN_FLAG" ]; then
       mkdir -p "$SESSION_DIR" 2>/dev/null || true
       touch "$SEEN_FLAG" 2>/dev/null || true
-      UPDATE_MSG="⚡ Megavibe was updated (new version available). Run /megavibe-restart to apply (updates hooks, rules, skills, then resumes this conversation). Or finish your current task first — no rush."
-      if [ -n "$NUDGE_MSG" ]; then
-        NUDGE_MSG="${NUDGE_MSG}
-${UPDATE_MSG}"
-      else
-        NUDGE_MSG="$UPDATE_MSG"
-      fi
+      # For the USER only: restarting is the user's call, and a model told to
+      # "run /megavibe-restart" might restart the session mid-task.
+      USER_ONLY_MSG="⚡ Megavibe was updated (new version available). Run /megavibe-restart to apply (updates hooks, rules, skills, then resumes this conversation). Or finish your current task first — no rush."
     fi
   fi
 fi
 
-# Emit nudge as systemMessage (authoritative — Claude treats it as system-level instruction)
+# The nudges in NUDGE_MSG are addressed to Claude, so they go out as additionalContext,
+# the channel that reaches the model; systemMessage is shown to the user only
+# (hooks reference). Until 2026-10-11 these went out as systemMessage alone, so
+# none of them reached the model. The user keeps seeing the same line.
+# USER_ONLY_MSG is shown to the user and never sent to the model.
+USER_ONLY_MSG="${USER_ONLY_MSG:-}"
 if [ -n "$NUDGE_MSG" ]; then
-  jq -n --arg msg "$NUDGE_MSG" '{systemMessage: $msg}' 2>/dev/null || true
+  _EV=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null || echo PostToolUse)
+  _UMSG="$NUDGE_MSG"; [ -n "$USER_ONLY_MSG" ] && _UMSG="${NUDGE_MSG}
+${USER_ONLY_MSG}"
+  jq -n --arg msg "$_UMSG" --arg ctx "$NUDGE_MSG" --arg ev "${_EV:-PostToolUse}" \
+    '{systemMessage: $msg, hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null || true
+elif [ -n "$USER_ONLY_MSG" ]; then
+  jq -n --arg msg "$USER_ONLY_MSG" '{systemMessage: $msg}' 2>/dev/null || true
 fi

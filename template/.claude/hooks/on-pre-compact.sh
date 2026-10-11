@@ -8,26 +8,31 @@ _hook_error() {
 trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
 set -u
 
-# Megavibe — pre-compaction context flush reminder + grace-period stamper
+# Megavibe — pre-compaction status report + grace-period and flag stamper
 # Triggered by: PreCompact (fires on BOTH auto-compact AND manual /compact)
 #
-# IMPORTANT: Claude does NOT get a turn between this hook and compaction.
-# The systemMessage here becomes part of the compaction summary — it tells
-# the post-compaction Claude whether context files were stale and what to
-# run next.
+# IMPORTANT: Claude does NOT get a turn between this hook and compaction, and
+# Claude Code DISCARDS a PreCompact hook's systemMessage (hooks reference). This
+# hook therefore reaches nobody directly: what it learns goes to stderr, to a
+# timestamped alert file, and, for the register-currency warning, to a file
+# on-compact.sh folds into the short message the post-compact model does see.
+# (Measured 2026-10-11 over 20 compactions: the old "stamp the summary" text
+# appeared in 0 of 20 summaries.)
 #
 # Strategy:
 # - Read the tool-call counter to assess staleness
 # - Stamp .compact-ts.$SID and .needs-rehydration.$SID so post-compact
 #   log-tool-event.sh honors the grace period even on manual /compact
-#   (SessionStart:compact only fires on AUTO-compaction, so on-compact.sh
+#   (SessionStart:compact is documented for both, but has not always fired
+#   for a manual /compact, so on-compact.sh
 #   cannot be relied on to stamp these files — PreCompact is the only
 #   hook that reliably fires for both manual and automatic compactions)
 # - Drop this session's read-delta cache, whose rows would otherwise claim
 #   that file content survived the compaction that is about to drop it
 #   (see the SID note at that block: the two hooks must agree on the name)
-# - Emit a systemMessage noting what may be lost and the single required
-#   post-compact action (/rehydrate) — per D79, /catchup is folded inline
+# - Report what may be lost and the single required
+#   post-compact action (/rehydrate); the /catchup-equivalent orientation is
+#   written to a file by on-compact.sh
 
 # Only run if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0
@@ -44,15 +49,59 @@ COUNTER_FILE="${LOGDIR}/.tool-call-counter.${SID}"
 
 mkdir -p "$LOGDIR" 2>/dev/null || true
 
+# --- A SUBAGENT's compaction is not this session's ---
+# Subagents share the parent's session_id, so without this guard a subagent
+# compacting set the PARENT's rehydration flag, and the main thread was then
+# told to "Run /rehydrate NOW" for a compaction it never had (found twice in one
+# session, 2026-10-04/05, each matching a subagents/agent-*.jsonl compaction to
+# the second). The hooks reference documents agent_id for hooks that fire inside
+# a subagent, but not for PreCompact specifically, so both signals are checked,
+# and the payload's KEYS (never its values) are logged so the next real case
+# shows which one Claude Code actually sends.
+_PC_KEYS=$(printf '%s' "$INPUT" | jq -c 'keys' 2>/dev/null || echo "?")
+_PC_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+_PC_TP=$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
+# Anchored on THIS session's own subagent directory (<id>/subagents/), never a
+# bare "subagents" component: a config or home path can contain one, and a false
+# match here silently disables the whole recovery for a real compaction.
+_PC_SIDF=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+_PC_SUBPATH=no
+[ -n "$_PC_SIDF" ] && case "$_PC_TP" in */"$_PC_SIDF"/subagents/agent-*.jsonl) _PC_SUBPATH=yes ;; esac
+echo "$(date -u +%FT%TZ) sid=${SID} agent_id=${_PC_AGENT:+set} subagent_path=${_PC_SUBPATH} keys=${_PC_KEYS}" \
+  >> "${LOGDIR}/pre-compact-inputs.log" 2>/dev/null || true
+[ "$_PC_SUBPATH" = yes ] && _PC_AGENT="${_PC_AGENT:-subagent-path}"
+IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
+
 # --- Stamp the grace-period cooldown and rehydration flag ---
 # log-tool-event.sh reads .compact-ts.$SID to suppress both the 8-call
 # stale-context nudge and the rehydrate-pending nag for TOKEN_COOLDOWN_SECS
 # (default 300s). on-compact.sh ALSO stamps this on auto-compaction, but
 # stamping here guarantees manual /compact also gets the grace window.
-date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true
-# Mark that rehydration is needed. on-compact.sh normally sets this too,
-# but it won't fire for manual /compact — so we set it here as the floor.
-touch "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
+[ "$IS_SUBAGENT" -eq 0 ] && { date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true; }
+# Mark that rehydration is needed. on-compact.sh normally sets this too, but
+# it may not run for a manual /compact, so this is the floor.
+# The nag count (log-tool-event.sh) restarts with each compaction.
+# The autopilot's once-per-fill-cycle flags (rehydrate AND close-out) are re-armed here too,
+# because on-compact.sh (which also does it) may not run for a manual /compact.
+# Not when a non-empty WORKING_CONTEXT (full-id or legacy 12-char directory) was
+# written within the hour: on-compact.sh applies the same rule, but it may not
+# run for a manual /compact, and then nothing would take the flag back down.
+_PC_FRESH=0
+# session_id becomes a path component below: same safe-charset gate as on-compact.sh.
+case "$_PC_SIDF" in ''|.|..|*[!A-Za-z0-9._-]*) _PC_SIDF="none" ;; esac
+for _wc in ".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
+  if [ -f "$_wc" ] && [ -s "$_wc" ]; then
+    _m=$(stat -c %Y "$_wc" 2>/dev/null || stat -f %m "$_wc" 2>/dev/null || echo 0)
+    case "$_m" in ''|*[!0-9]*) _m=0 ;; esac
+    [ $(( $(date +%s) - _m )) -lt 3600 ] && _PC_FRESH=1
+  fi
+done
+if [ "$IS_SUBAGENT" -eq 0 ]; then
+  if [ "$_PC_FRESH" -eq 1 ]; then rm -f "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
+  else echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true; fi
+  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" \
+        "${LOGDIR}/.closeout-done.${SID}" "${LOGDIR}/.closeout-blocked.${SID}" "${LOGDIR}/.closeout-count.${SID}" 2>/dev/null || true
+fi
 
 # --- Invalidate the read-delta re-Read cache ---
 # read-delta.sh answers a re-Read of an unchanged file with a stub saying the
@@ -81,8 +130,21 @@ for _rd_sid in "$RD_SID" "$SID"; do
   rm -f "${LOGDIR}/.read-delta-shape.${_rd_sid}" 2>/dev/null || true
 done
 
+# A subagent's compaction still drops ITS reads (the cache invalidation above
+# applies), but everything below is about the main session's recovery.
+[ "$IS_SUBAGENT" -eq 1 ] && exit 0
+
 # How stale is the context?
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+# The counter resets on every .agent/ write, and the context watcher writes every
+# few minutes, so with the watcher alive it reads 0 every time. The age of the
+# newest write is the number that still says something.
+_newest=$(ls -t .agent/events/ 2>/dev/null | head -1)
+LAST_WRITE_MIN="?"
+if [ -n "$_newest" ]; then
+  _m=$(stat -c %Y ".agent/events/$_newest" 2>/dev/null || stat -f %m ".agent/events/$_newest" 2>/dev/null || echo "")
+  [ -n "$_m" ] && LAST_WRITE_MIN=$(( ($(date +%s) - _m) / 60 ))
+fi
 
 # Check which .agent/ files have content
 FC_LINES=$(wc -l < .agent/FULL_CONTEXT.md 2>/dev/null || echo "0")
@@ -105,8 +167,8 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 # string occurs in this text" and "this register claims that release" are the
 # same bytes, so a dependency pin, a language version, another project's release
 # — or the same release spelled `1.1.0` where the tag says `v1.1.0` — all read
-# as the register naming the wrong thing. The output lands in the compaction
-# summary, the one place the next session cannot check it, so a check that
+# as the register naming the wrong thing. The output lands in the post-compact
+# message, where the next session takes it on trust, so a check that
 # occasionally asserts unfalsifiable staleness is worse there than no check.
 # The sound version is a different design: have the register record the release
 # as a machine-readable marker per non-negotiable 7 and compare THAT against
@@ -114,8 +176,7 @@ LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 #
 # Every branch is built to stay SILENT unless it can make a true statement. A
 # warning that fires unconditionally is trained away within two compactions, and
-# it lands in the compaction summary — the one place the next session cannot
-# check anything against. An unverified claim delivered there is the exact
+# it lands in the post-compact message, which the next session takes on trust. An unverified claim delivered there is the exact
 # failure non-negotiable 7 exists to prevent, so this must not be the thing that
 # commits it. Four review rounds each found a new false positive here; the
 # design rule that finally held is: when in doubt, say nothing.
@@ -184,15 +245,16 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 - DECISIONS.md: ${DECISIONS_LINES} lines
 - LESSONS.md: ${LESSONS_LINES} lines
 - Tool calls since last .agent/ write: ${COUNT}
+- Newest .agent/events entry: ${LAST_WRITE_MIN} min ago
 
 ⚠️ If ${COUNT} is high, context accumulated in this conversation may NOT be in the .agent/ files yet. The post-compaction recovery will only have what's on disk.
 
-After compaction, your only required action is: run /rehydrate (single command — it regenerates WORKING_CONTEXT.md via the chain reviewers.sh digest-chain prints: Codex then the Claude subagent, or capped Gemini then the subagent where there is no Codex). A 5-minute post-compact grace period suppresses stale-context nags while /rehydrate runs, so you won't get double-yelled-at during recovery. On auto-compactions the on-compact hook will additionally inline git state + DECISIONS/TASKS/LESSONS in its systemMessage — on manual /compact that orientation lives in this compaction summary instead."
+After compaction, the only required action is: run /rehydrate (it regenerates WORKING_CONTEXT.md via the chain reviewers.sh digest-chain prints: Codex then the Claude subagent, or capped Gemini then the subagent where there is no Codex). The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
 
 
-# Fold the register-currency warning into the compaction summary. This is the
-# one part of the message that can contradict the reassuring line counts above,
-# so it goes in the summary itself, not only to stderr.
+# Add the register-currency warning to the report. This is the one part of it
+# that can contradict the reassuring line counts above, which is why it is also
+# written to .reg-warn.<sid> below for the post-compact message.
 if [ -n "$REG_WARN" ]; then
   MSG="$MSG
 
@@ -214,17 +276,27 @@ if [ "$FC_LINES" -gt "$PRUNE_THRESHOLD" ] 2>/dev/null; then
 🧹 FULL_CONTEXT.md is ${FC_LINES} lines (above the ${PRUNE_THRESHOLD}-line threshold). It is rendered from write-once events and /rehydrate reads a bounded slice, so the size alone is not a problem. If .agent/events/ has accumulated a lot of old entries, run .claude/hooks/agent-log.sh fold after /rehydrate: it moves events older than 30 days into .agent/snapshot.md, loses nothing, and FULL_CONTEXT.md renders identically before and after. This is distinct from /compact, which summarizes the live conversation."
 fi
 
-# --- User-visible alert ---
-# The systemMessage below is folded into the compaction summary, so the user
-# never sees it as a standalone turn. To prove the hook ran, we ALSO:
-#   1. Write a durable alert file the user can tail/grep
-#   2. Echo the report to stderr (Claude Code surfaces hook stderr to the user)
+# --- Where the report goes ---
+#   1. A timestamped alert file per compaction (one fixed name was overwritten
+#      every time, so 16 of 20 compactions could not be audited afterwards),
+#      plus the fixed name as a copy of the latest; the last 30 per session kept.
+#   2. stderr (Claude Code surfaces hook stderr to the user).
+#   3. The register-currency warning, the one part the next model must see, to a
+#      file on-compact.sh puts into its post-compact message.
 ALERT_FILE="${LOGDIR}/pre-compact-alert.${SID}.md"
+ALERT_TS_FILE="${LOGDIR}/pre-compact-alert.${SID}.$(date -u +%Y%m%dT%H%M%SZ).md"
 {
   echo "# Pre-compact alert — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo ""
   echo "$MSG"
-} > "$ALERT_FILE" 2>/dev/null || true
+} > "$ALERT_TS_FILE" 2>/dev/null || true
+cp "$ALERT_TS_FILE" "$ALERT_FILE" 2>/dev/null || true
+ls -t "${LOGDIR}"/pre-compact-alert."${SID}".2*.md 2>/dev/null | tail -n +31 | while IFS= read -r _old; do rm -f "$_old" 2>/dev/null || true; done
+if [ -n "$REG_WARN" ]; then
+  printf '%s\n' "$REG_WARN" > "${LOGDIR}/.reg-warn.${SID}" 2>/dev/null || true
+else
+  rm -f "${LOGDIR}/.reg-warn.${SID}" 2>/dev/null || true
+fi
 
 # Echo to stderr — visible to the user in the Claude Code UI
 echo "" >&2
@@ -235,4 +307,5 @@ echo "(saved to $ALERT_FILE)" >&2
 echo "═══════════════════════════════════════════════════════════════" >&2
 echo "" >&2
 
+# Kept for older Claude Code versions that may still show it; current ones discard it.
 jq -n --arg msg "$MSG" '{systemMessage: $msg}' 2>/dev/null || true

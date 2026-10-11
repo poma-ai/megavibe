@@ -6,8 +6,9 @@ set -u
 # The protocol requires session-scoping (CLAUDE.md "Session isolation"), but
 # Claude drifts and occasionally writes .agent/WORKING_CONTEXT.md or even
 # <project>/WORKING_CONTEXT.md. These stray files poison rehydration:
-# log-tool-event.sh matches "*WORKING_CONTEXT.md" and silently clears the
-# rehydrate flag, so the wrong location satisfies the hook without fixing anything.
+# they look like a rehydrate to a reader without being the session's own file
+# (log-tool-event.sh used to clear the flag on any "*WORKING_CONTEXT.md"; it now
+# requires this session's own, non-empty one, and this hook stays as defence).
 #
 # Runs on Write|Edit|MultiEdit. No-op when jq is missing (graceful).
 
