@@ -8,7 +8,7 @@ _hook_error() {
 trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
 set -u
 
-# Megavibe — pre-compaction context flush reminder + grace-period stamper
+# Megavibe — pre-compaction status report + grace-period and flag stamper
 # Triggered by: PreCompact (fires on BOTH auto-compact AND manual /compact)
 #
 # IMPORTANT: Claude does NOT get a turn between this hook and compaction, and
@@ -31,7 +31,8 @@ set -u
 #   that file content survived the compaction that is about to drop it
 #   (see the SID note at that block: the two hooks must agree on the name)
 # - Report what may be lost and the single required
-#   post-compact action (/rehydrate) — per D79, /catchup is folded inline
+#   post-compact action (/rehydrate); the /catchup-equivalent orientation is
+#   written to a file by on-compact.sh
 
 # Only run if this is a Megavibe-initialized project
 [ -d ".agent" ] || exit 0

@@ -53,16 +53,27 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    # even at `high` — digesting a log does not reason), so `low` is free. The
    # wrapper owns its own timeout and kills the whole process group, so there is
    # no orphan and no argv limit.
-   NEW="$OUT.new"; : > "$NEW"
+   NEW="$OUT.new"
+   # promote <exit code of the backend that wrote $NEW>: moves $NEW over $OUT only
+   # if the backend succeeded and all six sections are present, each with text
+   # under it (deeper ### subheadings stay inside their section).
+   promote() {
+     local ok=0
+     [ "$1" -eq 0 ] && [ -f "$NEW" ] && [ -s "$NEW" ] && [ ! -d "$OUT" ] && ok=1
+     awk 'BEGIN{n=split("goal constraint done open risk next",k," ")}
+          /^#+ /{lv=index($0," ")-1; l=tolower($0); hit=""
+                 for(i=1;i<=n;i++) if(index(l,k[i])){hit=k[i]; break}
+                 if(hit!=""){cur=hit; clv=lv} else if(cur!="" && lv<=clv){cur=""}
+                 next}
+          NF && cur!=""{body[cur]=1}
+          END{for(i=1;i<=n;i++) if(!(k[i] in body)) exit 1}' "$NEW" 2>/dev/null || ok=0
+     if [ "$ok" -eq 1 ] && mv -f "$NEW" "$OUT"; then rm -f "$OUT.err"; echo promoted; return 0; fi
+     echo "backend failed (rc $1, or sections missing)"; return 1
+   }
+   : > "$NEW"
    bash ~/.megavibe/scripts/codex-review.sh --effort low \
-     --timeout 150 --out "$NEW" --prompt "$INSTR" "$IN" >/dev/null 2>"$OUT.err"; RC=$?
-   OK=0; [ "$RC" -eq 0 ] && [ -f "$NEW" ] && [ -s "$NEW" ] && [ ! -d "$OUT" ] && OK=1
-   # all six sections present as headings, each with some text under it
-   awk 'BEGIN{n=split("goal constraint done open risk next",k," ")}
-        /^#+ /{cur=""; l=tolower($0); for(i=1;i<=n;i++) if(index(l,k[i])){cur=k[i]; break}; next}
-        NF && cur!=""{body[cur]=1}
-        END{for(i=1;i<=n;i++) if(!(k[i] in body)) exit 1}' "$NEW" 2>/dev/null || OK=0
-   if [ "$OK" -eq 1 ] && mv -f "$NEW" "$OUT"; then rm -f "$OUT.err"; echo promoted; else echo "backend failed (rc $RC, or sections missing)"; fi
+     --timeout 150 --out "$NEW" --prompt "$INSTR" "$IN" >/dev/null 2>"$OUT.err"
+   promote $?
    ```
 
    No `--model`: the user's own `~/.codex/config.toml` picks it, and a name
@@ -73,7 +84,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    call fails rather than falling down the chain on a model name.
 
    - `backend failed` (non-zero exit, incl. the wrapper's 124 timeout, an empty answer, or one missing any of the six required sections or the text under one) = that backend FAILED. Don't retry it — move down the chain, again writing to `$NEW` and promoting only a valid answer.
-   - **Fallback order** is whatever `digest-chain` printed in step 2. With Codex: Codex (above) → **Claude subagent** (Agent tool, `subagent_type: summarizer` — internal, cannot hang, always finishes, and the best output of the three; it spends this subscription's own quota, ~125K tokens on an input this size, which is why it is second and not first). **Without Codex** (`gemini subagent`): Gemini first — `perl -e 'alarm shift; exec @ARGV' 150 bash ~/.megavibe/scripts/gemini-review.sh --max 12000 --out "$NEW" --prompt "$INSTR" "$IN"`, then `rm -f "$NEW.raw.json"` and the same check-and-promote as above — then the subagent (give it the same instruction; it writes its answer to `$NEW` with Bash, or returns it for you to write there), with the same check-and-promote. Gemini here is the metered alternative: flash-lite only, never Pro, and `gemini-review.sh` itself refuses (exit 5) once today's call, dollar or input-size cap is reached, or (exit 4) while Codex is usable; treat both as "that backend failed" and move on to the subagent. Exit 3 (cut off) leaves a partial `$NEW`: do not promote it; move on to the subagent. Check `finishReason` in the `.err` before trusting a short answer. `gemini-review.sh --budget` shows today's spend. Never the Gemini CLI or `mcp__gemini-cli__ask-gemini` here: both run full thinking on a large input and stall.
+   - **Fallback order** is whatever `digest-chain` printed in step 2. With Codex: Codex (above) → **Claude subagent** (Agent tool, `subagent_type: summarizer` — internal, cannot hang, always finishes, and the best output of the three; it spends this subscription's own quota, ~125K tokens on an input this size, which is why it is second and not first). **Without Codex** (`gemini subagent`): Gemini first — `: > "$NEW"; perl -e 'alarm shift; exec @ARGV' 150 bash ~/.megavibe/scripts/gemini-review.sh --max 12000 --out "$NEW" --prompt "$INSTR" "$IN"; promote $?`, then `rm -f "$NEW.raw.json"` — then the subagent (give it the same instruction; empty `$NEW` first, it writes its answer there with Bash or returns it for you to write there, then `promote 0`). Gemini here is the metered alternative: flash-lite only, never Pro, and `gemini-review.sh` itself refuses (exit 5) once today's call, dollar or input-size cap is reached, or (exit 4) while Codex is usable; treat both as "that backend failed" and move on to the subagent. Exit 3 (cut off) leaves a partial `$NEW`: do not promote it; move on to the subagent. Check `finishReason` in the `.err` before trusting a short answer. `gemini-review.sh --budget` shows today's spend. Never the Gemini CLI or `mcp__gemini-cli__ask-gemini` here: both run full thinking on a large input and stall.
 
 5. **Verify + load.** Confirm `$OUT` was promoted (non-empty, the requested sections), then Read it into your window **in full**: one Read call with no `offset`/`limit` (it is at most ~400 lines). Reading only its head was the common failure in practice (8 of 17 real runs), and leaves you working from the compaction summary after all. If every external backend failed AND the subagent is unavailable, hand-write a minimal WORKING_CONTEXT from TASKS.md + git state rather than leaving it empty.
 
