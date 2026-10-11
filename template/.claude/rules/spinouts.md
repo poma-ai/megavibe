@@ -80,24 +80,26 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
 
 ## Batch jobs: split by context size, not by task count
 
-When one job walks many items that are each judged on their own (checking labels, describing charts, auditing documents) and their tool results are bulky (images, PDFs, long logs), do not run it in one long subagent. Give each batch of items a fresh subagent. This applies even when the job is a single task: the 3+ task gate above is about planning, not context. The dependency and file-overlap checks above still hold: items that must be compared with each other, or that write one shared file, go to fresh subagents in sequence, each handed a compact summary of the last, not in parallel. Fan out in waves of a few at a time, and merge compact verdicts in the parent, never the raw material.
+When one job walks many items that are each judged on their own (checking labels, describing charts, auditing documents) and their tool results are bulky (images, PDFs, long logs), do not let one subagent's context grow far past about 400K tokens. Give each batch of items a fresh subagent instead.
+- **Single jobs count too.** This applies even when the job is a single task: the 3+ task gate above is about planning, not context.
+- **Dependent items stay together.** Items that must be compared with each other go in the same subagent, with the evidence the comparison needs. A summary handed to the next batch can drop exactly that evidence.
+- **Shared output files.** Independent items that write one shared file go to batches in sequence, not in parallel, per the overlap check above.
+- **Fan-out and merge.** Fan out in waves of a few at a time, and merge compact verdicts in the parent, never the raw material.
+- **When it does not pay.** If the briefing plus first call per subagent would exceed about a third of the cap (about 80K), or the whole job fits under 250K anyway, splitting saves little or nothing: do not split.
 
-**Sizing.** Aim to keep each subagent's context under about 250K tokens. That is a conservative margin, not a measured threshold. A parent cannot see a subagent's context, so estimate it:
-- Count by reads and calls, not by items. One image read costs about 2-3K tokens. In the job below, each item took about 34 reads, and each call added about 22K tokens on average.
-- Run one pilot batch first. Read its token usage (the transcript's `cache_creation_input_tokens` plus `cache_read_input_tokens`), then size the remaining batches with headroom to spare.
+**Sizing.** Aim to keep each subagent's context under about 250K tokens. That is a margin below the first observed reset, not a measured safe threshold. A parent cannot see a subagent's context, so estimate it:
+- **Count reads and calls, not items.** In the job below, each item took about 34 image reads (author-counted from the transcript), and each call added a median of 22K and a mean of 32K tokens.
+- **Run one pilot batch first.** Its context size is the sum of `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` on its last request, not a sum over the transcript. Size the rest from the pilot's growth per item, with headroom.
 
-**Why, measured 2026-10-11 on one real job** (one Sonnet subagent, 109 image pairs, 3,744 image reads, 387 requests):
+**Why, measured 2026-10-11 on one real job** (one Sonnet subagent, 109 image pairs, 3,744 image reads, 387 requests; input tokens only):
 - **No re-caching at first.** The context grew to 394K tokens without one.
-- **Then repeated resets.** From there, 107 requests fell back to only the 17.6K-token cached system prefix and re-sent the rest as fresh input. 104 of those came with a shrinking context, most likely Claude Code trimming old tool results; that mechanism is inferred, not confirmed. Later resets came at 375-918K, so the trigger is not one fixed size.
+- **Then repeated resets.** From there, 107 requests read only the 17.6K-token system prefix from cache and re-sent the rest as fresh input. 104 of those came with a shrinking context, most likely Claude Code trimming old tool results; that mechanism is inferred, not confirmed. Later resets came at 375-918K, so the trigger is not one fixed size.
 - **Result: 66.5M fresh input tokens and 131M cache reads.** Ordinary calls added 8.8M tokens of new content; about 11M is the estimate counting the reset calls.
-- **Projection.** A simulation over the same requests, with a new subagent before 250K (about 73 subagents, each paying the job's 74K first call), gives 16.5M fresh and 54M reads. That is 2.8x fewer raw tokens, or 3.7x cheaper weighted by API price (cache read about 0.1x, 5-minute write 1.25x).
-- **Robustness.** The result holds under weaker assumptions too:
-  - 3.3x when the observed cache expiries (19 gaps over 5 minutes) are kept;
-  - 2.2x when every observed reset is kept;
-  - 2.0x with per-call growth doubled;
-  - 2.1x with a briefing twice as large.
+- **Projection.** A simulation over the same requests, with a new subagent before 250K (74 subagents, each paying the job's 74K first call again), gives 16.7M fresh and 54M reads. That is 2.8x fewer raw tokens, or 3.7x cheaper weighted by API price (cache read about 0.1x, 5-minute write 1.25x). How either maps onto subscription limits is not documented.
+- **Checks, one assumption changed at a time.** Weighted savings: 3.3x keeping the observed cache expiries; 2.2x keeping every observed reset; 2.7x sizing by mean rather than median growth; 2.0x with per-call growth doubled; 2.1x with the briefing doubled.
+- **Stacked worst case.** Doubled growth plus doubled briefing gives 1.1x, and adding the expiries and resets gives 0.9x. That case is where the "do not split" condition above comes from.
 
-This is a projection, not a measured re-run. It is at least about 2x cheaper under every variant tried, which is why this is a rule.
+This is a projection from one job, not a measured re-run. On the realistic reading of the data the saving is about 3x; it holds only while each batch's fixed cost stays small next to the context it saves.
 
 ## What NOT to do
 
