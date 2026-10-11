@@ -78,6 +78,17 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
 
 5. **Update `.agent/TASKS.md`** — mark completed tasks, note any issues, proceed.
 
+## Batch jobs: split by context size, not by task count
+
+A job that walks many images or large files (checking labels, describing charts, auditing documents) must not run in one long subagent. Split the items into batches and give each batch its own subagent, sized so its context stays under about 250K tokens (tens of images, not hundreds). Run them in parallel and merge the results in the parent.
+
+Why, measured 2026-10-11 on one real job (one Sonnet subagent checking 109 image pairs, 3,744 image reads, 387 calls):
+- The context grew to about 395K tokens with no re-caching at all. Past that point the earlier history kept changing (the context shrank each time, so most likely Claude Code trimming old tool results to make room; the mechanism was inferred, not confirmed), and every change made the next call re-send the whole context as fresh input. That happened 108 times, re-sending 155-866K tokens each.
+- Result: 66.5M fresh input tokens and 131M cache reads. The new content the job actually needed was about 9M.
+- Re-running the same calls through a simulation with a new subagent before 350K (each paying the job's 74K first call again) gave 14.4M fresh and 72M reads. That is 2.3x fewer tokens in raw count, or 3.8x cheaper weighted by API price (a cache read is about 0.1x, a write 1.25x). Either way it wins.
+
+This applies wherever a context fills with bulky tool results: images, PDFs, long logs. The limit is context size, so a batch of 10 small text files needs no split. Brief each batch subagent with the full standard and only its own items, and have it return compact verdicts, not the raw material.
+
 ## What NOT to do
 
 - Don't spin out tasks that need to import from each other's new code (they'd fail)
