@@ -80,14 +80,24 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
 
 ## Batch jobs: split by context size, not by task count
 
-A job that walks many images or large files (checking labels, describing charts, auditing documents) must not run in one long subagent. Split the items into batches and give each batch its own subagent, sized so its context stays under about 250K tokens (tens of images, not hundreds). Run them in parallel and merge the results in the parent.
+When one job walks many items that are each judged on their own (checking labels, describing charts, auditing documents) and their tool results are bulky (images, PDFs, long logs), do not run it in one long subagent. Give each batch of items a fresh subagent. This applies even when the job is a single task: the 3+ task gate above is about planning, not context. The dependency and file-overlap checks above still hold: items that must be compared with each other, or that write one shared file, go to fresh subagents in sequence, each handed a compact summary of the last, not in parallel. Fan out in waves of a few at a time, and merge compact verdicts in the parent, never the raw material.
 
-Why, measured 2026-10-11 on one real job (one Sonnet subagent checking 109 image pairs, 3,744 image reads, 387 calls):
-- The context grew to about 395K tokens with no re-caching at all. Past that point the earlier history kept changing (the context shrank each time, so most likely Claude Code trimming old tool results to make room; the mechanism was inferred, not confirmed), and every change made the next call re-send the whole context as fresh input. That happened 108 times, re-sending 155-866K tokens each.
-- Result: 66.5M fresh input tokens and 131M cache reads. The new content the job actually needed was about 9M.
-- Re-running the same calls through a simulation with a new subagent before 350K (each paying the job's 74K first call again) gave 14.4M fresh and 72M reads. That is 2.3x fewer tokens in raw count, or 3.8x cheaper weighted by API price (a cache read is about 0.1x, a write 1.25x). Either way it wins.
+**Sizing.** Aim to keep each subagent's context under about 250K tokens. That is a conservative margin, not a measured threshold. A parent cannot see a subagent's context, so estimate it:
+- Count by reads and calls, not by items. One image read costs about 2-3K tokens. In the job below, each item took about 34 reads, and each call added about 22K tokens on average.
+- Run one pilot batch first. Read its token usage (the transcript's `cache_creation_input_tokens` plus `cache_read_input_tokens`), then size the remaining batches with headroom to spare.
 
-This applies wherever a context fills with bulky tool results: images, PDFs, long logs. The limit is context size, so a batch of 10 small text files needs no split. Brief each batch subagent with the full standard and only its own items, and have it return compact verdicts, not the raw material.
+**Why, measured 2026-10-11 on one real job** (one Sonnet subagent, 109 image pairs, 3,744 image reads, 387 requests):
+- **No re-caching at first.** The context grew to 394K tokens without one.
+- **Then repeated resets.** From there, 107 requests fell back to only the 17.6K-token cached system prefix and re-sent the rest as fresh input. 104 of those came with a shrinking context, most likely Claude Code trimming old tool results; that mechanism is inferred, not confirmed. Later resets came at 375-918K, so the trigger is not one fixed size.
+- **Result: 66.5M fresh input tokens and 131M cache reads.** Ordinary calls added 8.8M tokens of new content; about 11M is the estimate counting the reset calls.
+- **Projection.** A simulation over the same requests, with a new subagent before 250K (about 73 subagents, each paying the job's 74K first call), gives 16.5M fresh and 54M reads. That is 2.8x fewer raw tokens, or 3.7x cheaper weighted by API price (cache read about 0.1x, 5-minute write 1.25x).
+- **Robustness.** The result holds under weaker assumptions too:
+  - 3.3x when the observed cache expiries (19 gaps over 5 minutes) are kept;
+  - 2.2x when every observed reset is kept;
+  - 2.0x with per-call growth doubled;
+  - 2.1x with a briefing twice as large.
+
+This is a projection, not a measured re-run. It is at least about 2x cheaper under every variant tried, which is why this is a rule.
 
 ## What NOT to do
 
