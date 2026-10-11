@@ -2239,6 +2239,14 @@ release_lock() {
   rm -f ".agent/.session-lock" 2>/dev/null
 }
 
+# Remote Control names a session "<prefix>-..." with the hostname as prefix, so
+# on the phone only a GitHub-backed session shows where it runs. Prefix it with
+# the folder instead — evaluated at launch, after any cd into a worktree. An
+# exported prefix or an explicit --remote-control-session-name-prefix wins.
+# The CLI slugs it (lowercase, non-[a-z0-9] runs -> "-"), so a non-ASCII-only
+# folder name falls back to its generic name.
+rc_name_prefix() { printf '%s' "${CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX:-${PWD##*/}}"; }
+
 # ─── Resume path: minimal, never mutates directory ───────────────────
 
 if $IS_RESUME; then
@@ -2273,7 +2281,7 @@ if $IS_RESUME; then
   # Skip init.sh (LESSONS.md: never overwrite hooks mid-session)
   # Go straight to claude
   trap release_lock EXIT HUP INT TERM
-  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
   CLAUDE_PID=$!
   update_lock_pid "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
@@ -2592,7 +2600,7 @@ announce_prompt_args() {
 
 while true; do
   announce_prompt_args
-  claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} ${ANNOUNCE_ARGS[@]+"${ANNOUNCE_ARGS[@]}"} &
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} ${ANNOUNCE_ARGS[@]+"${ANNOUNCE_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
