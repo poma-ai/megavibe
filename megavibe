@@ -1479,18 +1479,27 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
     # (found 4 months stale, without rm-to-trash, on a session that runs with
     # --dangerously-skip-permissions). Only here, before a fresh start: a live
     # session keeps the hooks it registered at its own start. The Telegram bot
-    # runs the same step, so both take one lock, and both are bounded (the
-    # alarm is armed before the lock wait and survives the exec). The lock fd
-    # must survive exec too, hence $^F. Output goes to a file, not $( ): a hung
-    # grandchild would hold a command substitution open past the alarm.
-    # Note: init.sh replaces the project's hooks block and synced rules
-    # wholesale; anything authored there is overwritten, as in any project.
+    # runs the same step; two overlapping runs are safe, because init.sh
+    # installs every file atomically and keeps its temp files per process.
+    # Bounded at 120s by a supervisor that kills init.sh's whole process
+    # group, so nothing it started keeps writing after the session is up.
+    # Output goes to a log file, never through $( ).
+    # Note: init.sh replaces the hooks block and the synced rules and skills
+    # wholesale; anything authored in those is overwritten, as in any project.
     if [ -f "$MEGAVIBE_HOME/init.sh" ]; then
       _pi_log="$MEGAVIBE_HOME/personal-init.log"
       _pi_cmd=(bash "$MEGAVIBE_HOME/init.sh" "$PERSONAL_DIR")
       if command -v perl >/dev/null 2>&1; then
-        _pi_cmd=(perl -MFcntl=:flock -e '$^F = 255; my ($lk, $secs) = splice(@ARGV, 0, 2); alarm $secs; open(my $l, ">>", $lk) or die "lock: $!\n"; flock($l, LOCK_EX) or die "lock: $!\n"; exec @ARGV or die "exec: $!\n"' \
-          "$MEGAVIBE_HOME/.personal-init.lock" 120 "${_pi_cmd[@]}")
+        _pi_cmd=(perl -e '
+          my $t = shift; my $p = fork; die "fork: $!\n" unless defined $p;
+          if (!$p) { setpgrp(0, 0); exec @ARGV or die "exec: $!\n"; }
+          my $stop = sub { kill "TERM", -$p; sleep 2; kill "KILL", -$p; waitpid($p, 0); exit $_[0] };
+          $SIG{ALRM} = sub { print STDERR "init.sh timed out after ${t}s\n"; $stop->(124) };
+          $SIG{INT} = $SIG{TERM} = sub { $stop->(130) };
+          alarm $t; waitpid($p, 0); exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+        ' 120 "${_pi_cmd[@]}")
+      elif command -v timeout >/dev/null 2>&1; then
+        _pi_cmd=(timeout 120 "${_pi_cmd[@]}")
       fi
       if ! "${_pi_cmd[@]}" </dev/null >"$_pi_log" 2>&1; then
         echo "Warning: init.sh failed on $PERSONAL_DIR; starting with its existing hooks. Log: $_pi_log"

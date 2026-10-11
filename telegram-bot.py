@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import shlex
-import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -205,25 +205,32 @@ def start_personal_session():
 
     # Sync hooks, skills and settings before a fresh start; nothing else runs
     # init.sh on this directory (see the same step in `megavibe assistant`).
-    # Same lock and bound as the launcher, so the two never run it at once.
+    # Same step as `megavibe assistant`. Overlapping runs are safe (init.sh
+    # installs atomically, temp files per process); on timeout the whole
+    # process group goes, so nothing it started keeps writing.
     init_sh = MEGAVIBE_HOME / "init.sh"
     if init_sh.is_file():
-        cmd = ["bash", str(init_sh), str(PERSONAL_DIR)]
-        if shutil.which("perl"):
-            cmd = ["perl", "-MFcntl=:flock", "-e",
-                   '$^F = 255; my ($lk, $secs) = splice(@ARGV, 0, 2); alarm $secs; '
-                   'open(my $l, ">>", $lk) or die "lock: $!\\n"; flock($l, LOCK_EX) or die "lock: $!\\n"; '
-                   'exec @ARGV or die "exec: $!\\n"',
-                   str(MEGAVIBE_HOME / ".personal-init.lock"), "120"] + cmd
         log_path = MEGAVIBE_HOME / "personal-init.log"
         try:
             with open(log_path, "wb") as out:
-                r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=out,
-                                   stderr=subprocess.STDOUT, timeout=150)
-            if r.returncode != 0:
-                log.warning("init.sh on personal dir exited %d; starting with existing hooks (log: %s)",
-                            r.returncode, log_path)
-        except (subprocess.TimeoutExpired, OSError) as e:
+                p = subprocess.Popen(["bash", str(init_sh), str(PERSONAL_DIR)],
+                                     stdin=subprocess.DEVNULL, stdout=out,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
+                try:
+                    rc = p.wait(timeout=120)
+                except subprocess.TimeoutExpired:
+                    for sig in (signal.SIGTERM, signal.SIGKILL):
+                        try:
+                            os.killpg(p.pid, sig)
+                        except (ProcessLookupError, PermissionError):
+                            break  # gone; macOS answers EPERM once only zombies remain
+                        time.sleep(2)
+                    p.wait()
+                    rc = "timeout"
+            if rc != 0:
+                log.warning("init.sh on personal dir failed (%s); starting with existing hooks (log: %s)",
+                            rc, log_path)
+        except OSError as e:
             log.warning("init.sh on personal dir failed (%s); starting with existing hooks", e)
 
     # Pre-accept workspace trust (run claude once to establish trust)
@@ -235,12 +242,20 @@ def start_personal_session():
 
     log.info("Starting personal Claude session in tmux...")
     # Create tmux session running claude directly (not megavibe — avoid lock issues)
-    subprocess.run([
-        "tmux", "new-session", "-d", "-s", TMUX_SESSION,
-        "-c", str(PERSONAL_DIR),
-        "claude", "--dangerously-skip-permissions", "--remote-control",
-        "--name", "Personal Assistant",
-    ], check=True, timeout=10)
+    try:
+        subprocess.run([
+            "tmux", "new-session", "-d", "-s", TMUX_SESSION,
+            "-c", str(PERSONAL_DIR),
+            "claude", "--dangerously-skip-permissions", "--remote-control",
+            "--name", "Personal Assistant",
+        ], check=True, timeout=10)
+    except subprocess.CalledProcessError:
+        # `megavibe assistant` runs the same start; if it won the race, the
+        # duplicate-session error is success.
+        if not is_personal_session_alive():
+            raise
+        log.info("Personal tmux session was started concurrently; using it")
+        return
     # Give Claude a moment to start and create JSONL
     time.sleep(5)
     log.info("Personal session started in tmux session '%s'", TMUX_SESSION)
