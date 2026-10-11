@@ -249,7 +249,7 @@ Explore → Plan → Implement → Verify → Commit → Learn → Reflect
 
 When a plan has 3+ independent tasks, Claude can spin them to parallel subagents. Each gets a fresh context window. The primary benefit is **context freshness**, not just speed.
 
-A job over many bulky items (images, PDFs, long logs) is split the same way by context size: on one measured image-labelling job, one long subagent cost an estimated 2-4x more than batches kept under about 250K tokens would have (about 3x on the realistic reading; it pays only while each batch's fixed briefing stays small). Rule and numbers: `.claude/rules/spinouts.md`, "Batch jobs".
+A job over many bulky items (images, PDFs, long logs) is split the same way by context size: on one measured image-labelling job, one long subagent cost an estimated 2-4x more than batches kept under about 250K tokens would have (it pays only while each batch's fixed briefing stays small). Rule and numbers: `.claude/rules/spinouts.md`, "Batch jobs".
 
 ### Slash commands
 
