@@ -12,7 +12,8 @@ set -u
 
 # Megavibe — auto re-hydrate context after compaction
 # Triggered by: SessionStart (matcher: "compact")
-# Only acts when source === "compact" (Claude Code auto-compacted the context)
+# Only acts when source === "compact" (after a compaction; documented for both
+# automatic and manual /compact, though on-pre-compact.sh does not rely on it)
 #
 # Strategy (since 2026-10-11 nothing large is injected; see the end of the script):
 # - Write the orientation to .agent/LOGS/rehydration-instructions.<sid>.md:
@@ -125,7 +126,7 @@ WC_FRESH=0
 # -s, not -f: /rehydrate's own failure path leaves an EMPTY WORKING_CONTEXT, and
 # an empty file written a minute ago is not a working context.
 if [ -s "$WC_READ" ]; then
-  WC_MTIME=$(stat -f %m "$WC_READ" 2>/dev/null || stat -c %Y "$WC_READ" 2>/dev/null || echo 0)
+  WC_MTIME=$(stat -c %Y "$WC_READ" 2>/dev/null || stat -f %m "$WC_READ" 2>/dev/null || echo 0)
   NOW_TS=$(date +%s)
   WC_AGE=$(( NOW_TS - WC_MTIME ))
   [ "$WC_AGE" -lt 3600 ] 2>/dev/null && WC_FRESH=1
@@ -180,7 +181,7 @@ ${GIT_DIFF_STAT}"
 # Pre-compact WORKING_CONTEXT may still exist from before /compact fired.
 # It's stale (compaction summary is now the source of truth) but useful as
 # a what-was-I-doing hint. Truncate to 40 lines — even at 40 lines this is
-# a stale hint, not authoritative; longer was bloating the systemMessage.
+# a stale hint, not authoritative; it goes into the orientation file.
 OLD_WC=""
 if [ -f "$WC_READ" ]; then
   OLD_WC_BODY=$(head -40 "$WC_READ" 2>/dev/null || echo "")

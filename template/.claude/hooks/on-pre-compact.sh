@@ -77,8 +77,8 @@ IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 # (default 300s). on-compact.sh ALSO stamps this on auto-compaction, but
 # stamping here guarantees manual /compact also gets the grace window.
 [ "$IS_SUBAGENT" -eq 0 ] && { date +%s > "${LOGDIR}/.compact-ts.${SID}" 2>/dev/null || true; }
-# Mark that rehydration is needed. on-compact.sh normally sets this too,
-# but it won't fire for manual /compact — so we set it here as the floor.
+# Mark that rehydration is needed. on-compact.sh normally sets this too, but
+# it may not run for a manual /compact, so this is the floor.
 # The nag count (log-tool-event.sh) restarts with each compaction.
 # The autopilot's once-per-fill-cycle flags (rehydrate AND close-out) are re-armed here too,
 # because on-compact.sh (which also does it) may not run for a manual /compact.
@@ -90,7 +90,7 @@ _PC_FRESH=0
 case "$_PC_SIDF" in ''|.|..|*[!A-Za-z0-9._-]*) _PC_SIDF="none" ;; esac
 for _wc in ".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
   if [ -s "$_wc" ]; then
-    _m=$(stat -f %m "$_wc" 2>/dev/null || stat -c %Y "$_wc" 2>/dev/null || echo 0)
+    _m=$(stat -c %Y "$_wc" 2>/dev/null || stat -f %m "$_wc" 2>/dev/null || echo 0)
     case "$_m" in ''|*[!0-9]*) _m=0 ;; esac
     [ $(( $(date +%s) - _m )) -lt 3600 ] && _PC_FRESH=1
   fi
@@ -141,7 +141,7 @@ COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
 _newest=$(ls -t .agent/events/ 2>/dev/null | head -1)
 LAST_WRITE_MIN="?"
 if [ -n "$_newest" ]; then
-  _m=$(stat -f %m ".agent/events/$_newest" 2>/dev/null || stat -c %Y ".agent/events/$_newest" 2>/dev/null || echo "")
+  _m=$(stat -c %Y ".agent/events/$_newest" 2>/dev/null || stat -f %m ".agent/events/$_newest" 2>/dev/null || echo "")
   [ -n "$_m" ] && LAST_WRITE_MIN=$(( ($(date +%s) - _m) / 60 ))
 fi
 

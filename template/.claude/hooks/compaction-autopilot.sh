@@ -89,7 +89,8 @@ case "$REMIND_EVERY" in ''|*[!0-9]*) REMIND_EVERY=25 ;; esac
 # so the close-out thresholds cannot be met and these two can never contend for
 # the same Stop. The precedence is stated anyway, because "they cannot collide"
 # is exactly the assumption that stops being true after someone tunes a
-# threshold. Rehydrate wins; if it fires, this hook does nothing else.
+# threshold. Rehydrate wins: when its Stop block fires, this hook does nothing
+# else on that event.
 #
 # on-compact.sh sets .needs-rehydration when the working context is stale;
 # log-tool-event.sh clears it the moment WORKING_CONTEXT.md is written. So the

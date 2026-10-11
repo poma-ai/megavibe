@@ -241,7 +241,7 @@ esac
 # Skip if mtime-reset already fired — this call IS the writer, don't re-bump
 # it back above zero on the very same invocation.
 COUNT=0
-if [ "$IMPL_TOOL" -eq 1 ] && [ "$MTIME_RESET" -eq 0 ]; then
+if [ "$IMPL_TOOL" -eq 1 ] && [ "$MTIME_RESET" -eq 0 ] && [ -z "$_TE_AGENT" ]; then
   (
     flock -x 200 2>/dev/null
     COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
@@ -533,7 +533,9 @@ if [ -f "$REHYDRATE_FLAG" ] && [ "$POST_COMPACT_GRACE" -eq 0 ] && [ -z "$_TE_AGE
       1|10|30)
         INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
         REHYDRATE_MSG="⚠️ Context was compacted and /rehydrate has not run yet (reminder at call ${NEW_COUNT} after the 5-minute grace window). Run /rehydrate now; it rebuilds .agent/sessions/${SID_FULL}/WORKING_CONTEXT.md."
-        [ -f "$INSTRUCTIONS_FILE" ] && REHYDRATE_MSG="${REHYDRATE_MSG} Orientation: ${INSTRUCTIONS_FILE}."
+        # Only an orientation file from THIS compaction (a manual /compact may
+        # not run on-compact.sh, leaving the previous one behind).
+        [ -f "$INSTRUCTIONS_FILE" ] && ! [ "$COOLDOWN_TS_FILE" -nt "$INSTRUCTIONS_FILE" ] && REHYDRATE_MSG="${REHYDRATE_MSG} Orientation: ${INSTRUCTIONS_FILE}."
         ;;
     esac
   fi
