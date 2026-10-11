@@ -56,14 +56,15 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    NEW="$OUT.new"
    # promote <exit code of the backend that wrote $NEW>: moves $NEW over $OUT only
    # if the backend succeeded and all six sections are present, each with text
-   # under it (deeper ### subheadings stay inside their section).
+   # under it (a deeper heading always stays inside its section, whatever it says).
    promote() {
      local ok=0
      [ "$1" -eq 0 ] && [ -f "$NEW" ] && [ -s "$NEW" ] && [ ! -d "$OUT" ] && ok=1
      awk 'BEGIN{n=split("goal constraint done open risk next",k," ")}
-          /^#+ /{lv=index($0," ")-1; l=tolower($0); hit=""
-                 for(i=1;i<=n;i++) if(index(l,k[i])){hit=k[i]; break}
-                 if(hit!=""){cur=hit; clv=lv} else if(cur!="" && lv<=clv){cur=""}
+          /^#+ /{lv=index($0," ")-1
+                 if(cur!="" && lv>clv) next
+                 l=tolower($0); cur=""
+                 for(i=1;i<=n;i++) if(index(l,k[i])){cur=k[i]; clv=lv; break}
                  next}
           NF && cur!=""{body[cur]=1}
           END{for(i=1;i<=n;i++) if(!(k[i] in body)) exit 1}' "$NEW" 2>/dev/null || ok=0
