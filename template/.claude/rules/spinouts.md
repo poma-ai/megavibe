@@ -78,6 +78,29 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
 
 5. **Update `.agent/TASKS.md`** — mark completed tasks, note any issues, proceed.
 
+## Batch jobs: split by context size, not by task count
+
+When one job walks many items that are each judged on their own (checking labels, describing charts, auditing documents) and their tool results are bulky (images, PDFs, long logs), do not let one subagent's context grow far past about 400K tokens. Give each batch of items a fresh subagent instead.
+- **Single jobs count too.** This applies even when the job is a single task: the 3+ task gate above is about planning, not context.
+- **Dependent items stay together.** Items that must be compared with each other go in the same subagent, with the evidence the comparison needs. A summary handed to the next batch can drop exactly that evidence.
+- **Shared output files.** Independent items that write one shared file go to batches in sequence, not in parallel, per the overlap check above.
+- **Fan-out and merge.** Fan out in waves of a few at a time, and merge compact verdicts in the parent, never the raw material.
+- **When it pays.** Do not split a job that fits under 250K anyway. Otherwise the fixed cost each subagent pays (briefing plus first call) decides the gain. In the job below, with 250K batches: 3.7x at 74K, 2.6x at 125K, 2.1x at 150K, 1.5x at 175K, about break-even at 200K (weighted). Keep the briefing lean, and estimate before splitting when it is large.
+
+**Sizing.** Aim to keep each subagent's context under about 250K tokens. That is a margin below the first observed reset, not a measured safe threshold. A parent cannot see a subagent's context, so estimate it:
+- **Count reads, not items.** In the job below, each item took about 34 image reads (author-counted from the transcript), about 100K tokens per item, so the simulated 250K batches averaged about 1.5 items; real batches split between items, never inside one. Per-call growth varied about 4x within the job: medians of about 8K per call in the first 32 calls and about 29K after (22K median, 32K mean overall), so do not size from a per-call figure.
+- **Run one small pilot batch first** (one or two items, well under 250K, so nothing in it has been trimmed yet; if its context ever fell between requests, the figure is a floor). Its context size is the sum of `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` on its last request, not a sum over the transcript. Subtract its starting context and divide by the items it handled: that is the tokens per item to size the rest from, with headroom.
+
+**Why, measured 2026-10-11 on one real job** (one Sonnet subagent, 109 image pairs and 3,744 image reads as counted by the author from the transcript, 387 requests; input tokens only, parent orchestration not counted):
+- **No re-caching at first.** The context grew to 394K tokens without one.
+- **Then repeated resets.** From there, 107 requests read only the 17.6K-token system prefix from cache and re-sent the rest as fresh input. 104 of those came with a shrinking context, most likely Claude Code trimming old tool results; that mechanism is inferred, not confirmed. 19 of them followed a pause of over 5 minutes, so cache expiry explains some too. Later resets came at 375-918K, so the trigger is not one fixed size.
+- **Result: 66.5M fresh input tokens and 131M cache reads.** Ordinary calls added 8.8M tokens of new content; about 11M is the estimate counting the reset calls.
+- **Projection.** A simulation over the same requests, with a new subagent before 250K (74 subagents, each paying the job's 74K first call again), gives 16.7M fresh and 54M reads. That is 2.8x fewer raw tokens, or 3.7x cheaper weighted by API price (cache read about 0.1x, 5-minute write 1.25x; at the 1-hour write's 2x it is 3.8x). How either maps onto subscription limits is not documented.
+- **Checks, one assumption changed at a time.** Weighted savings: 3.3x keeping the observed cache expiries; 2.2x keeping every observed reset; 2.8x with all per-call growth scaled 1.4x (mean over median); 2.0x with per-call growth doubled; 2.1x with the briefing doubled.
+- **Stacked worst case.** Doubled growth plus doubled briefing gives 1.1x, and adding the expiries and resets gives 0.9x.
+
+This is a projection from one job on one Claude Code build, not a measured re-run; re-measure if a later build behaves differently. Across the single-assumption checks the saving is about 2-4x; it holds only while each batch's fixed cost stays small next to the context it saves. At this job's 74K first call, a 350K cap instead of 250K changes the simulated saving by only about 0.1x; with a large briefing the higher cap recovers much more (2.1x against 1.1x at 200K), so a bulky briefing is a reason to batch closer to 350K, at the cost of less margin below the first reset.
+
 ## What NOT to do
 
 - Don't spin out tasks that need to import from each other's new code (they'd fail)
