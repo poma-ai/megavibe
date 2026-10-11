@@ -208,6 +208,7 @@ fi
 # off is exactly what silently degrades every later review.
 REVIEWER_ROW=""
 REVIEWER_LINE=""
+REVIEWER_USER=""   # a pin the user should see; the default stays silent
 if [ -n "$ACTIVE_REVIEWERS" ]; then
   RV_SORTED=$(printf '%s\n' $ACTIVE_REVIEWERS | sort | tr '\n' ' ' | sed 's/ *$//')
   # MEGAVIBE_REVIEWERS=auto in the environment beats every settings file
@@ -229,6 +230,8 @@ if [ -n "$ACTIVE_REVIEWERS" ]; then
     else
       REVIEWER_ROW="
 | Reviewers (non-negotiable 4) | reviewer + codex (pinned; gemini will NOT stand in) |"
+      REVIEWER_USER="
+Reviewers: reviewer + codex (pinned; gemini will NOT stand in)"
     fi
   elif [ "$RV_SORTED" = "gemini reviewer" ] && [ "$RV_DEFAULT" = "gemini reviewer" ]; then
     # Default on a machine where codex does not work. Also silent: the Codex
@@ -343,6 +346,7 @@ ${DECISIONS_TAIL}${POINTER}"
 USER_MSG="megavibe: project knowledge loaded"
 case "$CODEX_STATUS" in INSTALLED*) USER_MSG="${USER_MSG}
 Codex: ${CODEX_STATUS}" ;; esac
+[ -n "$REVIEWER_USER" ] && USER_MSG="${USER_MSG}${REVIEWER_USER}"
 [ -n "$REVIEWER_LINE" ] && USER_MSG="${USER_MSG}${REVIEWER_LINE}"
 [ -n "$REVIEWER_DEFAULT_NOTE" ] && USER_MSG="${USER_MSG}${REVIEWER_DEFAULT_NOTE}"
 jq -n --arg ctx "$SHORT" --arg msg "$USER_MSG" \
