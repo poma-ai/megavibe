@@ -1730,23 +1730,36 @@ fi
 if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.claude/settings.json" ] \
    && [ -f "$MEGAVIBE_HOME/init.sh" ] && [ -d "$MEGAVIBE_HOME/template" ]; then
   # -L: template/ or init.sh may be symlinks (the installer preserves that layout).
-  _ps_sum=$(cd "$MEGAVIBE_HOME" && find -L init.sh template -type f -print0 2>/dev/null \
+  _ps_sum=$(cd "$MEGAVIBE_HOME" && find -L init.sh template -type f ! -name .DS_Store -print0 2>/dev/null \
               | LC_ALL=C sort -z | xargs -0 cksum | cksum || true)
   _ps_stamp="$MEGAVIBE_HOME/.personal-synced"
   # A matching stamp is not enough on its own: an older run that stalled
-  # mid-install and was killed after a newer one finished can leave an old file
-  # behind under a new stamp. So the installed hooks, rules and agents are also
-  # compared with the template (about 40 cmp calls), and any difference is due.
+  # mid-install and was killed after a newer one finished can leave old files
+  # or old settings behind under a new stamp, and a file that failed to install
+  # (init.sh only warns) would be stamped too. So what is installed is checked
+  # as well, and any difference is due: every hook, rule, agent and skill file
+  # byte for byte (about 50 cmp calls), and every hook registration the
+  # template makes (event, matcher, script) present in settings.json. Extra
+  # registrations of the user's own are fine.
   _ps_due=0
   [ "$(cat "$_ps_stamp" 2>/dev/null || true)" = "$_ps_sum" ] || _ps_due=1
   if [ "$_ps_due" = 0 ]; then
     for _ps_t in "$MEGAVIBE_HOME/template/.claude/hooks/"*.sh \
                  "$MEGAVIBE_HOME/template/.claude/rules/"*.md \
-                 "$MEGAVIBE_HOME/template/.claude/agents/"*.md; do
+                 "$MEGAVIBE_HOME/template/.claude/agents/"*.md \
+                 "$MEGAVIBE_HOME/template/.claude/skills/"*/*; do
       [ -f "$_ps_t" ] || continue
       _ps_rel="${_ps_t#"$MEGAVIBE_HOME/template/"}"
       cmp -s "$_ps_t" "$MEGAVIBE_HOME/personal/$_ps_rel" || { _ps_due=1; break; }
     done
+  fi
+  if [ "$_ps_due" = 0 ] && command -v jq >/dev/null 2>&1; then
+    jq -e -n --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
+          --slurpfile p "$MEGAVIBE_HOME/personal/.claude/settings.json" '
+        def regs(x): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
+                      | .hooks[]? | (.command // "") | capture("\\.claude/hooks/(?<b>[A-Za-z0-9._-]+\\.sh)")?
+                      | "\($e)\t\($m)\t\(.b)"] | unique;
+        (regs($t[0]) - regs($p[0])) | length == 0' >/dev/null 2>&1 || _ps_due=1
   fi
   if [ -n "$_ps_sum" ] && [ "$_ps_due" = 1 ]; then
     echo "  Syncing the personal assistant's hooks..." >&2

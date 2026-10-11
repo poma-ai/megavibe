@@ -253,6 +253,9 @@ SETTINGS_TMP="${SETTINGS}.tmp.$$"
 trap 'rm -f "$SETTINGS_TMP" 2>/dev/null || true' EXIT
 # A SIGKILLed run skips the trap; sweep its leftovers once they are clearly stale.
 find "$PROJECT/.claude/" -maxdepth 1 \( -name 'settings.json.tmp.*' -o -name 'settings.json.tmp' \) -mmin +10 -exec rm -f {} + 2>/dev/null || true
+# atomic_install stages each file as a hidden ".<name>.XXXXXX" beside it; a
+# killed run leaves those in the hooks dir, so sweep stale ones there too.
+find "$PROJECT/.claude/hooks/" -maxdepth 1 -name '.*.??????' -type f -mmin +10 -exec rm -f {} + 2>/dev/null || true
 TEMPLATE_SETTINGS="$TEMPLATE_DIR/.claude/settings.json"
 
 # `-f` passes on a file the OS will not let us READ. An evicted iCloud file
