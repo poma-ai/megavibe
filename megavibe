@@ -1704,6 +1704,85 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
   fi
 fi
 
+# The personal assistant's folder ($MEGAVIBE_HOME/personal) is a project too,
+# but nothing launches `megavibe` in it, so its hooks stayed at whatever an
+# earlier init.sh run wrote: found four months stale, without rm-to-trash, on a
+# session that runs with --dangerously-skip-permissions. Sync it here, after
+# the templates and init.sh are synced, never at assistant start (racing the
+# Telegram bot's start was where the first attempt, #50, kept breaking).
+#
+# "Due" is a comparison, not a flag: a checksum of the installed init.sh and
+# template tree against the one recorded by the last successful sync. The sum
+# is taken BEFORE init.sh runs, so files that change during a run leave a
+# mismatch and the next launch syncs again; an interrupted or failed run
+# records nothing. Overlapping launches can both sync, and one may record an
+# older sum, which again only costs one more sync. Nothing can be lost.
+#
+# It runs whether or not the assistant is up: that session lives for weeks.
+# This departs on purpose from the older rule (DECISIONS, and the resume path
+# below) never to touch hooks under a live session: that rule predates atomic
+# installs and the hooks-before-settings order in init.sh, which make it safe. A
+# live session picks up changed hook scripts on their next call (each install
+# is an atomic rename, and init.sh installs hook files before settings.json
+# names them); newly registered hooks take effect after its next restart (or a
+# /hooks review). Only a folder init.sh has set up before is synced: a fresh
+# one is left for the user to opt in (`bash ~/.megavibe/init.sh <dir>`). The poma-memory
+# heal is skipped, since it moves the index db aside under a possibly live
+# reader. As in every project, init.sh replaces the hooks block of
+# settings.json and the synced rules, skills and agents wholesale.
+if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.claude/settings.json" ] \
+   && [ -f "$MEGAVIBE_HOME/init.sh" ] && [ -d "$MEGAVIBE_HOME/template" ]; then
+  # -L: template/ or init.sh may be symlinks (the installer preserves that layout).
+  _ps_sum=$(cd "$MEGAVIBE_HOME" && find -L init.sh template -type f ! -name .DS_Store -print0 2>/dev/null \
+              | LC_ALL=C sort -z | xargs -0 cksum | cksum || true)
+  _ps_stamp="$MEGAVIBE_HOME/.personal-synced"
+  # A matching stamp is not enough on its own: an older run that stalled
+  # mid-install and was killed after a newer one finished can leave old files
+  # or old settings behind under a new stamp, and a file that failed to install
+  # (init.sh only warns) would be stamped too. So what is installed is checked
+  # as well, and any difference is due: every hook, rule, agent and skill file
+  # byte for byte (about 50 cmp calls), and every hook registration the
+  # template makes (event, matcher, script) present in settings.json. Extra
+  # registrations of the user's own are fine.
+  _ps_due=0
+  [ "$(cat "$_ps_stamp" 2>/dev/null || true)" = "$_ps_sum" ] || _ps_due=1
+  if [ "$_ps_due" = 0 ]; then
+    for _ps_t in "$MEGAVIBE_HOME/template/.claude/hooks/"*.sh \
+                 "$MEGAVIBE_HOME/template/.claude/rules/"*.md \
+                 "$MEGAVIBE_HOME/template/.claude/agents/"*.md \
+                 "$MEGAVIBE_HOME/template/.claude/skills/"*/*; do
+      [ -f "$_ps_t" ] || continue
+      _ps_rel="${_ps_t#"$MEGAVIBE_HOME/template/"}"
+      cmp -s "$_ps_t" "$MEGAVIBE_HOME/personal/$_ps_rel" || { _ps_due=1; break; }
+    done
+  fi
+  # Full commands, expanded the way init.sh writes them (quoted absolute path
+  # under the canonical folder), so a moved ~/.megavibe whose settings still
+  # point at the old location is due too.
+  if [ "$_ps_due" = 0 ] && command -v jq >/dev/null 2>&1; then
+    _ps_root=$(cd "$MEGAVIBE_HOME/personal" && pwd -P) || _ps_due=1
+    jq -e -n --arg root "${_ps_root:-}/" \
+          --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
+          --slurpfile p "$MEGAVIBE_HOME/personal/.claude/settings.json" '
+        def regs(x; f): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
+                         | .hooks[]? | (.command // "" | f) as $c | "\($e)\t\($m)\t\($c)"] | unique;
+        def expand: if startswith(".claude/hooks/") then "\"" + $root + . + "\"" else . end;
+        (regs($t[0]; expand) - regs($p[0]; .)) | length == 0' >/dev/null 2>&1 || _ps_due=1
+  fi
+  if [ -n "$_ps_sum" ] && [ "$_ps_due" = 1 ]; then
+    echo "  Syncing the personal assistant's hooks..." >&2
+    if MEGAVIBE_INIT_SKIP_HEAL=1 bash "$MEGAVIBE_HOME/init.sh" "$MEGAVIBE_HOME/personal" </dev/null \
+         >"$MEGAVIBE_HOME/personal-init.log" 2>&1; then
+      # Without jq, init.sh exits 0 but cannot merge settings.json: not a sync.
+      if command -v jq >/dev/null 2>&1; then
+        printf '%s\n' "$_ps_sum" > "$_ps_stamp" 2>/dev/null || true
+      fi
+    else
+      echo "Warning: syncing the personal assistant's hooks failed; will retry next launch. Log: $MEGAVIBE_HOME/personal-init.log" >&2
+    fi
+  fi
+fi
+
 # Keep the active statusline in sync with the template. The block above
 # surgically updates ~/.claude/CLAUDE.md on launch but historically never the
 # statusline, so edits to template/statusline.sh silently failed to propagate

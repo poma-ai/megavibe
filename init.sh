@@ -229,8 +229,30 @@ copy_if_missing() {
   fi
 }
 
+# --- Hook scripts (infrastructure — always overwrite) ---
+# Hook files go in BEFORE settings.json names them. The other order left a
+# window where a killed run (Ctrl-C, timeout) had registered hooks that did
+# not exist yet, safety hooks included, and every tool call in the next
+# session failed on them until init.sh ran again.
+HOOKS_MISSING=0
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
+  if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
+    atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
+    echo "  synced: .claude/hooks/$hook"
+  else
+    echo "  skip: .claude/hooks/$hook (missing from template)"
+    HOOKS_MISSING=$((HOOKS_MISSING + 1))
+  fi
+done
 # --- Merge hooks into .claude/settings.json (first time only) ---
 SETTINGS="$PROJECT/.claude/settings.json"
+# Per process: two overlapping init.sh runs on one project shared one fixed
+# .tmp name, so one truncated the file the other was installing and aborted.
+# The trap also removes it when a run is killed between write and install.
+SETTINGS_TMP="${SETTINGS}.tmp.$$"
+trap 'rm -f "$SETTINGS_TMP" 2>/dev/null || true' EXIT
+# A SIGKILLed run skips the trap; sweep its leftovers once they are clearly stale.
+find "$PROJECT/.claude/" -maxdepth 1 \( -name 'settings.json.tmp.*' -o -name 'settings.json.tmp' \) -mmin +10 -exec rm -f {} + 2>/dev/null || true
 TEMPLATE_SETTINGS="$TEMPLATE_DIR/.claude/settings.json"
 
 # `-f` passes on a file the OS will not let us READ. An evicted iCloud file
@@ -268,9 +290,9 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
         | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(.hooks |= map(select(((.command // "") | test("^(\"[^\"]*\\.claude/hooks/status-sync\\.sh\"|[^ \"]*\\.claude/hooks/status-sync\\.sh)$")) | not))) | map(select((.hooks | length) > 0))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
-      > "${SETTINGS}.tmp"
-    atomic_install "${SETTINGS}.tmp" "$SETTINGS"
-    rm -f "${SETTINGS}.tmp"
+      > "$SETTINGS_TMP"
+    atomic_install "$SETTINGS_TMP" "$SETTINGS"
+    rm -f "$SETTINGS_TMP"
     echo "  synced: .claude/settings.json (hooks)"
   else
     echo "  warning: .claude/settings.json exists but jq is not available to sync hooks"
@@ -282,28 +304,17 @@ else
   # bakes a symlink into settings.json and breaks every hook if it moves.
   ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
   jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
-    "$TEMPLATE_SETTINGS" > "${SETTINGS}.tmp"
+    "$TEMPLATE_SETTINGS" > "$SETTINGS_TMP"
   # Through atomic_install, not a bare `> "$SETTINGS"`. A redirect FOLLOWS a
   # symlink, so when this branch is reached because the existing settings.json
   # is an unreadable symlink, the redirect writes the unreadable target and
   # fails — aborting the run with zero hooks installed, which is the whole
   # failure this is recovering from. atomic_install replaces the link instead.
-  atomic_install "${SETTINGS}.tmp" "$SETTINGS"
-  rm -f "${SETTINGS}.tmp" 2>/dev/null || true
+  atomic_install "$SETTINGS_TMP" "$SETTINGS"
+  rm -f "$SETTINGS_TMP" 2>/dev/null || true
   echo "  created: $SETTINGS"
 fi
 
-# --- Hook scripts (infrastructure — always overwrite) ---
-HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
-  if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
-    atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
-    echo "  synced: .claude/hooks/$hook"
-  else
-    echo "  skip: .claude/hooks/$hook (missing from template)"
-    HOOKS_MISSING=$((HOOKS_MISSING + 1))
-  fi
-done
 # --- Every registration must point at a file that exists --------------------
 # settings.json and the hook list above are deployed separately, so they can
 # drift: on 2026-09-11 the deployed template's settings.json already named
@@ -327,12 +338,12 @@ if command -v jq >/dev/null 2>&1 && [ -f "$SETTINGS" ]; then
            .hooks |= with_entries(
              .value |= ( map(.hooks |= map(select(((.command // "") | contains($b)) | not)))
                        | map(select((.hooks | length) > 0)) )
-           )' "$SETTINGS" > "${SETTINGS}.tmp" 2>/dev/null; then
-      atomic_install "${SETTINGS}.tmp" "$SETTINGS"
-      rm -f "${SETTINGS}.tmp"
+           )' "$SETTINGS" > "$SETTINGS_TMP" 2>/dev/null; then
+      atomic_install "$SETTINGS_TMP" "$SETTINGS"
+      rm -f "$SETTINGS_TMP"
       echo "  unregistered: $_base (no such hook in the template)"
     else
-      rm -f "${SETTINGS}.tmp"
+      rm -f "$SETTINGS_TMP"
       echo "  ⚠  $_base is registered but missing, and could not be repaired" >&2
     fi
   done
@@ -483,7 +494,9 @@ xattr -rd com.apple.quarantine "$PROJECT/.claude/hooks/" 2>/dev/null || true
 # rebuild it scoped to THIS .agent/ only — never a parent dir (that caused the pollution).
 # Safe: marker-gated (idempotent), no-op without poma-memory, never aborts init.
 HEAL_MARKER="$PROJECT/.agent/LOGS/.poma-heal-v1"
-if command -v poma-memory &>/dev/null && [ ! -f "$HEAL_MARKER" ]; then
+# MEGAVIBE_INIT_SKIP_HEAL=1: the launcher's sync of the personal
+# assistant's folder sets it, because that session may be live and reading the db.
+if [ "${MEGAVIBE_INIT_SKIP_HEAL:-0}" != 1 ] && command -v poma-memory &>/dev/null && [ ! -f "$HEAL_MARKER" ]; then
   echo "  healing poma-memory index (one-time clean rebuild)..."
   mkdir -p "$PROJECT/.agent/LOGS"
   DB="$PROJECT/.agent/.poma-memory.db"

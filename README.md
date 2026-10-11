@@ -358,7 +358,7 @@ A session hands you work in one visible place instead of burying it in the hidde
 |------|-------|
 | `megavibe` CLI | `~/.local/bin/megavibe` |
 | Framework files | `~/.megavibe/` |
-| Personal assistant project | `~/.megavibe/personal/` |
+| Personal assistant project | `~/.megavibe/personal/` (once set up with `bash ~/.megavibe/init.sh ~/.megavibe/personal`, its hooks, rules, skills and agents sync on the next project `megavibe` launch after an update, not on `megavibe assistant`; log in `~/.megavibe/personal-init.log`) |
 | Core protocol | `~/.claude/CLAUDE.md` |
 | Status bar | `~/.claude/statusline.sh` |
 | MCP servers | Gemini, Playwright, poma-memory (Codex is a CLI, not MCP) |
