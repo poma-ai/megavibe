@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Check that nothing org-specific or secret is published in this PUBLIC repo.
 #
-# megavibe ships credential-touching scripts (provision-megawork.sh,
-# mint-gemini-key.sh, google-oauth-mint.sh) and is developed inside a company
+# megavibe ships credential-touching scripts (mint-gemini-key.sh,
+# google-oauth-mint.sh) and is developed inside a company
 # that has real keys, hostnames and colleagues. Two things have already landed
 # here and cost a history rewrite each — see .gitignore. The cost asymmetry is
 # the whole argument: catching it before a push is a `git reset`, catching it

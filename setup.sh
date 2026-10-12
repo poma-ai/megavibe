@@ -190,15 +190,8 @@ fi
 # ─── 0. Define installation mode ────────────────────────────────────
 
 NONINTERACTIVE_AUTO=0
-HARNESS_ONLY=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
-    --harness-only)
-      # Everything Megawork needs — the CLIs, poma-memory, the MCP servers —
-      # without the developer surface: no protocol in ~/.claude/CLAUDE.md, no
-      # statusline, no Telegram bot, no megavibe CLI. Megawork brings its own
-      # protocol and launcher and would only fight those.
-      HARNESS_ONLY=1; NONINTERACTIVE_AUTO=1; shift; continue ;;
     --auto-install)
       NONINTERACTIVE_AUTO=1
       ;;
@@ -365,9 +358,7 @@ fi
 
 # ─── 2. First-time logins ───────────────────────────────────────────
 
-if [ "${HARNESS_ONLY:-0}" = "1" ]; then
-  : # Megawork handles the one sign-in that matters (Claude) in its own words.
-elif [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
+if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   info "2) First-time logins"
   echo ""
@@ -399,11 +390,7 @@ fi
 # accounts are pointed at the Antigravity CLI instead). API key auth still
 # works and is now the ONLY supported auth for megavibe's Gemini backend.
 
-if [ "${HARNESS_ONLY:-0}" = "1" ]; then
-  # Megawork: the key is the organisation's and is pasted once by megawork/init.sh (or read
-  # from the overlay), after this script has run. Nothing to ask here.
-  :
-elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo ""
   info "2b) Gemini API key"
   echo ""
@@ -454,10 +441,6 @@ elif [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
 fi
 
 # ─── 3. Deploy megavibe to ~/.megavibe/ + install CLI ─────────────
-if [ "${HARNESS_ONLY:-0}" = "1" ]; then
-  info "Harness-only install: tools and MCP servers, no developer setup"
-else
-
 echo ""
 info "3) Deploying megavibe"
 
@@ -785,13 +768,6 @@ fi
 # given the rm -rf that follows).
 [ -n "${MEGAVIBE_HOME:-}" ] || { err "MEGAVIBE_HOME is empty — refusing to rm -rf"; exit 1; }
 atomic_install_dir "$SCRIPT_DIR/template" "$MEGAVIBE_HOME/template"
-# The Megawork profile ships with the install too — the curl installer clones to a
-# temp dir and deletes it, so without this `megavibe megawork` would have nothing
-# to run and the documented setup path would be broken for every quickstart user.
-if [ -d "$SCRIPT_DIR/megawork" ]; then
-  atomic_install_dir "$SCRIPT_DIR/megawork" "$MEGAVIBE_HOME/megawork"
-  chmod +x "$MEGAVIBE_HOME/megawork/init.sh" "$MEGAVIBE_HOME/megawork/bin/"* 2>/dev/null || true
-fi
 ok "~/.megavibe/ synced"
 
 
@@ -1294,8 +1270,6 @@ if [ -d "$LEGACY_HOOK_DIR" ]; then
     fi
   fi
 fi
-
-fi   # end of the developer-only sections skipped by --harness-only
 
 # ─── 6. Register MCP servers ────────────────────────────────────────
 

@@ -606,66 +606,6 @@ if [ "${1:-}" = "update" ]; then
   exit 0
 fi
 
-# ─── Nondev subcommand ───────────────────────────────────────────────
-
-if [ "${1:-}" = "megawork" ] || [ "${1:-}" = "nondev" ]; then
-  shift
-  NONDEV_DIR="$MEGAVIBE_HOME/megawork"
-  [ -d "$NONDEV_DIR" ] || NONDEV_DIR="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/megawork"
-  if [ ! -d "$NONDEV_DIR" ]; then
-    echo "The Megawork profile is not installed. Re-run: bash setup.sh"
-    exit 1
-  fi
-  if [ "$(uname -s)" != "Darwin" ]; then
-    echo "megawork is macOS-only — its containment is a macOS sandbox profile."
-    exit 1
-  fi
-  # The installed engine is the control plane: policy, seatbelt profile and
-  # protocol live there, OUTSIDE the writable folder, so a session can never
-  # rewrite its own guardrails. The repo copy has no rendered policy, so a bare
-  # `nondev` must reach the INSTALLED engine, never $NONDEV_DIR/bin.
-  NONDEV_ENGINE="${MEGAWORK_HOME:-$HOME/.megawork}"
-
-  # Only the known words are subcommands. Everything else — a flag like -p, or
-  # a bare prompt — belongs to the session and is passed straight through, so
-  # `megavibe nondev -p "..."` and `megavibe nondev "do X"` both work.
-  case "${1:-}" in
-    init)   shift; exec bash "$NONDEV_DIR/init.sh" "$@" ;;
-    doctor|connect|mode|folder|update)
-      _sub="megawork-$1"; shift
-      # Each of these derives the engine from its OWN location, so the repo copy
-      # audits or edits the CHECKOUT, not the install. That is not a harmless
-      # fallback: `doctor` against the checkout prints "10 ok, 8 problems" for a
-      # machine that has no install at all — the exact misleading report this
-      # dispatch exists to stop. No engine means not set up, same as `start`.
-      if [ ! -x "$NONDEV_ENGINE/bin/$_sub" ]; then
-        echo "Nondev mode is not set up yet. Run:  megavibe nondev init"
-        exit 1
-      fi
-      exec "$NONDEV_ENGINE/bin/$_sub" "$@" ;;
-    -h|--help|help)
-      echo "Usage: megavibe nondev [init|doctor|connect|mode|folder|update]"
-      echo ""
-      echo "  (no argument)  start a nondev session — sandboxed, plain language"
-      echo "  init           first-time setup (asks where the working folder goes)"
-      echo "  doctor         check the install, including live sandbox-escape tests"
-      echo "  connect        add or review an outside service (Gmail, GitHub, …)"
-      echo "  mode           on|off — keep the developer protocol out of sessions"
-      echo "  folder         show or move the working folder"
-      echo "  update         fetch and install the current release"
-      echo ""
-      echo "  Anything else is passed to the session:  megavibe nondev -p \"...\""
-      exit 0 ;;
-    *)
-      [ "${1:-}" = "start" ] && shift
-      if [ ! -x "$NONDEV_ENGINE/bin/megawork" ]; then
-        echo "Nondev mode is not set up yet. Run:  megavibe nondev init"
-        exit 1
-      fi
-      exec "$NONDEV_ENGINE/bin/megawork" "$@" ;;
-  esac
-fi
-
 # ─── Remote subcommand ───────────────────────────────────────────────
 
 # ─── Worktree subcommand ────────────────────────────────────────────
@@ -767,8 +707,8 @@ fi
 
 # Subscription first: a launch that would bill per token is refused unless
 # MEGAVIBE_ALLOW_API_BILLING=1. Called on the main launch only, after ANTHROPIC_API_KEY is
-# masked. `megavibe assistant|remote|nondev` start Claude by other routes (tmux, a bot, the
-# megawork engine) and are NOT covered yet, and neither is a key supplied through `--settings`
+# masked. `megavibe assistant|remote` start Claude by other routes (tmux, a bot)
+# and are NOT covered yet, and neither is a key supplied through `--settings`
 # (your explicit choice; the login check cannot see it). $1 = `claude auth status` JSON.
 # authMethod is one of none | claude.ai | oauth_token | api_key | api_key_helper | third_party
 # (claude docs); oauth_token is a subscription token and stays allowed. Older CLIs report a
@@ -2490,7 +2430,7 @@ export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
 #
 # Some user-scope MCP registrations reference ${MEGAWORK_TOKEN_<NAME>} and
 # ${MEGAWORK_PASSWORD_<NAME>} — the `github` and `reports` servers. Those
-# placeholders were only ever filled by the megawork launcher, so a plain
+# placeholders were only ever filled by the (removed) megawork launcher, so a plain
 # `megavibe` dev session started them with the value unsubstituted: GitHub
 # answered 400 "Authorization header is badly formatted", and the reports
 # toolbox exited during config parse on a missing variable. Every dev session
@@ -2498,10 +2438,13 @@ export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
 # credentials were sitting on disk, readable, the whole time — and two standing
 # red lines are how people learn to ignore MCP failures that matter.
 #
-# Same loader as megawork/bin/megawork's export_tokens, over the same files.
-# Inert when the policy directory is absent, which is every machine that never
-# installed megawork. Values are read from files into the environment and never
-# passed through argv, so they stay out of `ps`.
+# The Megawork profile is no longer shipped from this repo (replaced by Claude
+# Cowork + a hosted connector), but machines that installed it keep
+# ~/.megawork/policy and MCP registrations that still reference these
+# placeholders, so the loader stays. Inert when the policy directory is absent,
+# which is every machine that never installed megawork. Values are read from
+# files into the environment and never passed through argv, so they stay out
+# of `ps`.
 MEGAWORK_POLICY="${MEGAWORK_ENGINE:-$HOME/.megawork}/policy"
 if [ -d "$MEGAWORK_POLICY" ]; then
   for _tf in "$MEGAWORK_POLICY"/*-token; do
