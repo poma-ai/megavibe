@@ -66,7 +66,6 @@ KUBE_TOKEN_MAX_AGE=$((10#$KUBE_TOKEN_MAX_AGE))   # decimal: "08" is not octal
 [ -n "$KUBE_TOKEN_KEEPER" ] || exit 0
 
 command -v jq &>/dev/null || exit 0
-command -v python3 &>/dev/null || exit 0
 
 INPUT=$(cat 2>/dev/null || echo "")
 TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
@@ -96,7 +95,10 @@ fi
 # reauth wall into a 401 that shadows whatever credentials the user has. Ten
 # minutes of grace over MAX_AGE, then hand nothing over.
 MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FILE" 2>/dev/null || echo 0)
-[ $(( $(date +%s) - MTIME )) -lt $(( KUBE_TOKEN_MAX_AGE + 600 )) ] || exit 0
+if [ $(( $(date +%s) - MTIME )) -ge $(( KUBE_TOKEN_MAX_AGE + 600 )) ]; then
+  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] The token keeper could not refresh the token, so none was handed over. If this command fails on auth, say plainly that the keeper failed; do not send the user to an interactive login."}}' 2>/dev/null || true
+  exit 0
+fi
 
 # --- 2. hand the token over through gcloud's own configuration -------------
 # Nothing inside the command is rewritten. One line in front of it exports
@@ -145,23 +147,32 @@ import sys
 sys.stdout.write(sys.stdin.read().replace("\\\n", "").replace("\x27", "").replace("\"", "").replace("\\", ""))
 ' 2>/dev/null) || NORM=""
 # Without python (or if it fails): the same in sed + tr.
-[ -n "$NORM" ] || NORM=$(printf '%s' "$COMMAND" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\\\n//g' 2>/dev/null | tr -d "\"'\\\\") || NORM=""
+# ($!{N;ba} keeps a single line: BSD sed's bare N discards it at end of input.)
+[ -n "$NORM" ] || NORM=$(printf '%s' "$COMMAND" | sed -e ':a' -e '$!{N;ba' -e '}' -e 's/\\\n//g' 2>/dev/null | tr -d "\"'\\\\") || NORM=""
 has() { printf '%s' "$NORM" | grep -Eq "(^|[^[:alnum:]_])($1)([^[:alnum:]_]|\$)"; }
 # The CLOUDSDK_* identity variables count even without the word gcloud: they
 # also steer the GKE plugin's call to gcloud (`env CLOUDSDK_CORE_ACCOUNT=x kubectl`).
-# With gcloud in the command, any shell expansion that could spell a group the
-# static check cannot read also skips: ANSI-C or locale quoting ($'...', $"..."),
-# $( ), ${ }, backticks, glob characters and braces; so does --flags-file, which
-# can carry an --account the command line does not show.
+# With gcloud in the command, ANSI-C or locale quoting ($'...', $"...) also
+# skips (it can spell any word), and so does --flags-file, which can carry an
+# --account the command line does not show.
+#
+# Scope: this guards against honest mistakes (a login, a revoke or an explicit
+# account running under the keeper's token), not against a command built to get
+# past it. Any command the agent runs can read the token file directly, so a
+# deliberately obfuscated spelling (a group or the gcloud name assembled from
+# variables, globs, brace or command expansion) crosses no boundary; recognising
+# every one would need a shell, and the attempts to approximate one cost the
+# ordinary commands their token.
 SKIP=0
+[ -n "$NORM" ] || SKIP=1      # could not normalise: fail closed
 printf '%s' "$NORM" | grep -Eq 'CLOUDSDK_(CORE_ACCOUNT|AUTH_CREDENTIAL_FILE_OVERRIDE|ACTIVE_CONFIG_NAME|CONFIG|AUTH_ACCESS_TOKEN|AUTH_IMPERSONATE_SERVICE_ACCOUNT)([^_[:alnum:]]|$)' && SKIP=1
 if has gcloud; then
   has 'auth|config|components|init' && SKIP=1
   printf '%s' "$NORM" | grep -Eq -- '--account|--configuration|--credential-file-override|--impersonate-service-account|--flags-file' && SKIP=1
-  printf '%s' "$COMMAND" | grep -Eq '\$['"'"'"({]|`|[*?{]' && SKIP=1
+  printf '%s' "$COMMAND" | grep -Eq '\$['"'"'"]' && SKIP=1
 fi
 if [ "$SKIP" = "1" ]; then
-  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] No token was handed over for this command: it contains a gcloud credential/configuration word (auth, config, components, init, also inside names or paths), an account/configuration/impersonation choice, a CLOUDSDK_* identity variable, or a shell expansion next to gcloud. If it fails on auth, run the cluster or gcloud command as its own Bash call without those words (a kubectl call without gcloud in it always gets the token); otherwise report the failure plainly."}}' 2>/dev/null || true
+  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] No token was handed over for this command: it contains gcloud together with a credential/configuration word (auth, config, components, init, also inside names or paths), an account/configuration/impersonation choice or $'...' quoting, or a CLOUDSDK_* identity variable. If it fails on auth, run the cluster or gcloud command as its own Bash call without those words (a kubectl call without gcloud in it always gets the token); otherwise report the failure plainly."}}' 2>/dev/null || true
   exit 0
 fi
 # A relative path is resolved the way step 1 checked it: from this directory.
