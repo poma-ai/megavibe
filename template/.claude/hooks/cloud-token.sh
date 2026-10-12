@@ -38,15 +38,14 @@ set -u
 # gcloud was the gap that made this look broken. The keeper mints a `ya29.`
 # Google OAuth access token, which is exactly what `gcloud --access-token-file`
 # consumes — but the hook only ever rewrote kubectl, so every `gcloud` call
-# still hit the reauth wall. Measured in ~/dev/poma-on-prem's own logs: 74
+# still hit the reauth wall. Measured in one real project's logs: 74
 # occurrences of the model telling the user to run `gcloud auth login`, and 32
 # of "cannot prompt during non-interactive execution", while a usable token sat
 # in the keeper's file.
 #
-# A command that mentions gcloud, `auth` and a login verb (login,
-# activate-service-account, application-default) gets no token: a login is the
-# one command that fixes a genuine expiry, and it must not be shadowed by the
-# token it replaces.
+# A command running `gcloud auth|config|components|init` gets no token: a login
+# is the one command that fixes a genuine expiry and must not be shadowed by the
+# token it replaces, and the other credential commands need the stored accounts.
 #
 # Only the token FILE's path is exported, never the token: it does not enter
 # the command text, a shell variable or the model's context (a token held in a
@@ -91,6 +90,11 @@ if [ "$NEED" = "1" ]; then
   wait "$KPID" 2>/dev/null || true
 fi
 [ -s "$KUBE_TOKEN_FILE" ] || exit 0
+# The keeper may have failed: a token that is still stale would only turn the
+# reauth wall into a 401 that shadows whatever credentials the user has. Ten
+# minutes of grace over MAX_AGE, then hand nothing over.
+MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FILE" 2>/dev/null || echo 0)
+[ $(( $(date +%s) - MTIME )) -lt $(( KUBE_TOKEN_MAX_AGE + 600 )) ] || exit 0
 
 # --- 2. hand the token over through gcloud's own configuration -------------
 # Nothing inside the command is rewritten. One line in front of it exports
@@ -100,7 +104,10 @@ fi
 # which honours the property. Verified 2026-10-12 against a GKE cluster:
 # kubectl, kubectl auth whoami, kubeseal --fetch-cert and gcloud all work with
 # only this variable, and all fail at the reauth wall without it. A kubectl
-# started by a script or `bash -c` inherits it; one run over ssh does not.
+# started by a script or `bash -c` from a command that mentions one of the
+# tools inherits it; a script whose command line names none of them, `sudo`,
+# `env -i` and ssh do not. Only GKE credentials go through gcloud: EKS/OIDC
+# kube contexts and other tools' application-default credentials are untouched.
 #
 # Why not rewrite the command: putting --token=... next to each `kubectl` needs a
 # shell parser. It rewrote heredoc bodies written to files, and two parser
@@ -110,13 +117,21 @@ fi
 #
 # An explicit --token or --access-token-file in the command still wins over the
 # property, so they need no special case.
-printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|gcloud|kubeseal|helm)([^[:alnum:]_-]|$)' || exit 0
-# A login must not run with the token it is meant to replace: with the property
-# set, gcloud would pick the token file over the account being logged in. Word
-# level and deliberately broad (any flags, `beta`, quoting, continuations): a
-# command that mentions gcloud, `auth` and a login verb gets no token at all.
-w() { printf '%s' "$COMMAND" | grep -Eq "(^|[^[:alnum:]_-])$1([^[:alnum:]_-]|\$)"; }
-if w gcloud && w auth && { w login || w activate-service-account || w application-default; }; then
+#
+# gcloud's own credential and configuration commands get no token: with the
+# property set gcloud uses the token file instead of the stored accounts, so a
+# login would be shadowed by the token it replaces, `auth revoke` would not
+# revoke, and `print-identity-token`/`print-access-token <account>` would answer
+# for the wrong identity. Skipped: gcloud followed by auth, config, components
+# or init (global flags with or without a value, and alpha/beta, allowed in
+# between; newlines and line
+# continuations folded), the same set the old rewrite skipped. Per command, not
+# per word: a kubectl in the same command line goes without a token too, which
+# is the behaviour before this hook existed. Still affected: commands that need
+# the stored account's own key, such as `gcloud storage sign-url` with a
+# service-account key (as with the old injected flag).
+FLAT=$(printf '%s' "$COMMAND" | tr '\n\\' '  ')
+if printf '%s' "$FLAT" | grep -Eq '(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|alpha|beta))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'; then
   exit 0
 fi
 # A relative path is resolved the way step 1 checked it: from this directory.
@@ -128,6 +143,6 @@ NEW_CMD="export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE='$TOKEN_PATH'
 $COMMAND"
 
 printf '%s' "$INPUT" | jq -c --arg cmd "$NEW_CMD" \
-  --arg ctx "[megavibe cloud-token] kubectl/gcloud are carrying a freshly minted token. Do NOT tell the user to run gcloud auth login or any interactive cloud login for this — the keeper handles it. If a command still fails on auth, say so plainly rather than falling back to asking for a login." \
+  --arg ctx "[megavibe cloud-token] gcloud and GKE kubectl in this command get a freshly minted token (CLOUDSDK_AUTH_ACCESS_TOKEN_FILE). Do NOT tell the user to run gcloud auth login or any interactive cloud login for this — the keeper handles it. If a command still fails on auth, say so plainly rather than falling back to asking for a login." \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $cmd}), additionalContext: $ctx}}'
 exit 0
