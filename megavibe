@@ -1461,6 +1461,17 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
   exec tmux attach -t "$PERSONAL_TMUX"
 fi
 
+# ─── Removed subcommands ─────────────────────────────────────────────
+#
+# `megavibe nondev` launched the Megawork profile, removed in 2026-10. With
+# extra words (`megavibe nondev update`) it would otherwise fall through to a
+# full developer session with the words as its prompt.
+case "${1:-}" in
+  nondev|megawork)
+    echo "megavibe ${1}: the Megawork profile was removed (Cowork with a hosted connector replaces it)." >&2
+    exit 1 ;;
+esac
+
 # ─── Unknown subcommand guard ────────────────────────────────────────
 #
 # Everything below forwards "$@" straight to `claude`, where a bare word lands
