@@ -131,7 +131,9 @@ MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FIL
 #
 # Also skipped: a command that names gcloud and selects an identity itself
 # (--account, --configuration, --credential-file-override, CLOUDSDK_CORE_ACCOUNT,
-# CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, CLOUDSDK_ACTIVE_CONFIG_NAME). A static
+# CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, CLOUDSDK_ACTIVE_CONFIG_NAME,
+# CLOUDSDK_CONFIG=). Matched anywhere in the command, so such text in prose
+# (an echo, a grep pattern) also skips: no token, the safe direction. A static
 # match cannot see every shell spelling ($'auth', a\uth, a variable holding the
 # group); those still get the token, as they got the flag from the old rewrite.
 #
@@ -142,21 +144,26 @@ MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FIL
 # `gcloud auth login` skips too. Still affected the other way: commands that
 # need the stored account's own key, such as `gcloud storage sign-url` with a
 # service-account key (as with the old injected flag).
-# Normalised for matching only: a backslash-newline continuation is joined
-# (bash joins `au\<newline>th` into `auth`), quoted spans lose their spaces and
-# then their quotes (`--account "a b"` is one word, "auth" is auth), remaining
-# newlines and backslashes become spaces. Redirections (2>/dev/null, >f) may sit
-# between gcloud and its group.
+# Normalised for matching only, as TWO lines matched separately: backslash-
+# newline continuations joined (bash joins `au\<newline>th` into `auth`), then
+#   1. quotes removed, spaces kept: a command quoted for `bash -c "gcloud auth
+#      login"`, `ssh host '...'` or `watch "..."` is still seen as a command;
+#   2. quoted spans first fused into one word, then quotes removed: a quoted
+#      flag value with a space (`--account "a b" auth`) stays one value.
+# Either copy matching skips. Remaining newlines and backslashes become spaces.
+# Redirections (2>/dev/null, 2> /dev/null, >f) may sit between gcloud and its
+# group.
 FLAT=$(printf '%s' "$COMMAND" | python3 -c '
 import re, sys
 s = sys.stdin.read().replace("\\\n", "")
-s = re.sub(r"\x27[^\x27]*\x27|\"[^\"]*\"", lambda m: m.group(0).replace(" ", "_").replace("\t", "_"), s)
-sys.stdout.write(s.replace("\x27", "").replace("\"", "").replace("\n", " ").replace("\\", " "))
+flat = lambda t: t.replace("\x27", "").replace("\"", "").replace("\n", " ").replace("\\", " ")
+fused = re.sub(r"\x27[^\x27]*\x27|\"[^\"]*\"", lambda m: m.group(0).replace(" ", "_").replace("\t", "_"), s)
+sys.stdout.write(flat(s) + "\n" + flat(fused))
 ' 2>/dev/null) || FLAT=$(printf '%s' "$COMMAND" | tr -d "\"'" | tr '\n\\' '  ')
-GC_GROUP='(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]<>][^[:space:]]*)?|alpha|beta|[0-9]*[<>]+&?[^[:space:]]*))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'
+GC_GROUP='(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]<>][^[:space:]]*)?|alpha|beta|[0-9]*[<>]+&?[[:space:]]*[^-[:space:]][^[:space:]]*|[0-9]*[<>]+&?[0-9-]))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'
 # A command that picks its own identity keeps it: the property would override an
 # explicit --account, a credential file override or another configuration.
-GC_IDENTITY='--account([=[:space:]]|$)|--configuration([=[:space:]]|$)|--credential-file-override|CLOUDSDK_CORE_ACCOUNT|CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE|CLOUDSDK_ACTIVE_CONFIG_NAME'
+GC_IDENTITY='--account([=[:space:]]|$)|--configuration([=[:space:]]|$)|--credential-file-override|CLOUDSDK_CORE_ACCOUNT|CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE|CLOUDSDK_ACTIVE_CONFIG_NAME|CLOUDSDK_CONFIG='
 if printf '%s' "$FLAT" | grep -Eq "$GC_GROUP" || { printf '%s' "$FLAT" | grep -Eq '(^|[^[:alnum:]_-])gcloud([^[:alnum:]_-]|$)' && printf '%s' "$FLAT" | grep -Eq -- "$GC_IDENTITY"; }; then
   if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|kubeseal|helm)([^[:alnum:]_-]|$)'; then
     printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] This command runs a gcloud auth/config/components/init command or picks its own gcloud identity, so no token was handed over and the kubectl/helm/kubeseal in it may hit the reauth wall. Run the gcloud command as its own Bash call and the cluster command in a separate one; the separate cluster call gets the token."}}' 2>/dev/null || true
