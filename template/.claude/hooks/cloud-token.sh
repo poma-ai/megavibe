@@ -53,8 +53,8 @@ set -u
 #
 # Triggered by: PreToolUse (Bash). Exit 0 always.
 
-for CONF in "$HOME/.megavibe/personal/cloud-token.conf" \
-            "$HOME/.megavibe/personal/kube-token.conf"; do
+for CONF in "${HOME:-}/.megavibe/personal/cloud-token.conf" \
+            "${HOME:-}/.megavibe/personal/kube-token.conf"; do
   [ -f "$CONF" ] && { . "$CONF" 2>/dev/null; break; }
 done
 KUBE_TOKEN_FILE="${KUBE_TOKEN_FILE:-}"
@@ -124,14 +124,22 @@ MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FIL
 # revoke, and `print-identity-token`/`print-access-token <account>` would answer
 # for the wrong identity. Skipped: gcloud followed by auth, config, components
 # or init (global flags with or without a value, and alpha/beta, allowed in
-# between; newlines and line
-# continuations folded), the same set the old rewrite skipped. Per command, not
-# per word: a kubectl in the same command line goes without a token too, which
-# is the behaviour before this hook existed. Still affected: commands that need
-# the stored account's own key, such as `gcloud storage sign-url` with a
+# between; quote characters removed and newlines and line continuations folded
+# first, so "gcloud" auth or gcloud 'auth' count too). The same set the old
+# rewrite skipped.
+#
+# It errs towards skipping, which only means no token (the behaviour before
+# this hook): per command, not per word, so a kubectl in the same command line
+# goes without (the agent is told to run the gcloud command separately); a flag
+# value named like a group (`--configuration config`) or prose quoting
+# `gcloud auth login` skips too. Still affected the other way: commands that
+# need the stored account's own key, such as `gcloud storage sign-url` with a
 # service-account key (as with the old injected flag).
-FLAT=$(printf '%s' "$COMMAND" | tr '\n\\' '  ')
+FLAT=$(printf '%s' "$COMMAND" | tr -d "\"'" | tr '\n\\' '  ')
 if printf '%s' "$FLAT" | grep -Eq '(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|alpha|beta))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'; then
+  if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|kubeseal|helm)([^[:alnum:]_-]|$)'; then
+    printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] This command runs a gcloud auth/config/components/init command, so no token was handed over and the kubectl/helm/kubeseal in it may hit the reauth wall. Run the gcloud command as its own Bash call and the cluster command in a separate one; the separate cluster call gets the token."}}' 2>/dev/null || true
+  fi
   exit 0
 fi
 # A relative path is resolved the way step 1 checked it: from this directory.
