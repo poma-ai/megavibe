@@ -123,50 +123,34 @@ MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FIL
 # property set gcloud uses the token file instead of the stored accounts, so a
 # login would be shadowed by the token it replaces, `auth revoke` would not
 # revoke, and `print-identity-token`/`print-access-token <account>` would answer
-# for the wrong identity. Skipped: gcloud followed by auth, config, components
-# or init (global flags with or without a value, and alpha/beta, allowed in
-# between; quote characters removed and newlines and line continuations folded
-# first, so "gcloud" auth or gcloud 'auth' count too). The same set the old
-# rewrite skipped.
+# for the wrong identity. The same goes for a command that picks its own
+# identity (--account, --configuration, --credential-file-override,
+# CLOUDSDK_CORE_ACCOUNT, CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE,
+# CLOUDSDK_ACTIVE_CONFIG_NAME, CLOUDSDK_CONFIG=).
 #
-# Also skipped: a command that names gcloud and selects an identity itself
-# (--account, --configuration, --credential-file-override, CLOUDSDK_CORE_ACCOUNT,
-# CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, CLOUDSDK_ACTIVE_CONFIG_NAME,
-# CLOUDSDK_CONFIG=). Matched anywhere in the command, so such text in prose
-# (an echo, a grep pattern) also skips: no token, the safe direction. A static
-# match cannot see every shell spelling ($'auth', a\uth, a variable holding the
-# group); those still get the token, as they got the flag from the old rewrite.
-#
-# It errs towards skipping, which only means no token (the behaviour before
-# this hook): per command, not per word, so a kubectl in the same command line
-# goes without (the agent is told to run the gcloud command separately); a flag
-# value named like a group (`--configuration config`) or prose quoting
-# `gcloud auth login` skips too. Still affected the other way: commands that
-# need the stored account's own key, such as `gcloud storage sign-url` with a
-# service-account key (as with the old injected flag).
-# Normalised for matching only, as TWO lines matched separately: backslash-
-# newline continuations joined (bash joins `au\<newline>th` into `auth`), then
-#   1. quotes removed, spaces kept: a command quoted for `bash -c "gcloud auth
-#      login"`, `ssh host '...'` or `watch "..."` is still seen as a command;
-#   2. quoted spans first fused into one word, then quotes removed: a quoted
-#      flag value with a space (`--account "a b" auth`) stays one value.
-# Either copy matching skips. Remaining newlines and backslashes become spaces.
-# Redirections (2>/dev/null, 2> /dev/null, >f) may sit between gcloud and its
-# group.
-FLAT=$(printf '%s' "$COMMAND" | python3 -c '
-import re, sys
-s = sys.stdin.read().replace("\\\n", "")
-flat = lambda t: t.replace("\x27", "").replace("\"", "").replace("\n", " ").replace("\\", " ")
-fused = re.sub(r"\x27[^\x27]*\x27|\"[^\"]*\"", lambda m: m.group(0).replace(" ", "_").replace("\t", "_"), s)
-sys.stdout.write(flat(s) + "\n" + flat(fused))
-' 2>/dev/null) || FLAT=$(printf '%s' "$COMMAND" | tr -d "\"'" | tr '\n\\' '  ')
-GC_GROUP='(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]<>][^[:space:]]*)?|alpha|beta|[0-9]*[<>]+&?[[:space:]]*[^-[:space:]][^[:space:]]*|[0-9]*[<>]+&?[0-9-]))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'
-# A command that picks its own identity keeps it: the property would override an
-# explicit --account, a credential file override or another configuration.
-GC_IDENTITY='--account([=[:space:]]|$)|--configuration([=[:space:]]|$)|--credential-file-override|CLOUDSDK_CORE_ACCOUNT|CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE|CLOUDSDK_ACTIVE_CONFIG_NAME|CLOUDSDK_CONFIG='
-if printf '%s' "$FLAT" | grep -Eq "$GC_GROUP" || { printf '%s' "$FLAT" | grep -Eq '(^|[^[:alnum:]_-])gcloud([^[:alnum:]_-]|$)' && printf '%s' "$FLAT" | grep -Eq -- "$GC_IDENTITY"; }; then
+# FAIL-CLOSED, by word co-occurrence, not by gcloud's grammar. Here a missed
+# credential command runs with the keeper's identity, while a false skip only
+# means no token (the behaviour before this hook). Matching gcloud's command
+# structure missed some spelling in every review round (quoted words, `a\uth`,
+# redirections glued to gcloud, flags with values), so the check does not look
+# at structure at all: after joining line continuations and deleting every
+# quote and backslash, a command that contains the word `gcloud` AND any of the
+# words auth, config, components, init, or an identity selector, gets no token.
+# Over-skips by design (e.g. `gcloud ... ; kubectl logs deploy/auth`); then the
+# agent is told to run the cluster command separately. Not recognisable
+# statically: a group held in a variable (`gcloud $G`), which still gets it.
+NORM=$(printf '%s' "$COMMAND" | python3 -c '
+import sys
+sys.stdout.write(sys.stdin.read().replace("\\\n", "").replace("\x27", "").replace("\"", "").replace("\\", ""))
+' 2>/dev/null)
+[ -n "$NORM" ] || NORM=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\")
+has() { printf '%s' "$NORM" | grep -Eq "(^|[^[:alnum:]_])($1)([^[:alnum:]_]|\$)"; }
+# The CLOUDSDK_* identity variables count even without the word gcloud: they
+# also steer the GKE plugin's call to gcloud (`env CLOUDSDK_CORE_ACCOUNT=x kubectl`).
+if printf '%s' "$NORM" | grep -Eq 'CLOUDSDK_(CORE_ACCOUNT|AUTH_CREDENTIAL_FILE_OVERRIDE|ACTIVE_CONFIG_NAME|CONFIG|AUTH_ACCESS_TOKEN)([^_[:alnum:]]|$)' \
+   || { has gcloud && { has 'auth|config|components|init' || printf '%s' "$NORM" | grep -Eq -- '--account|--configuration|--credential-file-override'; }; }; then
   if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|kubeseal|helm)([^[:alnum:]_-]|$)'; then
-    printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] This command runs a gcloud auth/config/components/init command or picks its own gcloud identity, so no token was handed over and the kubectl/helm/kubeseal in it may hit the reauth wall. Run the gcloud command as its own Bash call and the cluster command in a separate one; the separate cluster call gets the token."}}' 2>/dev/null || true
+    printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] This command mentions gcloud together with auth/config/components/init or an account/configuration choice, so no token was handed over and the kubectl/helm/kubeseal in it may hit the reauth wall. Run the cluster command as its own Bash call, without gcloud in it; that call gets the token."}}' 2>/dev/null || true
   fi
   exit 0
 fi
