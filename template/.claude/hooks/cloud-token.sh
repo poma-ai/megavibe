@@ -90,15 +90,16 @@ if [ "$NEED" = "1" ]; then
   kill -9 "$KPID" 2>/dev/null || true
   wait "$KPID" 2>/dev/null || true
 fi
-[ -s "$KUBE_TOKEN_FILE" ] || exit 0
+keeper_failed() {
+  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] The token keeper could not refresh the token, so none was handed over. If this command fails on auth, say plainly that the keeper failed; do not send the user to an interactive login."}}' 2>/dev/null || true
+  exit 0
+}
+[ -s "$KUBE_TOKEN_FILE" ] || keeper_failed
 # The keeper may have failed: a token that is still stale would only turn the
 # reauth wall into a 401 that shadows whatever credentials the user has. Ten
 # minutes of grace over MAX_AGE, then hand nothing over.
 MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FILE" 2>/dev/null || echo 0)
-if [ $(( $(date +%s) - MTIME )) -ge $(( KUBE_TOKEN_MAX_AGE + 600 )) ]; then
-  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] The token keeper could not refresh the token, so none was handed over. If this command fails on auth, say plainly that the keeper failed; do not send the user to an interactive login."}}' 2>/dev/null || true
-  exit 0
-fi
+[ $(( $(date +%s) - MTIME )) -lt $(( KUBE_TOKEN_MAX_AGE + 600 )) ] || keeper_failed
 
 # --- 2. hand the token over through gcloud's own configuration -------------
 # Nothing inside the command is rewritten. One line in front of it exports
@@ -178,10 +179,11 @@ if [ "$SKIP" = "1" ]; then
 fi
 # A relative path is resolved the way step 1 checked it: from this directory.
 case "$KUBE_TOKEN_FILE" in /*) TOKEN_PATH="$KUBE_TOKEN_FILE" ;; *) TOKEN_PATH="$PWD/$KUBE_TOKEN_FILE" ;; esac
-case "$TOKEN_PATH" in *"'"*) exit 0 ;; esac   # cannot be single-quoted safely
+# Single-quoted for the shell; an apostrophe in the path becomes '\''.
+QUOTED_PATH=$(printf '%s' "$TOKEN_PATH" | sed "s/'/'\\\\''/g")
 # Only the token FILE's path is exported, never the token. The command stays
 # byte for byte as written, below the prefix line.
-NEW_CMD="export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE='$TOKEN_PATH'
+NEW_CMD="export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE='$QUOTED_PATH'
 $COMMAND"
 
 printf '%s' "$INPUT" | jq -c --arg cmd "$NEW_CMD" \
