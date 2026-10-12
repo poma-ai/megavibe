@@ -169,10 +169,11 @@ printf '%s' "$NORM" | grep -Eq 'CLOUDSDK_(CORE_ACCOUNT|AUTH_CREDENTIAL_FILE_OVER
 if has gcloud; then
   has 'auth|config|components|init' && SKIP=1
   printf '%s' "$NORM" | grep -Eq -- '--account|--configuration|--credential-file-override|--impersonate-service-account|--flags-file' && SKIP=1
-  printf '%s' "$COMMAND" | grep -Eq '\$['"'"'"]' && SKIP=1
+  # only where the quote opens a word: `grep 'web$'` (an anchor) is not it
+  printf '%s' "$COMMAND" | grep -Eq '(^|[[:space:];&|(=])\$['"'"'"]' && SKIP=1
 fi
 if [ "$SKIP" = "1" ]; then
-  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] No token was handed over for this command: it contains gcloud together with a credential/configuration word (auth, config, components, init, also inside names or paths), an account/configuration/impersonation choice or $'...' quoting, or a CLOUDSDK_* identity variable. If it fails on auth, run the cluster or gcloud command as its own Bash call without those words (a kubectl call without gcloud in it always gets the token); otherwise report the failure plainly."}}' 2>/dev/null || true
+  printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] No token was handed over for this command: it contains gcloud together with a credential/configuration word (auth, config, components, init, also inside names or paths), an account/configuration/impersonation choice or ANSI-C ($-quote) quoting, or a CLOUDSDK_* identity variable. If it fails on auth, run the cluster or gcloud command as its own Bash call without those words (a kubectl call without gcloud in it always gets the token); otherwise report the failure plainly."}}' 2>/dev/null || true
   exit 0
 fi
 # A relative path is resolved the way step 1 checked it: from this directory.
