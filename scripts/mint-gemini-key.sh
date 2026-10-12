@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mint a Gemini API "auth key" programmatically — no AI Studio clicking.
 #
-# What this is for (2026-09): an ADMIN minting keys for megavibe / Megawork
+# What this is for (2026-09): an ADMIN minting keys for megavibe
 # users on the organisation's BILLED Gemini project — one key per person (or one
 # shared key for a small team), so each can be
 # revoked on its own. Run it on your own Mac; never on a colleague's.

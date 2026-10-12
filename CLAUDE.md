@@ -26,14 +26,12 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/.claude/hooks/*.sh` | Hook scripts template (31 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Summarization fallback (sonnet) — second in the chain, behind Codex and ahead of Gemini | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called on the ship round (critical work included), and whenever it is the only reader | Medium — affects every review |
-| `scripts/provision-megawork.sh` | Admin: Megawork credentials and local config (gemini, ga4, github, grafana, db, toolbox, org) into the private overlay; identities in one project | Medium — touches IAM |
 | `scripts/reviewers.sh` | The `MEGAVIBE_REVIEWERS` allow-list — which of non-negotiable 4's reviewers are switched on. Consulted by the review scripts **only under `--as-reviewer`** (they are also the general Codex/Gemini transport), and by `on-session-start.sh`. Front end: `megavibe reviewers` | Medium — gates every review |
 | `scripts/gemini-review.sh` | Gemini via direct API with `thinkingLevel: low` — the only Gemini path that returns complete reviews on 3.x; installed to `~/.megavibe/scripts/`. `--fallback` is what lets it review at all in the default set. Outside a review it is the rationed no-Codex alternative: refuses while Codex is usable (exit 4), flash-lite only, reserved-before-sent daily call/$/input caps with a ledger (exit 5), `--budget` | Medium — spends money |
 | `scripts/codex-review.sh` | The primary backend for reviews, re-hydration and large context, over `codex exec`. `--model`/`--effort` override the user's `~/.codex/config.toml` per call — used for summarising, left off for reviews | Medium |
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
-| `megawork/` | Derived profile Megawork — the profile for non-technical colleagues. Started with `megavibe nondev`; no separate app since 2026-09-12 | Medium — see `megawork/README.md` |
 | `scripts/google-oauth-mint.sh` | Per-user Google OAuth refresh token for scopes a gcloud login does not carry (Ads, Workspace Admin, GA4 Admin). Loopback consent, token 0600 in ~/.config. `groupwrite` is a WRITE scope — see the header | Medium — touches credentials |
 | `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
 | `scripts/usage-route.sh`, `template/.claude/hooks/usage-advisory.sh`, `template/statusline.sh` | Subscription-first routing. The statusline logs account-wide Claude usage to `~/.megavibe/usage/claude.jsonl`; `usage-route.sh` turns it into a band (over / normal / under, with hysteresis) that `megavibe` applies as `--model`/`--effort` on a fresh launch only and the hook relays to subagent choices. Any user choice, missing data or a reset window means no effect (a stale reading inside a live window can still raise `over`, never `under`). Also: the launcher bars API billing unless `MEGAVIBE_ALLOW_API_BILLING=1`. `usage-route.sh codex|balance` apply the same bands to the Codex weekly record and compare the two, as advice only. Detail: README "Subscription-first routing" | High — changes the model a session starts on |
@@ -95,14 +93,14 @@ Two questions, every time, and the second one is the one that gets skipped:
 1. **Is anything published that should not be?** Credentials, internal hostnames, GCP projects, colleagues' names, customer or property IDs, binaries. This repo ships credential-touching scripts and is written inside a company that has all of those lying around.
 2. **Does any of it only make sense to us?** Hardcoded org defaults, internal tool names, workflows that assume our cluster. These are not leaks — they are what makes a published tool useless to the strangers it was published for. A stranger with a Claude subscription and nothing else must be able to `curl | bash` this and get a working setup.
 
-Run `scripts/leak-scan.sh` before pushing anything that touches `scripts/`, `megawork/`, `install.sh`, `setup.sh`, or docs. It fails the run on findings and prints `file:line` only — never the matched value, since a scanner that echoes a secret into a terminal or an agent transcript has moved the leak rather than found it.
+Run `scripts/leak-scan.sh` before pushing anything that touches `scripts/`, `install.sh`, `setup.sh`, or docs. It fails the run on findings and prints `file:line` only — never the matched value, since a scanner that echoes a secret into a terminal or an agent transcript has moved the leak rather than found it.
 
 Two gotchas worth holding even without reading the script:
 
 - **History counts as published.** A secret deleted in a later commit is still served by GitHub at its blob URL, forever, and a force-push does not revoke it. Rotation is not optional at that point. The default scan reads all history; `--fast` skips it and is for tight loops only.
 - **The org-coupling check is a REVIEW, not a verdict.** Legitimate `poma-ai` references exist — the repo URL, the licence, the poma-memory dependency — so it never fails the run. Read the lines it prints rather than trusting the exit code for that axis.
 
-An icon and a named pilot brief have each landed here once, and each cost a history rewrite. `.gitignore` carries the guards that came out of those; the paths in it said `nondev/` until the rename, so for a while they guarded nothing.
+An icon and a named pilot brief (both from the since-removed Megawork profile) have each landed here once, and each cost a history rewrite; `scripts/leak-scan.sh` now flags tracked binaries and `.gitignore` guards credential-shaped files.
 
 ## Verification protocol
 

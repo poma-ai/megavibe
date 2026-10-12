@@ -6,21 +6,13 @@ Megavibe keeps decisions, mistakes, progress and context in files on disk, so a
 fresh session can pick up where the last one stopped instead of re-deriving
 everything from a lossy summary.
 
-**Two profiles:**
-
-| | Who it is for | What it gives them |
-|---|---|---|
-| **megavibe** | developers using Claude Code | durable project context, workflow protocol, second opinions from Codex/Gemini |
-| **megawork** | a non-technical colleague on a Mac | the same harness in plain language, confined to one folder by a macOS sandbox |
-
 **Before you paste the install command**, know what it does to your machine — it
 installs CLIs and MCP servers, and it launches Claude with permission prompts
 disabled by default. See [Security and what gets installed](#security-and-what-gets-installed).
 
 Requires a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 subscription. macOS and Linux (Windows via Git Bash/WSL, less tested); the
-context watcher needs `tmux`, and **megawork is macOS-only** because its
-containment is a macOS sandbox profile.
+context watcher needs `tmux`.
 
 ## Security and what gets installed
 
@@ -46,9 +38,6 @@ Stated plainly, because you should decide before pasting:
   them — for the Gemini API, only a key from a project **with billing attached**
   is a "Paid Service" (prompts not used for training); a Workspace login does
   not change that for the API, and the free tier trains on your prompts.
-
-`megawork` inverts these defaults: no bypassed permissions, and a kernel
-sandbox confining writes to one folder. See **`megawork/README.md`**.
 
 ## Get Started
 
@@ -276,40 +265,6 @@ An optional Telegram bot adds a personal assistant and project launcher.
 
 Full detail: **`README-remote.md`**.
 
-## Tier 2 — megawork, for a non-technical colleague
-
-**macOS only.** A derived profile for someone who is not a programmer: plain
-language, one folder they own, and a macOS sandbox that confines writes to it
-while leaving reads broad. Bash, MCP servers and the colleague's own claude.ai
-connectors all keep working — the boundary is the kernel, not a crippled agent.
-
-The person can install it themselves — one line, no admin, nothing to clone:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/megawork/install.sh | bash
-```
-
-Or, from an existing megavibe install:
-
-```bash
-megavibe nondev             # start a session (sandboxed, plain language)
-megavibe nondev init        # asks where the folder should live (Google Drive aware)
-megavibe nondev doctor      # verify, including live sandbox-escape tests
-megavibe nondev folder      # show or move the working folder
-
-# On the colleague's own Mac the self-serve installer deploys `megawork*` only —
-# `megavibe nondev` is the developer spelling. `megavibe megawork` is an alias.
-```
-
-The person gets one command (`megawork`), four folders (Inbox / Workspace / Delivered /
-Library) and an assistant that opens by telling them what is waiting. Undo is
-automatic. Nothing it does can write outside their folder.
-
-Status: containment is measured and re-checked on every `doctor` run, but it has
-not yet been piloted with a real non-technical user.
-
-Full detail: **`megawork/README.md`**.
-
 ## Optional API Keys
 
 Megavibe works without any API keys. Adding them unlocks extra capabilities:
@@ -329,7 +284,7 @@ export OPENAI_API_KEY="your-key-here"
 
 Megavibe prefers the subscriptions you already pay for over anything billed per token, and uses what they report about themselves to spend them sensibly.
 
-- **API billing is barred.** A launch that would bill per token (`claude auth status` reporting `api_key` or `api_key_helper`; a subscription OAuth token is fine; a Bedrock/Vertex/Foundry or other third-party provider only gets a notice, since that is a cloud bill, not a Claude one) stops with one line on the main `megavibe` launch; `MEGAVIBE_ALLOW_API_BILLING=1` accepts it. An exported `ANTHROPIC_API_KEY` is masked for that session, as before. `megavibe assistant`, `remote` and `nondev` start Claude by other routes (tmux, the Telegram bot, the megawork engine) and are not covered yet, and neither is a key you pass yourself through `--settings`.
+- **API billing is barred.** A launch that would bill per token (`claude auth status` reporting `api_key` or `api_key_helper`; a subscription OAuth token is fine; a Bedrock/Vertex/Foundry or other third-party provider only gets a notice, since that is a cloud bill, not a Claude one) stops with one line on the main `megavibe` launch; `MEGAVIBE_ALLOW_API_BILLING=1` accepts it. An exported `ANTHROPIC_API_KEY` is masked for that session, as before. `megavibe assistant` and `remote` start Claude by other routes (tmux, the Telegram bot) and are not covered yet, and neither is a key you pass yourself through `--settings`.
 - **Usage history.** Claude Code has no usage API, but the statusline receives your account-wide five-hour and seven-day usage (`rate_limits`, subscribers only, after the first reply). `statusline.sh` appends a row to `~/.megavibe/usage/claude.jsonl` on a change or every five minutes. Nothing leaves the machine and nothing reads credentials.
 - **Launch.** `scripts/usage-route.sh` classifies the account as `over` (7-day use at 90% or projected past 100% of the week, or 5-hour use at 85%), `under` (week on pace to use less than 70%, or capacity about to reset unspent) or `normal`. `over` launches with `--model sonnet --effort medium` where your defaults are higher; `under` launches with `${MEGAVIBE_ROUTER_UP:-opus}` where your default is lower, but an upgrade to Opus (or Fable) only on a Max plan (`claude auth status` reports `subscriptionType`; a lower `MEGAVIBE_ROUTER_UP` target is not plan-gated): a lower or unknown plan keeps the model it chose, Sonnet unless it picked otherwise, because Opus spends a Pro limit several times faster. Hysteresis releases `over` 30 minutes after its leave thresholds first hold (the highest reading of a window is remembered, so a reading of 85% or more holds `over` until the window resets or the projection falls with elapsed time; delete `~/.megavibe/usage/route-state.json` or set `MEGAVIBE_ROUTER=0` to override), and requires two qualifying evaluations 30 minutes apart for `under`; `under` lasts only while its qualifying reading holds (the five-hour window that justified it resetting ends it), and with no live window both bands are `normal`. Which window is live is decided by its reset time, not by the order rows were logged. Concurrent sessions are merged by taking the highest reading of the current window, which the router also remembers in `route-state.json` so a flood of late, lower rows cannot hide it. No data or a reset window is `normal`, which changes nothing; a reading older than 6 hours inside a live window still counts toward `over` (usage only grows inside a window) but never toward `under`. `under` upgrades from the model in `~/.claude/settings.json`, so it needs one there. The history keeps its newest 5000 rows past 2 MB and does not tell accounts apart (one account per `~/.megavibe`).
 - **Your choice wins, per half.** `--model`/`--effort`/`--settings` on the command line, a resumed conversation (`--continue`, `--resume`, `--from-pr`) and `MEGAVIBE_ROUTER=0` switch the router off. A model set by `ANTHROPIC_MODEL`/`ANTHROPIC_DEFAULT_MODEL` or a project `model` is left alone, and so is an effort set by `CLAUDE_CODE_EFFORT_LEVEL` or a project `effortLevel`; the other half can still be routed. `megavibe route` prints what a launch would do.

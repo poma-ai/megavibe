@@ -41,22 +41,10 @@ CLAUDE.local.md
 .idea/
 events.jsonl
 
-# Org-specific Megawork overlay (branding, named pilots) — this repo is PUBLIC.
-# Keep these in ~/.megavibe/personal/megawork/ instead.
-# (Paths said 'nondev/' until the rename, so they guarded nothing. An icon and a
-# named pilot brief have each landed here once and cost a history rewrite.)
-megawork/template/icon.*
-megawork/**/icon.*
-megawork/PILOT-BRIEF.md
-megawork/org/
-nondev/
 README-data-treatment.md
 scripts/gcp-token.sh
 
-# Runtime state — never belongs in the repo
-megawork/logs/
-
-# Admin-issued Megawork credentials — these live in the private overlay, never here.
+# Admin-issued credentials (a leftover Megawork overlay's) — these live in the private overlay, never here.
 **/gemini-key
 **/*-token
 **/*-password
@@ -64,3 +52,7 @@ megawork/logs/
 # Organisation-local config (the shipped examples are org.example.json / tools.example.yaml)
 **/org.json
 **/tools.yaml
+
+# The removed Megawork profile: local residue (icons, pilot briefs, org/, logs/)
+# from an older checkout must never be committed to this public repo.
+megawork/
