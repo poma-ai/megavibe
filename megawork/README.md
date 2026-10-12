@@ -1,5 +1,12 @@
 # megawork
 
+> **Frozen since 2026-10-12; to be removed.** Non-technical colleagues use
+> Claude Cowork with a hosted MCP connector to the company's data sources
+> instead. No new features here; only
+> fixes that existing installs need. Removal (`megawork/`, `megavibe nondev`,
+> `scripts/provision-megawork.sh`, `setup.sh --harness-only`) follows the Cowork
+> pilot, once the existing installs are confirmed unused.
+
 A megavibe profile for people who are not programmers: plain language, a single
 folder they own, and an OS-enforced boundary so nothing they ask for can wander
 outside it. Same harness underneath — hooks, context files, subagents, backends.
