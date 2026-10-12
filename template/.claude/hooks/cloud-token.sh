@@ -60,6 +60,7 @@ done
 KUBE_TOKEN_FILE="${KUBE_TOKEN_FILE:-}"
 KUBE_TOKEN_KEEPER="${KUBE_TOKEN_KEEPER:-}"
 KUBE_TOKEN_MAX_AGE="${KUBE_TOKEN_MAX_AGE:-3000}"
+case "$KUBE_TOKEN_MAX_AGE" in ''|*[!0-9]*) KUBE_TOKEN_MAX_AGE=3000 ;; esac
 [ -n "$KUBE_TOKEN_FILE" ] || exit 0
 [ -n "$KUBE_TOKEN_KEEPER" ] || exit 0
 
@@ -128,6 +129,12 @@ MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FIL
 # first, so "gcloud" auth or gcloud 'auth' count too). The same set the old
 # rewrite skipped.
 #
+# Also skipped: a command that names gcloud and selects an identity itself
+# (--account, --configuration, --credential-file-override, CLOUDSDK_CORE_ACCOUNT,
+# CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, CLOUDSDK_ACTIVE_CONFIG_NAME). A static
+# match cannot see every shell spelling ($'auth', a\uth, a variable holding the
+# group); those still get the token, as they got the flag from the old rewrite.
+#
 # It errs towards skipping, which only means no token (the behaviour before
 # this hook): per command, not per word, so a kubectl in the same command line
 # goes without (the agent is told to run the gcloud command separately); a flag
@@ -135,10 +142,24 @@ MTIME=$(stat -f %m "$KUBE_TOKEN_FILE" 2>/dev/null || stat -c %Y "$KUBE_TOKEN_FIL
 # `gcloud auth login` skips too. Still affected the other way: commands that
 # need the stored account's own key, such as `gcloud storage sign-url` with a
 # service-account key (as with the old injected flag).
-FLAT=$(printf '%s' "$COMMAND" | tr -d "\"'" | tr '\n\\' '  ')
-if printf '%s' "$FLAT" | grep -Eq '(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|alpha|beta))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'; then
+# Normalised for matching only: a backslash-newline continuation is joined
+# (bash joins `au\<newline>th` into `auth`), quoted spans lose their spaces and
+# then their quotes (`--account "a b"` is one word, "auth" is auth), remaining
+# newlines and backslashes become spaces. Redirections (2>/dev/null, >f) may sit
+# between gcloud and its group.
+FLAT=$(printf '%s' "$COMMAND" | python3 -c '
+import re, sys
+s = sys.stdin.read().replace("\\\n", "")
+s = re.sub(r"\x27[^\x27]*\x27|\"[^\"]*\"", lambda m: m.group(0).replace(" ", "_").replace("\t", "_"), s)
+sys.stdout.write(s.replace("\x27", "").replace("\"", "").replace("\n", " ").replace("\\", " "))
+' 2>/dev/null) || FLAT=$(printf '%s' "$COMMAND" | tr -d "\"'" | tr '\n\\' '  ')
+GC_GROUP='(^|[^[:alnum:]_-])gcloud([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]<>][^[:space:]]*)?|alpha|beta|[0-9]*[<>]+&?[^[:space:]]*))*[[:space:]]+(auth|config|components|init)([^[:alnum:]_-]|$)'
+# A command that picks its own identity keeps it: the property would override an
+# explicit --account, a credential file override or another configuration.
+GC_IDENTITY='--account([=[:space:]]|$)|--configuration([=[:space:]]|$)|--credential-file-override|CLOUDSDK_CORE_ACCOUNT|CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE|CLOUDSDK_ACTIVE_CONFIG_NAME'
+if printf '%s' "$FLAT" | grep -Eq "$GC_GROUP" || { printf '%s' "$FLAT" | grep -Eq '(^|[^[:alnum:]_-])gcloud([^[:alnum:]_-]|$)' && printf '%s' "$FLAT" | grep -Eq -- "$GC_IDENTITY"; }; then
   if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|kubeseal|helm)([^[:alnum:]_-]|$)'; then
-    printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] This command runs a gcloud auth/config/components/init command, so no token was handed over and the kubectl/helm/kubeseal in it may hit the reauth wall. Run the gcloud command as its own Bash call and the cluster command in a separate one; the separate cluster call gets the token."}}' 2>/dev/null || true
+    printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] This command runs a gcloud auth/config/components/init command or picks its own gcloud identity, so no token was handed over and the kubectl/helm/kubeseal in it may hit the reauth wall. Run the gcloud command as its own Bash call and the cluster command in a separate one; the separate cluster call gets the token."}}' 2>/dev/null || true
   fi
   exit 0
 fi
