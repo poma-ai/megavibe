@@ -29,12 +29,11 @@ set -u
 #     KUBE_TOKEN_MAX_AGE=3000        # optional, seconds; default 3000 (50 min)
 #   or export the same three as environment variables.
 #
-# Then, on a Bash command that mentions `kubectl` or `gcloud` and passes no
-# token flag of its own, this hook:
+# Then, on a Bash command that mentions kubectl, gcloud, kubeseal or helm:
 #   1. runs KUBE_TOKEN_KEEPER when KUBE_TOKEN_FILE is missing or older than MAX_AGE
-#   2. puts one line in front of the command that tells kubectl and gcloud where
-#      the token is (KUBECONFIG with a tokenFile user, and
-#      CLOUDSDK_AUTH_ACCESS_TOKEN_FILE). The command itself is not changed.
+#   2. puts `export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE='<token file>'` on a line in
+#      front of the command. gcloud reads it; kubectl reaches it through the GKE
+#      credential plugin. The command itself is not changed.
 #
 # gcloud was the gap that made this look broken. The keeper mints a `ya29.`
 # Google OAuth access token, which is exactly what `gcloud --access-token-file`
@@ -44,9 +43,10 @@ set -u
 # of "cannot prompt during non-interactive execution", while a usable token sat
 # in the keeper's file.
 #
-# A command that mentions `gcloud auth`, `components`, `config` or `init`
-# gets no gcloud token: `gcloud auth login` is the one command that fixes a
-# genuine expiry, and it must not be shadowed by the token it replaces.
+# A command that mentions gcloud, `auth` and a login verb (login,
+# activate-service-account, application-default) gets no token: a login is the
+# one command that fixes a genuine expiry, and it must not be shadowed by the
+# token it replaces.
 #
 # Only the token FILE's path is exported, never the token: it does not enter
 # the command text, a shell variable or the model's context (a token held in a
@@ -73,7 +73,7 @@ TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
 [ -n "$COMMAND" ] || exit 0
 
-printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|gcloud)([^[:alnum:]_-]|$)' || exit 0
+printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|gcloud|kubeseal|helm)([^[:alnum:]_-]|$)' || exit 0
 # Never recurse into the keeper's own invocation.
 case "$COMMAND" in *"$KUBE_TOKEN_KEEPER"*) exit 0 ;; esac
 
@@ -92,76 +92,39 @@ if [ "$NEED" = "1" ]; then
 fi
 [ -s "$KUBE_TOKEN_FILE" ] || exit 0
 
-# --- 2. hand the token over through each tool's own configuration -----------
-# Nothing inside the command is rewritten. A one-line prefix exports where the
-# token is, and kubectl and gcloud read it themselves:
-#   gcloud  — CLOUDSDK_AUTH_ACCESS_TOKEN_FILE (the auth/access_token_file
-#             property; verified with Cloud SDK, 2026-10-12)
-#   kubectl — KUBECONFIG = <generated file>:<your kubeconfig>. The generated file
-#             only redefines the GKE users (gke-gcloud-auth-plugin or the old
-#             gcp auth-provider) with tokenFile: <token file>; kubeconfig merging
-#             takes the first definition of a user, so those users authenticate
-#             with the token and everything else comes from your own file.
-# The previous design rewrote `kubectl`/`gcloud` words in the command text,
-# which needs a shell parser: it rewrote heredoc bodies written to files, and
-# two attempts at a parser each failed review on new edge cases. A prefix
-# cannot touch a heredoc, a quote or a comment, and it also reaches kubectl run
-# by a script or a `bash -c`.
-
-# A caller who passes a token explicitly means it; do not second-guess them.
-case "$COMMAND" in *--token*|*--access-token-file*) exit 0 ;; esac
-case "$KUBE_TOKEN_FILE" in *"'"*) exit 0 ;; esac   # cannot be quoted safely below
-
-PREFIX=""
-if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])kubectl([^[:alnum:]_-]|$)'; then
-  BASE="${KUBECONFIG:-$HOME/.kube/config}"
-  # One generated file per base config: a session with a different KUBECONFIG
-  # must not inherit users generated from another one.
-  GEN="$HOME/.megavibe/personal/cloud-token.$(printf '%s' "$BASE" | cksum | cut -d' ' -f1).kubeconfig"
-  REGEN=0
-  [ -s "$GEN" ] || REGEN=1
-  grep -qF "$KUBE_TOKEN_FILE" "$GEN" 2>/dev/null || REGEN=1
-  OLDIFS=$IFS; IFS=:
-  for f in $BASE; do [ -n "$f" ] && [ "$f" -nt "$GEN" ] && REGEN=1; done
-  IFS=$OLDIFS
-  if [ "$REGEN" = "1" ]; then
-    TMPGEN=$(mktemp "$GEN.XXXXXX" 2>/dev/null) || TMPGEN=""
-    if [ -n "$TMPGEN" ]; then
-      # `command` and an explicit KUBECONFIG: read the user's own config, never
-      # one that already includes the generated file.
-      KUBECONFIG="$BASE" command kubectl config view --raw -o json 2>/dev/null \
-        | TOKEN_FILE="$KUBE_TOKEN_FILE" python3 -c '
-import json, os, sys
-try:
-    cfg = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-users = []
-for u in cfg.get("users") or []:
-    user = u.get("user") or {}
-    cmd = os.path.basename(str((user.get("exec") or {}).get("command") or ""))
-    prov = (user.get("auth-provider") or {}).get("name")
-    if cmd == "gke-gcloud-auth-plugin" or prov == "gcp":
-        users.append({"name": u["name"], "user": {"tokenFile": os.environ["TOKEN_FILE"]}})
-json.dump({"apiVersion": "v1", "kind": "Config", "users": users}, sys.stdout)
-' > "$TMPGEN" 2>/dev/null && chmod 600 "$TMPGEN" && mv -f "$TMPGEN" "$GEN"
-      rm -f "$TMPGEN" 2>/dev/null
-    fi
-  fi
-  if grep -q '"tokenFile"' "$GEN" 2>/dev/null; then
-    case "$GEN:$BASE" in *"'"*) ;; *) PREFIX="export KUBECONFIG='$GEN:$BASE'; " ;; esac
-  fi
+# --- 2. hand the token over through gcloud's own configuration -------------
+# Nothing inside the command is rewritten. One line in front of it exports
+# CLOUDSDK_AUTH_ACCESS_TOKEN_FILE (the auth/access_token_file property). gcloud
+# reads it directly, and kubectl gets it too: the GKE credential plugin
+# (gke-gcloud-auth-plugin) asks `gcloud config config-helper` for a token,
+# which honours the property. Verified 2026-10-12 against a GKE cluster:
+# kubectl, kubectl auth whoami, kubeseal --fetch-cert and gcloud all work with
+# only this variable, and all fail at the reauth wall without it. A kubectl
+# started by a script or `bash -c` inherits it; one run over ssh does not.
+#
+# Why not rewrite the command: putting --token=... next to each `kubectl` needs a
+# shell parser. It rewrote heredoc bodies written to files, and two parser
+# attempts failed review on new edge cases; a generated kubeconfig layered in
+# front of the user's absorbed `kubectl config use-context` and `get-credentials`
+# writes. An exported path touches neither the command nor any config file.
+#
+# An explicit --token or --access-token-file in the command still wins over the
+# property, so they need no special case.
+printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])(kubectl|gcloud|kubeseal|helm)([^[:alnum:]_-]|$)' || exit 0
+# A login must not run with the token it is meant to replace: with the property
+# set, gcloud would pick the token file over the account being logged in. Word
+# level and deliberately broad (any flags, `beta`, quoting, continuations): a
+# command that mentions gcloud, `auth` and a login verb gets no token at all.
+w() { printf '%s' "$COMMAND" | grep -Eq "(^|[^[:alnum:]_-])$1([^[:alnum:]_-]|\$)"; }
+if w gcloud && w auth && { w login || w activate-service-account || w application-default; }; then
+  exit 0
 fi
-# gcloud: not for the commands that manage credentials or config themselves
-# (auth, config, components, init), anywhere in the command — a login must not
-# be shadowed by the token it is meant to replace.
-if printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_-])gcloud([^[:alnum:]_-]|$)' \
-   && ! printf '%s' "$COMMAND" | grep -Eq 'gcloud[[:space:]]+(-[^[:space:]]+[[:space:]]+)*(auth|config|components|init)([^[:alnum:]_-]|$)'; then
-  PREFIX="${PREFIX}export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE='$KUBE_TOKEN_FILE'; "
-fi
-[ -n "$PREFIX" ] || exit 0
-# The prefix on its own line: the command below it stays byte for byte as written.
-NEW_CMD="$PREFIX
+# A relative path is resolved the way step 1 checked it: from this directory.
+case "$KUBE_TOKEN_FILE" in /*) TOKEN_PATH="$KUBE_TOKEN_FILE" ;; *) TOKEN_PATH="$PWD/$KUBE_TOKEN_FILE" ;; esac
+case "$TOKEN_PATH" in *"'"*) exit 0 ;; esac   # cannot be single-quoted safely
+# Only the token FILE's path is exported, never the token. The command stays
+# byte for byte as written, below the prefix line.
+NEW_CMD="export CLOUDSDK_AUTH_ACCESS_TOKEN_FILE='$TOKEN_PATH'
 $COMMAND"
 
 printf '%s' "$INPUT" | jq -c --arg cmd "$NEW_CMD" \
