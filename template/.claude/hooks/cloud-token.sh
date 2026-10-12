@@ -179,6 +179,9 @@ if [ "$SKIP" = "1" ]; then
 fi
 # A relative path is resolved the way step 1 checked it: from this directory.
 case "$KUBE_TOKEN_FILE" in /*) TOKEN_PATH="$KUBE_TOKEN_FILE" ;; *) TOKEN_PATH="$PWD/$KUBE_TOKEN_FILE" ;; esac
+# A newline in the path cannot survive $( ) capture: refuse it, with a hint.
+case "$TOKEN_PATH" in *"
+"*) printf '%s' "$INPUT" | jq -c '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: "[megavibe cloud-token] KUBE_TOKEN_FILE contains a newline, so no token was handed over. Report this; do not send the user to an interactive login."}}' 2>/dev/null || true; exit 0 ;; esac
 # Single-quoted for the shell; an apostrophe in the path becomes '\''.
 QUOTED_PATH=$(printf '%s' "$TOKEN_PATH" | sed "s/'/'\\\\''/g")
 # Only the token FILE's path is exported, never the token. The command stays
