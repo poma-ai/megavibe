@@ -89,6 +89,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 - When the plan has 3+ tasks, use structured task format (see `.claude/rules/spinouts.md`).
 - Check `.agent/LESSONS.md` before planning — don't repeat past mistakes.
 - **Search project memory before planning:** if poma-memory MCP is available, call `poma_search` with key terms from the task to surface relevant decisions, context, and patterns. The Grep hook does this automatically during code search, but planning benefits from a deliberate memory check.
+- **Shared knowledge** (`.claude/rules/shared-memory.md`): two independent parts. If env `MEGAVIBE_MEMORY_SERVER` names a connected MCP server exposing `memory_search`/`memory_ingest`, route searches and short-record writes by scope. If env `MEGAVIBE_MEMORY_DOCS` names a connected document MCP, search it before the web for questions about an ingested document, check for a duplicate and ask the human before storing a new substantial document there (unless `MEGAVIBE_MEMORY_DOCS_ASK=0`), and never ingest unprompted. An unset part is skipped silently.
 - **Think critically.** Question the user's assumptions, identify overlooked risks, and flag when the approach seems wrong — even if the user sounds certain. Substance over agreement.
 
 **Implement**
