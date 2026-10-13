@@ -280,6 +280,19 @@ export GEMINI_API_KEY="your-key-here"
 export OPENAI_API_KEY="your-key-here"
 ```
 
+## Shared memory routing (optional)
+
+You do not need any of this. The baseline is `.agent/`: `DECISIONS.md`, `LESSONS.md` and `RESEARCH/` are tracked in git, so teammates get them with the repo, and the Grep and Glob hook searches them through local poma-memory. Shared memory and a document server are opt-in additions for sharing across repos and for long documents. With neither configured, nothing below changes how Megavibe behaves.
+
+`.claude/rules/shared-memory.md` has two independent parts. With a shared-memory MCP connected (tools `memory_search` and `memory_ingest`), it routes each search to one scope (this repo, general knowledge, or organisation-wide guidelines) and sends short records there while long documents go to a document-indexing MCP. The repo scope is labelled by `scripts/repo-id.sh`, the normalized `org/name` of the `upstream` or `origin` remote. `MEGAVIBE_MEMORY_SERVER` names the MCP server that gets used (the `<server>` part of its tool names, `mcp__<server>__memory_search`, compared exactly); unset, the feature is off, so a third-party server that happens to expose the same tool names never receives your entries. The general and organisation scopes are `org/name` labels your server's operator names; set them in the `env` block of `~/.claude/settings.json` as `MEGAVIBE_MEMORY_GENERAL` and `MEGAVIBE_MEMORY_COMPANY`. An unset variable disables that scope. `MEGAVIBE_MEMORY_DOCS` names the document MCP server; unset, documents are not stored and document questions go to web search as before. When it is set, questions about an ingested document search it before the web, next to a scoped memory search, and Claude asks once whether a substantial new document you hand it should be remembered there (never ingesting without a yes). Every ingest carries the file name as the `filename` attribute, and Claude checks whether a handed document is already stored before asking. Set `MEGAVIBE_MEMORY_DOCS_ASK=0` to stop the offers (explicit store requests still work). Writes to the general and company scopes happen only when you ask for them. Without the MCP, or with a backend that does not support labels, nothing changes.
+
+The document server behind `MEGAVIBE_MEMORY_DOCS` can be any MCP server that meets these requirements:
+
+- Ingest: a tool that takes a whole file or URL and does the parsing, chunking and embedding itself. A bare vector database that only stores text you chunk yourself does not qualify.
+- Search: a tool that returns passages together with their source document. Restricting a search to one document is optional.
+- Document list (optional): without it, the duplicate check is skipped and Claude asks the usual question.
+- Attributes and filters (optional): used to record the file name as a `filename` attribute and to look it up. Where the ingest tool has no `attributes` parameter, Claude omits it.
+
 ## Subscription-first routing
 
 Megavibe prefers the subscriptions you already pay for over anything billed per token, and uses what they report about themselves to spend them sensibly.
@@ -325,7 +338,7 @@ A session hands you work in one visible place instead of burying it in the hidde
 | What | Where |
 |------|-------|
 | Hooks (31 scripts) | `.claude/hooks/` |
-| Rules (6 files) | `.claude/rules/` |
+| Rules (7 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (8 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |

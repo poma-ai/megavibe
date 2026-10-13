@@ -18,7 +18,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `init.sh` | Per-project bootstrapper (.agent/, hooks, skills, settings) | High — affects all projects |
 | `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
 | `template/CLAUDE.md` | Core protocol — installed to `~/.claude/CLAUDE.md` | Critical — review required |
-| `template/.claude/rules/*.md` | 6 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline, prod-access-discipline, deliverables) | Medium — review recommended |
+| `template/.claude/rules/*.md` | 7 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline, prod-access-discipline, deliverables, shared-memory) | Medium — review recommended |
 | `template/.claude/skills/*/SKILL.md` | 8 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy, init-feature, finish-feature) | Low — workflow shortcuts |
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
@@ -37,6 +37,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `scripts/usage-route.sh`, `template/.claude/hooks/usage-advisory.sh`, `template/statusline.sh` | Subscription-first routing. The statusline logs account-wide Claude usage to `~/.megavibe/usage/claude.jsonl`; `usage-route.sh` turns it into a band (over / normal / under, with hysteresis) that `megavibe` applies as `--model`/`--effort` on a fresh launch only and the hook relays to subagent choices. Any user choice, missing data or a reset window means no effect (a stale reading inside a live window can still raise `over`, never `under`). Also: the launcher bars API billing unless `MEGAVIBE_ALLOW_API_BILLING=1`. `usage-route.sh codex|balance` apply the same bands to the Codex weekly record and compare the two, as advice only. Detail: README "Subscription-first routing" | High — changes the model a session starts on |
 | `scripts/disk-watch.sh`, `template/.claude/hooks/disk-check.sh` | Free-disk-space watch: the hook tells a session at start when free space is below 15 GB (silent otherwise, one `df`), `disk-watch.sh watch` is the Monitor loop. Report-only, never deletes; opt out with `MEGAVIBE_DISK_WATCH=0` | Low — read-only |
 | `template/.claude/hooks/cloud-token.sh` | Keeps `kubectl` and `gcloud` carrying a freshly minted token so a non-interactive session never asks for an interactive login. Inert until `~/.megavibe/personal/cloud-token.conf` exists | Medium — touches credentials |
+| `scripts/repo-id.sh` | Prints the normalized `org/name` repo id from the `upstream`/`origin` remote; the label for shared-memory entries (`rules/shared-memory.md`). Exit 1 = no usable remote | Low — read-only |
 | `scripts/leak-scan.sh` | Pre-push check that this PUBLIC repo publishes no secrets/internal identifiers, and nothing that only works inside one company | Low — read-only |
 | `THIRD_PARTY_NOTICES.md` | MIT notices for the two upstreams `sr-style.md` adapts | Low — licensing |
 | `README-watcher.md` | Context-watcher detail | Low |
