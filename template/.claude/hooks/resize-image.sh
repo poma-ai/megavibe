@@ -21,8 +21,13 @@ set -u
 # The ORIGINAL is never modified. Until 2026-10 the resize ran in place, which
 # silently shrank 16 golden test crops the moment a reviewer looked at them.
 # Copies live in .agent/LOGS/resized/ (local, gitignored, like read-delta's
-# stubs) or, without .agent/, in $TMPDIR/megavibe-resized/; one copy per
-# (path, mtime, size), reused until the original changes, pruned after a day.
+# stubs) or, without .agent/, in a private per-user dir under $TMPDIR. A copy
+# is keyed by the original's CONTENT hash, written to a temp file, checked
+# (decodes, fits the limit) and only then renamed into place, so a partial or
+# foreign file is never shown; copies older than a day are pruned. JPEG input
+# stays JPEG, everything else becomes PNG (sips cannot write WebP or GIF).
+# An image the tool cannot read (macOS sips: animated GIF) passes through
+# untouched, as before.
 #
 # Uses: sips (macOS built-in) or ImageMagick (Linux/Windows)
 
@@ -55,63 +60,81 @@ case "$FILE_PATH" in /*) ABS="$FILE_PATH" ;; *) ABS="$ROOT/$FILE_PATH" ;; esac
 # Only image files (case-insensitive via tr)
 EXT=$(echo "$ABS" | tr '[:upper:]' '[:lower:]')
 case "$EXT" in
-  *.png|*.jpg|*.jpeg|*.gif|*.webp|*.bmp|*.tiff|*.tif) ;;
+  *.png|*.jpg|*.jpeg|*.gif|*.webp|*.bmp|*.tiff|*.tif|*.heic|*.heif) ;;
   *) exit 0 ;;
 esac
 
 MAX_DIM=1800
 
-# Where the resized copy goes.
-if [ -d "$ROOT/.agent/LOGS" ]; then
+# Dimensions "W H" of the FIRST frame (an animated GIF or multi-page TIFF has
+# several; only frame 0 is ever shown). Empty when the tool cannot read it.
+_dims() {
+  case "$RESIZE_TOOL" in
+    sips)
+      local w h
+      w=$(sips -g pixelWidth "$1" 2>/dev/null | awk '/pixelWidth/{print $2; exit}')
+      h=$(sips -g pixelHeight "$1" 2>/dev/null | awk '/pixelHeight/{print $2; exit}')
+      [ -n "$w" ] && [ -n "$h" ] && echo "$w $h" ;;
+    magick)  magick identify -format "%w %h" "$1[0]" 2>/dev/null || true ;;
+    convert) identify -format "%w %h" "$1[0]" 2>/dev/null || true ;;
+  esac
+}
+_is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+DIMS=$(_dims "$ABS")
+WIDTH=${DIMS%% *}; HEIGHT=${DIMS##* }
+_is_int "$WIDTH" && _is_int "$HEIGHT" || exit 0
+[ "$WIDTH" -gt "$MAX_DIM" ] || [ "$HEIGHT" -gt "$MAX_DIM" ] || exit 0
+
+# Where the copy goes: the project's local .agent/LOGS, else a private
+# per-user dir (mode 700, owned by us, not a symlink) under $TMPDIR.
+if [ -d "$ROOT/.agent/LOGS" ] && [ ! -L "$ROOT/.agent/LOGS/resized" ]; then
   OUT_DIR="$ROOT/.agent/LOGS/resized"
+  mkdir -p "$OUT_DIR" 2>/dev/null || exit 0
 else
-  OUT_DIR="${TMPDIR:-/tmp}/megavibe-resized"
+  OUT_DIR="${TMPDIR:-/tmp}"; OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
+  mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
+  [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
 fi
-MTIME=$(stat -f %m "$ABS" 2>/dev/null || stat -c %Y "$ABS" 2>/dev/null || echo 0)
-SIZE=$(stat -f %z "$ABS" 2>/dev/null || stat -c %s "$ABS" 2>/dev/null || echo 0)
-KEY=$(printf '%s|%s|%s' "$ABS" "$MTIME" "$SIZE" | { shasum 2>/dev/null || sha1sum; } | cut -c1-16)
-SUFFIX=$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')
-DEST="$OUT_DIR/$(basename "${ABS%.*}").$KEY.$SUFFIX"
-mkdir -p "$OUT_DIR" 2>/dev/null || exit 0
 find "$OUT_DIR" -maxdepth 1 -type f -mtime +1 -delete 2>/dev/null || true
 
-# Emit the redirect: same tool_input, file_path swapped for the copy.
-_redirect() {
-  [ -s "$DEST" ] || exit 0
-  printf '%s' "$INPUT" | jq -c --arg path "$DEST" --arg orig "$ABS" --arg w "$1" --arg h "$2" '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {file_path: $path}), additionalContext: ("megavibe resize-image: " + $orig + " is " + $w + "x" + $h + " px; this Read shows a copy scaled to fit 1800 px (" + $path + "). The original file is unchanged.")}}' 2>/dev/null
-  exit 0
+# Content key: a copy can only ever be reused for byte-identical input.
+KEY=$( { shasum -a 1 "$ABS" 2>/dev/null || sha1sum "$ABS" 2>/dev/null; } | awk '{print substr($1,1,16)}')
+[ -n "$KEY" ] || exit 0
+case "$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')" in
+  jpg|jpeg) OUT_EXT="jpg"; SIPS_FMT="jpeg" ;;
+  *)        OUT_EXT="png"; SIPS_FMT="png" ;;
+esac
+STEM=$(basename "${ABS%.*}" | cut -c1-60)
+DEST="$OUT_DIR/$STEM.$KEY.$OUT_EXT"
+
+# A copy is good when it is a regular file (not a link), decodes, and fits.
+_good() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  local d w h; d=$(_dims "$1"); w=${d%% *}; h=${d##* }
+  _is_int "$w" && _is_int "$h" && [ "$w" -gt 0 ] && [ "$h" -gt 0 ] \
+    && [ "$w" -le "$MAX_DIM" ] && [ "$h" -le "$MAX_DIM" ]
 }
 
-case "$RESIZE_TOOL" in
-  sips)
-    WIDTH=$(sips -g pixelWidth "$ABS" 2>/dev/null | awk '/pixelWidth/{print $2}')
-    HEIGHT=$(sips -g pixelHeight "$ABS" 2>/dev/null | awk '/pixelHeight/{print $2}')
-    [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] || exit 0
-    if [ "$WIDTH" -gt "$MAX_DIM" ] || [ "$HEIGHT" -gt "$MAX_DIM" ]; then
-      [ -s "$DEST" ] || sips --resampleHeightWidthMax "$MAX_DIM" "$ABS" --out "$DEST" &>/dev/null || exit 0
-      _redirect "$WIDTH" "$HEIGHT"
-    fi
-    ;;
-  magick)
-    # ImageMagick v7
-    DIMS=$(magick identify -format "%w %h" "$ABS" 2>/dev/null || echo "")
-    WIDTH=$(echo "$DIMS" | awk '{print $1}')
-    HEIGHT=$(echo "$DIMS" | awk '{print $2}')
-    [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] || exit 0
-    if [ "$WIDTH" -gt "$MAX_DIM" ] || [ "$HEIGHT" -gt "$MAX_DIM" ]; then
-      [ -s "$DEST" ] || magick "$ABS" -resize "${MAX_DIM}x${MAX_DIM}>" "$DEST" &>/dev/null || exit 0
-      _redirect "$WIDTH" "$HEIGHT"
-    fi
-    ;;
-  convert)
-    # ImageMagick v6
-    DIMS=$(identify -format "%w %h" "$ABS" 2>/dev/null || echo "")
-    WIDTH=$(echo "$DIMS" | awk '{print $1}')
-    HEIGHT=$(echo "$DIMS" | awk '{print $2}')
-    [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] || exit 0
-    if [ "$WIDTH" -gt "$MAX_DIM" ] || [ "$HEIGHT" -gt "$MAX_DIM" ]; then
-      [ -s "$DEST" ] || convert "$ABS" -resize "${MAX_DIM}x${MAX_DIM}>" "$DEST" &>/dev/null || exit 0
-      _redirect "$WIDTH" "$HEIGHT"
-    fi
-    ;;
-esac
+if ! _good "$DEST"; then
+  TMP_BASE=$(mktemp "$OUT_DIR/.tmp.XXXXXX" 2>/dev/null) || exit 0
+  TMP_OUT="$TMP_BASE.$OUT_EXT"
+  case "$RESIZE_TOOL" in
+    sips)    sips -s format "$SIPS_FMT" --resampleHeightWidthMax "$MAX_DIM" "$ABS" --out "$TMP_OUT" &>/dev/null || true ;;
+    magick)  magick "$ABS[0]" -resize "${MAX_DIM}x${MAX_DIM}>" "$TMP_OUT" &>/dev/null || true ;;
+    convert) convert "$ABS[0]" -resize "${MAX_DIM}x${MAX_DIM}>" "$TMP_OUT" &>/dev/null || true ;;
+  esac
+  rm -f "$TMP_BASE" 2>/dev/null || true
+  if _good "$TMP_OUT"; then
+    mv -f "$TMP_OUT" "$DEST" 2>/dev/null || { rm -f "$TMP_OUT"; exit 0; }
+  else
+    rm -f "$TMP_OUT" 2>/dev/null || true
+    exit 0
+  fi
+fi
+_good "$DEST" || exit 0
+
+# Redirect the Read: same tool_input, file_path swapped for the copy.
+printf '%s' "$INPUT" | jq -c --arg path "$DEST" --arg orig "$ABS" --arg w "$WIDTH" --arg h "$HEIGHT" \
+  '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {file_path: $path}), additionalContext: ("megavibe resize-image: " + $orig + " is " + $w + "x" + $h + " px; this Read shows a copy scaled to fit 1800 px (" + $path + "). The original file is unchanged.")}}' 2>/dev/null
+exit 0
