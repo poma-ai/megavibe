@@ -26,7 +26,7 @@ set -u
 # files. (A Read of that path may prompt for permission outside bypass mode.)
 # A copy is keyed by the original's CONTENT hash, written to a temp file, checked
 # (decodes, fits the limit) and only then renamed into place, so a partial or
-# foreign file is never shown; copies older than a day are pruned. JPEG input
+# foreign file is never shown; copies untouched for about two days are pruned (find -mtime +1). JPEG input
 # stays JPEG, everything else becomes PNG (sips cannot write WebP or GIF).
 # An image the tool cannot read passes through untouched, as before.
 #
@@ -92,6 +92,8 @@ _is_int "$WIDTH" && _is_int "$HEIGHT" || exit 0
 OUT_DIR="${TMPDIR:-/tmp}"; OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
 mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
+# mkdir -m does not tighten a dir that already exists: force it.
+chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
 find "$OUT_DIR" -maxdepth 1 -type f -mtime +1 -delete 2>/dev/null || true
 
 # Content key: a copy can only ever be reused for byte-identical input.
@@ -106,7 +108,9 @@ DEST="$OUT_DIR/$STEM.$KEY.$OUT_EXT"
 
 # A copy is good when it is a regular file (not a link), decodes, and fits.
 _good() {
-  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  # ours only: a file another user planted (e.g. while the dir was looser)
+  # is never shown as the copy
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
   local d w h; d=$(_dims "$1"); w=${d%% *}; h=${d##* }
   _is_int "$w" && _is_int "$h" && [ "$w" -gt 0 ] && [ "$h" -gt 0 ] \
     && [ "$w" -le "$MAX_DIM" ] && [ "$h" -le "$MAX_DIM" ]
