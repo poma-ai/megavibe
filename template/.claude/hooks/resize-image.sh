@@ -20,14 +20,15 @@ set -u
 #
 # The ORIGINAL is never modified. Until 2026-10 the resize ran in place, which
 # silently shrank 16 golden test crops the moment a reviewer looked at them.
-# Copies live in .agent/LOGS/resized/ (local, gitignored, like read-delta's
-# stubs) or, without .agent/, in a private per-user dir under $TMPDIR. A copy
-# is keyed by the original's CONTENT hash, written to a temp file, checked
+# Copies live in a private per-user dir under $TMPDIR (mode 700, owned by the
+# user, not a symlink), never inside the project, so nothing a project or a
+# clone can write is ever shown as a copy and pruning cannot reach project
+# files. (A Read of that path may prompt for permission outside bypass mode.)
+# A copy is keyed by the original's CONTENT hash, written to a temp file, checked
 # (decodes, fits the limit) and only then renamed into place, so a partial or
 # foreign file is never shown; copies older than a day are pruned. JPEG input
 # stays JPEG, everything else becomes PNG (sips cannot write WebP or GIF).
-# An image the tool cannot read (macOS sips: animated GIF) passes through
-# untouched, as before.
+# An image the tool cannot read passes through untouched, as before.
 #
 # Uses: sips (macOS built-in) or ImageMagick (Linux/Windows)
 
@@ -74,7 +75,7 @@ _dims() {
       local w h
       w=$(sips -g pixelWidth "$1" 2>/dev/null | awk '/pixelWidth/{print $2; exit}')
       h=$(sips -g pixelHeight "$1" 2>/dev/null | awk '/pixelHeight/{print $2; exit}')
-      [ -n "$w" ] && [ -n "$h" ] && echo "$w $h" ;;
+      [ -n "$w" ] && [ -n "$h" ] && echo "$w $h"; return 0 ;;
     magick)  magick identify -format "%w %h" "$1[0]" 2>/dev/null || true ;;
     convert) identify -format "%w %h" "$1[0]" 2>/dev/null || true ;;
   esac
@@ -86,16 +87,11 @@ WIDTH=${DIMS%% *}; HEIGHT=${DIMS##* }
 _is_int "$WIDTH" && _is_int "$HEIGHT" || exit 0
 [ "$WIDTH" -gt "$MAX_DIM" ] || [ "$HEIGHT" -gt "$MAX_DIM" ] || exit 0
 
-# Where the copy goes: the project's local .agent/LOGS, else a private
-# per-user dir (mode 700, owned by us, not a symlink) under $TMPDIR.
-if [ -d "$ROOT/.agent/LOGS" ] && [ ! -L "$ROOT/.agent/LOGS/resized" ]; then
-  OUT_DIR="$ROOT/.agent/LOGS/resized"
-  mkdir -p "$OUT_DIR" 2>/dev/null || exit 0
-else
-  OUT_DIR="${TMPDIR:-/tmp}"; OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
-  mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
-  [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
-fi
+# Where the copy goes: a private per-user dir (mode 700, owned by us, not a
+# symlink) under $TMPDIR.
+OUT_DIR="${TMPDIR:-/tmp}"; OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
+mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
+[ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
 find "$OUT_DIR" -maxdepth 1 -type f -mtime +1 -delete 2>/dev/null || true
 
 # Content key: a copy can only ever be reused for byte-identical input.
@@ -105,7 +101,7 @@ case "$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')" in
   jpg|jpeg) OUT_EXT="jpg"; SIPS_FMT="jpeg" ;;
   *)        OUT_EXT="png"; SIPS_FMT="png" ;;
 esac
-STEM=$(basename "${ABS%.*}" | cut -c1-60)
+STEM=$(printf '%s' "$(basename "${ABS%.*}")" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-60)
 DEST="$OUT_DIR/$STEM.$KEY.$OUT_EXT"
 
 # A copy is good when it is a regular file (not a link), decodes, and fits.
@@ -133,6 +129,7 @@ if ! _good "$DEST"; then
   fi
 fi
 _good "$DEST" || exit 0
+touch "$DEST" 2>/dev/null || true   # a reused copy must not age out under the Read
 
 # Redirect the Read: same tool_input, file_path swapped for the copy.
 printf '%s' "$INPUT" | jq -c --arg path "$DEST" --arg orig "$ABS" --arg w "$WIDTH" --arg h "$HEIGHT" \
