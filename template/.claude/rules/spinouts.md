@@ -67,11 +67,12 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
    - Edit ONLY the files listed above
    - If you discover you need to edit another file, STOP and report it instead
    - Run the verification command before finishing
-   - Never block longer than 180 s in one tool call (subagent prompt caches
-     expire after 5 minutes): wait for a background job in slices, with a
-     sentinel file the job writes when done (see "keep the cache warm" below)
-     if you would wait more than about 35 minutes in total, report the job's
-     task id and stop so the parent can take over the wait
+   - No wait loop longer than 170 s in one tool call (subagent prompt caches
+     expire after 5 minutes): start a long job in the background and wait for
+     it in slices on a sentinel file it writes when done (the recipe is in
+     "keep the cache warm" below; the parent pastes it into this brief)
+   - If you would wait more than about 35 minutes in total, report the job's
+     task id and stop, so the parent can restart and await it
    - Report: what you changed, verification result, any issues found
    ```
 
@@ -122,18 +123,21 @@ heartbeat") shows the raw-token count can point the other way. Not reproduced on
 another project. A wait split into slices of at most 180 s costs one read per
 slice instead.
 
-- **Brief every spin-out with the 180 s rule** (it is in the template above).
+- **Brief every spin-out with the wait-slice rule** (it is in the template above).
 - **Bound the wait itself:** each slice is ONE waiting call, never a burst of
   short polls (each poll is a turn that re-reads the whole context). Start the
   job once with the Bash tool's `run_in_background` (never a bare `&`), as
-  `rm -f /abs/done.flag; { cmd; echo $? > /abs/done.flag; }`: the stale flag is
-  removed first and the path is absolute, so a changed working directory cannot
-  hide it. Then wait with `end=$((SECONDS+170)); until [ -e /abs/done.flag ] ||
-  [ $SECONDS -ge $end ]; do sleep 5; done` as a Bash call with
-  `timeout: 200000` (`timeout(1)` does not exist on stock macOS), then read the
-  output. The loop's own deadline is what bounds the call; the tool timeout is
-  only a backstop that kills it. 180 s leaves room for a turn of generating
-  before the wait: a longer wait plus that turn passes the 5 minutes.
+  `rm -f /tmp/mv-done.flag; { cmd; echo $? > /tmp/mv-done.flag; }`. The stale
+  flag is removed first, and the path is absolute and outside the project, so a
+  changed working directory cannot hide it (use a unique name per job when
+  several run). Then wait with
+  `end=$((SECONDS+170)); until [ -e /tmp/mv-done.flag ] || [ $SECONDS -ge $end ]; do sleep 5; done`
+  as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
+  macOS), then read the output. The loop's own deadline is what bounds the call;
+  the tool timeout is only a backstop (it may kill the call or move it to the
+  background: stop any backgrounded waiter before starting another). 170 s
+  leaves room for a turn of generating before the wait: a longer wait plus that
+  turn passes the 5 minutes.
 - **Check the premise before applying any of this:** the numbers assume a
   5-minute subagent cache (the default; 1 hour where enabled, and configurable),
   a read at 0.1x and a 5-minute write at 1.25x input price. At other

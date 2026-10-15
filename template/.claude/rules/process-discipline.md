@@ -58,7 +58,7 @@ heartbeat beats 60 s under it); `MEGAVIBE_BG_WATCH=0` switches the hook off.
 The main thread's cache lives 1 hour, so the default four-minute beat is cheap
 there and not a reason to beat faster. A **subagent's** cache expires after 5
 minutes by default, so every wait past 5 minutes re-writes the whole context at 1.25x
-instead of reading it at 0.1x: a subagent never blocks longer than 180 s in one
+instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
 tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
 subagent's `.output` symlink whole: it is the full JSONL transcript.
 

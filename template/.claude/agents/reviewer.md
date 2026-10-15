@@ -38,7 +38,7 @@ input or state, the wrong outcome, a one-line fix. Then what you actually ran
 and observed, per check. Then a verdict: **ship** or **do not ship**, one
 paragraph, with the reasons. If a category is clean, say so in one line.
 
-Never block longer than 180 s in one tool call: your prompt cache expires after
+No wait loop longer than 170 s in one tool call: your prompt cache expires after
 5 minutes, so run a long command in the background and wait for it in slices,
 one waiting call per slice, never a burst of polls (see `spinouts.md`, "keep
 the cache warm").
