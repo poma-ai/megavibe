@@ -147,10 +147,11 @@ command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1
 REQ=$(mktemp -t codex-req)
 ANS=$(mktemp -t codex-ans)
 SCRATCH=""
-trap 'rm -f "$REQ" "$REQ.err" "$ANS"; [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"' EXIT   # before anything below can fail
+# Cleanup must never change the exit code (a reviewer can leave a chmod 000 dir behind) and must reach everything.
+trap 'rm -f "$REQ" "$REQ.err" "$ANS" || true; if [ -n "$SCRATCH" ]; then chmod -R u+rwX "$SCRATCH" 2>/dev/null || true; rm -rf "$SCRATCH" 2>/dev/null || true; fi' EXIT   # before anything below can fail
 if [ "$SCRATCH_MODE" = 1 ]; then
   SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/codex-review-scratch.XXXXXX") || { SCRATCH=""; echo "error: cannot create the scratch dir" >&2; exit 1; }
-  SCRATCH=$(cd "$SCRATCH" && pwd -P) || { echo "error: cannot resolve the scratch dir" >&2; exit 1; }   # absolute: a relative TMPDIR would give codex a wrong one
+  SCRATCH=$(CDPATH= cd -- "$SCRATCH" && pwd -P) || { echo "error: cannot resolve the scratch dir" >&2; exit 1; }   # absolute: a relative TMPDIR would give codex a wrong one
   mkdir -p "$SCRATCH/tmp"
 fi
 {
@@ -167,7 +168,8 @@ fi
 # --skip-git-repo-check: reviews run against arbitrary paths, including temp
 # dirs that are not repos. -o writes ONLY the final message, so the answer never
 # has to be scraped out of the run's progress chrome.
-ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
+# approval_policy is pinned too: a user's on-request / auto-review setting must not approve an escalation.
+ARGS=(exec --sandbox "$SANDBOX" -c 'approval_policy="never"' --skip-git-repo-check --color never -o "$ANS")
 # A user's exec-policy rules ($CODEX_HOME/rules/*.rules, which codex itself writes when
 # someone answers "always allow" in the TUI) run an allowed command OUTSIDE the sandbox,
 # which re-opens the project, $HOME, /tmp and the network in BOTH modes. Never load them.
