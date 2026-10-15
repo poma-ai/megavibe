@@ -170,7 +170,7 @@ Changes to `template/CLAUDE.md` affect every downstream project. Before modifyin
 2. **Test with a real project.** Apply the updated protocol, run a non-trivial task, confirm Claude follows the new rules.
 3. **Update README.md** to reflect protocol changes.
 
-For hook changes, ask Codex — it runs the script under `--sandbox read-only` — for edge cases (missing files, race conditions, unexpected input, shell quoting). A reviewer that only reads the diff is the measured failure mode here.
+For hook changes, ask Codex — it runs the script in a scratch-write sandbox (the project read-only, a throwaway directory writable, no network) — for edge cases (missing files, race conditions, unexpected input, shell quoting). A reviewer that only reads the diff is the measured failure mode here.
 
 ## Subcontractor model routing
 

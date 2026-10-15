@@ -31,6 +31,9 @@ Stated plainly, because you should decide before pasting:
   server — codex-cli 0.154.0 removed its `mcp-server` subcommand, so megavibe
   calls it through `~/.megavibe/scripts/codex-review.sh` over `codex exec` and
   removes any dead registration left by an earlier setup.
+  A Codex review runs with the project read-only and a throwaway scratch directory
+  writable (no network), so it can run the harnesses a review needs; `--strict` or
+  `MEGAVIBE_CODEX_SCRATCH=0` makes it fully read-only.
 - **Hooks run on every tool call** in projects you initialise — they write context
   files under `.agent/` and never send anything off your machine on their own.
 - **Backends see your content.** Delegating to Gemini or Codex sends the material
