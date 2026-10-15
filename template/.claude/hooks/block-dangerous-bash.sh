@@ -662,27 +662,35 @@ if [ "$_MAYBE_KILL" = "1" ] && [ "${MEGAVIBE_ALLOW_KILL:-0}" != "1" ] && command
 import os, re, shlex, sys
 
 CMD = sys.stdin.read()
-# Heredoc bodies are text, not commands: drop everything between <<WORD and WORD.
-out, skip = [], None
+# Heredoc bodies are text, not commands: drop the body of EVERY heredoc started on a line
+# (cat <<A <<B has two), up to its delimiter line.
+out, pending = [], []
 for line in CMD.split("\n"):
-    if skip is not None:
-        if line.strip() == skip: skip = None
+    if pending:
+        if line.strip() == pending[0]: pending.pop(0)
         continue
     out.append(line)
-    m = re.search(r"<<-?\s*[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
-    if m: skip = m.group(1)
+    pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
 CMD = "\n".join(out).replace("\\\n", "")
 CMD = CMD.replace("\n", " ; ")
 
 KILLERS = {"pkill", "killall"}
 TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
 LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
-WRAPPERS = {"sudo", "env", "command", "nice", "time", "nohup", "stdbuf", "doas", "exec", "builtin"}
+WRAPPER_OPTS = {"sudo": {"-u","-g","-h","-p","-C","-T","-r","-t","-U","-D","-R"}, "doas": {"-u","-C"},
+                "env": {"-u","-C","-S","-P"}, "nice": {"-n"}, "stdbuf": {"-i","-o","-e"},
+                "timeout": {"-s","-k"}, "nohup": set(), "command": set(),
+                "time": set(), "builtin": set(),
+                "xargs": {"-I","-n","-P","-L","-s","-E","-d","-a","-J","-R","-S"}}
+WRAPPER_OPTS["ex" + "ec"] = {"-a"}
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done"}
 SHELLS = {"sh", "bash", "zsh", "ksh", "dash"}
-OPS = {";", "&&", "||", "|", "&", "\n", "(", ")"}
+OPS = {";", "&&", "||", "|", "&", "\n", "(", ")", "|&", ";;"}
 
-def toks(s):
-    lx = shlex.shlex(s, posix=True, punctuation_chars=True)
+def split_tokens(s):
+    # Non-POSIX mode keeps the quotes on a word, so a QUOTED ";" or "&&" is a word
+    # (echo ";" pkill x prints text) and only a bare one is an operator.
+    lx = shlex.shlex(s, posix=False, punctuation_chars=True)
     lx.whitespace_split = True
     lx.commenters = ""
     try:
@@ -690,15 +698,22 @@ def toks(s):
     except ValueError:
         return None
 
+def unq(tok):
+    try:
+        w = shlex.split(tok)
+        return "".join(w) if w else ""
+    except ValueError:
+        return tok
+
 def commands(tokens):
     cur = []
     for t in tokens:
         if t in OPS:
-            if cur: yield cur
+            if cur: yield [unq(x) for x in cur]
             cur = []
         else:
             cur.append(t)
-    if cur: yield cur
+    if cur: yield [unq(x) for x in cur]
 
 def verb(argv, valued):
     i = 1
@@ -707,38 +722,52 @@ def verb(argv, valued):
         if a.startswith("-"):
             i += 2 if a in valued else 1
             continue
-        return a, i
-    return None, len(argv)
+        return a
+    return None
 
 def scan(argv, depth=0):
     if depth > 3 or not argv: return False
     i = 0
-    while i < len(argv) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i])
-                             or os.path.basename(argv[i]) in WRAPPERS):
-        if argv[i] == "MEGAVIBE_ALLOW_KILL=1": return False
-        i += 1
+    while i < len(argv):
+        a = argv[i]; b = os.path.basename(a)
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            if a == "MEGAVIBE_ALLOW_KILL=1": return False
+            i += 1; continue
+        if a in KEYWORDS:
+            i += 1; continue
+        if b in WRAPPER_OPTS:
+            i += 1
+            while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
+                opt = argv[i]; i += 1
+                if opt == "--": break
+                if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
+            while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+                if argv[i] == "MEGAVIBE_ALLOW_KILL=1": return False
+                i += 1
+            if b == "timeout" and i < len(argv) and re.match(r"^[0-9.]+[smhd]?$", argv[i]): i += 1
+            continue
+        break
     if i >= len(argv): return False
     argv = argv[i:]
     base = os.path.basename(argv[0])
     if base in SHELLS:
-        for j, a in enumerate(argv):
-            if a == "-c" and j + 1 < len(argv):
-                t = toks(argv[j + 1])
+        for j, a in enumerate(argv[1:], 1):
+            if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
+                t = split_tokens(argv[j + 1])
                 if t is None: return False
                 return any(scan(c, depth + 1) for c in commands(t))
         return False
     if base in KILLERS:
         return not ("--help" in argv or "-h" in argv)
     if base == "tmux":
-        v, _ = verb(argv, {"-L", "-S", "-f", "-c", "-T"})
-        return v in TMUX_VERBS
+        return verb(argv, {"-L", "-S", "-f", "-c", "-T"}) in TMUX_VERBS
     if base == "launchctl":
-        v, k = verb(argv, set())
-        if v == "kickstart": return "-k" in argv
+        v = verb(argv, set())
+        if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
         return v in LAUNCHCTL_VERBS
     return False
 
-t = toks(CMD)
+t = split_tokens(CMD)
 if t is None:
     print("ok")
 else:

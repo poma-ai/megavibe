@@ -6,7 +6,7 @@
 # a ledger of what was sent, skipped or mirrored, and an INDEX.md that lists EVERY entry
 # of the folder with its state, so nothing is silently missing.
 #
-#   deliverables-index.sh unsent                   entries not yet sent, skipped or mirrored (date order)
+#   deliverables-index.sh unsent                   entries not yet sent, skipped or mirrored (name order)
 #   deliverables-index.sh mark NAME STATE...       record a state (sent YYYY-MM-DD | skipped: reason | URL), then rebuild INDEX.md
 #   deliverables-index.sh index                    rebuild INDEX.md
 #   deliverables-index.sh --dir DIR ...            folder (default ./megavibe-deliverables, or $MEGAVIBE_DELIVERABLES_DIR)
@@ -23,12 +23,15 @@ if [ "${1:-}" = "--dir" ]; then [ $# -ge 2 ] || { echo "error: --dir needs a val
 CMD="${1:-index}"; [ $# -gt 0 ] && shift
 [ -d "$DIR" ] || { echo "error: no such folder: $DIR" >&2; exit 1; }
 LEDGER="$DIR/.mirror"
+[ ! -L "$LEDGER" ] || { echo "error: $LEDGER is a symlink: refusing to write through it" >&2; exit 1; }
+[ ! -L "$DIR/INDEX.md" ] || rm -f "$DIR/INDEX.md"   # a link at INDEX.md is replaced, never followed
 CR=$(printf '\r'); TAB=$(printf '\t')
 
 entries() {   # sorted entry names, one per line
   local f n
   for f in "$DIR"/* ; do
     [ -e "$f" ] || continue
+    [ ! -L "$f" ] || { echo "note: skipped a symlink: ${f##*/}" >&2; continue; }
     n=${f##*/}
     case "$n" in STATUS.md|README.md|INDEX.md) continue ;; esac
     case "$n" in *[[:cntrl:]]*) echo "note: skipped a name with control characters" >&2; continue ;; esac
@@ -39,7 +42,7 @@ entries() {   # sorted entry names, one per line
 state_of() {  # last ledger state for $1, else "unsent"
   local s=""
   if [ -f "$LEDGER" ]; then
-    s=$(awk -F'\t' -v n="$1" '$1 == n { s = $2 } END { print s }' "$LEDGER" 2>/dev/null || true)
+    s=$(N="$1" awk -F'\t' '$1 == ENVIRON["N"] { s = $2 } END { print s }' "$LEDGER" 2>/dev/null || true)
   fi
   [ -n "$s" ] && printf '%s' "$s" || printf 'unsent'
 }

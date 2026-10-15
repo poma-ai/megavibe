@@ -59,14 +59,16 @@ call() {  # $1 = model or empty
     ${OUT:+--out "$OUT"} --prompt "$PROMPT" ${FILES[@]+"${FILES[@]}"}
 }
 set +e
-call "$MODEL" 2>"${TMPDIR:-/tmp}/second-opinion.$$.err"
+ERRF=$(mktemp "${TMPDIR:-/tmp}/second-opinion.XXXXXX")
+trap 'rm -f "$ERRF"' EXIT
+call "$MODEL" 2>"$ERRF"
 RC=$?
 set -e
 if [ "$RC" -eq 1 ] && [ -z "$EXPLICIT_MODEL" ] && [ -z "${MEGAVIBE_SECOND_OPINION_MODEL:-}" ]; then
   # most likely the default model is not on this plan: once, with the user's own model
-  echo "note: $MODEL failed ($(tail -1 "${TMPDIR:-/tmp}/second-opinion.$$.err" | cut -c1-160)); retrying once with the configured model" >&2
-  set +e; call "" 2>"${TMPDIR:-/tmp}/second-opinion.$$.err"; RC=$?; set -e
+  echo "note: $MODEL failed ($(tail -1 "$ERRF" | cut -c1-160)); retrying once with the configured model" >&2
+  set +e; call "" 2>"$ERRF"; RC=$?; set -e
 fi
-cat "${TMPDIR:-/tmp}/second-opinion.$$.err" >&2 || true
-rm -f "${TMPDIR:-/tmp}/second-opinion.$$.err"
+cat "$ERRF" >&2 || true
+rm -f "$ERRF"
 exit "$RC"
