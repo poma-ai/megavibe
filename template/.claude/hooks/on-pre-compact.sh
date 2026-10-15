@@ -253,7 +253,7 @@ fi
 ASK_WARN=""
 _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then
-  _STTXT=$(head -c 1048576 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r' || true)
+  _STTXT=$(head -c 1048576 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r\0' || true)
   # "Now" is a status line, not the report (bytes: wc -m depends on the locale).
   _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = (tolower($0) ~ /^## now([^a-z]|$)/); next } p' | wc -c | tr -d ' ')
   # Rows of the register table under "## Asked for": the table that starts at a
@@ -281,23 +281,28 @@ if [ -f "$_ST" ]; then
       if (line ~ /^(    |\t)/) { intab = 0; next }   # four blanks or a tab: an indented code block, not a table
       if (line ~ /^[ \t]*$/ || line !~ /\|/) { intab = 0; next }
       gsub(/\\\|/, "\001", line)      # an escaped pipe belongs to its cell
-      line = trim(line); base = (line ~ /^\|/) ? 1 : 0
+      sub(/^[ \t]+/, "", line); base = (line ~ /^\|/) ? 1 : 0   # leading blanks only: cells keep their inner blanks
       n = split(line, c, "|")
       if (!intab) { if (tolower(plain(c[1 + base])) == "ask") intab = 1; next }
       a = trim(c[1 + base])
-      if (a ~ /^[-: ]*$/) next        # the separator row
+      if (a ~ /^:?-+:?$/ || tolower(plain(a)) == "ask") next   # the separator row, or a repeated header
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
-      f = trim(c[3 + base]); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      if (length(f) > 255) f = ""   # no file name is this long (NAME_MAX); it also bounds the work per row below
+      raw = c[3 + base]
+      if (length(raw) > 255) f = ""   # no file name is this long (NAME_MAX); it also bounds the work per row below
+      else { f = raw; sub(/^[ \t]+/, "", f); sub(/[ \t]+$/, "", f) }   # edges only: a name keeps its own inner blanks
+      gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
       g = f; sub(/^[*`~]+/, "", g); sub(/[*`~]+$/, "", g)   # wrapping markup only: file names keep their underscores
-      h = g; if (h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h) }   # and without a MATCHED pair of wrapping underscores (italics)
-      lab = ""; tgt = ""
-      if (g ~ /^!?\[[^]]*\]\([^)]*\)$/) { lab = g; sub(/^!?\[/, "", lab); sub(/\].*$/, "", lab); tgt = g; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
+      h = g; if (f !~ /^`/ && h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h) }   # a MATCHED pair of wrapping underscores (italics), never inside a code span
+      tgt = ""; lk = (h ~ /^!?\[[^]]*\]\(.*\)$/) ? h : ((g ~ /^!?\[[^]]*\]\(.*\)$/) ? g : "")
+      if (lk != "") { tgt = lk; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
       if (k == "open") nopen++
-      else if (k == "done") { nd++; rec[nd % 500] = k "\037" f "\037" g "\037" h "\037" lab "\037" tgt }   # open rows are only counted here; of the done rows the NEWEST 500 are kept, so the shell loop stays short
+      else if (k == "done") {   # open rows are only counted here; of the done rows the FIRST 250 and the LAST 250 are kept (rows are added at either end), so the shell loop stays short
+        nd++; r = k "\037" f "\037" g "\037" h "\037" "" "\037" tgt
+        if (nd <= 250) head[nd] = r; else ring[nd % 250] = r
+      }
     }
-    END { for (i = (nd > 500 ? nd - 499 : 1); i <= nd; i++) print rec[i % 500]; print "count\037" (nopen + 0) }' 2>/dev/null || true)
+    END { for (i = 1; i <= (nd < 250 ? nd : 250); i++) print head[i]; for (i = (nd > 499 ? nd - 249 : 251); i <= nd; i++) print ring[i % 250]; print "count\037" (nopen + 0) }' 2>/dev/null || true)
   _NOPEN=0; _NNOFILE=0
   if [ -n "$_ROWS" ]; then
     _US=$(printf '\037')
