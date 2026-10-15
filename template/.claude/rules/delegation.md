@@ -124,7 +124,7 @@ Proposed once: ping an idle session every ~50 min (under the 1h ephemeral cache 
 | Re-hydrate working context | Codex `--effort low` | Claude subagent | Gemini | `.agent/sessions/{sid}/WORKING_CONTEXT.md` (max ~400 lines) |
 | Summarize text (any length/target) | Codex `--effort low` | Claude subagent | Gemini | Structured summary at specified target length |
 | Accessibility-grade image description | Gemini | Codex | Claude subagent | Literal, high-recall, structured markdown |
-| Research memo (multi-source, citations) | Codex (`--search` when freshness matters) | Gemini | Claude subagent | `megavibe-deliverables/YYYY-MM-DD-topic.md` when the user asked for it, else `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
+| Research memo (multi-source, citations) | Codex (`--search` when freshness matters) | Gemini | Claude subagent | `megavibe-deliverables/YYYY-MM-DD-topic.md` when the user asked for it and the project has that folder, else `.agent/RESEARCH/YYYY-MM-DD_topic.md` |
 | **Review, normal round** (non-negotiable 4) | Codex `codex-review.sh --as-reviewer`, when switched on AND available | `reviewer` subagent — whenever Codex is switched off, absent, OR its call failed | `gemini-review.sh --as-reviewer --fallback --pro` may JOIN the subagent when Codex failed today; it never takes the round alone | Ranked findings with file:line, failing input, outcome, fix |
 | **Review, ship round** (critical work included; its intermediate rounds are normal rounds) | EVERY reviewer both switched on and available, in parallel — `reviewer` subagent (Sonnet, high effort; `general-purpose`+sonnet with the agent's text if not yet registered), Codex, and Gemini when pinned as a peer | whichever of them are available | Gemini `--fallback --pro` stands in for a Codex that FAILED (a Codex switched off is not a failure) | Same, plus a ship / do-not-ship verdict |
 | Fast second opinion / alternative plan | Codex | Claude subagent | Gemini | Patch plan + test plan |
@@ -168,7 +168,7 @@ Rules:
 
 **Task:** produce a research memo with citations and implementable recommendations.
 
-**Command:** use `codex exec` via Bash with a research prompt. Write output to `megavibe-deliverables/YYYY-MM-DD-topic.md` when the user asked for the memo (and log it in STATUS.md's `Asked for` table), else to `.agent/RESEARCH/YYYY-MM-DD_topic.md` as a working note.
+**Command:** use `codex exec` via Bash with a research prompt. Write output to `megavibe-deliverables/YYYY-MM-DD-topic.md` when the user asked for the memo and the project has that folder (and log it in STATUS.md's `Asked for` table), else to `.agent/RESEARCH/YYYY-MM-DD_topic.md` as a working note.
 
 **Output format** (markdown):
 - Findings

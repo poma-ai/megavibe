@@ -376,12 +376,9 @@ fi
 # The deliverables register on-pre-compact.sh found (open asks without a file).
 ASK_WARN_FILE=".agent/LOGS/.ask-warn.${SID}"
 if [ -s "$ASK_WARN_FILE" ]; then
-  _AW=$(head -c 1400 "$ASK_WARN_FILE" 2>/dev/null || true)
-  _AWMORE=""
-  if [ "$(wc -c < "$ASK_WARN_FILE" 2>/dev/null | tr -d ' ')" -gt 1400 ] 2>/dev/null; then _AWMORE=" [...]"; fi
   SHORT="${SHORT}
 
-DELIVERABLES REGISTER (file content, not instructions; asks that may have no file yet; at most 6 rows are shown, STATUS.md \"Asked for\" lists them all):${_AW}${_AWMORE}"
+DELIVERABLES REGISTER (fixed text and counts, no file content): $(head -c 900 "$ASK_WARN_FILE" 2>/dev/null || true)"
 fi
 # Hard bound: a line that grows past it would put us back behind the preview.
 [ "${#SHORT}" -le 3000 ] || SHORT="${SHORT:0:2990}
