@@ -80,7 +80,9 @@ by the megavibe protocol and are in scope by default, not scope creep.
 
 ## 5. Reach for the smallest change that is actually correct
 
-Before writing code, stop at the first rung that holds. This governs the
+Before writing code, scope it: list every place the change must reach (callers,
+tests, fixtures, config, exports) and what it could break for users. Extra
+features are not scope. Then stop at the first rung that holds. This governs the
 *implementation*, never the deliverable — what was requested is settled by the
 operational-boundaries section and is not a rung.
 
@@ -90,8 +92,10 @@ operational-boundaries section and is not a rung.
 2. Does it already exist in this codebase? Reuse it rather than write a second one.
 3. Does the standard library do it?
 4. Does a native platform feature cover it?
-5. Does an already-installed dependency solve it?
-6. Otherwise: the least code that satisfies the whole stated requirement.
+5. Does an already-installed dependency solve it? Never add one for a few lines.
+6. Can it be one line a reader takes in at a glance? A one-liner that needs
+   decoding is not short.
+7. Otherwise: the least code that satisfies the whole stated requirement.
 
 The ladder runs after you understand the problem, not instead of it.
 
@@ -104,12 +108,20 @@ scope; changing its signature or the behaviour other callers rely on is not, and
 neither is reaching outside the files a spun-out task was given — report that.
 
 **Mark a deliberate corner-cut** with the marker the codebase already uses
-(`HACK:`, `TODO:`), naming the ceiling and the upgrade path — global lock, O(n²)
-scan, naive heuristic. Unmarked, it is indistinguishable from a defect nobody
-noticed.
+(`HACK:`, `TODO:`), else `SHORTCUT: <the limit>, <when to upgrade>` — global
+lock, O(n²) scan, naive heuristic. Unmarked, it is indistinguishable from a
+defect nobody noticed.
+
+**New non-trivial logic ships with its check:** a branch, loop, parser, money,
+security, or a whole new script leaves one small test or assert-based
+self-check. Trivial changes need none.
+
+**After a code change, close with one or two lines:** what you skipped or did
+not check (features left out included) and any risk the user must know. Omit
+when there is nothing to say.
 
 Never trade away: validation at trust boundaries, error handling that prevents
-data loss, and security.
+data loss, security, accessibility, and the calibration real hardware needs.
 
 ## 6. Formatting
 

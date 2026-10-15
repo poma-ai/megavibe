@@ -67,6 +67,8 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
    - Edit ONLY the files listed above
    - If you discover you need to edit another file, STOP and report it instead
    - Run the verification command before finishing
+   - Never block longer than 240 s in one tool call: poll a long wait in
+     slices of at most 240 s (subagent prompt caches expire after 5 minutes)
    - Report: what you changed, verification result, any issues found
    ```
 
@@ -100,6 +102,27 @@ When one job walks many items that are each judged on their own (checking labels
 - **Stacked worst case.** Doubled growth plus doubled briefing gives 1.1x, and adding the expiries and resets gives 0.9x.
 
 This is a projection from one job on one Claude Code build, not a measured re-run; re-measure if a later build behaves differently. Across the single-assumption checks the saving is about 2-4x; it holds only while each batch's fixed cost stays small next to the context it saves. At this job's 74K first call, a 350K cap instead of 250K changes the simulated saving by only about 0.1x; with a large briefing the higher cap recovers much more (2.1x against 1.1x at 200K), so a bulky briefing is a reason to batch closer to 350K, at the cost of less margin below the first reset.
+
+## Subagents: keep the cache warm while waiting
+
+A subagent's prompt cache lives 5 minutes (the main thread's lives 1 hour). Any
+single tool call that blocks past that — `sleep`, an `until grep …` poll, a long
+test run in the foreground — makes the next request re-write the whole context
+as a cache write (1.25x input price) instead of a read (0.1x). Measured
+2026-10-14 in one project: three long subagents (contexts of 790-970K) each sat
+in 34-38 foreground waits of 5-9 minutes and re-wrote about 500K tokens every
+time, 51M cache-written tokens and 62% of that session's usage that day (117M of
+189M price-weighted tokens). A wait split into slices of at most 240 s costs one
+cheap read per slice instead.
+
+- **Brief every spin-out with the 240 s rule** (it is in the template above).
+- **Bound the wait itself:** `timeout 240 bash -c 'until …; do sleep 5; done'`,
+  or run the job in the background and poll its output file each slice; a
+  foreground call with a 600 s `timeout` is the failure.
+- **Not worth it above roughly 50 minutes of idle:** slices of 240 s cost about
+  0.1 of the context per 4 minutes, a cold re-write 1.25, so past ~50 minutes
+  of pure waiting let it go cold. Prefer a fresh subagent by then (see the
+  batch rule above).
 
 ## What NOT to do
 
