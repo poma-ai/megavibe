@@ -13,7 +13,8 @@
 # non-negotiable 4 are called the same way and neither is the awkward one.
 #
 # Usage:
-#   scripts/codex-review.sh [--as-reviewer] [--model M] [--effort minimal|low|medium|high|xhigh]
+#   scripts/codex-review.sh [--as-reviewer] [--scratch | --strict]
+#                           [--model M] [--effort minimal|low|medium|high|xhigh]
 #                           [--timeout N] [--out FILE] --prompt "text" FILE...
 #   scripts/codex-review.sh ... --prompt-file PROMPT.md FILE...
 #
@@ -45,7 +46,8 @@
 # Two modes, same guarantee for the project:
 #   scratch (the default under --as-reviewer; --scratch elsewhere): codex runs with
 #     workspace-write in a throwaway directory it is started IN (and TMPDIR points
-#     there), network off, /tmp and $TMPDIR NOT writable. The project, $HOME and
+#     there), network off, /tmp and the caller's $TMPDIR NOT writable, and any
+#     writable_roots in the user's own codex config reset to none. The project, $HOME and
 #     everything else stay read-only, even a project that happens to live under
 #     /tmp. A reviewer must run the code it reviews (a reviewer that only read the
 #     diff missed a P1 in every measured case), and that needs a place to write
@@ -82,7 +84,7 @@ while [ $# -gt 0 ]; do
     --prompt-file) need "$@"; PROMPT_FILE="$2"; shift 2 ;;
     # Refused, not forwarded: a review that can write is not a review.
     --sandbox|--dangerously-bypass-approvals-and-sandbox|--approve-for-me|--full-auto)
-      echo "error: $1 is not available here — the project under review is read-only by contract (use --scratch for a writable scratch dir)" >&2; exit 2 ;;
+      echo "error: $1 is not available here — the project under review is read-only by contract (--scratch / --as-reviewer give a writable scratch dir, --strict none)" >&2; exit 2 ;;
     -h|--help)     awk 'NR >= 2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     --)            shift; FILES+=("$@"); break ;;
     -*)            echo "unknown arg: $1" >&2; exit 2 ;;
@@ -140,14 +142,15 @@ command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1
 REQ=$(mktemp -t codex-req)
 ANS=$(mktemp -t codex-ans)
 SCRATCH=""
+trap 'rm -f "$REQ" "$REQ.err" "$ANS"; [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"' EXIT   # before anything below can fail
 if [ "$SCRATCH_MODE" = 1 ]; then
-  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/codex-review-scratch.XXXXXX") || { echo "error: cannot create the scratch dir" >&2; exit 1; }
+  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/codex-review-scratch.XXXXXX") || { SCRATCH=""; echo "error: cannot create the scratch dir" >&2; exit 1; }
+  SCRATCH=$(cd "$SCRATCH" && pwd -P) || { echo "error: cannot resolve the scratch dir" >&2; exit 1; }   # absolute: a relative TMPDIR would give codex a wrong one
   mkdir -p "$SCRATCH/tmp"
 fi
-trap 'rm -f "$REQ" "$REQ.err" "$ANS"; [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"' EXIT
 {
   if [ -n "$SCRATCH" ]; then
-    printf 'SANDBOX NOTE FROM THE HARNESS: the project under review is at %s (your own working directory is NOT the project). It is READ-ONLY for you: read it by absolute path and never try to modify it. Your writable scratch directory is %s (it is your working directory; TMPDIR is %s/tmp): copy what you need there and write and run harnesses there. There is no network, and /tmp is not writable.\n\n' "$PWD" "$SCRATCH" "$SCRATCH"
+    printf 'SANDBOX NOTE FROM THE HARNESS: the project under review is at %s (your own working directory is NOT the project). It is READ-ONLY for you: read it by absolute path and never try to modify it. Your writable scratch directory is %s (it is your working directory; TMPDIR is %s/tmp): copy what you need there and write and run harnesses there. Run git commands against the project as git -C <project> (your working directory is not a repository). There is no network, and /tmp is not writable.\n\n' "$PWD" "$SCRATCH" "$SCRATCH"
   fi
   printf '%s\n' "$PROMPT"
   for f in ${FILES[@]+"${FILES[@]}"}; do
@@ -162,7 +165,7 @@ trap 'rm -f "$REQ" "$REQ.err" "$ANS"; [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"' EX
 ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
 if [ -n "$SCRATCH" ]; then
   # workspace-write is the cwd (the scratch dir) only: /tmp and $TMPDIR excluded, network off.
-  ARGS+=(-C "$SCRATCH" -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true)
+  ARGS+=(-C "$SCRATCH" -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c 'sandbox_workspace_write.writable_roots=[]')
   export TMPDIR="$SCRATCH/tmp"
 fi
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
