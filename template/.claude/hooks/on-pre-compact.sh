@@ -255,37 +255,53 @@ _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then
   _STTXT=$(head -c 1048576 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r' || true)
   # "Now" is a status line, not the report (bytes: wc -m depends on the locale).
-  _NOWB=$(printf '%s\n' "$_STTXT" | awk '/^## /{ p = ($0 ~ /^## [Nn]ow([^A-Za-z]|$)/); next } p' | wc -c | tr -d ' ')
-  # Rows of the "## Asked for" table (columns Ask | Date | File | Mirror | State):
-  # state and file cells, markup (* _ backticks, [text](link)) removed, one row per
-  # line, unit-separator delimited; rows with fewer than 5 columns count as open.
-  _ROWS=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk -F'|' '
+  _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = ($0 ~ /^## [Nn]ow([^A-Za-z]|$)/); next } p' | wc -c | tr -d ' ')
+  # Rows of the register table under "## Asked for": the table that starts at a
+  # header line whose first cell is "Ask" and ends at the first blank or pipe-less
+  # line (another table, an example in a code fence, prose do not count). Outer
+  # pipes are optional, up to 3 leading blanks are allowed. Columns Ask | Date |
+  # File | Mirror | State; markup (* _ backticks, [text](link)) is removed from the
+  # state, a file keeps its own characters (wrapping markup only is also tried);
+  # a row with fewer than 5 columns counts as open. One row per line, delimited
+  # by the unit separator: class, file, file without wrapping markup.
+  _ROWS=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
     function plain(x) { x = trim(x); gsub(/[*_`]/, "", x); if (x ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", x); sub(/\].*$/, "", x) } return trim(x) }
-    fence { if ($0 ~ /^[ \t]*(```|~~~)/) fence = 0; next }
-    /^[ \t]*(```|~~~)/ { fence = 1; next }
+    function fenceinfo(x,   t, c, n) { t = x; sub(/^[ \t]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
+    fence { if (fenceinfo($0) && fch == ofch && fln >= oln && frest ~ /^[ \t]*$/) fence = 0; next }
     inc { if ($0 ~ /-->/) inc = 0; next }
     /^[ \t]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
-    /^## / { t = (tolower($0) ~ /^## asked for[ \t]*$/); next }
-    t && /^[ ]?[ ]?[ ]?\|/ {
-      gsub(/\\\|/, "\001"); $0 = $0   # an escaped pipe belongs to its cell
-      a = trim($2)
-      if (tolower(a) == "ask" || a ~ /^[-: ]+$/ || a == "") next
-      s = tolower(plain($6)); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
-      c = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^dropped([^a-z]|$)/) ? "dropped" : "open")
-      f = plain($4); sub(/^megavibe-deliverables\//, "", f); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      print c "\037" f
+    fenceinfo($0) { fence = 1; ofch = fch; oln = fln; next }
+    /^## / { t = (tolower($0) ~ /^## asked for[ \t]*$/); intab = 0; next }
+    !t { next }
+    {
+      line = $0
+      if (length(line) > 2000) { if (intab) print "open\037\037"; next }   # no real row is this long; BSD awk is quadratic on long blanks
+      if (line ~ /^[ \t]*$/ || line !~ /\|/) { intab = 0; next }
+      gsub(/\\\|/, "\001", line)      # an escaped pipe belongs to its cell
+      line = trim(line); base = (line ~ /^\|/) ? 1 : 0
+      n = split(line, c, "|")
+      if (!intab) { if (tolower(trim(c[1 + base])) == "ask") intab = 1; next }
+      a = trim(c[1 + base])
+      if (a ~ /^[-: ]*$/) next        # the separator row
+      s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
+      k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
+      f = trim(c[3 + base]); if (f ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", f); sub(/\].*$/, "", f) }
+      sub(/^megavibe-deliverables\//, "", f); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
+      g = f; sub(/^[*_`]+/, "", g); sub(/[*_`]+$/, "", g)   # wrapping markup only: file names keep their underscores
+      print k "\037" f "\037" g
     }' 2>/dev/null || true)
   _NOPEN=0; _NNOFILE=0
   if [ -n "$_ROWS" ]; then
-    while IFS="$(printf '\037')" read -r _c _f; do
+    _US=$(printf '\037')
+    while IFS="$_US" read -r _c _f _g; do
       case "$_c" in
         open) _NOPEN=$((_NOPEN + 1)) ;;
         done)
           # "done" counts only when the file is really in the folder (no path tricks).
           case "$_f" in
-            ""|/*|..|../*|*/../*|*/..) _NNOFILE=$((_NNOFILE + 1)) ;;
-            *) [ -e "megavibe-deliverables/$_f" ] || _NNOFILE=$((_NNOFILE + 1)) ;;
+            ""|.|/*|..|../*|*/../*|*/..) _NNOFILE=$((_NNOFILE + 1)) ;;
+            *) [ -e "megavibe-deliverables/$_f" ] || { [ -n "$_g" ] && [ -e "megavibe-deliverables/$_g" ]; } || _NNOFILE=$((_NNOFILE + 1)) ;;
           esac ;;
       esac
     done <<ROWS_EOF

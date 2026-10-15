@@ -23,8 +23,8 @@ Answer:
 | Ask | Date | File | Mirror | State |
 |---|---|---|---|---|
 
-<!-- One row per report, memo, analysis or retrospective you ask for, added when asked. State: open | done | dropped; done only when the file is in this folder. Mirror: URL of a hosted copy, if one was made at your request. Example:
-| TabPFN memo | 2026-10-15 | 2026-10-15-tabpfn-memo.md | | open |
+<!-- One row per report, memo, analysis or retrospective you ask for, added when asked. State: open | done | dropped | moved (moved = the file graduated out of this folder; put its new location in File); done only when the file is in this folder. Keep the header line as the first row. Mirror: URL of a hosted copy, if one was made at your request. Example:
+| Example memo | 2026-10-15 | 2026-10-15-example-memo.md | | open |
 -->
 
 ## Decided
