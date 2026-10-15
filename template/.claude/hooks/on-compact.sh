@@ -374,11 +374,26 @@ REGISTER CURRENCY: the records may describe a state the repo has left:$(head -c 
 Re-read TASKS §0 against git before repeating it as current."
 fi
 # The deliverables register on-pre-compact.sh found (open asks without a file).
-ASK_WARN_FILE=".agent/LOGS/.ask-warn.${SID}"
-if [ -s "$ASK_WARN_FILE" ]; then
-  SHORT="${SHORT}
+# Only four validated integers are read from the cache file and the text is rendered
+# here: a stale or clone-supplied file cannot put any other text into the message.
+ASK_COUNTS_FILE=".agent/LOGS/.ask-counts.${SID}"
+if [ -s "$ASK_COUNTS_FILE" ]; then
+  _ac=$(head -c 64 "$ASK_COUNTS_FILE" 2>/dev/null | head -n 1 || true)
+  if printf '%s' "$_ac" | grep -qE '^[0-9]{1,7} [0-9]{1,7} [0-9]{1,7} [0-9]{1,7}$'; then
+    IFS=' ' read -r _ao _an _ar _ab <<ASK_EOF
+$_ac
+ASK_EOF
+    _at=""
+    [ "$_ao" -eq 0 ] || _at="${_at} ${_ao} ask(s) still open;"
+    [ "$_an" -eq 0 ] || _at="${_at} ${_an} ask(s) marked done whose file is not in megavibe-deliverables/;"
+    [ "$_ar" -eq 0 ] || _at="${_at} ${_ar} research note(s) in .agent/RESEARCH newer than the newest deliverable (heuristic);"
+    [ "$_ab" -le 4000 ] || _at="${_at} the STATUS.md Now section is ${_ab} bytes (cap about 4000);"
+    if [ -n "$_at" ]; then
+      SHORT="${SHORT}
 
-DELIVERABLES REGISTER (fixed text and counts, no file content): $(head -c 900 "$ASK_WARN_FILE" 2>/dev/null || true)"
+DELIVERABLES REGISTER (counts only, no file content):${_at} read the Asked for table in megavibe-deliverables/STATUS.md and finish or update the rows."
+    fi
+  fi
 fi
 # Hard bound: a line that grows past it would put us back behind the preview.
 [ "${#SHORT}" -le 3000 ] || SHORT="${SHORT:0:2990}

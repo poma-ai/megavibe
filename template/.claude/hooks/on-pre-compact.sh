@@ -253,7 +253,7 @@ fi
 ASK_WARN=""
 _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then
-  _STTXT=$(head -c 1048576 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r\0' || true)
+  _STTXT=$(head -c 524288 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r\0' || true)
   # "Now" is a status line, not the report (bytes: wc -m depends on the locale).
   _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = (tolower($0) ~ /^## now([^a-z]|$)/); next } p' | wc -c | tr -d ' ')
   # Rows of the register table under "## Asked for": the table that starts at a
@@ -292,10 +292,11 @@ if [ -f "$_ST" ]; then
       if (length(raw) > 255) f = ""   # no file name is this long (NAME_MAX); it also bounds the work per row below
       else { f = raw; sub(/^[ \t]+/, "", f); sub(/[ \t]+$/, "", f) }   # edges only: a name keeps its own inner blanks
       gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      g = f; sub(/^[*`~]+/, "", g); sub(/[*`~]+$/, "", g)   # wrapping markup only: file names keep their underscores
-      h = g; if (f !~ /^`/ && h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h) }   # a MATCHED pair of wrapping underscores (italics), never inside a code span
+      g0 = f; sub(/^[*~]+/, "", g0); sub(/[*~]+$/, "", g0); code = (g0 ~ /^`/)   # bold/strike wrappers first, then is it a code span?
+      g = g0; sub(/^`+/, "", g); sub(/`+$/, "", g)   # wrapping markup only: file names keep their underscores
+      h = g; if (!code) for (w = 0; w < 2; w++) if (h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h) }   # MATCHED pairs of wrapping underscores (italics, bold), never inside a code span
       tgt = ""; lk = (h ~ /^!?\[[^]]*\]\(.*\)$/) ? h : ((g ~ /^!?\[[^]]*\]\(.*\)$/) ? g : "")
-      if (lk != "") { tgt = lk; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
+      if (lk != "") { tgt = lk; sub(/^.*\]\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
       if (k == "open") nopen++
       else if (k == "done") {   # open rows are only counted here; of the done rows the FIRST 250 and the LAST 250 are kept (rows are added at either end), so the shell loop stays short
         nd++; r = k "\037" f "\037" g "\037" h "\037" "" "\037" tgt
@@ -418,8 +419,10 @@ else
 fi
 if [ -n "$ASK_WARN" ]; then
   printf '%s\n' "$ASK_WARN" > "${LOGDIR}/.ask-warn.${SID}" 2>/dev/null || true
+  # What on-compact.sh reads is numbers only, validated there; it renders the text itself.
+  printf '%s %s %s %s\n' "${_NOPEN:-0}" "${_NNOFILE:-0}" "${_NNEWR:-0}" "${_NOWB:-0}" > "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
 else
-  rm -f "${LOGDIR}/.ask-warn.${SID}" 2>/dev/null || true
+  rm -f "${LOGDIR}/.ask-warn.${SID}" "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
 fi
 
 # Echo to stderr — visible to the user in the Claude Code UI
