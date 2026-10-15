@@ -255,7 +255,7 @@ _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then
   _STTXT=$(head -c 1048576 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r' || true)
   # "Now" is a status line, not the report (bytes: wc -m depends on the locale).
-  _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = ($0 ~ /^## [Nn]ow([^A-Za-z]|$)/); next } p' | wc -c | tr -d ' ')
+  _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = (tolower($0) ~ /^## now([^a-z]|$)/); next } p' | wc -c | tr -d ' ')
   # Rows of the register table under "## Asked for": the table that starts at a
   # header line whose first cell is "Ask" and ends at the first blank or pipe-less
   # line (another table, an example in a code fence, prose do not count). Outer
@@ -268,6 +268,7 @@ if [ -f "$_ST" ]; then
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
     function plain(x) { x = trim(x); gsub(/[*_`]/, "", x); if (x ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", x); sub(/\].*$/, "", x) } return trim(x) }
     function fenceinfo(x,   t, c, n) { t = x; sub(/^[ \t]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
+    length($0) > 2000 { if (t && intab && !fence && !inc) print "open\037\037\037\037"; next }   # no real line is this long; BSD awk is quadratic on long runs, so no other rule may see it
     fence { if (fenceinfo($0) && fch == ofch && fln >= oln && frest ~ /^[ \t]*$/) fence = 0; next }
     inc { if ($0 ~ /-->/) inc = 0; next }
     /^[ \t]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
@@ -277,7 +278,6 @@ if [ -f "$_ST" ]; then
     {
       line = $0
       if (line ~ /^(    |\t)/) { intab = 0; next }   # four blanks or a tab: an indented code block, not a table
-      if (length(line) > 2000) { if (intab) print "open\037\037"; next }   # no real row is this long; BSD awk is quadratic on long blanks
       if (line ~ /^[ \t]*$/ || line !~ /\|/) { intab = 0; next }
       gsub(/\\\|/, "\001", line)      # an escaped pipe belongs to its cell
       line = trim(line); base = (line ~ /^\|/) ? 1 : 0
@@ -287,22 +287,23 @@ if [ -f "$_ST" ]; then
       if (a ~ /^[-: ]*$/) next        # the separator row
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
-      f = trim(c[3 + base]); if (f ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", f); sub(/\].*$/, "", f) }
-      sub(/^megavibe-deliverables\//, "", f); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      g = f; sub(/^[*_`]+/, "", g); sub(/[*_`]+$/, "", g); sub(/^megavibe-deliverables\//, "", g)   # wrapping markup only: file names keep their underscores
-      print k "\037" f "\037" g
+      f = trim(c[3 + base]); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
+      g = f; sub(/^[*_`~]+/, "", g); sub(/[*_`~]+$/, "", g)   # wrapping markup only: file names keep their underscores
+      lab = ""; tgt = ""
+      if (g ~ /^!?\[[^]]*\]\([^)]*\)$/) { lab = g; sub(/^!?\[/, "", lab); sub(/\].*$/, "", lab); tgt = g; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); gsub(/^<|>$/, "", tgt) }
+      print k "\037" f "\037" g "\037" lab "\037" tgt
     }' 2>/dev/null || true)
   _NOPEN=0; _NNOFILE=0
   if [ -n "$_ROWS" ]; then
     _US=$(printf '\037')
-    while IFS="$_US" read -r _c _f _g; do
+    while IFS="$_US" read -r _c _f _g _l _t; do
       case "$_c" in
         open) _NOPEN=$((_NOPEN + 1)) ;;
         done)
           # "done" counts only when the file is really in the folder (no path tricks).
           _have=0
-          for _cand in "$_f" "$_g"; do
-            _cand="${_cand%/}"
+          for _cand in "$_f" "$_g" "$_l" "$_t"; do
+            _cand="${_cand#megavibe-deliverables/}"; _cand="${_cand#./}"; _cand="${_cand%/}"
             case "$_cand" in
               ""|.|/*|..|../*|*/../*|*/..|./*) ;;
               *) [ -e "megavibe-deliverables/$_cand" ] && _have=1 ;;
