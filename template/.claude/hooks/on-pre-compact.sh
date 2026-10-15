@@ -271,24 +271,25 @@ if [ -f "$_ST" ]; then
     fence { if (fenceinfo($0) && fch == ofch && fln >= oln && frest ~ /^[ \t]*$/) fence = 0; next }
     inc { if ($0 ~ /-->/) inc = 0; next }
     /^[ \t]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
-    fenceinfo($0) { fence = 1; ofch = fch; oln = fln; next }
+    fenceinfo($0) { fence = 1; ofch = fch; oln = fln; intab = 0; next }   # a fence ends the table
     /^## / { t = (tolower($0) ~ /^## asked for[ \t]*$/); intab = 0; next }
     !t { next }
     {
       line = $0
+      if (line ~ /^(    |\t)/) { intab = 0; next }   # four blanks or a tab: an indented code block, not a table
       if (length(line) > 2000) { if (intab) print "open\037\037"; next }   # no real row is this long; BSD awk is quadratic on long blanks
       if (line ~ /^[ \t]*$/ || line !~ /\|/) { intab = 0; next }
       gsub(/\\\|/, "\001", line)      # an escaped pipe belongs to its cell
       line = trim(line); base = (line ~ /^\|/) ? 1 : 0
       n = split(line, c, "|")
-      if (!intab) { if (tolower(trim(c[1 + base])) == "ask") intab = 1; next }
+      if (!intab) { if (tolower(plain(c[1 + base])) == "ask") intab = 1; next }
       a = trim(c[1 + base])
       if (a ~ /^[-: ]*$/) next        # the separator row
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
       f = trim(c[3 + base]); if (f ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", f); sub(/\].*$/, "", f) }
       sub(/^megavibe-deliverables\//, "", f); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      g = f; sub(/^[*_`]+/, "", g); sub(/[*_`]+$/, "", g)   # wrapping markup only: file names keep their underscores
+      g = f; sub(/^[*_`]+/, "", g); sub(/[*_`]+$/, "", g); sub(/^megavibe-deliverables\//, "", g)   # wrapping markup only: file names keep their underscores
       print k "\037" f "\037" g
     }' 2>/dev/null || true)
   _NOPEN=0; _NNOFILE=0
@@ -299,10 +300,15 @@ if [ -f "$_ST" ]; then
         open) _NOPEN=$((_NOPEN + 1)) ;;
         done)
           # "done" counts only when the file is really in the folder (no path tricks).
-          case "$_f" in
-            ""|.|/*|..|../*|*/../*|*/..) _NNOFILE=$((_NNOFILE + 1)) ;;
-            *) [ -e "megavibe-deliverables/$_f" ] || { [ -n "$_g" ] && [ -e "megavibe-deliverables/$_g" ]; } || _NNOFILE=$((_NNOFILE + 1)) ;;
-          esac ;;
+          _have=0
+          for _cand in "$_f" "$_g"; do
+            _cand="${_cand%/}"
+            case "$_cand" in
+              ""|.|/*|..|../*|*/../*|*/..|./*) ;;
+              *) [ -e "megavibe-deliverables/$_cand" ] && _have=1 ;;
+            esac
+          done
+          [ "$_have" -eq 1 ] || _NNOFILE=$((_NNOFILE + 1)) ;;
       esac
     done <<ROWS_EOF
 $_ROWS
