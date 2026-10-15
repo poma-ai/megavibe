@@ -289,14 +289,15 @@ if [ -f "$_ST" ]; then
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
       f = trim(c[3 + base]); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
+      if (length(f) > 255) f = ""   # no file name is this long (NAME_MAX); it also bounds the work per row below
       g = f; sub(/^[*`~]+/, "", g); sub(/[*`~]+$/, "", g)   # wrapping markup only: file names keep their underscores
-      h = g; sub(/^_+/, "", h); sub(/_+$/, "", h)           # and also without wrapping underscores
+      h = g; if (h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h) }   # and without a MATCHED pair of wrapping underscores (italics)
       lab = ""; tgt = ""
-      if (g ~ /^!?\[[^]]*\]\([^)]*\)$/) { lab = g; sub(/^!?\[/, "", lab); sub(/\].*$/, "", lab); tgt = g; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt) }
+      if (g ~ /^!?\[[^]]*\]\([^)]*\)$/) { lab = g; sub(/^!?\[/, "", lab); sub(/\].*$/, "", lab); tgt = g; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
       if (k == "open") nopen++
-      else if (k == "done" && ++nd <= 2000) print k "\037" f "\037" g "\037" h "\037" lab "\037" tgt   # open rows are only counted here: the shell loop stays short
+      else if (k == "done") { nd++; rec[nd % 500] = k "\037" f "\037" g "\037" h "\037" lab "\037" tgt }   # open rows are only counted here; of the done rows the NEWEST 500 are kept, so the shell loop stays short
     }
-    END { print "count\037" (nopen + 0) }' 2>/dev/null || true)
+    END { for (i = (nd > 500 ? nd - 499 : 1); i <= nd; i++) print rec[i % 500]; print "count\037" (nopen + 0) }' 2>/dev/null || true)
   _NOPEN=0; _NNOFILE=0
   if [ -n "$_ROWS" ]; then
     _US=$(printf '\037')
@@ -306,7 +307,7 @@ if [ -f "$_ST" ]; then
         done)
           # "done" counts only when the file is really in the folder (no path tricks).
           _have=0
-          for _cand in "$_f" "$_g" "$_h" "$_l" "$_t"; do
+          for _cand in "$_f" "$_g" "$_h" "$_t"; do   # literal names first; a link resolves by its target, never by its label
             _cand="${_cand#megavibe-deliverables/}"; _cand="${_cand#./}"; _cand="${_cand%/}"
             case "$_cand" in
               ""|.|/*|..|../*|*/../*|*/..|./*) ;;
