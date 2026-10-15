@@ -137,8 +137,9 @@ reproduced on another project.
   `D=/tmp; end=$((SECONDS+170)); until [ -s "$D/mv-NAME.rc" ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat "$D/mv-NAME.rc" 2>/dev/null || echo pending; wc -c < "$D/mv-NAME.log"; tail -c 300 "$D/mv-NAME.log"`
   as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
   macOS). Read the byte count and tail against the rules in
-  `process-discipline.md`: a log that has not grown for two slices is a hang,
-  repeating lines a crashloop; act on it, do not keep waiting. When the rc file
+  `process-discipline.md`: a build or test run whose log has not grown for two
+  slices is hung (a job that idles by design is healthy), repeating lines are a
+  crashloop; act on it, do not keep waiting. When the rc file
   holds a number, it is the command's exit status (non-zero means it failed).
   The loop's own deadline bounds the call; the tool timeout is only a backstop
   that may kill the call or move it to the background (stop any backgrounded
