@@ -80,7 +80,7 @@ by the megavibe protocol and are in scope by default, not scope creep.
 
 ## 5. Reach for the smallest change that is actually correct
 
-Before writing code, scope it: list every place the change must reach (callers,
+Before writing code, scope it silently: list every place the change must reach (callers,
 tests, fixtures, config, exports) and what it could break for users. Extra
 features are not scope. Then stop at the first rung that holds. This governs the
 *implementation*, never the deliverable — what was requested is settled by the
@@ -112,16 +112,17 @@ neither is reaching outside the files a spun-out task was given — report that.
 lock, O(n²) scan, naive heuristic. Unmarked, it is indistinguishable from a
 defect nobody noticed.
 
-**New non-trivial logic ships with its check:** a branch, loop, parser, money,
-security, or a whole new script leaves one small test or assert-based
-self-check. Trivial changes need none.
+**New non-trivial logic ships with its check:** a branch, loop, parser, money
+or security leaves one small test or assert-based self-check where the project
+has a test practice; where it has none, say what you ran instead. Trivial
+changes need none.
 
 **After a code change, close with one or two lines:** what you skipped or did
 not check (features left out included) and any risk the user must know. Omit
 when there is nothing to say.
 
 Never trade away: validation at trust boundaries, error handling that prevents
-data loss, security, accessibility, and the calibration real hardware needs.
+data loss, security, and accessibility.
 
 ## 6. Formatting
 

@@ -55,7 +55,7 @@ exits or is stopped. Once per interval, all overdue tasks in one reason, never
 in a loop. A Stop hook cannot wake you later; the heartbeat is the only thing
 that can. `MEGAVIBE_BG_CHECK_SECS` sets the interval (clamped to 60–600 s; the
 heartbeat beats 60 s under it); `MEGAVIBE_BG_WATCH=0` switches the hook off.
-The default four-minute beat also happens to keep the API's five-minute prompt
+In the main thread the default four-minute beat also keeps a five-minute prompt
 cache warm — a side benefit, not a reason to beat faster. For a **subagent** it
 is more than a side benefit: its cache expires after 5 minutes (the main
 thread's after 1 hour), so every wait past 5 minutes re-writes the whole

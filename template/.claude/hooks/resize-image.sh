@@ -23,11 +23,12 @@ set -u
 # Copies live in a private per-user dir under $TMPDIR (mode 700, owned by the
 # user, not a symlink), never inside the project, so nothing a project or a
 # clone can write is ever shown as a copy and pruning cannot reach project
-# files. (A Read of that path may prompt for permission outside bypass mode.)
+# files. (A Read of that path may prompt for permission outside bypass mode,
+# and fail under -p or dontAsk; every megavibe launcher runs in bypass mode.)
 # A copy is keyed by the original's CONTENT hash, written to a temp file, checked
 # (decodes, fits the limit) and only then renamed into place, so a partial or
-# foreign file is never shown; copies untouched for about two days are pruned (find -mtime +1). JPEG input
-# stays JPEG, everything else becomes PNG (sips cannot write WebP or GIF).
+# foreign file is never shown; copies untouched for about two days are pruned
+# (find -mtime +1). JPEG input stays JPEG, everything else becomes PNG (sips cannot write WebP or GIF).
 # An image the tool cannot read passes through untouched, as before.
 #
 # Uses: sips (macOS built-in) or ImageMagick (Linux/Windows)
