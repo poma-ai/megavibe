@@ -61,11 +61,16 @@ Three gotchas:
   is user-level. `init.sh` does not deploy it into projects.
 - Two upstreams now, so "re-sync from upstream" is ambiguous — check which section
   before touching one. Section 5 adapts selected ponytail guidance as prompt text
-  (the ladder, the root-cause/caller rule, the `SHORTCUT:` marker); its rule files
+  (the ladder with its one-line rung, the scope step, the root-cause/caller rule,
+  the test rule, the closing skipped/unchecked line, the never-trade list, the
+  `SHORTCUT:` marker; re-checked against v5.2.0 on 2026-10-15); its rule files
   and skills for 20+ agents are a distribution problem megavibe does not have, and
-  are deliberately not imported. Deviations: ponytail's "shortest working diff
+  are deliberately not imported. Deviations: the test rule applies only where the
+  project has a test practice, the closing skipped/unchecked line is for code
+  changes and omittable, and hardware calibration is dropped from the never-trade
+  list; ponytail's "shortest working diff
   wins" and "deletion over addition" are dropped — as absolutes they invite the
-  under-delivery this harness forbids — and its `ponytail:` marker is renamed
+  under-delivery this harness forbids — and its `shortcut:` marker is upper-cased to
   `SHORTCUT:` so the convention does not depend on knowing that project.
 
 

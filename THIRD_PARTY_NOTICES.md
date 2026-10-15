@@ -44,8 +44,10 @@ SOFTWARE.
 ## ponytail
 
 https://github.com/DietrichGebert/ponytail — the basis for the "smallest change"
-section: the decision ladder, the root-cause/caller rule, and the convention of
-marking a deliberate corner-cut with its ceiling and upgrade path.
+section: the decision ladder (with its scope step), the root-cause/caller rule, the
+test rule for non-trivial logic, the closing "skipped / not checked" line, the
+never-trade list, and the convention of marking a deliberate corner-cut with its
+ceiling and upgrade path.
 
 Only prompt text was taken. Ponytail's rule files and skills for 20+ agents solve
 a distribution problem megavibe does not have, and are not imported.

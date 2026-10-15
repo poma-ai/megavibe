@@ -240,6 +240,8 @@ When a plan has 3+ independent tasks, Claude can spin them to parallel subagents
 
 A job over many bulky items (images, PDFs, long logs) is split the same way by context size: on one measured image-labelling job, one long subagent cost an estimated 2-4x more than batches kept under about 250K tokens would have (it pays only while each batch's fixed briefing stays small). Rule and numbers: `.claude/rules/spinouts.md`, "Batch jobs".
 
+A subagent's prompt cache lives 5 minutes by default (the main thread's usually 1 hour), so a foreground wait past that re-writes its whole context. Spin-out briefs therefore carry a wait limit of 170 s per call and a sentinel-file recipe for waiting on long jobs; waits over about 35 minutes belong to the parent. Measurement and recipe: `.claude/rules/spinouts.md`, "Subagents: keep the cache warm while waiting".
+
 ### Slash commands
 
 Inside a megavibe session:

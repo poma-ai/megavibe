@@ -38,6 +38,13 @@ input or state, the wrong outcome, a one-line fix. Then what you actually ran
 and observed, per check. Then a verdict: **ship** or **do not ship**, one
 paragraph, with the reasons. If a category is clean, say so in one line.
 
+No wait loop longer than 170 s in one tool call: your prompt cache expires after
+5 minutes, so run a long command in the background and wait for it in slices,
+one waiting call per slice, never a burst of polls (recipe: `spinouts.md`,
+"keep the cache warm"; without that file, start the command in the background
+writing its status to an rc file, then `until [ -s RC ] || [ $SECONDS -ge $end ];
+do sleep 5; done` with `end=$((SECONDS+170))`).
+
 No praise. Do not restate the diff. Do not soften a finding because the fix
 is small. If you cannot run something, say that you could not and what you
 read instead.
