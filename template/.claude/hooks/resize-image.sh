@@ -106,6 +106,9 @@ OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
 mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
 _PHYS_OUT=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
+# The derived cache dir itself must not be the project root or inside it (a
+# project directory named like the cache dir, under TMPDIR).
+case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) exit 0 ;; esac
 # mkdir -m does not tighten a dir that already exists: force it.
 chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
 # Reading a file that lives in the cache dir itself (under any spelling of the
@@ -124,7 +127,7 @@ case "$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')" in
   *)        OUT_EXT="png"; SIPS_FMT="png" ;;
 esac
 STEM=$(printf '%s' "$(basename "${ABS%.*}")" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-60)
-DEST="$OUT_DIR/$STEM.$KEY.$OUT_EXT"
+DEST="$_PHYS_OUT/$STEM.$KEY.$OUT_EXT"   # absolute, even for a relative TMPDIR
 # The input is itself the destination (a project link to a cache file): the
 # publish below would overwrite the very file being read.
 [ "$ABS" -ef "$DEST" ] && exit 0

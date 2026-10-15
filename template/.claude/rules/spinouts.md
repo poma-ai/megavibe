@@ -127,17 +127,21 @@ reproduced on another project.
   for a job that needs waiting on, paste the recipe below with a unique NAME.
 - **The recipe.** One slice is ONE waiting call, never a burst of short polls
   (each poll is a turn that re-reads the whole context). Start the job once with
-  the Bash tool's `run_in_background` (never a bare `&`):
-  `rm -f /tmp/mv-NAME.rc; { cmd > /tmp/mv-NAME.log 2>&1; echo $? > /tmp/mv-NAME.rc; }`.
-  The flag paths are absolute and outside the project, so a changed working
+  the Bash tool's `run_in_background` (never a bare `&`), in a subshell so that
+  `exit`, `cd` and pipelines inside the command cannot skip the status:
+  `D=${TMPDIR:-/tmp}; rm -f $D/mv-NAME.rc; ( set -o pipefail; cmd ) > $D/mv-NAME.log 2>&1; echo $? > $D/mv-NAME.rc`.
+  The paths are absolute and outside the project, so a changed working
   directory cannot hide them. Wait with
-  `end=$((SECONDS+170)); until [ -s /tmp/mv-NAME.rc ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat /tmp/mv-NAME.rc`
+  `D=${TMPDIR:-/tmp}; end=$((SECONDS+170)); until [ -s $D/mv-NAME.rc ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat $D/mv-NAME.rc 2>/dev/null || echo pending`
   as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
-  macOS), repeat until the rc file exists, then read the rc (non-zero means the
-  command failed) and the log. The loop's own deadline bounds the call; the tool
-  timeout is only a backstop that may kill the call or move it to the background
-  (stop any backgrounded waiter before starting another).
-- **A subagent's heartbeat is that loop.** `watch-background.sh` tells a session
+  macOS). After each incomplete slice look at the log (`wc -c` and the tail) and
+  apply the rules in `process-discipline.md`: a log that has not grown for two
+  slices is a hang, repeating lines a crashloop; act on it, do not keep waiting.
+  When the rc file holds a number, read it (non-zero means the command failed)
+  and the log. The loop's own deadline bounds the call; the tool timeout is only
+  a backstop that may kill the call or move it to the background (stop any
+  backgrounded waiter before starting another).
+- **A subagent's heartbeat is that loop, with the log check.** `watch-background.sh` tells a session
   to arm a Monitor; a subagent without that tool (the `reviewer`) keeps the
   slice loop instead.
 - **Waits over about 35 minutes belong to the parent** (a heuristic: a slice
