@@ -265,10 +265,11 @@ if [ -f "$_ST" ]; then
   # a row with fewer than 5 columns counts as open. One row per line, delimited
   # by the unit separator: class, file, file without wrapping markup.
   _ROWS=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '
-    function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    # BSD awk is quadratic on /[ \t]+$/ over a long run of blanks: collapse runs first (linear), then drop one blank at each end
+    function trim(x) { gsub(/[ \t]+/, " ", x); sub(/^ /, "", x); sub(/ $/, "", x); return x }
     function plain(x) { x = trim(x); gsub(/[*_`]/, "", x); if (x ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", x); sub(/\].*$/, "", x) } return trim(x) }
     function fenceinfo(x,   t, c, n) { t = x; sub(/^[ \t]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
-    length($0) > 2000 { if (t && intab && !fence && !inc) print "open\037\037\037\037"; next }   # no real line is this long; BSD awk is quadratic on long runs, so no other rule may see it
+    length($0) > 2000 { if (t && intab && !fence && !inc) nopen++; next }   # no real line is this long; BSD awk is quadratic on long runs, so no other rule may see it
     fence { if (fenceinfo($0) && fch == ofch && fln >= oln && frest ~ /^[ \t]*$/) fence = 0; next }
     inc { if ($0 ~ /-->/) inc = 0; next }
     /^[ \t]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
@@ -288,21 +289,24 @@ if [ -f "$_ST" ]; then
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
       f = trim(c[3 + base]); gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      g = f; sub(/^[*_`~]+/, "", g); sub(/[*_`~]+$/, "", g)   # wrapping markup only: file names keep their underscores
+      g = f; sub(/^[*`~]+/, "", g); sub(/[*`~]+$/, "", g)   # wrapping markup only: file names keep their underscores
+      h = g; sub(/^_+/, "", h); sub(/_+$/, "", h)           # and also without wrapping underscores
       lab = ""; tgt = ""
-      if (g ~ /^!?\[[^]]*\]\([^)]*\)$/) { lab = g; sub(/^!?\[/, "", lab); sub(/\].*$/, "", lab); tgt = g; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); gsub(/^<|>$/, "", tgt) }
-      print k "\037" f "\037" g "\037" lab "\037" tgt
-    }' 2>/dev/null || true)
+      if (g ~ /^!?\[[^]]*\]\([^)]*\)$/) { lab = g; sub(/^!?\[/, "", lab); sub(/\].*$/, "", lab); tgt = g; sub(/^[^(]*\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt) }
+      if (k == "open") nopen++
+      else if (k == "done" && ++nd <= 2000) print k "\037" f "\037" g "\037" h "\037" lab "\037" tgt   # open rows are only counted here: the shell loop stays short
+    }
+    END { print "count\037" (nopen + 0) }' 2>/dev/null || true)
   _NOPEN=0; _NNOFILE=0
   if [ -n "$_ROWS" ]; then
     _US=$(printf '\037')
-    while IFS="$_US" read -r _c _f _g _l _t; do
+    while IFS="$_US" read -r _c _f _g _h _l _t; do
       case "$_c" in
-        open) _NOPEN=$((_NOPEN + 1)) ;;
+        count) case "$_f" in ""|*[!0-9]*) ;; *) _NOPEN=$_f ;; esac ;;
         done)
           # "done" counts only when the file is really in the folder (no path tricks).
           _have=0
-          for _cand in "$_f" "$_g" "$_l" "$_t"; do
+          for _cand in "$_f" "$_g" "$_h" "$_l" "$_t"; do
             _cand="${_cand#megavibe-deliverables/}"; _cand="${_cand#./}"; _cand="${_cand%/}"
             case "$_cand" in
               ""|.|/*|..|../*|*/../*|*/..|./*) ;;
