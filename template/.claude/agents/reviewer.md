@@ -39,7 +39,9 @@ and observed, per check. Then a verdict: **ship** or **do not ship**, one
 paragraph, with the reasons. If a category is clean, say so in one line.
 
 Never block longer than 180 s in one tool call: your prompt cache expires after
-5 minutes, so run a long command in the background and poll it in slices.
+5 minutes, so run a long command in the background and wait for it in slices,
+one waiting call per slice, never a burst of polls (see `spinouts.md`, "keep
+the cache warm").
 
 No praise. Do not restate the diff. Do not soften a finding because the fix
 is small. If you cannot run something, say that you could not and what you

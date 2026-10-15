@@ -122,23 +122,25 @@ slice instead.
 
 - **Brief every spin-out with the 180 s rule** (it is in the template above).
 - **Bound the wait itself:** each slice is ONE waiting call, never a burst of
-  short polls (each poll is a turn that re-reads the whole context). Have the
-  job write a sentinel when it ends (`cmd; echo $? > done.flag` started in the
-  background), then wait with `end=$((SECONDS+170)); until [ -e done.flag ] ||
-  [ $SECONDS -ge $end ]; do sleep 5; done` as a Bash call with `timeout: 200000`
-  (`timeout(1)` does not exist on stock macOS), then read the output. The loop's
-  own deadline is what bounds the call; the tool timeout is only a backstop that
-  kills it. 180 s leaves room for a turn of generating before the wait: a
-  longer wait plus that turn passes the 5 minutes.
+  short polls (each poll is a turn that re-reads the whole context). Start the
+  job once with the Bash tool's `run_in_background` (never a bare `&`), as
+  `rm -f /abs/done.flag; { cmd; echo $? > /abs/done.flag; }`: the stale flag is
+  removed first and the path is absolute, so a changed working directory cannot
+  hide it. Then wait with `end=$((SECONDS+170)); until [ -e /abs/done.flag ] ||
+  [ $SECONDS -ge $end ]; do sleep 5; done` as a Bash call with
+  `timeout: 200000` (`timeout(1)` does not exist on stock macOS), then read the
+  output. The loop's own deadline is what bounds the call; the tool timeout is
+  only a backstop that kills it. 180 s leaves room for a turn of generating
+  before the wait: a longer wait plus that turn passes the 5 minutes.
 - **Check the premise before applying any of this:** the numbers assume a
   5-minute subagent cache (the default; 1 hour where enabled, and configurable),
   a read at 0.1x and a 5-minute write at 1.25x input price. At other
-  multipliers the break-even moves (0.05x reads double it). Under 4 minutes of
-  work per wait, none of this matters.
-- **Keep slicing however long the job.** A slice costs about 0.025 of the
-  context per minute against 1.25 for one cold re-write (50 minutes' worth), and
-  a subagent cannot idle in one call anyway (a foreground call stops at 10
-  minutes), so abandoning work to save a re-write loses. A job expected to take
+  multipliers the economics shift (0.05x reads halve the cost of a slice). Under
+  about 3 minutes of work per wait, none of this matters.
+- **Keep slicing however long the job.** A slice costs about 0.035 of the
+  context per minute (a 170 s wait plus its turn at 0.1x); the alternative is not one cold re-write but one per
+  foreground call, which stops at 10 minutes (1.25 per 10 minutes, 0.125 per
+  minute), so abandoning work to save a re-write loses. A job expected to take
   over an hour is started by the PARENT (its cache lives an hour) and the
   subagent is briefed only for what follows; do not assume a command survives
   the subagent that started it. If a job must change hands, pass its task id

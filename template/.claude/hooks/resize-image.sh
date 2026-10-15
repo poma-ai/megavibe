@@ -91,7 +91,10 @@ _is_int "$WIDTH" && _is_int "$HEIGHT" || exit 0
 
 # Where the copy goes: a private per-user dir (mode 700, owned by us, not a
 # symlink) under $TMPDIR.
-OUT_DIR="${TMPDIR:-/tmp}"; OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
+OUT_DIR="${TMPDIR:-/tmp}"
+# Never create parent directories: a missing TMPDIR means no cache.
+[ -d "$OUT_DIR" ] || exit 0
+OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
 mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
 # A $TMPDIR inside the project would put the chmod and the prune below within
@@ -119,6 +122,9 @@ case "$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')" in
 esac
 STEM=$(printf '%s' "$(basename "${ABS%.*}")" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-60)
 DEST="$OUT_DIR/$STEM.$KEY.$OUT_EXT"
+# The input is itself the destination (a project link to a cache file): the
+# publish below would overwrite the very file being read.
+[ "$ABS" -ef "$DEST" ] && exit 0
 
 # A copy is good when it is a regular file (not a link), decodes, and fits.
 _good() {
