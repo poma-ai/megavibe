@@ -250,7 +250,7 @@ fi
 # a case variant on a case-insensitive filesystem all slip past a "tracked?"
 # test). The model reads the table itself, as it reads any file of the repo.
 # Only where the project has megavibe-deliverables/STATUS.md; the result reaches
-# the post-compact message through .ask-counts.<sid> (four integers; the text is rendered there).
+# the post-compact message through .ask-counts.<sid> (five integers; the text is rendered there).
 ASK_WARN=""
 _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then

@@ -380,7 +380,7 @@ Re-read TASKS §0 against git before repeating it as current."
   fi
 fi
 # The deliverables register on-pre-compact.sh found (open asks without a file).
-# Only four validated integers are read from the cache file and the text is rendered
+# Only five validated integers are read from the cache file and the text is rendered
 # here: a stale or clone-supplied file cannot put any other text into the message.
 ASK_COUNTS_FILE=".agent/LOGS/.ask-counts.${SID}"
 if [ -s "$ASK_COUNTS_FILE" ]; then
