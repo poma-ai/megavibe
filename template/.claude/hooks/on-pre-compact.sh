@@ -135,7 +135,8 @@ done
 [ "$IS_SUBAGENT" -eq 1 ] && exit 0
 
 # How stale is the context?
-COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+COUNT=$(head -c 12 "$COUNTER_FILE" 2>/dev/null | head -n 1 || true)
+case "$COUNT" in ""|*[!0-9]*) COUNT=0 ;; esac   # a cache file is data: only an integer reaches the report
 # The counter resets on every .agent/ write, and the context watcher writes every
 # few minutes, so with the watcher alive it reads 0 every time. The age of the
 # newest write is the number that still says something.
@@ -292,9 +293,11 @@ if [ -f "$_ST" ]; then
       if (length(raw) > 255) f = ""   # no file name is this long (NAME_MAX); it also bounds the work per row below
       else { f = raw; sub(/^[ \t]+/, "", f); sub(/[ \t]+$/, "", f) }   # edges only: a name keeps its own inner blanks
       gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
-      g0 = f; sub(/^[*~]+/, "", g0); sub(/[*~]+$/, "", g0); code = (g0 ~ /^`/)   # bold/strike wrappers first, then is it a code span?
-      g = g0; sub(/^`+/, "", g); sub(/`+$/, "", g)   # wrapping markup only: file names keep their underscores
-      h = g; if (!code) for (w = 0; w < 2; w++) if (h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h) }   # MATCHED pairs of wrapping underscores (italics, bold), never inside a code span
+      g0 = f; sub(/^[*~]+/, "", g0); sub(/[*~]+$/, "", g0)   # bold/strike wrappers
+      g = g0; sub(/^`+/, "", g); sub(/`+$/, "", g)   # g: wrapping markup only, file names keep their underscores
+      h = g0   # h: also MATCHED pairs of wrapping underscores (italics, bold) around plain text or a code span; the inside of a code span stays literal
+      for (w = 0; w < 2; w++) if (h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h); sub(/^[*~]+/, "", h); sub(/[*~]+$/, "", h) }
+      sub(/^`+/, "", h); sub(/`+$/, "", h)
       tgt = ""; lk = (h ~ /^!?\[[^]]*\]\(.*\)$/) ? h : ((g ~ /^!?\[[^]]*\]\(.*\)$/) ? g : "")
       if (lk != "") { tgt = lk; sub(/^.*\]\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
       if (k == "open") nopen++
