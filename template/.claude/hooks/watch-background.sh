@@ -121,6 +121,16 @@ if [ "$EVENT" = "PostToolUse" ]; then
     *) exit 0 ;;
   esac
 
+  # A subagent's calls carry an agent_id. It has no Monitor tool and its cache
+  # expires after 5 minutes, so it gets the 170 s wait-slice rule (spinouts.md)
+  # instead of a heartbeat, and its task is not recorded for the parent's Stop check.
+  AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+  if [ -n "$AGENT_ID" ]; then
+    MSG="Background $KIND task $ID started${OUT:+. Output: $OUT}. Do NOT arm a Monitor (you have none) and do not wait longer than 170 s in one tool call (your prompt cache expires after 5 minutes). Wait in slices: one Bash call with timeout 200000 that loops until the job's rc file is non-empty or SECONDS passes 170, then prints the rc, the log's byte count and its tail. A log that has not grown for two slices is a hang, repeating lines a crashloop: act on it. If you would wait more than about 35 minutes in total, report the command, its log path and its rc path to the parent and stop."
+    jq -nc --arg m "$MSG" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
+    exit 0
+  fi
+
   jq -nc --arg id "$ID" --arg p "$OUT" --arg k "$KIND" --argjson t "$NOW" \
     '{id:$id, path:$p, kind:$k, started:$t, nudged:0}' >> "$STATE" 2>/dev/null || true
 
