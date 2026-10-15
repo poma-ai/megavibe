@@ -661,6 +661,8 @@ if [ "${1:-}" = "worktree" ]; then
         if [ -n "$_keep" ]; then
           echo "  Not removing $WT: $WT/megavibe-deliverables holds files git does not track (for example $_keep)."
           echo "  Copy them out (or move them to the main checkout's megavibe-deliverables/), then run this again."
+          echo "  README.md/STATUS.md count as yours when they differ from today's template, which includes files copied from an older template version."
+          echo "  If they are only unedited template copies, delete the folder yourself (rmtrash \"$WT/megavibe-deliverables\"), then run this again."
           exit 1
         fi
       fi
