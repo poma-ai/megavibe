@@ -633,4 +633,152 @@ else:
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Process-kill and session-kill commands by PATTERN or by SERVER.
+#
+# 2026-10-15 18:35: a review subagent cleaning up after a timeout test ran
+# `pkill -f 'perl -e' -P 1`. The pattern also matched the tmux server (its argv
+# carries the whole start command), and every tmux-hosted session died with it:
+# the remote-control sessions, the Telegram bot, the Personal Assistant, the
+# context watchers. A prose prohibition in the brief is not a sandbox
+# (same class as the `git rm -f` incident of 2026-10-08).
+#
+# Blocked when they are the command: pkill, killall, `tmux kill-server|kill-session|
+# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|bootstrap|disable`
+# and `launchctl kickstart -k`. NOT blocked: `kill <pid>` (a PID you started),
+# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`.
+# Parsed with shlex like the exec guard above, so the words inside quotes, an
+# echo, a commit message or a heredoc body are not commands; `bash -c "pkill x"`,
+# `sudo pkill x` and `env X=1 pkill x` are. Escape hatch for a human decision:
+# MEGAVIBE_ALLOW_KILL=1 (environment or an inline prefix). Needs python3; without
+# it the guard is skipped (same posture as the other guards here).
+# ---------------------------------------------------------------------------
+case "$COMMAND" in
+  *pkill*|*killall*|*tmux*|*launchctl*) _MAYBE_KILL=1 ;;
+  *) _MAYBE_KILL=0 ;;
+esac
+if [ "$_MAYBE_KILL" = "1" ] && [ "${MEGAVIBE_ALLOW_KILL:-0}" != "1" ] && command -v python3 &>/dev/null; then
+  _KV=$(printf '%s' "$COMMAND" | python3 -c '
+import os, re, shlex, sys
+
+CMD = sys.stdin.read()
+# Heredoc bodies are text, not commands: drop the body of EVERY heredoc started on a line
+# (cat <<A <<B has two), up to its delimiter line.
+out, pending = [], []
+for line in CMD.split("\n"):
+    if pending:
+        if line.strip() == pending[0]: pending.pop(0)
+        continue
+    out.append(line)
+    pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
+CMD = "\n".join(out).replace("\\\n", "")
+CMD = CMD.replace("\n", " ; ")
+
+KILLERS = {"pkill", "killall"}
+TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
+LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
+WRAPPER_OPTS = {"sudo": {"-u","-g","-h","-p","-C","-T","-r","-t","-U","-D","-R"}, "doas": {"-u","-C"},
+                "env": {"-u","-C","-S","-P"}, "nice": {"-n"}, "stdbuf": {"-i","-o","-e"},
+                "timeout": {"-s","-k"}, "nohup": set(), "command": set(),
+                "time": set(), "builtin": set(),
+                "xargs": {"-I","-n","-P","-L","-s","-E","-d","-a","-J","-R","-S"}}
+WRAPPER_OPTS["ex" + "ec"] = {"-a"}
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done"}
+SHELLS = {"sh", "bash", "zsh", "ksh", "dash"}
+OPS = {";", "&&", "||", "|", "&", "\n", "(", ")", "|&", ";;"}
+
+def split_tokens(s):
+    # Non-POSIX mode keeps the quotes on a word, so a QUOTED ";" or "&&" is a word
+    # (echo ";" pkill x prints text) and only a bare one is an operator.
+    lx = shlex.shlex(s, posix=False, punctuation_chars=True)
+    lx.whitespace_split = True
+    lx.commenters = ""
+    try:
+        return list(lx)
+    except ValueError:
+        return None
+
+def unq(tok):
+    try:
+        w = shlex.split(tok)
+        return "".join(w) if w else ""
+    except ValueError:
+        return tok
+
+def commands(tokens):
+    cur = []
+    for t in tokens:
+        if t in OPS:
+            if cur: yield [unq(x) for x in cur]
+            cur = []
+        else:
+            cur.append(t)
+    if cur: yield [unq(x) for x in cur]
+
+def verb(argv, valued):
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-"):
+            i += 2 if a in valued else 1
+            continue
+        return a
+    return None
+
+def scan(argv, depth=0):
+    if depth > 3 or not argv: return False
+    i = 0
+    while i < len(argv):
+        a = argv[i]; b = os.path.basename(a)
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            if a == "MEGAVIBE_ALLOW_KILL=1": return False
+            i += 1; continue
+        if a in KEYWORDS:
+            i += 1; continue
+        if b in WRAPPER_OPTS:
+            i += 1
+            while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
+                opt = argv[i]; i += 1
+                if opt == "--": break
+                if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
+            while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+                if argv[i] == "MEGAVIBE_ALLOW_KILL=1": return False
+                i += 1
+            if b == "timeout" and i < len(argv) and re.match(r"^[0-9.]+[smhd]?$", argv[i]): i += 1
+            continue
+        break
+    if i >= len(argv): return False
+    argv = argv[i:]
+    base = os.path.basename(argv[0])
+    if base in SHELLS:
+        for j, a in enumerate(argv[1:], 1):
+            if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
+                t = split_tokens(argv[j + 1])
+                if t is None: return False
+                return any(scan(c, depth + 1) for c in commands(t))
+        return False
+    if base in KILLERS:
+        return not ("--help" in argv or "-h" in argv)
+    if base == "tmux":
+        return verb(argv, {"-L", "-S", "-f", "-c", "-T"}) in TMUX_VERBS
+    if base == "launchctl":
+        v = verb(argv, set())
+        if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
+        return v in LAUNCHCTL_VERBS
+    return False
+
+t = split_tokens(CMD)
+if t is None:
+    print("ok")
+else:
+    print("block" if any(scan(c) for c in commands(t)) else "ok")
+' 2>/dev/null || echo ok)
+  if [ "$_KV" = "block" ]; then
+    echo "Blocked: pkill/killall or a tmux/launchctl kill command." >&2
+    echo "A pattern kill can hit the tmux server and every remote-control session with it (2026-10-15 18:35). Kill only a PID you started yourself (kill \$!, then ps -p), never a pattern, a server or a service." >&2
+    echo "If a human has decided to: re-run with MEGAVIBE_ALLOW_KILL=1." >&2
+    exit 2
+  fi
+fi
+
 exit 0

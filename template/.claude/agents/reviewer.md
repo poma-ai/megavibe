@@ -45,6 +45,13 @@ one waiting call per slice, never a burst of polls (recipe: `spinouts.md`,
 writing its status to an rc file, then `until [ -s RC ] || [ $SECONDS -ge $end ];
 do sleep 5; done` with `end=$((SECONDS+170))`).
 
+Never run `pkill`, `killall`, `tmux` or `launchctl` commands that stop anything,
+and never kill by pattern (`kill $(pgrep -f ...)` included): a pattern kill once
+took down the tmux server and every remote-control session. Kill only a PID you
+started yourself (`$!`), and check it with `ps -p`. `block-dangerous-bash.sh`
+refuses `pkill`, `killall` and tmux/launchctl stop commands; it does not catch
+`kill $(pgrep ...)`, so that rule is yours to keep.
+
 No praise. Do not restate the diff. Do not soften a finding because the fix
 is small. If you cannot run something, say that you could not and what you
 read instead.
