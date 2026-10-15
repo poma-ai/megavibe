@@ -35,7 +35,7 @@ set -u
 
 # Require jq
 command -v jq &>/dev/null || exit 0
-[ -d ".agent" ] || exit 0
+[ -d "${CLAUDE_PROJECT_DIR:-.}/.agent" ] || exit 0
 
 # Need at least one image tool
 RESIZE_TOOL=""

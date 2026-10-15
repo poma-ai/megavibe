@@ -125,22 +125,24 @@ reproduced on another project.
 
 - **Brief every spin-out with the wait rule** (it is in the template above) and,
   for a job that needs waiting on, paste the recipe below with a unique NAME.
-- **The recipe.** One slice is ONE waiting call, never a burst of short polls
-  (each poll is a turn that re-reads the whole context). Start the job once with
-  the Bash tool's `run_in_background` (never a bare `&`), in a subshell so that
-  `exit`, `cd` and pipelines inside the command cannot skip the status:
-  `D=${TMPDIR:-/tmp}; rm -f $D/mv-NAME.rc; ( set -o pipefail; cmd ) > $D/mv-NAME.log 2>&1; echo $? > $D/mv-NAME.rc`.
-  The paths are absolute and outside the project, so a changed working
-  directory cannot hide them. Wait with
-  `D=${TMPDIR:-/tmp}; end=$((SECONDS+170)); until [ -s $D/mv-NAME.rc ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat $D/mv-NAME.rc 2>/dev/null || echo pending`
+- **The recipe.** One slice is ONE call that waits and reports, never a burst of
+  short polls (each call is a turn that re-reads the whole context). Pick one
+  absolute scratch dir outside the project, without spaces, once (`/tmp` works;
+  `$TMPDIR` is fine when it is absolute) and quote every path. Start the job
+  once with the Bash tool's `run_in_background` (never a bare `&`), in a
+  subshell so that `exit`, `cd` and pipelines inside the command cannot skip the
+  status:
+  `D=/tmp; rm -f "$D/mv-NAME.rc"; ( set -o pipefail; cmd ) > "$D/mv-NAME.log" 2>&1; echo $? > "$D/mv-NAME.rc"`.
+  Wait, and report progress in the same call:
+  `D=/tmp; end=$((SECONDS+170)); until [ -s "$D/mv-NAME.rc" ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat "$D/mv-NAME.rc" 2>/dev/null || echo pending; wc -c < "$D/mv-NAME.log"; tail -c 300 "$D/mv-NAME.log"`
   as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
-  macOS). After each incomplete slice look at the log (`wc -c` and the tail) and
-  apply the rules in `process-discipline.md`: a log that has not grown for two
-  slices is a hang, repeating lines a crashloop; act on it, do not keep waiting.
-  When the rc file holds a number, read it (non-zero means the command failed)
-  and the log. The loop's own deadline bounds the call; the tool timeout is only
-  a backstop that may kill the call or move it to the background (stop any
-  backgrounded waiter before starting another).
+  macOS). Read the byte count and tail against the rules in
+  `process-discipline.md`: a log that has not grown for two slices is a hang,
+  repeating lines a crashloop; act on it, do not keep waiting. When the rc file
+  holds a number, it is the command's exit status (non-zero means it failed).
+  The loop's own deadline bounds the call; the tool timeout is only a backstop
+  that may kill the call or move it to the background (stop any backgrounded
+  waiter before starting another).
 - **A subagent's heartbeat is that loop, with the log check.** `watch-background.sh` tells a session
   to arm a Monitor; a subagent without that tool (the `reviewer`) keeps the
   slice loop instead.
@@ -151,7 +153,7 @@ reproduced on another project.
   waiting that long reports the exact command, its log path and its rc path and
   stops; do not assume a command survives the subagent that started it, and
   confirm the old job has stopped before restarting it, or two copies write the
-  same outputs. Waits under about 3 minutes need none of this.
+  same outputs. Waits under about 2.5 minutes need none of this.
 
 ## What NOT to do
 
