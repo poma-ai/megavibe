@@ -633,4 +633,123 @@ else:
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Process-kill and session-kill commands by PATTERN or by SERVER.
+#
+# 2026-10-15 18:35: a review subagent cleaning up after a timeout test ran
+# `pkill -f 'perl -e' -P 1`. The pattern also matched the tmux server (its argv
+# carries the whole start command), and every tmux-hosted session died with it:
+# the remote-control sessions, the Telegram bot, the Personal Assistant, the
+# context watchers. A prose prohibition in the brief is not a sandbox
+# (same class as the `git rm -f` incident of 2026-10-08).
+#
+# Blocked when they are the command: pkill, killall, `tmux kill-server|kill-session|
+# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|bootstrap|disable`
+# and `launchctl kickstart -k`. NOT blocked: `kill <pid>` (a PID you started),
+# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`.
+# Parsed with shlex like the exec guard above, so the words inside quotes, an
+# echo, a commit message or a heredoc body are not commands; `bash -c "pkill x"`,
+# `sudo pkill x` and `env X=1 pkill x` are. Escape hatch for a human decision:
+# MEGAVIBE_ALLOW_KILL=1 (environment or an inline prefix). Needs python3; without
+# it the guard is skipped (same posture as the other guards here).
+# ---------------------------------------------------------------------------
+case "$COMMAND" in
+  *pkill*|*killall*|*tmux*|*launchctl*) _MAYBE_KILL=1 ;;
+  *) _MAYBE_KILL=0 ;;
+esac
+if [ "$_MAYBE_KILL" = "1" ] && [ "${MEGAVIBE_ALLOW_KILL:-0}" != "1" ] && command -v python3 &>/dev/null; then
+  _KV=$(printf '%s' "$COMMAND" | python3 -c '
+import os, re, shlex, sys
+
+CMD = sys.stdin.read()
+# Heredoc bodies are text, not commands: drop everything between <<WORD and WORD.
+out, skip = [], None
+for line in CMD.split("\n"):
+    if skip is not None:
+        if line.strip() == skip: skip = None
+        continue
+    out.append(line)
+    m = re.search(r"<<-?\s*[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
+    if m: skip = m.group(1)
+CMD = "\n".join(out).replace("\\\n", "")
+CMD = CMD.replace("\n", " ; ")
+
+KILLERS = {"pkill", "killall"}
+TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
+LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
+WRAPPERS = {"sudo", "env", "command", "nice", "time", "nohup", "stdbuf", "doas", "exec", "builtin"}
+SHELLS = {"sh", "bash", "zsh", "ksh", "dash"}
+OPS = {";", "&&", "||", "|", "&", "\n", "(", ")"}
+
+def toks(s):
+    lx = shlex.shlex(s, posix=True, punctuation_chars=True)
+    lx.whitespace_split = True
+    lx.commenters = ""
+    try:
+        return list(lx)
+    except ValueError:
+        return None
+
+def commands(tokens):
+    cur = []
+    for t in tokens:
+        if t in OPS:
+            if cur: yield cur
+            cur = []
+        else:
+            cur.append(t)
+    if cur: yield cur
+
+def verb(argv, valued):
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-"):
+            i += 2 if a in valued else 1
+            continue
+        return a, i
+    return None, len(argv)
+
+def scan(argv, depth=0):
+    if depth > 3 or not argv: return False
+    i = 0
+    while i < len(argv) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i])
+                             or os.path.basename(argv[i]) in WRAPPERS):
+        if argv[i] == "MEGAVIBE_ALLOW_KILL=1": return False
+        i += 1
+    if i >= len(argv): return False
+    argv = argv[i:]
+    base = os.path.basename(argv[0])
+    if base in SHELLS:
+        for j, a in enumerate(argv):
+            if a == "-c" and j + 1 < len(argv):
+                t = toks(argv[j + 1])
+                if t is None: return False
+                return any(scan(c, depth + 1) for c in commands(t))
+        return False
+    if base in KILLERS:
+        return not ("--help" in argv or "-h" in argv)
+    if base == "tmux":
+        v, _ = verb(argv, {"-L", "-S", "-f", "-c", "-T"})
+        return v in TMUX_VERBS
+    if base == "launchctl":
+        v, k = verb(argv, set())
+        if v == "kickstart": return "-k" in argv
+        return v in LAUNCHCTL_VERBS
+    return False
+
+t = toks(CMD)
+if t is None:
+    print("ok")
+else:
+    print("block" if any(scan(c) for c in commands(t)) else "ok")
+' 2>/dev/null || echo ok)
+  if [ "$_KV" = "block" ]; then
+    echo "Blocked: pkill/killall or a tmux/launchctl kill command." >&2
+    echo "A pattern kill can hit the tmux server and every remote-control session with it (2026-10-15 18:35). Kill only a PID you started yourself (kill \$!, then ps -p), never a pattern, a server or a service." >&2
+    echo "If a human has decided to: re-run with MEGAVIBE_ALLOW_KILL=1." >&2
+    exit 2
+  fi
+fi
+
 exit 0

@@ -6,6 +6,17 @@ Where a session puts what the user will read, and how it asks for decisions. The
 
 `megavibe-deliverables/` in the project root (created and gitignored by `init.sh`; `megavibe worktree <name>` links it into the worktree; the automatic per-session worktree gets a folder of its own). Clean Markdown or HTML only: a report, a review synthesis, a plan, an analysis the user will rely on. Name files `YYYY-MM-DD-topic.md`. `.agent/` stays the machine-facing log (events, working context, research notes); a deliverable that matters is written to the folder, and `.agent/` may point at it. A hosted page (a claude.ai artifact, a doc) is for sharing with someone else on request, not the default; if you publish one, the folder still carries the source.
 
+## Phone copy (`SendUserFile`, `INDEX.md`, hosted mirror)
+
+The user reads on a phone or Remote Control and cannot open files in a laptop folder. The folder stays the source of truth; the phone gets a copy that is provably complete.
+
+- **Trigger:** the session is connected via Remote Control (the user writes from a phone), or the user says "sync".
+- **Procedure:** `~/.megavibe/scripts/deliverables-index.sh unsent` lists the folder's entries not yet sent, skipped or mirrored. Send each with `SendUserFile`, one call per file, in date order, real names. After each: `deliverables-index.sh mark <name> sent <YYYY-MM-DD>`. At the end send `INDEX.md` (rebuilt by every `mark`; one line per entry: `name | date | size | state`). A directory entry is sent file by file or described in chat, then marked.
+- **Never send** a file with customer, personal or billing data, or credentials, without asking in chat first: check each file's header and content, then `mark <name> skipped: <reason>`. A skipped file stays listed in `INDEX.md`, so nothing is silently withheld.
+- **The `Mirror` column** of the `Asked for` table carries the same state for a row's file: `sent <date>` or the URL of a hosted mirror.
+- **Hosted mirror (opt-in):** for a file the user keeps re-reading, a private Claude Doc (prose reports) or artifact (HTML, dashboards) may be made; say so in chat first, record the URL with `mark <name> <url>`, and put the source path and an "as of" time on the page. Publishing sends the content to an external service: the same sensitivity rule applies, and the folder file stays the original.
+- **State is bookkeeping, not evidence of delivery:** `SendUserFile` confirms delivery to the user's session, not that the phone rendered it; if the user says something did not arrive, resend.
+
 ## `STATUS.md`: one live file, kept current
 
 Update it whenever the state or a decision changes, in the same turn, not at the end. Shape (the template `init.sh` installs):
