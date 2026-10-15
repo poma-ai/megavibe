@@ -54,7 +54,10 @@ PREVSIG=""; [ -f "$SEEN" ] && PREVSIG=$(head -c 256 "$SEEN" 2>/dev/null | head -
 if [ "$EVENT" != "SessionStart" ] && [ -n "$SIG" ] && [ "$SIG" = "$PREVSIG" ]; then exit 0; fi
 
 # A file a clone shipped is not something this user typed: a tracked STATUS.md is ignored.
+# The folder itself counts too: a clone can commit megavibe-deliverables as a symlink, and git then
+# reports the file behind it as "not tracked".
 if git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then exit 0; fi
+if git ls-files --error-unmatch -- megavibe-deliverables >/dev/null 2>&1; then exit 0; fi
 
 # "D<n> <TAB> answer" for each decision under "## Decisions needed" whose FIRST Answer: line has text, and
 # "OPEN <TAB> D<n>" for each without. Placeholders (only * _ - … or nothing) count as empty. Only a
