@@ -47,7 +47,7 @@ altogether, run the same loop with a fixed beat count through
 `run_in_background` and let its completion be the wake-up.
 
 `watch-background.sh` enforces both halves. On start it injects the exact loop
-to arm. On a turn boundary it reads the harness's live task registry and
+to arm (to a subagent's call, identified by `agent_id`, the 170 s wait-slice advice instead). On a turn boundary it reads the harness's live task registry and
 refuses to let the turn end while a running task older than the interval has
 no other running task whose command names it — which is what an armed
 heartbeat looks like, and which stops being true the moment the heartbeat

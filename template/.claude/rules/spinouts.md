@@ -137,14 +137,16 @@ reproduced on another project.
   `D=/tmp; end=$((SECONDS+170)); until [ -s "$D/mv-NAME.rc" ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat "$D/mv-NAME.rc" 2>/dev/null || echo pending; wc -c < "$D/mv-NAME.log"; tail -c 300 "$D/mv-NAME.log"`
   as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
   macOS). Read the byte count and tail against the rules in
-  `process-discipline.md`: a log that has not grown for two slices is a hang,
-  repeating lines a crashloop; act on it, do not keep waiting. When the rc file
+  `process-discipline.md`: a build or test run whose log has not grown for two
+  slices is hung (a job that idles by design is healthy), repeating lines are a
+  crashloop; act on it, do not keep waiting. When the rc file
   holds a number, it is the command's exit status (non-zero means it failed).
   The loop's own deadline bounds the call; the tool timeout is only a backstop
   that may kill the call or move it to the background (stop any backgrounded
   waiter before starting another).
 - **A subagent's heartbeat is that loop, with the log check.** `watch-background.sh` tells a session
-  to arm a Monitor; a subagent without that tool (the `reviewer`) keeps the
+  to arm a Monitor; a payload carrying an `agent_id` (a subagent's call) gets the
+  slice advice instead and is not recorded for the parent's Stop check. A subagent without Monitor (the `reviewer`) keeps the
   slice loop instead.
 - **Waits over about 35 minutes belong to the parent** (a heuristic: a slice
   costs about 0.035 of the context per minute at 0.1x, a cold re-write 1.25).
