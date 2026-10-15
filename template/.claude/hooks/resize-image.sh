@@ -75,8 +75,8 @@ _dims() {
   case "$RESIZE_TOOL" in
     sips)
       local w h
-      w=$(sips -g pixelWidth "$1" 2>/dev/null | awk '/pixelWidth/{print $2; exit}')
-      h=$(sips -g pixelHeight "$1" 2>/dev/null | awk '/pixelHeight/{print $2; exit}')
+      w=$(sips -g pixelWidth "$1" 2>/dev/null | awk '$1=="pixelWidth:"{print $2; exit}')
+      h=$(sips -g pixelHeight "$1" 2>/dev/null | awk '$1=="pixelHeight:"{print $2; exit}')
       [ -n "$w" ] && [ -n "$h" ] && echo "$w $h"; return 0 ;;
     magick)  magick identify -format "%w %h" "$1[0]" 2>/dev/null || true ;;
     convert) identify -format "%w %h" "$1[0]" 2>/dev/null || true ;;
@@ -99,7 +99,8 @@ mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
 # A $TMPDIR inside the project would put the chmod and the prune below within
 # reach of project files: use no cache dir at all then, and touch nothing
-# (physical paths, so links do not hide it).
+# (physical paths, so links do not hide it). The cost: no resize in that setup,
+# the image is Read as is (a known limit; keep TMPDIR outside the project).
 _PHYS_OUT=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
 _PHYS_ROOT=$(cd -P "$ROOT" 2>/dev/null && pwd -P) || exit 0
 case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) { rmdir "$OUT_DIR" 2>/dev/null || true; }; exit 0 ;; esac

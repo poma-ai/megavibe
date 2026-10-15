@@ -93,8 +93,8 @@ operational-boundaries section and is not a rung.
 3. Does the standard library do it?
 4. Does a native platform feature cover it?
 5. Does an already-installed dependency solve it? Never add one for a few lines.
-6. Can it be one line a reader takes in at a glance? A one-liner that needs
-   decoding is not short.
+6. If the whole requirement fits in one line a reader takes in at a glance, use
+   it. A one-liner that needs decoding is not short.
 7. Otherwise: the least code that satisfies the whole stated requirement.
 
 The ladder runs after you understand the problem, not instead of it.

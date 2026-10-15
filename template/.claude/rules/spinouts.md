@@ -70,6 +70,8 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
    - Never block longer than 180 s in one tool call (subagent prompt caches
      expire after 5 minutes): wait for a background job in slices, with a
      sentinel file the job writes when done (see "keep the cache warm" below)
+     if you would wait more than about 35 minutes in total, report the job's
+     task id and stop so the parent can take over the wait
    - Report: what you changed, verification result, any issues found
    ```
 
@@ -137,15 +139,19 @@ slice instead.
   a read at 0.1x and a 5-minute write at 1.25x input price. At other
   multipliers the economics shift (0.05x reads halve the cost of a slice). Under
   about 3 minutes of work per wait, none of this matters.
-- **Keep slicing however long the job.** A slice costs about 0.035 of the
-  context per minute (a 170 s wait plus its turn at 0.1x); the alternative is not one cold re-write but one per
-  foreground call, which stops at 10 minutes (1.25 per 10 minutes, 0.125 per
-  minute), so abandoning work to save a re-write loses. A job expected to take
-  over an hour is started by the PARENT (its cache lives an hour) and the
-  subagent is briefed only for what follows; do not assume a command survives
-  the subagent that started it. If a job must change hands, pass its task id
-  and confirm the old one has stopped before restarting, or two copies write the
-  same outputs.
+- **Slice up to about 35 minutes, then hand the wait to the parent.** A slice
+  costs about 0.035 of the context per minute (a 170 s wait plus its turn at
+  0.1x); one cold re-write costs 1.25, which is about 35 minutes of slicing. A
+  job expected to run longer, with nothing for the subagent to do meanwhile, is
+  started and awaited by the PARENT (its cache lives an hour) and the subagent is
+  briefed only for what follows. A subagent that finds itself waiting longer
+  reports the job's task id and stops; do not assume a command survives the
+  subagent that started it, and confirm the old job has stopped before
+  restarting it, or two copies write the same outputs. With a 1-hour subagent
+  cache none of this applies.
+- **A subagent's heartbeat is the sliced wait itself.** `watch-background.sh`
+  tells a session to arm a Monitor; a subagent without that tool (the
+  `reviewer`) just keeps the slice loop above, which is its heartbeat.
 
 ## What NOT to do
 
