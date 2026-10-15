@@ -378,7 +378,7 @@ ASK_WARN_FILE=".agent/LOGS/.ask-warn.${SID}"
 if [ -s "$ASK_WARN_FILE" ]; then
   SHORT="${SHORT}
 
-DELIVERABLES REGISTER (asks that may have no file yet):$(head -c 700 "$ASK_WARN_FILE" 2>/dev/null)"
+DELIVERABLES REGISTER (asks that may have no file yet; at most 6 rows are shown, STATUS.md \"Asked for\" lists them all):$(head -c 1000 "$ASK_WARN_FILE" 2>/dev/null)"
 fi
 # Hard bound: a line that grows past it would put us back behind the preview.
 [ "${#SHORT}" -le 3000 ] || SHORT="${SHORT:0:2990}

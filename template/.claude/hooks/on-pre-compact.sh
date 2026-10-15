@@ -244,48 +244,86 @@ fi
 # for X and no file exists yet" (found 2026-10-15: 8 asks in one project that
 # ended only in .agent/RESEARCH or in chat). Three cheap checks, only where the
 # project has megavibe-deliverables/STATUS.md; the result reaches the post-compact
-# message through .ask-warn.<sid>.
+# message through .ask-warn.<sid>. That message is read by a model as instructions,
+# so STATUS.md is read under the same gates status-sync.sh uses (not a symlink, not
+# tracked by git: a clone can ship one), at most 1 MB, and everything printed from
+# it or from file names is stripped to plain characters and length-capped.
 ASK_WARN=""
-if [ -f megavibe-deliverables/STATUS.md ]; then
-  _ST="megavibe-deliverables/STATUS.md"
-  # 1. Rows of the "## Asked for" table whose state is not done/dropped.
-  _OPEN=$(awk -F'|' '
+_ST="megavibe-deliverables/STATUS.md"
+if [ -f "$_ST" ] && [ ! -L "$_ST" ] && ! git ls-files --error-unmatch -- "$_ST" >/dev/null 2>&1; then
+  _STTXT=$(head -c 1048576 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r' || true)
+  # 1. "Now" is a status line, not the report (bytes: wc -m depends on the locale).
+  _NOWB=$(printf '%s\n' "$_STTXT" | awk '/^## /{ p = ($0 ~ /^## Now[[:space:]]*$/); next } p' | wc -c | tr -d ' ')
+  if [ "${_NOWB:-0}" -gt 4000 ] 2>/dev/null; then
+    ASK_WARN="${ASK_WARN}
+STATUS.md \"Now\" is ${_NOWB} bytes (cap about 4000): move the account into a dated file in megavibe-deliverables/ and link it."
+  fi
+  # 2. Rows of the "## Asked for" table (columns Ask | Date | File | Mirror | State).
+  #    Printed as ask, date, file, class separated by the unit separator (not
+  #    whitespace, so an empty file cell cannot shift the columns), class = done | dropped | open;
+  #    a row with fewer than 5 columns counts as open.
+  _ROWS=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk -F'|' '
+    function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    function clean(x, n) { x = trim(x); gsub(/[^ -~]/, "", x); return substr(x, 1, n) }
+    fence { if ($0 ~ /^[ \t]*(```|~~~)/) fence = 0; next }
+    /^[ \t]*(```|~~~)/ { fence = 1; next }
     inc { if ($0 ~ /-->/) inc = 0; next }
     /<!--/ { if ($0 !~ /-->/) inc = 1; next }
-    /^## /{ t = ($0 ~ /^## Asked for/); next }
+    /^## / { t = (tolower($0) ~ /^## asked for[ \t]*$/); next }
     t && /^\|/ {
-      a=$2; d=$3; s=tolower($(NF-1))
-      gsub(/^[ \t]+|[ \t]+$/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", d); gsub(/^[ \t]+|[ \t]+$/, "", s)
-      if (a == "Ask" || a ~ /^-+$/ || a == "") next
-      if (s == "done" || s == "dropped") next
-      print "- " a " (" d ", state: " (s == "" ? "open" : s) ")"
-    }' "$_ST" 2>/dev/null | head -8)
-  if [ -n "$_OPEN" ]; then
-    ASK_WARN="${ASK_WARN}
-Open rows in STATUS.md \"Asked for\" (an ask is done only when its file is in megavibe-deliverables/; a chat answer is not a file):
-${_OPEN}"
+      a = trim($2)
+      if (tolower(a) == "ask" || a ~ /^[-: ]+$/ || a == "") next
+      s = tolower(trim($6))
+      c = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^dropped([^a-z]|$)/) ? "dropped" : "open")
+      print clean(a, 80) "\037" clean($3, 12) "\037" clean($4, 80) "\037" c
+    }' 2>/dev/null | head -50 || true)
+  _OPEN=""; _NOPEN=0
+  if [ -n "$_ROWS" ]; then
+    while IFS="$(printf '\037')" read -r _a _d _f _c; do
+      [ -n "$_a" ] || continue
+      _why=""
+      case "$_c" in
+        dropped) continue ;;
+        open) _why="open" ;;
+        done)
+          # "done" counts only when the file is really in the folder (no path tricks).
+          case "$_f" in
+            ""|/*|..|../*|*/../*|*/..) _why="marked done, no file in the folder named" ;;
+            *) [ -e "megavibe-deliverables/$_f" ] || _why="marked done, but megavibe-deliverables/${_f} does not exist" ;;
+          esac ;;
+      esac
+      [ -n "$_why" ] || continue
+      _NOPEN=$((_NOPEN + 1))
+      if [ "$_NOPEN" -le 6 ]; then
+        _OPEN="${_OPEN}
+- ${_a} (${_d}: ${_why})"
+      fi
+    done <<ROWS_EOF
+$_ROWS
+ROWS_EOF
   fi
-  # 2. Research notes newer than the newest deliverable (last 14 days): if the
-  #    user asked for one of them it belongs in the folder. Heuristic, so say so.
-  _NEWEST=$(ls -t megavibe-deliverables 2>/dev/null | grep -v -E '^(STATUS|README)\.md$' | head -1)
-  _NEWR=""
-  if [ -d .agent/RESEARCH ]; then
-    if [ -n "$_NEWEST" ]; then
-      _NEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 -newer "megavibe-deliverables/$_NEWEST" 2>/dev/null | head -5)
-    else
-      _NEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 2>/dev/null | head -5)
+  if [ "$_NOPEN" -gt 0 ]; then
+    [ "$_NOPEN" -le 6 ] || _OPEN="${_OPEN}
+- ... and $((_NOPEN - 6)) more"
+    ASK_WARN="${ASK_WARN}
+Asks in STATUS.md \"Asked for\" without a file in megavibe-deliverables/ (an ask is done only when its file is there; a chat answer is not a file):${_OPEN}"
+    # 3. Only while something is open: research notes newer than the newest
+    #    deliverable (last 14 days) may be the memo that was asked for. Names are
+    #    reduced to [A-Za-z0-9._-]; heuristic, working notes are fine where they are.
+    _NEWEST=$(ls -t megavibe-deliverables 2>/dev/null | grep -v -E '^(STATUS|README)\.md$' | head -1 || true)
+    _NEWR=""
+    if [ -d .agent/RESEARCH ]; then
+      if [ -n "$_NEWEST" ]; then
+        _NEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 -newer "megavibe-deliverables/$_NEWEST" -print0 2>/dev/null | LC_ALL=C tr '\0\n' '\n_' | head -3 || true)
+      else
+        _NEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 -print0 2>/dev/null | LC_ALL=C tr '\0\n' '\n_' | head -3 || true)
+      fi
     fi
-  fi
-  if [ -n "$_NEWR" ]; then
-    ASK_WARN="${ASK_WARN}
-Research notes newer than anything in megavibe-deliverables/ (heuristic: working notes are fine where they are; one the user asked for is promoted to the folder):
-$(printf '%s\n' "$_NEWR" | sed 's/^/- /')"
-  fi
-  # 3. "Now" is a status line, not the report.
-  _NOWB=$(awk '/^## /{ p = ($0 ~ /^## Now/); next } p' "$_ST" 2>/dev/null | wc -c | tr -d ' ')
-  if [ "${_NOWB:-0}" -gt 3000 ] 2>/dev/null; then
-    ASK_WARN="${ASK_WARN}
-STATUS.md \"Now\" is ${_NOWB} characters (cap about 3000): move the account into a dated file in megavibe-deliverables/ and link it."
+    if [ -n "$_NEWR" ]; then
+      ASK_WARN="${ASK_WARN}
+Research notes newer than anything in megavibe-deliverables/ (the memo may be one of them; if so, promote it to the folder):
+$(printf '%s\n' "$_NEWR" | LC_ALL=C tr -c 'A-Za-z0-9._/\n-' '_' | cut -c1-80 | sed 's/^/- /')"
+    fi
   fi
 fi
 
