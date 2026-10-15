@@ -36,12 +36,25 @@
 # Exit 0 on an answer, 124 on timeout, 4 if asked to review while codex is off
 # in MEGAVIBE_REVIEWERS, 2 on a usage error, 1 on error.
 #
-# SANDBOX: always read-only. There is no --sandbox flag at all — passing one is
-# refused (exit 2), as are --approve-for-me, --full-auto and
-# --dangerously-bypass-approvals-and-sandbox. This is where that enforcement now lives:
+# SANDBOX. The project under review is never writable. There is no --sandbox flag
+# at all: passing one is refused (exit 2), as are --approve-for-me, --full-auto and
+# --dangerously-bypass-approvals-and-sandbox. This is where that enforcement lives:
 # codex-approval-never.sh used to force read-only on every mcp__codex__codex
 # call, and it can no longer fire because the tool it guarded does not exist.
-# A reviewer does not need write access to review.
+#
+# Two modes, same guarantee for the project:
+#   scratch (the default under --as-reviewer; --scratch elsewhere): codex runs with
+#     workspace-write in a throwaway directory it is started IN (and TMPDIR points
+#     there), network off, /tmp and $TMPDIR NOT writable. The project, $HOME and
+#     everything else stay read-only, even a project that happens to live under
+#     /tmp. A reviewer must run the code it reviews (a reviewer that only read the
+#     diff missed a P1 in every measured case), and that needs a place to write
+#     harnesses; with a strictly read-only sandbox 22 of 23 reviews in one
+#     2026-10-15 session reported they could not create a scratch file and
+#     reviewed by reading. The prompt tells it where the project is (absolute
+#     path, read-only) and where the scratch dir is; the dir is deleted on exit.
+#   strict read-only (--strict, MEGAVIBE_CODEX_SCRATCH=0, and the default for the
+#     non-review uses: /rehydrate, summaries, memos): nothing is writable at all.
 #
 # `exec` has no approval prompt at all, so the old approval-policy=never is
 # implicit — there is no interactive approver to say yes.
@@ -49,16 +62,18 @@
 set -euo pipefail
 
 MODEL=""; EFFORT=""; TIMEOUT=300; OUT=""; PROMPT=""; PROMPT_FILE=""
-# read-only is not a default, it is the contract. There is deliberately no
-# flag to raise it: a caller-supplied sandbox is how the previous version of
-# this guarantee was lost.
-readonly SANDBOX="read-only"
+# The project is never writable: that is the contract. There is deliberately no
+# flag to raise it beyond the scratch dir: a caller-supplied sandbox is how the
+# previous version of this guarantee was lost.
+SCRATCH_MODE=""   # "" = decide below (reviewer: scratch, otherwise strict); 1 / 0 = forced
 AS_REVIEWER=""
 FILES=()
 need(){ [ $# -ge 2 ] || { echo "error: $1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --as-reviewer) AS_REVIEWER=1; shift ;;
+    --scratch)     SCRATCH_MODE=1; shift ;;
+    --strict)      SCRATCH_MODE=0; shift ;;
     --model)       need "$@"; MODEL="$2"; shift 2 ;;
     --effort)      need "$@"; EFFORT=$(printf '%s' "$2" | tr 'A-Z' 'a-z'); shift 2 ;;
     --timeout)     need "$@"; TIMEOUT="$2"; shift 2 ;;
@@ -67,13 +82,20 @@ while [ $# -gt 0 ]; do
     --prompt-file) need "$@"; PROMPT_FILE="$2"; shift 2 ;;
     # Refused, not forwarded: a review that can write is not a review.
     --sandbox|--dangerously-bypass-approvals-and-sandbox|--approve-for-me|--full-auto)
-      echo "error: $1 is not available here — this reviewer is read-only by contract" >&2; exit 2 ;;
+      echo "error: $1 is not available here — the project under review is read-only by contract (use --scratch for a writable scratch dir)" >&2; exit 2 ;;
     -h|--help)     awk 'NR >= 2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     --)            shift; FILES+=("$@"); break ;;
     -*)            echo "unknown arg: $1" >&2; exit 2 ;;
     *)             FILES+=("$1"); shift ;;
   esac
 done
+
+# Scratch or strict: an explicit flag wins, then MEGAVIBE_CODEX_SCRATCH, then
+# the default (reviews get a scratch dir, everything else is strict).
+if [ -z "$SCRATCH_MODE" ]; then
+  case "${MEGAVIBE_CODEX_SCRATCH:-}" in 1) SCRATCH_MODE=1 ;; 0) SCRATCH_MODE=0 ;; *) if [ -n "$AS_REVIEWER" ]; then SCRATCH_MODE=1; else SCRATCH_MODE=0; fi ;; esac
+fi
+if [ "$SCRATCH_MODE" = 1 ]; then SANDBOX="workspace-write"; else SANDBOX="read-only"; fi
 
 # Case-insensitive, and `minimal` accepted because codex accepts it. Validated
 # rather than passed through: the value lands in a `-c model_reasoning_effort=`
@@ -117,8 +139,16 @@ command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1
 # any safe argv length, and `codex exec -` reads instructions from stdin.
 REQ=$(mktemp -t codex-req)
 ANS=$(mktemp -t codex-ans)
-trap 'rm -f "$REQ" "$REQ.err" "$ANS"' EXIT
+SCRATCH=""
+if [ "$SCRATCH_MODE" = 1 ]; then
+  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/codex-review-scratch.XXXXXX") || { echo "error: cannot create the scratch dir" >&2; exit 1; }
+  mkdir -p "$SCRATCH/tmp"
+fi
+trap 'rm -f "$REQ" "$REQ.err" "$ANS"; [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"' EXIT
 {
+  if [ -n "$SCRATCH" ]; then
+    printf 'SANDBOX NOTE FROM THE HARNESS: the project under review is at %s (your own working directory is NOT the project). It is READ-ONLY for you: read it by absolute path and never try to modify it. Your writable scratch directory is %s (it is your working directory; TMPDIR is %s/tmp): copy what you need there and write and run harnesses there. There is no network, and /tmp is not writable.\n\n' "$PWD" "$SCRATCH" "$SCRATCH"
+  fi
   printf '%s\n' "$PROMPT"
   for f in ${FILES[@]+"${FILES[@]}"}; do
     [ -f "$f" ] && [ -r "$f" ] || { echo "error: not a readable file: $f" >&2; exit 1; }
@@ -130,6 +160,11 @@ trap 'rm -f "$REQ" "$REQ.err" "$ANS"' EXIT
 # dirs that are not repos. -o writes ONLY the final message, so the answer never
 # has to be scraped out of the run's progress chrome.
 ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
+if [ -n "$SCRATCH" ]; then
+  # workspace-write is the cwd (the scratch dir) only: /tmp and $TMPDIR excluded, network off.
+  ARGS+=(-C "$SCRATCH" -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true)
+  export TMPDIR="$SCRATCH/tmp"
+fi
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
 [ -n "$EFFORT" ] && ARGS+=(-c "model_reasoning_effort=$EFFORT")
 ARGS+=(-)
@@ -192,4 +227,4 @@ rm -f "$REQ.err"
 [ -n "$OUT" ] && cp "$ANS" "$OUT"
 cat "$ANS"
 echo "" >&2
-echo "[codex-review: sandbox=$SANDBOX${MODEL:+ model=$MODEL}${EFFORT:+ effort=$EFFORT} timeout=${TIMEOUT}s]" >&2
+echo "[codex-review: sandbox=$SANDBOX${SCRATCH:+ (scratch dir only; project read-only)}${MODEL:+ model=$MODEL}${EFFORT:+ effort=$EFFORT} timeout=${TIMEOUT}s]" >&2
