@@ -94,17 +94,18 @@ _is_int "$WIDTH" && _is_int "$HEIGHT" || exit 0
 OUT_DIR="${TMPDIR:-/tmp}"
 # Never create parent directories: a missing TMPDIR means no cache.
 [ -d "$OUT_DIR" ] || exit 0
+# A $TMPDIR inside the project would put the mkdir, chmod and prune below within
+# reach of project files: use no cache dir at all then, and touch nothing,
+# before anything is created (physical paths, so links do not hide it). The
+# cost: no resize in that setup, the image is Read as is (a known limit; keep
+# TMPDIR outside the project).
+_PHYS_TMP=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
+_PHYS_ROOT=$(cd -P "$ROOT" 2>/dev/null && pwd -P) || exit 0
+case "$_PHYS_TMP/" in "$_PHYS_ROOT"/*) exit 0 ;; esac
 OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
-_PRE=0; [ -e "$OUT_DIR" ] && _PRE=1   # rejected below: remove only what we created
 mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
-# A $TMPDIR inside the project would put the chmod and the prune below within
-# reach of project files: use no cache dir at all then, and touch nothing
-# (physical paths, so links do not hide it). The cost: no resize in that setup,
-# the image is Read as is (a known limit; keep TMPDIR outside the project).
 _PHYS_OUT=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
-_PHYS_ROOT=$(cd -P "$ROOT" 2>/dev/null && pwd -P) || exit 0
-case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) { [ "$_PRE" = 1 ] || rmdir "$OUT_DIR" 2>/dev/null || true; }; exit 0 ;; esac
 # mkdir -m does not tighten a dir that already exists: force it.
 chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
 # Reading a file that lives in the cache dir itself (under any spelling of the

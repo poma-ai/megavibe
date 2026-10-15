@@ -68,11 +68,11 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
    - If you discover you need to edit another file, STOP and report it instead
    - Run the verification command before finishing
    - No wait loop longer than 170 s in one tool call (subagent prompt caches
-     expire after 5 minutes): start a long job in the background and wait for
-     it in slices on a sentinel file it writes when done (the recipe is in
-     "keep the cache warm" below; the parent pastes it into this brief)
-   - If you would wait more than about 35 minutes in total, report the job's
-     task id and stop, so the parent can restart and await it
+     expire after 5 minutes): wait for a long background job in slices on the
+     rc file it writes (the parent pastes the recipe here, with a unique NAME)
+   - If you would wait more than about 35 minutes in total, report the exact
+     command, its log path and its rc path, and stop, so the parent can
+     restart and await it
    - Report: what you changed, verification result, any issues found
    ```
 
@@ -109,7 +109,8 @@ This is a projection from one job on one Claude Code build, not a measured re-ru
 
 ## Subagents: keep the cache warm while waiting
 
-A subagent's prompt cache lives 5 minutes (the main thread's lives 1 hour). Any
+A subagent's prompt cache lives 5 minutes by default (the main thread's usually
+1 hour; both depend on billing and settings, so check the effective ones). Any
 single tool call that blocks past that — `sleep`, an `until grep …` poll, a long
 test run in the foreground — makes the next request re-write the whole context
 as a cache write (1.25x input price) instead of a read (0.1x). Measured
@@ -117,45 +118,36 @@ as a cache write (1.25x input price) instead of a read (0.1x). Measured
 in 34-38 foreground waits of 5-9 minutes and re-wrote about 500K tokens every
 time: 51M cache-written tokens (about 64M weighted at 1.25x) plus 548M cache
 reads (about 55M at 0.1x) made about 119M of that session's 190M price-weighted
-tokens that day (63%). The weights are API list-price ratios, an assumption: how plan limits
-meter cache reads and writes is not documented, and `delegation.md` ("Cache
-heartbeat") shows the raw-token count can point the other way. Not reproduced on
-another project. A wait split into slices of at most 180 s costs one read per
-slice instead.
+tokens that day (63%). The weights are API list-price ratios, an assumption: how
+plan limits meter cache reads and writes is not documented, and `delegation.md`
+("Cache heartbeat") shows the raw-token count can point the other way. Not
+reproduced on another project.
 
-- **Brief every spin-out with the wait-slice rule** (it is in the template above).
-- **Bound the wait itself:** each slice is ONE waiting call, never a burst of
-  short polls (each poll is a turn that re-reads the whole context). Start the
-  job once with the Bash tool's `run_in_background` (never a bare `&`), as
-  `rm -f /tmp/mv-done.flag; { cmd; echo $? > /tmp/mv-done.flag; }`. The stale
-  flag is removed first, and the path is absolute and outside the project, so a
-  changed working directory cannot hide it (use a unique name per job when
-  several run). Then wait with
-  `end=$((SECONDS+170)); until [ -e /tmp/mv-done.flag ] || [ $SECONDS -ge $end ]; do sleep 5; done`
+- **Brief every spin-out with the wait rule** (it is in the template above) and,
+  for a job that needs waiting on, paste the recipe below with a unique NAME.
+- **The recipe.** One slice is ONE waiting call, never a burst of short polls
+  (each poll is a turn that re-reads the whole context). Start the job once with
+  the Bash tool's `run_in_background` (never a bare `&`):
+  `rm -f /tmp/mv-NAME.rc; { cmd > /tmp/mv-NAME.log 2>&1; echo $? > /tmp/mv-NAME.rc; }`.
+  The flag paths are absolute and outside the project, so a changed working
+  directory cannot hide them. Wait with
+  `end=$((SECONDS+170)); until [ -s /tmp/mv-NAME.rc ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat /tmp/mv-NAME.rc`
   as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
-  macOS), then read the output. The loop's own deadline is what bounds the call;
-  the tool timeout is only a backstop (it may kill the call or move it to the
-  background: stop any backgrounded waiter before starting another). 170 s
-  leaves room for a turn of generating before the wait: a longer wait plus that
-  turn passes the 5 minutes.
-- **Check the premise before applying any of this:** the numbers assume a
-  5-minute subagent cache (the default; 1 hour where enabled, and configurable),
-  a read at 0.1x and a 5-minute write at 1.25x input price. At other
-  multipliers the economics shift (0.05x reads halve the cost of a slice). Under
-  about 3 minutes of work per wait, none of this matters.
-- **Slice up to about 35 minutes, then hand the wait to the parent.** A slice
-  costs about 0.035 of the context per minute (a 170 s wait plus its turn at
-  0.1x); one cold re-write costs 1.25, which is about 35 minutes of slicing. A
-  job expected to run longer, with nothing for the subagent to do meanwhile, is
-  started and awaited by the PARENT (its cache lives an hour) and the subagent is
-  briefed only for what follows. A subagent that finds itself waiting longer
-  reports the job's task id and stops; do not assume a command survives the
-  subagent that started it, and confirm the old job has stopped before
-  restarting it, or two copies write the same outputs. With a 1-hour subagent
-  cache none of this applies.
-- **A subagent's heartbeat is the sliced wait itself.** `watch-background.sh`
-  tells a session to arm a Monitor; a subagent without that tool (the
-  `reviewer`) just keeps the slice loop above, which is its heartbeat.
+  macOS), repeat until the rc file exists, then read the rc (non-zero means the
+  command failed) and the log. The loop's own deadline bounds the call; the tool
+  timeout is only a backstop that may kill the call or move it to the background
+  (stop any backgrounded waiter before starting another).
+- **A subagent's heartbeat is that loop.** `watch-background.sh` tells a session
+  to arm a Monitor; a subagent without that tool (the `reviewer`) keeps the
+  slice loop instead.
+- **Waits over about 35 minutes belong to the parent** (a heuristic: a slice
+  costs about 0.035 of the context per minute at 0.1x, a cold re-write 1.25).
+  The parent starts and awaits such a job, if its own cache lifetime is longer,
+  and briefs the subagent only for what follows. A subagent that finds itself
+  waiting that long reports the exact command, its log path and its rc path and
+  stops; do not assume a command survives the subagent that started it, and
+  confirm the old job has stopped before restarting it, or two copies write the
+  same outputs. Waits under about 3 minutes need none of this.
 
 ## What NOT to do
 

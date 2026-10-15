@@ -62,7 +62,7 @@ Three gotchas:
 - Two upstreams now, so "re-sync from upstream" is ambiguous — check which section
   before touching one. Section 5 adapts selected ponytail guidance as prompt text
   (the ladder with its one-line rung, the scope step, the root-cause/caller rule,
-  the test rule, the closing skipped/unchecked line, the never-cut list, the
+  the test rule, the closing skipped/unchecked line, the never-trade list, the
   `SHORTCUT:` marker; re-checked against v5.2.0 on 2026-10-15); its rule files
   and skills for 20+ agents are a distribution problem megavibe does not have, and
   are deliberately not imported. Deviations: the test rule applies only where the
