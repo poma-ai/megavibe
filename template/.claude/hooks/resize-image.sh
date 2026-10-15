@@ -94,13 +94,14 @@ _is_int "$WIDTH" && _is_int "$HEIGHT" || exit 0
 OUT_DIR="${TMPDIR:-/tmp}"; OUT_DIR="${OUT_DIR%/}/megavibe-resized-$(id -u)"
 mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
-# mkdir -m does not tighten a dir that already exists: force it.
-chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
-# A $TMPDIR inside the project would put the prune below within reach of project
-# files: use no cache dir at all then (physical paths, so links do not hide it).
+# A $TMPDIR inside the project would put the chmod and the prune below within
+# reach of project files: use no cache dir at all then, and touch nothing
+# (physical paths, so links do not hide it).
 _PHYS_OUT=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
 _PHYS_ROOT=$(cd -P "$ROOT" 2>/dev/null && pwd -P) || exit 0
-case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) rmdir "$OUT_DIR" 2>/dev/null; exit 0 ;; esac
+case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) { rmdir "$OUT_DIR" 2>/dev/null || true; }; exit 0 ;; esac
+# mkdir -m does not tighten a dir that already exists: force it.
+chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
 # Reading a file that lives in the cache dir itself (under any spelling of the
 # path) is never ours to touch: no prune, no copy.
 _PHYS_IN=$(cd -P "$(dirname "$ABS")" 2>/dev/null && pwd -P) || exit 0

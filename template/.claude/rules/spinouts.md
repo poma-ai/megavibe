@@ -67,11 +67,9 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
    - Edit ONLY the files listed above
    - If you discover you need to edit another file, STOP and report it instead
    - Run the verification command before finishing
-   - Never block longer than 180-240 s in one tool call (subagent prompt caches
-     expire after 5 minutes): start a long job with `run_in_background` and wait
-     for it in bounded slices (see "keep the cache warm" below); if you would
-     wait more than about 50 minutes in total, stop and report so the parent
-     can restart the job itself
+   - Never block longer than 180 s in one tool call (subagent prompt caches
+     expire after 5 minutes): wait for a background job in slices, with a
+     sentinel file the job writes when done (see "keep the cache warm" below)
    - Report: what you changed, verification result, any issues found
    ```
 
@@ -119,33 +117,33 @@ reads (about 55M at 0.1x) made about 119M of that session's 190M price-weighted
 tokens that day (63%). The weights are API list-price ratios, an assumption: how plan limits
 meter cache reads and writes is not documented, and `delegation.md` ("Cache
 heartbeat") shows the raw-token count can point the other way. Not reproduced on
-another project. A wait split into slices of at most 240 s costs one read per
+another project. A wait split into slices of at most 180 s costs one read per
 slice instead.
 
-- **Brief every spin-out with the 240 s rule and the 50-minute stop** (both are
-  in the template above).
-- **Bound the wait itself:** each slice is ONE waiting call with a deadline of
-  its own below the tool's: start the job once in the background (keep its task
-  id), then wait with `end=$((SECONDS+230)); until <job finished> || [ $SECONDS
-  -ge $end ]; do sleep 5; done` as a Bash call with `timeout: 240000` (the tool
-  parameter is the backstop; `timeout(1)` does not exist on stock macOS), then
-  read the output. Without the loop's own deadline the tool backgrounds the
-  poller at its timeout and it keeps running. Reading the output file alone
-  does not wait: that is a burst of short polls, each a turn that re-reads the
-  whole context. A 240 s wait plus a minute of generating the next turn already
-  passes 5 minutes, so keep real margin (180-240 s).
+- **Brief every spin-out with the 180 s rule** (it is in the template above).
+- **Bound the wait itself:** each slice is ONE waiting call, never a burst of
+  short polls (each poll is a turn that re-reads the whole context). Have the
+  job write a sentinel when it ends (`cmd; echo $? > done.flag` started in the
+  background), then wait with `end=$((SECONDS+170)); until [ -e done.flag ] ||
+  [ $SECONDS -ge $end ]; do sleep 5; done` as a Bash call with `timeout: 200000`
+  (`timeout(1)` does not exist on stock macOS), then read the output. The loop's
+  own deadline is what bounds the call; the tool timeout is only a backstop that
+  kills it. 180 s leaves room for a turn of generating before the wait: a
+  longer wait plus that turn passes the 5 minutes.
 - **Check the premise before applying any of this:** the numbers assume a
   5-minute subagent cache (the default; 1 hour where enabled, and configurable),
   a read at 0.1x and a 5-minute write at 1.25x input price. At other
   multipliers the break-even moves (0.05x reads double it). Under 4 minutes of
   work per wait, none of this matters.
-- **Not worth it above roughly 50 minutes of idle** (the break-even of the
-  assumptions above: 1.25 / 0.1 slices of 4 minutes). Commands a subagent
-  started stop when it ends, so a job expected to outlast that is started by the
-  PARENT (its cache lives an hour), and the subagent is briefed only for what
-  follows. A subagent that still finds itself waiting that long stops and
-  reports; the parent restarts the job, it cannot be resumed. A small context
-  can just let the cache go cold.
+- **Keep slicing however long the job.** A slice costs about 0.025 of the
+  context per minute against 1.25 for one cold re-write (50 minutes' worth), and
+  a subagent cannot idle in one call anyway (a foreground call stops at 10
+  minutes), so abandoning work to save a re-write loses. A job expected to take
+  over an hour is started by the PARENT (its cache lives an hour) and the
+  subagent is briefed only for what follows; do not assume a command survives
+  the subagent that started it. If a job must change hands, pass its task id
+  and confirm the old one has stopped before restarting, or two copies write the
+  same outputs.
 
 ## What NOT to do
 

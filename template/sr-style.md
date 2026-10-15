@@ -114,8 +114,9 @@ defect nobody noticed.
 
 **New non-trivial logic ships with its check:** a branch, loop, parser, money
 or security leaves one small test or assert-based self-check where the project
-has a test practice; where it has none, say what you ran instead. Trivial
-changes need none.
+has a test practice; where it has none, say what you ran instead. A test
+file outside a spun-out task's files is reported, not added. Trivial changes
+need none.
 
 **After a code change, close with one or two lines:** what you skipped or did
 not check (features left out included) and any risk the user must know. Omit

@@ -56,10 +56,10 @@ in a loop. A Stop hook cannot wake you later; the heartbeat is the only thing
 that can. `MEGAVIBE_BG_CHECK_SECS` sets the interval (clamped to 60–600 s; the
 heartbeat beats 60 s under it); `MEGAVIBE_BG_WATCH=0` switches the hook off.
 The main thread's cache lives 1 hour, so the default four-minute beat is cheap
-there and not a reason to beat faster. For a **subagent** it is more than that: its cache expires after 5 minutes (the main
-thread's after 1 hour), so every wait past 5 minutes re-writes the whole
-context at 1.25x instead of reading it at 0.1x. A subagent never blocks longer
-than 240 s in one tool call; see `spinouts.md` for the measurement. Do not read a
+there and not a reason to beat faster. A **subagent's** cache expires after 5
+minutes by default, so every wait past 5 minutes re-writes the whole context at 1.25x
+instead of reading it at 0.1x: a subagent never blocks longer than 180 s in one
+tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
 subagent's `.output` symlink whole: it is the full JSONL transcript.
 
 ## Bind dev servers to localhost by default
