@@ -239,6 +239,56 @@ if [ -n "$S0_LINE" ]; then
 fi
 
 
+# --- Deliverables register: asks that never became a file ---
+# What a compaction summary keeps is decisions and paths, not "the user asked
+# for X and no file exists yet" (found 2026-10-15: 8 asks in one project that
+# ended only in .agent/RESEARCH or in chat). Three cheap checks, only where the
+# project has megavibe-deliverables/STATUS.md; the result reaches the post-compact
+# message through .ask-warn.<sid>.
+ASK_WARN=""
+if [ -f megavibe-deliverables/STATUS.md ]; then
+  _ST="megavibe-deliverables/STATUS.md"
+  # 1. Rows of the "## Asked for" table whose state is not done/dropped.
+  _OPEN=$(awk -F'|' '
+    inc { if ($0 ~ /-->/) inc = 0; next }
+    /<!--/ { if ($0 !~ /-->/) inc = 1; next }
+    /^## /{ t = ($0 ~ /^## Asked for/); next }
+    t && /^\|/ {
+      a=$2; d=$3; s=tolower($(NF-1))
+      gsub(/^[ \t]+|[ \t]+$/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", d); gsub(/^[ \t]+|[ \t]+$/, "", s)
+      if (a == "Ask" || a ~ /^-+$/ || a == "") next
+      if (s == "done" || s == "dropped") next
+      print "- " a " (" d ", state: " (s == "" ? "open" : s) ")"
+    }' "$_ST" 2>/dev/null | head -8)
+  if [ -n "$_OPEN" ]; then
+    ASK_WARN="${ASK_WARN}
+Open rows in STATUS.md \"Asked for\" (an ask is done only when its file is in megavibe-deliverables/; a chat answer is not a file):
+${_OPEN}"
+  fi
+  # 2. Research notes newer than the newest deliverable (last 14 days): if the
+  #    user asked for one of them it belongs in the folder. Heuristic, so say so.
+  _NEWEST=$(ls -t megavibe-deliverables 2>/dev/null | grep -v -E '^(STATUS|README)\.md$' | head -1)
+  _NEWR=""
+  if [ -d .agent/RESEARCH ]; then
+    if [ -n "$_NEWEST" ]; then
+      _NEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 -newer "megavibe-deliverables/$_NEWEST" 2>/dev/null | head -5)
+    else
+      _NEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 2>/dev/null | head -5)
+    fi
+  fi
+  if [ -n "$_NEWR" ]; then
+    ASK_WARN="${ASK_WARN}
+Research notes newer than anything in megavibe-deliverables/ (heuristic: working notes are fine where they are; one the user asked for is promoted to the folder):
+$(printf '%s\n' "$_NEWR" | sed 's/^/- /')"
+  fi
+  # 3. "Now" is a status line, not the report.
+  _NOWB=$(awk '/^## /{ p = ($0 ~ /^## Now/); next } p' "$_ST" 2>/dev/null | wc -c | tr -d ' ')
+  if [ "${_NOWB:-0}" -gt 3000 ] 2>/dev/null; then
+    ASK_WARN="${ASK_WARN}
+STATUS.md \"Now\" is ${_NOWB} characters (cap about 3000): move the account into a dated file in megavibe-deliverables/ and link it."
+  fi
+fi
+
 MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 - FULL_CONTEXT.md: ${FC_LINES} lines
 - TASKS.md: ${TASKS_LINES} lines
@@ -261,6 +311,12 @@ if [ -n "$REG_WARN" ]; then
 🕗 REGISTER CURRENCY — the records may describe a state the repo has left:${REG_WARN}
 
 These files are what post-compaction recovery reads FIRST, and the line counts above say nothing about whether they are still TRUE. Before repeating anything from TASKS §0 or BUGS as current, re-read them against git (tags, recent commits). Treat a stale §0 as the first thing to fix after /rehydrate."
+fi
+
+if [ -n "$ASK_WARN" ]; then
+  MSG="$MSG
+
+📎 DELIVERABLES REGISTER:${ASK_WARN}"
 fi
 
 # --- Optional fold hint (appended only if FULL_CONTEXT.md is large) ---
@@ -296,6 +352,11 @@ if [ -n "$REG_WARN" ]; then
   printf '%s\n' "$REG_WARN" > "${LOGDIR}/.reg-warn.${SID}" 2>/dev/null || true
 else
   rm -f "${LOGDIR}/.reg-warn.${SID}" 2>/dev/null || true
+fi
+if [ -n "$ASK_WARN" ]; then
+  printf '%s\n' "$ASK_WARN" > "${LOGDIR}/.ask-warn.${SID}" 2>/dev/null || true
+else
+  rm -f "${LOGDIR}/.ask-warn.${SID}" 2>/dev/null || true
 fi
 
 # Echo to stderr — visible to the user in the Claude Code UI

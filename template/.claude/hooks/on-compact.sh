@@ -373,6 +373,13 @@ if [ -s "$REG_WARN_FILE" ]; then
 REGISTER CURRENCY: the records may describe a state the repo has left:$(head -c 1200 "$REG_WARN_FILE" 2>/dev/null)
 Re-read TASKS §0 against git before repeating it as current."
 fi
+# The deliverables register on-pre-compact.sh found (open asks without a file).
+ASK_WARN_FILE=".agent/LOGS/.ask-warn.${SID}"
+if [ -s "$ASK_WARN_FILE" ]; then
+  SHORT="${SHORT}
+
+DELIVERABLES REGISTER (asks that may have no file yet):$(head -c 700 "$ASK_WARN_FILE" 2>/dev/null)"
+fi
 # Hard bound: a line that grows past it would put us back behind the preview.
 [ "${#SHORT}" -le 3000 ] || SHORT="${SHORT:0:2990}
 [...]"

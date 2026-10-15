@@ -18,6 +18,15 @@ My default if unanswered: the option taken and why
 Answer:
 -->
 
+## Asked for
+
+| Ask | Date | File | Mirror | State |
+|---|---|---|---|---|
+
+<!-- One row per report, memo, analysis or retrospective you ask for, added when asked. State: open | done | dropped; done only when the file is in this folder. Mirror: URL of a hosted copy, if one was made at your request. Example:
+| TabPFN memo | 2026-10-15 | 2026-10-15-tabpfn-memo.md | | open |
+-->
+
 ## Decided
 
 (answered decisions move here with the answer)
