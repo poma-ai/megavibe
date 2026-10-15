@@ -368,10 +368,39 @@ Full orientation (git state, DECISIONS, TASKS, LESSONS, the pre-compact WORKING_
 # its report that can contradict the records the model is about to trust.
 REG_WARN_FILE=".agent/LOGS/.reg-warn.${SID}"
 if [ -s "$REG_WARN_FILE" ]; then
-  SHORT="${SHORT}
+  # Only lines of the one format on-pre-compact.sh writes are carried; a stale or
+  # clone-supplied cache file cannot add other text to the message.
+  _RW=$(head -c 2000 "$REG_WARN_FILE" 2>/dev/null | grep -E '^- TASKS\.md §0 carries the date [0-9]{4}-[0-9]{2}-[0-9]{2} — [0-9]{1,5} days ago\. Confirm it still describes the repo before repeating it\.$' | head -n 5 || true)
+  if [ -n "$_RW" ]; then
+    SHORT="${SHORT}
 
-REGISTER CURRENCY: the records may describe a state the repo has left:$(head -c 1200 "$REG_WARN_FILE" 2>/dev/null)
+REGISTER CURRENCY: the records may describe a state the repo has left:
+${_RW}
 Re-read TASKS §0 against git before repeating it as current."
+  fi
+fi
+# The deliverables register on-pre-compact.sh found (open asks without a file).
+# Only five validated integers are read from the cache file and the text is rendered
+# here: a stale or clone-supplied file cannot put any other text into the message.
+ASK_COUNTS_FILE=".agent/LOGS/.ask-counts.${SID}"
+if [ -s "$ASK_COUNTS_FILE" ]; then
+  _ac=$(head -c 64 "$ASK_COUNTS_FILE" 2>/dev/null | head -n 1 || true)
+  if printf '%s' "$_ac" | grep -qE '^[0-9]{1,7} [0-9]{1,7} [0-9]{1,7} [0-9]{1,7} [0-9]{1,7}$'; then
+    IFS=' ' read -r _ao _an _ar _ab _at5 <<ASK_EOF
+$_ac
+ASK_EOF
+    _at=""
+    [ "$_ao" -eq 0 ] || _at="${_at} ${_ao} ask(s) still open;"
+    [ "$_an" -eq 0 ] || _at="${_at} ${_an} ask(s) marked done whose file is not in megavibe-deliverables/;"
+    [ "$_ar" -eq 0 ] || _at="${_at} ${_ar} research note(s) in .agent/RESEARCH newer than the newest deliverable (heuristic);"
+    [ "$_ab" -le 4000 ] || _at="${_at} the STATUS.md Now section is ${_ab} bytes (cap about 4000);"
+    [ "$_at5" -eq 0 ] || _at="${_at} STATUS.md is over 512 KB so the counts cover only its first 512 KB;"
+    if [ -n "$_at" ]; then
+      SHORT="${SHORT}
+
+DELIVERABLES REGISTER (counts only, no file content):${_at} read the Asked for table in megavibe-deliverables/STATUS.md and finish or update the rows."
+    fi
+  fi
 fi
 # Hard bound: a line that grows past it would put us back behind the preview.
 [ "${#SHORT}" -le 3000 ] || SHORT="${SHORT:0:2990}

@@ -135,7 +135,8 @@ done
 [ "$IS_SUBAGENT" -eq 1 ] && exit 0
 
 # How stale is the context?
-COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
+COUNT=$(head -c 12 "$COUNTER_FILE" 2>/dev/null | head -n 1 || true)
+case "$COUNT" in ""|*[!0-9]*) COUNT=0 ;; esac   # a cache file is data: only an integer reaches the report
 # The counter resets on every .agent/ write, and the context watcher writes every
 # few minutes, so with the watcher alive it reads 0 every time. The age of the
 # newest write is the number that still says something.
@@ -239,6 +240,127 @@ if [ -n "$S0_LINE" ]; then
 fi
 
 
+# --- Deliverables register: asks that never became a file ---
+# What a compaction summary keeps is decisions and paths, not "the user asked
+# for X and no file exists yet" (found 2026-10-15: 8 asks in one project that
+# ended only in .agent/RESEARCH or in chat). This block only COUNTS, and prints
+# fixed text plus numbers: nothing from STATUS.md or from a file name ever
+# reaches the message, which a model reads as instructions and which a cloned
+# repo's own STATUS.md could otherwise write (a tracked file, a tracked symlink,
+# a case variant on a case-insensitive filesystem all slip past a "tracked?"
+# test). The model reads the table itself, as it reads any file of the repo.
+# Only where the project has megavibe-deliverables/STATUS.md; the result reaches
+# the post-compact message through .ask-counts.<sid> (five integers; the text is rendered there).
+ASK_WARN=""
+_ST="megavibe-deliverables/STATUS.md"
+if [ -f "$_ST" ]; then
+  _STTXT=$(head -c 524288 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r\0' || true)
+  _STSZ=$(wc -c < "$_ST" 2>/dev/null | tr -d ' ' || true); _TRUNC=0
+  if [ "${_STSZ:-0}" -gt 524288 ] 2>/dev/null; then _TRUNC=1; fi   # only the first 512 KB is counted, and the report says so
+  # "Now" is a status line, not the report (bytes: wc -m depends on the locale).
+  _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = (tolower($0) ~ /^## now([^a-z]|$)/); next } p' | wc -c | tr -d ' ')
+  # Rows of the register table under "## Asked for": the table that starts at a
+  # header line whose first cell is "Ask" and ends at the first blank or pipe-less
+  # line (another table, an example in a code fence, prose do not count). Outer
+  # pipes are optional, up to 3 leading blanks are allowed. Columns Ask | Date |
+  # File | Mirror | State; markup (* _ backticks, [text](link)) is removed from the
+  # state, a file keeps its own characters (wrapping markup only is also tried);
+  # a row with fewer than 5 columns counts as open. One row per line, delimited
+  # by the unit separator: class, file, file without wrapping markup.
+  _ROWS=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '
+    # BSD awk is quadratic on /[ \t]+$/ over a long run of blanks: collapse runs first (linear), then drop one blank at each end
+    function trim(x) { gsub(/[ \t]+/, " ", x); sub(/^ /, "", x); sub(/ $/, "", x); return x }
+    function plain(x) { x = trim(x); gsub(/[*_`]/, "", x); if (x ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", x); sub(/\].*$/, "", x) } return trim(x) }
+    function fenceinfo(x,   t, c, n) { t = x; sub(/^[ \t]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
+    length($0) > 50000 { if (t && intab && !fence && !inc) nopen++; next }   # no real line is this long; BSD awk is quadratic on long runs, so no other rule may see it (below this size every rule here is cheap)
+    fence { if (fenceinfo($0) && fch == ofch && fln >= oln && frest ~ /^[ \t]*$/) fence = 0; next }
+    inc { if ($0 ~ /-->/) inc = 0; next }
+    /^[ \t]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
+    fenceinfo($0) { fence = 1; ofch = fch; oln = fln; intab = 0; next }   # a fence ends the table
+    /^## / { t = (tolower($0) ~ /^## asked for[ \t]*$/); intab = 0; next }
+    !t { next }
+    {
+      line = $0
+      if (line ~ /^(    |\t)/) { intab = 0; next }   # four blanks or a tab: an indented code block, not a table
+      if (line ~ /^[ \t]*$/ || line !~ /\|/) { intab = 0; next }
+      gsub(/\\\|/, "\001", line)      # an escaped pipe belongs to its cell
+      sub(/^[ \t]+/, "", line); base = (line ~ /^\|/) ? 1 : 0   # leading blanks only: cells keep their inner blanks
+      n = split(line, c, "|")
+      if (!intab) { if (tolower(plain(c[1 + base])) == "ask") intab = 1; next }   # the register starts at its header line
+      a = trim(c[1 + base])
+      if ((a ~ /^:?-+:?$/ && trim(c[2 + base]) ~ /^:?-+:?$/) || (tolower(plain(a)) == "ask" && tolower(plain(c[2 + base])) == "date" && tolower(plain(c[3 + base])) == "file")) next   # the separator row (two cells checked), or a repeated header (three cells: a row for an ask titled "Ask" counts)
+      s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
+      k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
+      raw = c[3 + base]
+      if (length(raw) > 20000) f = ""
+      else { f = raw; sub(/^[ \t]+/, "", f); nn = length(f); while (nn > 0 && (substr(f, nn, 1) == " " || substr(f, nn, 1) == "\t")) nn--; f = substr(f, 1, nn); if (length(f) > 255) f = "" }   # edges only (a loop: the regex /[ \t]+$/ is quadratic in BSD awk): a name keeps its own inner blanks; no file name is over 255 (NAME_MAX), which also bounds the shell loop
+      gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
+      g0 = f; sub(/^[*~]+/, "", g0); sub(/[*~]+$/, "", g0)   # bold/strike wrappers
+      g = g0; sub(/^`+/, "", g); sub(/`+$/, "", g)   # g: wrapping markup only, file names keep their underscores
+      h = g0   # h: also MATCHED pairs of wrapping underscores (italics, bold) around plain text or a code span; the inside of a code span stays literal
+      for (w = 0; w < 2; w++) if (h ~ /^_.+_$/) { sub(/^_/, "", h); sub(/_$/, "", h); sub(/^[*~]+/, "", h); sub(/[*~]+$/, "", h) }
+      sub(/^`+/, "", h); sub(/`+$/, "", h)
+      tgt = ""; lk = (h ~ /^!?\[[^]]*\]\(.*\)$/) ? h : ((g ~ /^!?\[[^]]*\]\(.*\)$/) ? g : "")
+      if (lk != "") { tgt = lk; sub(/^.*\]\(/, "", tgt); sub(/\)$/, "", tgt); if (tgt ~ /^</) { sub(/^</, "", tgt); sub(/>.*$/, "", tgt) } else { sub(/[ \t].*$/, "", tgt) }; sub(/#.*$/, "", tgt); gsub(/%20/, " ", tgt) }
+      if (k == "open") nopen++
+      else if (k == "done") {   # open rows are only counted here; of the done rows the FIRST 250 and the LAST 250 are kept (rows are added at either end), so the shell loop stays short
+        nd++; r = k "\037" f "\037" g "\037" h "\037" "" "\037" tgt
+        if (nd <= 250) head[nd] = r; else ring[nd % 250] = r
+      }
+    }
+    END { for (i = 1; i <= (nd < 250 ? nd : 250); i++) print head[i]; for (i = (nd > 499 ? nd - 249 : 251); i <= nd; i++) print ring[i % 250]; print "count\037" (nopen + 0) }' 2>/dev/null || true)
+  _NOPEN=0; _NNOFILE=0
+  if [ -n "$_ROWS" ]; then
+    _US=$(printf '\037')
+    while IFS="$_US" read -r _c _f _g _h _l _t; do
+      case "$_c" in
+        count) case "$_f" in ""|*[!0-9]*) ;; *) _NOPEN=$_f ;; esac ;;
+        done)
+          # "done" counts only when the file is really in the folder (no path tricks).
+          _have=0
+          for _cand in "$_f" "$_g" "$_h" "$_t"; do   # literal names first; a link resolves by its target, never by its label
+            case "$_cand" in */megavibe-deliverables/*) _cand="${_cand##*/megavibe-deliverables/}" ;; esac   # an absolute path into the folder
+            _cand="${_cand#megavibe-deliverables/}"; _cand="${_cand#./}"; _cand="${_cand%/}"
+            case "$_cand" in
+              ""|.|/*|..|../*|*/../*|*/..|./*) ;;
+              *) [ -e "megavibe-deliverables/$_cand" ] && _have=1 ;;
+            esac
+          done
+          [ "$_have" -eq 1 ] || _NNOFILE=$((_NNOFILE + 1)) ;;
+      esac
+    done <<ROWS_EOF
+$_ROWS
+ROWS_EOF
+  fi
+  # While something is open: research notes newer than the newest deliverable
+  # (last 14 days) may be the memo that was asked for. Heuristic, counted only.
+  _NNEWR=0
+  if [ "$_NOPEN" -gt 0 ] && [ -d .agent/RESEARCH ]; then
+    _NEWEST=$(ls -t megavibe-deliverables 2>/dev/null | grep -v -E '^(STATUS|README)\.md$' | head -1 || true)
+    if [ -n "$_NEWEST" ]; then
+      _NNEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 -newer "megavibe-deliverables/$_NEWEST" -print0 2>/dev/null | LC_ALL=C tr -cd '\0' | wc -c | tr -d ' ' || echo 0)
+    else
+      _NNEWR=$(find .agent/RESEARCH -type f ! -name '.gitkeep' -mtime -14 -print0 2>/dev/null | LC_ALL=C tr -cd '\0' | wc -c | tr -d ' ' || echo 0)
+    fi
+  fi
+  _PARTS=""
+  [ "$_NOPEN" -eq 0 ] || _PARTS="${_PARTS}
+- ${_NOPEN} ask(s) still open"
+  [ "$_NNOFILE" -eq 0 ] || _PARTS="${_PARTS}
+- ${_NNOFILE} ask(s) marked done whose file is not in megavibe-deliverables/"
+  [ "${_NNEWR:-0}" -eq 0 ] 2>/dev/null || _PARTS="${_PARTS}
+- ${_NNEWR} research note(s) in .agent/RESEARCH newer than the newest deliverable (heuristic: the memo asked for may be one of them; promote it to the folder)"
+  [ "$_TRUNC" -eq 0 ] || _PARTS="${_PARTS}
+- STATUS.md is over 512 KB: the counts above cover only its first 512 KB (move finished rows into a dated file in the folder)"
+  if [ "${_NOWB:-0}" -gt 4000 ] 2>/dev/null; then
+    _PARTS="${_PARTS}
+- the STATUS.md \"Now\" section is ${_NOWB} bytes (cap about 4000): move the account into a dated file in the folder and link it"
+  fi
+  if [ -n "$_PARTS" ]; then
+    ASK_WARN="Counts only, taken from megavibe-deliverables/STATUS.md (an ask is done only when its file is in the folder; a chat answer is not a file). Read its \"Asked for\" table and finish or update the rows:${_PARTS}"
+  fi
+fi
+
 MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 - FULL_CONTEXT.md: ${FC_LINES} lines
 - TASKS.md: ${TASKS_LINES} lines
@@ -261,6 +383,12 @@ if [ -n "$REG_WARN" ]; then
 🕗 REGISTER CURRENCY — the records may describe a state the repo has left:${REG_WARN}
 
 These files are what post-compaction recovery reads FIRST, and the line counts above say nothing about whether they are still TRUE. Before repeating anything from TASKS §0 or BUGS as current, re-read them against git (tags, recent commits). Treat a stale §0 as the first thing to fix after /rehydrate."
+fi
+
+if [ -n "$ASK_WARN" ]; then
+  MSG="$MSG
+
+📎 DELIVERABLES REGISTER:${ASK_WARN}"
 fi
 
 # --- Optional fold hint (appended only if FULL_CONTEXT.md is large) ---
@@ -296,6 +424,13 @@ if [ -n "$REG_WARN" ]; then
   printf '%s\n' "$REG_WARN" > "${LOGDIR}/.reg-warn.${SID}" 2>/dev/null || true
 else
   rm -f "${LOGDIR}/.reg-warn.${SID}" 2>/dev/null || true
+fi
+if [ -n "$ASK_WARN" ]; then
+  printf '%s\n' "$ASK_WARN" > "${LOGDIR}/.ask-warn.${SID}" 2>/dev/null || true
+  # What on-compact.sh reads is five integers, validated there; it renders the text itself.
+  printf '%s %s %s %s %s\n' "${_NOPEN:-0}" "${_NNOFILE:-0}" "${_NNEWR:-0}" "${_NOWB:-0}" "${_TRUNC:-0}" > "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
+else
+  rm -f "${LOGDIR}/.ask-warn.${SID}" "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
 fi
 
 # Echo to stderr — visible to the user in the Claude Code UI
