@@ -55,6 +55,11 @@
 #     2026-10-15 session reported they could not create a scratch file and
 #     reviewed by reading. The prompt tells it where the project is (absolute
 #     path, read-only) and where the scratch dir is; the dir is deleted on exit.
+#   Both modes also pass --ignore-rules: a user's exec-policy rules run an allowed command
+#   outside any sandbox (found 2026-10-15 with the real codex: a `touch` allow rule wrote
+#   into the project, $HOME and /tmp, and `curl` reached the network, in strict mode too).
+#   Not covered, as before: a notify command or MCP server in the user's own codex config
+#   runs as part of codex itself, outside the tool sandbox.
 #   strict read-only (--strict, MEGAVIBE_CODEX_SCRATCH=0, and the default for the
 #     non-review uses: /rehydrate, summaries, memos): nothing is writable at all.
 #
@@ -163,6 +168,11 @@ fi
 # dirs that are not repos. -o writes ONLY the final message, so the answer never
 # has to be scraped out of the run's progress chrome.
 ARGS=(exec --sandbox "$SANDBOX" --skip-git-repo-check --color never -o "$ANS")
+# A user's exec-policy rules ($CODEX_HOME/rules/*.rules, which codex itself writes when
+# someone answers "always allow" in the TUI) run an allowed command OUTSIDE the sandbox,
+# which re-opens the project, $HOME, /tmp and the network in BOTH modes. Never load them.
+# Older codex builds without the flag are run as before (the flag is probed, not assumed).
+if codex exec --help 2>/dev/null | grep -q -e '--ignore-rules'; then ARGS+=(--ignore-rules); fi
 if [ -n "$SCRATCH" ]; then
   # workspace-write is the cwd (the scratch dir) only: /tmp and $TMPDIR excluded, network off.
   ARGS+=(-C "$SCRATCH" -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c 'sandbox_workspace_write.writable_roots=[]')
