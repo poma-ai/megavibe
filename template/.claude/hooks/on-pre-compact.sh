@@ -255,6 +255,8 @@ ASK_WARN=""
 _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then
   _STTXT=$(head -c 524288 "$_ST" 2>/dev/null | LC_ALL=C tr -d '\r\0' || true)
+  _STSZ=$(wc -c < "$_ST" 2>/dev/null | tr -d ' ' || true); _TRUNC=0
+  if [ "${_STSZ:-0}" -gt 524288 ] 2>/dev/null; then _TRUNC=1; fi   # only the first 512 KB is counted, and the report says so
   # "Now" is a status line, not the report (bytes: wc -m depends on the locale).
   _NOWB=$(printf '%s\n' "$_STTXT" | LC_ALL=C awk '/^## /{ p = (tolower($0) ~ /^## now([^a-z]|$)/); next } p' | wc -c | tr -d ' ')
   # Rows of the register table under "## Asked for": the table that starts at a
@@ -270,7 +272,7 @@ if [ -f "$_ST" ]; then
     function trim(x) { gsub(/[ \t]+/, " ", x); sub(/^ /, "", x); sub(/ $/, "", x); return x }
     function plain(x) { x = trim(x); gsub(/[*_`]/, "", x); if (x ~ /^\[[^]]*\]\([^)]*\)$/) { sub(/^\[/, "", x); sub(/\].*$/, "", x) } return trim(x) }
     function fenceinfo(x,   t, c, n) { t = x; sub(/^[ \t]*/, "", t); c = substr(t, 1, 1); if (c != "`" && c != "~") return 0; n = 0; while (substr(t, n + 1, 1) == c) n++; if (n < 3) return 0; fch = c; fln = n; frest = substr(t, n + 1); return 1 }
-    length($0) > 2000 { if (t && intab && !fence && !inc) nopen++; next }   # no real line is this long; BSD awk is quadratic on long runs, so no other rule may see it
+    length($0) > 50000 { if (t && intab && !fence && !inc) nopen++; next }   # no real line is this long; BSD awk is quadratic on long runs, so no other rule may see it (below this size every rule here is cheap)
     fence { if (fenceinfo($0) && fch == ofch && fln >= oln && frest ~ /^[ \t]*$/) fence = 0; next }
     inc { if ($0 ~ /-->/) inc = 0; next }
     /^[ \t]*<!--/ { if ($0 !~ /-->/) inc = 1; next }
@@ -286,12 +288,12 @@ if [ -f "$_ST" ]; then
       n = split(line, c, "|")
       if (!intab) { if (tolower(plain(c[1 + base])) == "ask") intab = 1; next }   # the register starts at its header line
       a = trim(c[1 + base])
-      if (a ~ /^:?-+:?$/ || (tolower(plain(a)) == "ask" && tolower(plain(c[2 + base])) == "date" && tolower(plain(c[3 + base])) == "file")) next   # the separator row, or a repeated header (all three cells: a row for an ask titled "Ask" counts)
+      if ((a ~ /^:?-+:?$/ && trim(c[2 + base]) ~ /^:?-+:?$/) || (tolower(plain(a)) == "ask" && tolower(plain(c[2 + base])) == "date" && tolower(plain(c[3 + base])) == "file")) next   # the separator row (two cells checked), or a repeated header (three cells: a row for an ask titled "Ask" counts)
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
       raw = c[3 + base]
-      if (length(raw) > 600) f = ""   # padding beyond this is junk; it also bounds the quadratic trim below (600 blanks: well under a millisecond a row)
-      else { f = raw; sub(/^[ \t]+/, "", f); sub(/[ \t]+$/, "", f); if (length(f) > 255) f = "" }   # edges only: a name keeps its own inner blanks; no file name is over 255 (NAME_MAX), which also bounds the shell loop
+      if (length(raw) > 20000) f = ""
+      else { f = raw; sub(/^[ \t]+/, "", f); nn = length(f); while (nn > 0 && (substr(f, nn, 1) == " " || substr(f, nn, 1) == "\t")) nn--; f = substr(f, 1, nn); if (length(f) > 255) f = "" }   # edges only (a loop: the regex /[ \t]+$/ is quadratic in BSD awk): a name keeps its own inner blanks; no file name is over 255 (NAME_MAX), which also bounds the shell loop
       gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
       g0 = f; sub(/^[*~]+/, "", g0); sub(/[*~]+$/, "", g0)   # bold/strike wrappers
       g = g0; sub(/^`+/, "", g); sub(/`+$/, "", g)   # g: wrapping markup only, file names keep their underscores
@@ -348,6 +350,8 @@ ROWS_EOF
 - ${_NNOFILE} ask(s) marked done whose file is not in megavibe-deliverables/"
   [ "${_NNEWR:-0}" -eq 0 ] 2>/dev/null || _PARTS="${_PARTS}
 - ${_NNEWR} research note(s) in .agent/RESEARCH newer than the newest deliverable (heuristic: the memo asked for may be one of them; promote it to the folder)"
+  [ "$_TRUNC" -eq 0 ] || _PARTS="${_PARTS}
+- STATUS.md is over 512 KB: the counts above cover only its first 512 KB (move finished rows into a dated file in the folder)"
   if [ "${_NOWB:-0}" -gt 4000 ] 2>/dev/null; then
     _PARTS="${_PARTS}
 - the STATUS.md \"Now\" section is ${_NOWB} bytes (cap about 4000): move the account into a dated file in the folder and link it"
@@ -423,8 +427,8 @@ else
 fi
 if [ -n "$ASK_WARN" ]; then
   printf '%s\n' "$ASK_WARN" > "${LOGDIR}/.ask-warn.${SID}" 2>/dev/null || true
-  # What on-compact.sh reads is numbers only, validated there; it renders the text itself.
-  printf '%s %s %s %s\n' "${_NOPEN:-0}" "${_NNOFILE:-0}" "${_NNEWR:-0}" "${_NOWB:-0}" > "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
+  # What on-compact.sh reads is five integers, validated there; it renders the text itself.
+  printf '%s %s %s %s %s\n' "${_NOPEN:-0}" "${_NNOFILE:-0}" "${_NNEWR:-0}" "${_NOWB:-0}" "${_TRUNC:-0}" > "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
 else
   rm -f "${LOGDIR}/.ask-warn.${SID}" "${LOGDIR}/.ask-counts.${SID}" 2>/dev/null || true
 fi

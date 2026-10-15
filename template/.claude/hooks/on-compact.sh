@@ -385,8 +385,8 @@ fi
 ASK_COUNTS_FILE=".agent/LOGS/.ask-counts.${SID}"
 if [ -s "$ASK_COUNTS_FILE" ]; then
   _ac=$(head -c 64 "$ASK_COUNTS_FILE" 2>/dev/null | head -n 1 || true)
-  if printf '%s' "$_ac" | grep -qE '^[0-9]{1,7} [0-9]{1,7} [0-9]{1,7} [0-9]{1,7}$'; then
-    IFS=' ' read -r _ao _an _ar _ab <<ASK_EOF
+  if printf '%s' "$_ac" | grep -qE '^[0-9]{1,7} [0-9]{1,7} [0-9]{1,7} [0-9]{1,7} [0-9]{1,7}$'; then
+    IFS=' ' read -r _ao _an _ar _ab _at5 <<ASK_EOF
 $_ac
 ASK_EOF
     _at=""
@@ -394,6 +394,7 @@ ASK_EOF
     [ "$_an" -eq 0 ] || _at="${_at} ${_an} ask(s) marked done whose file is not in megavibe-deliverables/;"
     [ "$_ar" -eq 0 ] || _at="${_at} ${_ar} research note(s) in .agent/RESEARCH newer than the newest deliverable (heuristic);"
     [ "$_ab" -le 4000 ] || _at="${_at} the STATUS.md Now section is ${_ab} bytes (cap about 4000);"
+    [ "$_at5" -eq 0 ] || _at="${_at} STATUS.md is over 512 KB so the counts cover only its first 512 KB;"
     if [ -n "$_at" ]; then
       SHORT="${SHORT}
 
