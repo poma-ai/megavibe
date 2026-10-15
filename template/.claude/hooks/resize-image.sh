@@ -35,6 +35,7 @@ set -u
 
 # Require jq
 command -v jq &>/dev/null || exit 0
+[ -d ".agent" ] || exit 0
 
 # Need at least one image tool
 RESIZE_TOOL=""
@@ -95,10 +96,17 @@ mkdir -m 700 -p "$OUT_DIR" 2>/dev/null || exit 0
 [ -O "$OUT_DIR" ] && [ ! -L "$OUT_DIR" ] || exit 0
 # mkdir -m does not tighten a dir that already exists: force it.
 chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
-find "$OUT_DIR" -maxdepth 1 -type f -mtime +1 -delete 2>/dev/null || true
+# A $TMPDIR inside the project would put the prune below within reach of project
+# files: use no cache dir at all then (physical paths, so links do not hide it).
+_PHYS_OUT=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
+_PHYS_ROOT=$(cd -P "$ROOT" 2>/dev/null && pwd -P) || exit 0
+case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) rmdir "$OUT_DIR" 2>/dev/null; exit 0 ;; esac
+# Prune only what this hook writes (never the file being read).
+find "$OUT_DIR" -maxdepth 1 -type f \( -name '*.png' -o -name '*.jpg' -o -name '.tmp.*' \) ! -path "$ABS" -mtime +1 -delete 2>/dev/null || true
 
 # Content key: a copy can only ever be reused for byte-identical input.
-KEY=$( { shasum -a 1 "$ABS" 2>/dev/null || sha1sum "$ABS" 2>/dev/null; } | awk '{print substr($1,1,16)}')
+_key() { { shasum -a 1 "$1" 2>/dev/null || sha1sum "$1" 2>/dev/null; } | awk '{print substr($1,1,16)}'; }
+KEY=$(_key "$ABS")
 [ -n "$KEY" ] || exit 0
 case "$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')" in
   jpg|jpeg) OUT_EXT="jpg"; SIPS_FMT="jpeg" ;;
@@ -126,7 +134,12 @@ if ! _good "$DEST"; then
     convert) convert "$ABS[0]" -resize "${MAX_DIM}x${MAX_DIM}>" "$TMP_OUT" &>/dev/null || true ;;
   esac
   rm -f "$TMP_BASE" 2>/dev/null || true
-  if _good "$TMP_OUT"; then
+  # The input must not have changed while it was converted, or the copy would be
+  # filed under the wrong content key.
+  if [ "$(_key "$ABS")" = "$KEY" ] && _good "$TMP_OUT"; then
+    # A planted link at DEST must not make mv drop the file into its target dir.
+    [ -L "$DEST" ] && rm -f "$DEST" 2>/dev/null
+    if [ -d "$DEST" ]; then rm -f "$TMP_OUT"; exit 0; fi
     mv -f "$TMP_OUT" "$DEST" 2>/dev/null || { rm -f "$TMP_OUT"; exit 0; }
   else
     rm -f "$TMP_OUT" 2>/dev/null || true

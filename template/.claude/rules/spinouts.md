@@ -121,10 +121,16 @@ heartbeat") shows the raw-token count can point the other way. Not reproduced on
 another project. A wait split into slices of at most 240 s costs one read per
 slice instead.
 
-- **Brief every spin-out with the 240 s rule** (it is in the template above).
-- **Bound the wait itself:** `timeout 240 bash -c 'until …; do sleep 5; done'`,
-  or run the job in the background and poll its output file each slice; a
-  foreground call with a 600 s `timeout` is the failure.
+- **Brief every spin-out with the 240 s rule and the 50-minute stop** (both are
+  in the template above).
+- **Bound the wait itself:** give the Bash call `timeout: 240000` (its own
+  parameter; `timeout(1)` does not exist on stock macOS) around an
+  `until …; do sleep 5; done` loop, or run the job in the background and read
+  its output file each slice. One slice is ONE waiting call, never a burst of
+  short polls: each poll is a turn that re-reads the whole context. A 240 s
+  wait plus a minute of generating the next turn already passes 5 minutes, so
+  keep real margin (180-240 s). The 5-minute and 1-hour lifetimes are the API
+  defaults and are configurable.
 - **Not worth it above roughly 50 minutes of idle:** slices of 240 s cost about
   0.1 of the context per 4 minutes, a cold re-write 1.25, so past ~50 minutes
   of pure waiting let it go cold. The subagent stops and reports at that point
