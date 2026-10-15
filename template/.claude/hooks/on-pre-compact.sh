@@ -250,7 +250,7 @@ fi
 # a case variant on a case-insensitive filesystem all slip past a "tracked?"
 # test). The model reads the table itself, as it reads any file of the repo.
 # Only where the project has megavibe-deliverables/STATUS.md; the result reaches
-# the post-compact message through .ask-warn.<sid>.
+# the post-compact message through .ask-counts.<sid> (four integers; the text is rendered there).
 ASK_WARN=""
 _ST="megavibe-deliverables/STATUS.md"
 if [ -f "$_ST" ]; then
@@ -284,14 +284,14 @@ if [ -f "$_ST" ]; then
       gsub(/\\\|/, "\001", line)      # an escaped pipe belongs to its cell
       sub(/^[ \t]+/, "", line); base = (line ~ /^\|/) ? 1 : 0   # leading blanks only: cells keep their inner blanks
       n = split(line, c, "|")
-      if (!intab) { if (tolower(plain(c[1 + base])) == "ask") intab = 1; next }
+      if (!intab) { if (tolower(plain(c[1 + base])) == "ask") intab = 1; next }   # the register starts at its header line
       a = trim(c[1 + base])
-      if (a ~ /^:?-+:?$/ || tolower(plain(a)) == "ask") next   # the separator row, or a repeated header
+      if (a ~ /^:?-+:?$/ || (tolower(plain(a)) == "ask" && tolower(plain(c[2 + base])) == "date" && tolower(plain(c[3 + base])) == "file")) next   # the separator row, or a repeated header (all three cells: a row for an ask titled "Ask" counts)
       s = tolower(plain(c[5 + base])); sub(/^[^a-z]+/, "", s)   # a leading emoji or bullet is not the state
       k = (s ~ /^done([^a-z]|$)/) ? "done" : ((s ~ /^(dropped|moved)([^a-z]|$)/) ? "dropped" : "open")
       raw = c[3 + base]
-      if (length(raw) > 255) f = ""   # no file name is this long (NAME_MAX); it also bounds the work per row below
-      else { f = raw; sub(/^[ \t]+/, "", f); sub(/[ \t]+$/, "", f) }   # edges only: a name keeps its own inner blanks
+      if (length(raw) > 600) f = ""   # padding beyond this is junk; it also bounds the quadratic trim below (600 blanks: well under a millisecond a row)
+      else { f = raw; sub(/^[ \t]+/, "", f); sub(/[ \t]+$/, "", f); if (length(f) > 255) f = "" }   # edges only: a name keeps its own inner blanks; no file name is over 255 (NAME_MAX), which also bounds the shell loop
       gsub(/\001/, "|", f); gsub(/[\001-\037]/, "", f)
       g0 = f; sub(/^[*~]+/, "", g0); sub(/[*~]+$/, "", g0)   # bold/strike wrappers
       g = g0; sub(/^`+/, "", g); sub(/`+$/, "", g)   # g: wrapping markup only, file names keep their underscores
@@ -317,6 +317,7 @@ if [ -f "$_ST" ]; then
           # "done" counts only when the file is really in the folder (no path tricks).
           _have=0
           for _cand in "$_f" "$_g" "$_h" "$_t"; do   # literal names first; a link resolves by its target, never by its label
+            case "$_cand" in */megavibe-deliverables/*) _cand="${_cand##*/megavibe-deliverables/}" ;; esac   # an absolute path into the folder
             _cand="${_cand#megavibe-deliverables/}"; _cand="${_cand#./}"; _cand="${_cand%/}"
             case "$_cand" in
               ""|.|/*|..|../*|*/../*|*/..|./*) ;;
