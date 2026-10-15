@@ -101,11 +101,15 @@ chmod 700 "$OUT_DIR" 2>/dev/null || exit 0
 _PHYS_OUT=$(cd -P "$OUT_DIR" 2>/dev/null && pwd -P) || exit 0
 _PHYS_ROOT=$(cd -P "$ROOT" 2>/dev/null && pwd -P) || exit 0
 case "$_PHYS_OUT/" in "$_PHYS_ROOT"/*) rmdir "$OUT_DIR" 2>/dev/null; exit 0 ;; esac
+# Reading a file that lives in the cache dir itself (under any spelling of the
+# path) is never ours to touch: no prune, no copy.
+_PHYS_IN=$(cd -P "$(dirname "$ABS")" 2>/dev/null && pwd -P) || exit 0
+[ "$_PHYS_IN" != "$_PHYS_OUT" ] || exit 0
 # Prune only what this hook writes (never the file being read).
-find "$OUT_DIR" -maxdepth 1 -type f \( -name '*.png' -o -name '*.jpg' -o -name '.tmp.*' \) ! -path "$ABS" -mtime +1 -delete 2>/dev/null || true
+find "$OUT_DIR" -maxdepth 1 -type f \( -name '*.png' -o -name '*.jpg' -o -name '.tmp.*' \) ! -samefile "$ABS" -mtime +1 -delete 2>/dev/null || true
 
 # Content key: a copy can only ever be reused for byte-identical input.
-_key() { { shasum -a 1 "$1" 2>/dev/null || sha1sum "$1" 2>/dev/null; } | awk '{print substr($1,1,16)}'; }
+_key() { { shasum -a 1 "$1" 2>/dev/null || sha1sum "$1" 2>/dev/null; } | awk '{print $1}' | tr -cd 'a-f0-9' | cut -c1-16; }
 KEY=$(_key "$ABS")
 [ -n "$KEY" ] || exit 0
 case "$(echo "${ABS##*.}" | tr '[:upper:]' '[:lower:]')" in

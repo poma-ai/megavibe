@@ -67,10 +67,11 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
    - Edit ONLY the files listed above
    - If you discover you need to edit another file, STOP and report it instead
    - Run the verification command before finishing
-   - Never block longer than 240 s in one tool call (subagent prompt caches
-     expire after 5 minutes): start a long job with `run_in_background` and poll
-     its output in slices of at most 240 s; if it is still running after about
-     50 minutes, stop and report so the parent can respawn
+   - Never block longer than 180-240 s in one tool call (subagent prompt caches
+     expire after 5 minutes): start a long job with `run_in_background` and wait
+     for it in bounded slices (see "keep the cache warm" below); if you would
+     wait more than about 50 minutes in total, stop and report so the parent
+     can restart the job itself
    - Report: what you changed, verification result, any issues found
    ```
 
@@ -114,8 +115,8 @@ as a cache write (1.25x input price) instead of a read (0.1x). Measured
 2026-10-14 in one project: three long subagents (contexts of 790-970K) each sat
 in 34-38 foreground waits of 5-9 minutes and re-wrote about 500K tokens every
 time: 51M cache-written tokens (about 64M weighted at 1.25x) plus 548M cache
-reads and output made 117M of that session's 189M price-weighted tokens that
-day (62%). The weights are API list-price ratios, an assumption: how plan limits
+reads (about 55M at 0.1x) made about 119M of that session's 190M price-weighted
+tokens that day (63%). The weights are API list-price ratios, an assumption: how plan limits
 meter cache reads and writes is not documented, and `delegation.md` ("Cache
 heartbeat") shows the raw-token count can point the other way. Not reproduced on
 another project. A wait split into slices of at most 240 s costs one read per
@@ -123,19 +124,28 @@ slice instead.
 
 - **Brief every spin-out with the 240 s rule and the 50-minute stop** (both are
   in the template above).
-- **Bound the wait itself:** give the Bash call `timeout: 240000` (its own
-  parameter; `timeout(1)` does not exist on stock macOS) around an
-  `until …; do sleep 5; done` loop, or run the job in the background and read
-  its output file each slice. One slice is ONE waiting call, never a burst of
-  short polls: each poll is a turn that re-reads the whole context. A 240 s
-  wait plus a minute of generating the next turn already passes 5 minutes, so
-  keep real margin (180-240 s). The 5-minute and 1-hour lifetimes are the API
-  defaults and are configurable.
-- **Not worth it above roughly 50 minutes of idle:** slices of 240 s cost about
-  0.1 of the context per 4 minutes, a cold re-write 1.25, so past ~50 minutes
-  of pure waiting let it go cold. The subagent stops and reports at that point
-  (the brief says so); the parent respawns a fresh one (see the batch rule
-  above).
+- **Bound the wait itself:** each slice is ONE waiting call with a deadline of
+  its own below the tool's: start the job once in the background (keep its task
+  id), then wait with `end=$((SECONDS+230)); until <job finished> || [ $SECONDS
+  -ge $end ]; do sleep 5; done` as a Bash call with `timeout: 240000` (the tool
+  parameter is the backstop; `timeout(1)` does not exist on stock macOS), then
+  read the output. Without the loop's own deadline the tool backgrounds the
+  poller at its timeout and it keeps running. Reading the output file alone
+  does not wait: that is a burst of short polls, each a turn that re-reads the
+  whole context. A 240 s wait plus a minute of generating the next turn already
+  passes 5 minutes, so keep real margin (180-240 s).
+- **Check the premise before applying any of this:** the numbers assume a
+  5-minute subagent cache (the default; 1 hour where enabled, and configurable),
+  a read at 0.1x and a 5-minute write at 1.25x input price. At other
+  multipliers the break-even moves (0.05x reads double it). Under 4 minutes of
+  work per wait, none of this matters.
+- **Not worth it above roughly 50 minutes of idle** (the break-even of the
+  assumptions above: 1.25 / 0.1 slices of 4 minutes). Commands a subagent
+  started stop when it ends, so a job expected to outlast that is started by the
+  PARENT (its cache lives an hour), and the subagent is briefed only for what
+  follows. A subagent that still finds itself waiting that long stops and
+  reports; the parent restarts the job, it cannot be resumed. A small context
+  can just let the cache go cold.
 
 ## What NOT to do
 
