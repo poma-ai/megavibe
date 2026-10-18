@@ -739,5 +739,188 @@ for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
   lacks 'decision-like events newer than `DECISIONS.md`' 'retired mtime explanation removed'
 done
 
+echo "== Round 3 P2-1: real writers and unexpected event names"
+fresh
+OUT=$(python3 - "$REPO" "$P" <<'PYWRITERS'
+import importlib.util, pathlib, sys
+repo, project = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('watcher', repo/'scripts/context-watcher.py')
+watcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(watcher)
+for host in ('Björn-Mac.local', '東京²Ⅷ.local', '---'):
+    watcher.socket.gethostname = lambda: host
+    watcher.append_event(project/'.agent', 'DECISION: from another machine\n')
+PYWRITERS
+)
+eq "$?" 0 'real Unicode watcher writes succeed'
+OUT=$(cd "$P" && printf 'DECISION: shell writer\n' | /bin/bash .claude/hooks/agent-log.sh append 2>&1)
+eq "$?" 0 'real shell writer succeeds'
+R --session "$SID"
+eq "$RC" 1 'all writer names are checked'
+has '4 marked-decision events' 'Unicode, fallback and hash names counted'
+mark
+R --decisions-since "$CP"
+eq "$RC" 0 'Unicode coverage identities round trip'
+eq "$OUT" 0 'all writer identities covered'
+for name in unexpected.md unexpected.txt; do
+  printf 'DECISION: do not hide this\n' > "$P/.agent/events/$name"
+  R --session "$SID"
+  eq "$RC" 2 'unexpected event name prevents false readiness'
+  has 'unexpected event filename:' 'unexpected filename diagnostic'
+  rm "$P/.agent/events/$name"
+done
+
+echo "== Round 3 P2-2: force cannot certify missing files or live tasks"
+fresh
+mark
+BEFORE=$(cat "$CP")
+event 001 'DECISION: still needs review'
+for register in DECISIONS TASKS; do
+  mv "$P/.agent/$register.md" "$T/$register.saved"
+  R --session "$SID" --mark --force
+  eq "$RC" 1 'force cannot bypass missing register'
+  has "$register.md is missing" 'missing file named'
+  has '--force overrides register reconciliation only' 'force boundary explained'
+  eq "$(cat "$CP")" "$BEFORE" 'missing register leaves checkpoint unchanged'
+  mv "$T/$register.saved" "$P/.agent/$register.md"
+done
+printf '{"id":"job","kind":"shell","started":1,"nudged":0}\n' > "$P/.agent/LOGS/.bg-tasks.$SID.jsonl"
+printf '{"session_id":"%s","background_tasks":[{"id":"job","status":"running"}]}\n' "$SID" > "$P/live.json"
+R --session "$SID" --hook-input "$P/live.json" --mark --force
+eq "$RC" 1 'force cannot bypass live heartbeat blocker'
+has 'without a heartbeat' 'live blocker explained'
+eq "$(cat "$CP")" "$BEFORE" 'live blocker leaves checkpoint unchanged'
+printf '{"session_id":"%s","background_tasks":[]}\n' "$SID" > "$P/live.json"
+mark --hook-input "$P/live.json"
+
+echo "== Round 3 P2-3: registry first-seen age and freshest path"
+fresh
+NOW=$(date +%s)
+BG="$P/.agent/LOGS/.bg-tasks.$SID.jsonl"
+printf '{"id":"job","kind":"shell","path":"/old","started":%s,"nudged":9}\n{"id":"job","kind":"shell","path":"/new","started":%s,"nudged":0}\n' "$((NOW - 600))" "$NOW" > "$BG"
+cp "$BG" "$T/bg-before"
+printf '{"hook_event_name":"Stop","session_id":"%s","background_tasks":[{"id":"job","status":"running"}]}\n' "$SID" > "$P/live.json"
+R --session "$SID" --hook-input "$P/live.json"
+eq "$RC" 1 'first readiness observation uses original registry age'
+has 'without a heartbeat' 're-registration cannot reset age'
+eq "$(cat "$BG")" "$(cat "$T/bg-before")" 'readiness never invents a first-seen timestamp'
+OUT=$(cd "$P" && /bin/bash .claude/hooks/watch-background.sh < live.json 2>&1)
+has '10 min, no heartbeat' 'real watcher agrees with first-seen age'
+OUT=$(cat "$BG")
+has '"path":"/new"' 'real watcher retains freshest path'
+# Reverse file order: freshness is by registration time, not row position.
+{ tail -1 "$T/bg-before"; head -1 "$T/bg-before"; } > "$BG"
+printf '{"session_id":"%s","background_tasks":[{"id":"job","status":"running"},{"id":"monitor","status":"running","command":"tail /new"}]}\n' "$SID" > "$P/live.json"
+R --session "$SID" --hook-input "$P/live.json"
+eq "$RC" 0 'freshest path establishes live coverage even in reverse row order'
+has 'earlier heartbeat nudge' 'latest nudge survives re-registration'
+printf '{"id":"job","kind":"shell","nudged":0}\n' > "$BG"
+R --session "$SID" --hook-input "$P/live.json"
+eq "$RC" 2 'missing registry age is never replaced with readiness time'
+has 'missing or invalid registry start time' 'missing age diagnostic'
+
+echo "== Round 3 P3-4: inline backticks do not open a fence"
+fresh
+event 001 '```literal```' 'DECISION: actual decision'
+R --session "$SID"
+eq "$RC" 1 'inline backticks cannot hide following marker'
+has '1 marked-decision events' 'following real decision counted'
+
+echo "== Round 3 P3-5: failed done-flag probe is bounded and nonblocking"
+fresh
+mark
+usage 960000
+touch "$DONE"
+event 001 'DECISION: uncovered while dependency is absent'
+SAVED_PATH="$PATH"
+export PATH="$T/no-python"
+AP Stop
+eq "$RC" 0 'failed coverage probe remains nonblocking'
+has 'unable to check done-flag coverage (ADVISORY)' 'done probe reports uncertainty'
+has 'python3 is required' 'done probe preserves dependency diagnostic'
+lacks '"decision": "block"' 'dependency failure never forces a Stop'
+exists "$DONE" 'failed probe retains done flag'
+absent "$BLOCKED" 'failed probe does not consume hard block'
+AP Stop
+eq "$OUT" '' 'failed probe reminder is throttled'
+rm -f "$COUNT"
+AP Stop ',"stop_hook_active":true'
+eq "$OUT" '' 'failed probe respects active Stop guard'
+absent "$COUNT" 'active Stop does not consume advisory cadence'
+touch "$BLOCKED"
+AP Stop
+eq "$OUT" '' 'failed probe respects once-only block guard'
+rm -f "$BLOCKED"
+AP PostToolUse ',"agent_id":"child"'
+eq "$OUT" '' 'failed probe respects subagent guard'
+export PATH="$SAVED_PATH"
+printf '#!/bin/bash\nprintf "%%02000d" 0 >&2\nexit 2\n' > "$P/.claude/hooks/compact-readiness.sh"
+AP PostToolUse
+lacks '"decision": "block"' 'large probe error is advisory'
+eq "$(printf '%s' "$OUT" | jq -r '.systemMessage | length <= 700')" true 'probe error preview is bounded'
+
+echo "== Round 3 P3-6: legacy collision recovery and future full ownership"
+fresh
+mkdir -p "$P/.agent/sessions/$SID" "$P/.agent/sessions/$SIBLING"
+pending '2026-10-18T12:00:00Z'
+for identity in "$SID" "$SIBLING"; do
+  R --session "$identity"
+  eq "$RC" 2 'full identity cannot claim ambiguous legacy queue'
+  has 'review and archive' 'collision message gives workable recovery'
+done
+# After reviewing every legacy row and reconciling registers, archive intact.
+mkdir -p "$P/.agent/queue-audit"
+mv "$QUEUE" "$P/.agent/queue-audit/"
+R --session "$SID"
+eq "$RC" 0 'archiving reviewed legacy queue clears ambiguity'
+exists "$P/.agent/queue-audit/${QUEUE##*/}" 'legacy evidence retained'
+# Capture the real launch command without starting tmux or a daemon.
+mkdir -p "$T/mock-tmux" "$TEST_HOME/.megavibe/scripts"
+cp "$REPO/scripts/context-watcher.py" "$TEST_HOME/.megavibe/scripts/"
+chmod +x "$TEST_HOME/.megavibe/scripts/context-watcher.py"
+cat > "$T/mock-tmux/tmux" <<'TMUX'
+#!/bin/bash
+[ "$1" = has-session ] && exit 1
+printf '%s\n' "${@: -1}" > "$LAUNCH"
+TMUX
+chmod +x "$T/mock-tmux/tmux"
+sed 's/${HOME}/${TEST_HOME}/g; s/$HOME/$TEST_HOME/g' "$HOOKS/start-context-watcher.sh" > "$P/.claude/hooks/start-context-watcher.sh"
+export LAUNCH="$T/launch-command"
+usage 1000
+for identity in "$SID" "$SIBLING"; do
+  OUT=$(cd "$P" && printf '{"session_id":"%s","transcript_path":"%s"}' "$identity" "$TR" |
+    MEGAVIBE_WATCHER=1 PATH="$T/mock-tmux:$PATH" /bin/bash .claude/hooks/start-context-watcher.sh 2>&1)
+  eq "$?" 0 'watcher launcher succeeds'
+  OUT=$(python3 - "$REPO" "$P" "$identity" "$LAUNCH" <<'PYQUEUE'
+import importlib.util, json, pathlib, shlex, sys
+repo, project, sid, launch = sys.argv[1:]
+args = shlex.split(pathlib.Path(launch).read_text())
+assert args[args.index('--session-id')+1] == sid, args
+spec = importlib.util.spec_from_file_location('watcher', pathlib.Path(repo)/'scripts/context-watcher.py')
+watcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(watcher)
+watcher.stage_decisions(pathlib.Path(project)/'.agent', sid, [{'title': sid}])
+path = pathlib.Path(project)/'.agent/LOGS'/('pending-decisions.'+sid+'.jsonl')
+assert json.loads(path.read_text())['session_id'] == sid
+PYQUEUE
+)
+  eq "$?" 0 'launcher and writer preserve full queue filename and ownership'
+done
+R --session "$SID"
+eq "$RC" 1 'full queue reports own pending work despite sibling'
+has '1 pending decisions for this session' 'sibling pending row is separate'
+IDS=$(printf '%s\n' "$OUT" | awk '$3=="ROW_ID" {print $4}')
+R --session "$SID" --mark --staged-handled $IDS
+eq "$RC" 0 'own full queue acknowledgement succeeds'
+R --session "$SIBLING"
+eq "$RC" 1 'sibling full queue remains pending'
+for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
+  OUT=$(cat "$doc")
+  has 'Full IDs cannot resolve an ambiguous legacy queue' 'docs reject impossible remedy'
+  has 'Review every pending row against the source transcripts' 'docs require legacy review'
+  has 'move the entire legacy queue outside `LOGS`' 'docs give effective recovery'
+  has 'future queue filenames and row ownership use that full ID' 'docs describe future ownership'
+done
+
 echo "compact-readiness tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -34,7 +34,8 @@ WATCHER_BIN="$HOME/.megavibe/scripts/context-watcher.py"
 command -v tmux &>/dev/null || exit 0
 
 INPUT=$(cat)
-SID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | cut -c1-12)
+SID_FULL=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null)
+SID=$(printf '%s' "$SID_FULL" | cut -c1-12)
 [ -n "$SID" ] || exit 0
 
 TMUX_SESSION="mvw-${SID}"
@@ -49,19 +50,19 @@ fi
 # Locate the transcript. Prefer the transcript_path the hook input carries
 # (present on PostToolUse — used by revive-watcher.sh's lazy re-spawn), which
 # is authoritative and dodges the startup race. Fall back to a session-id glob
-# at ~/.claude/projects/<slug>/<full-sid>.jsonl (the session_id field is the
-# full UUID; our SID is the 12-char prefix). At SessionStart the transcript may
-# not exist on disk yet — that's the race revive-watcher.sh later heals.
+# at ~/.claude/projects/<slug>/<full-sid>.jsonl. Queue ownership and cursor
+# keys use the full ID; tmux names and diagnostic logs retain the short ID.
+# At SessionStart the transcript may not exist on disk yet — that's the race revive-watcher.sh later heals.
 WTRANS=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
 if [ -z "$WTRANS" ] || [ ! -f "$WTRANS" ]; then
-  WTRANS=$(ls -t "$HOME/.claude/projects/"*"/${SID}"*.jsonl 2>/dev/null | head -1)
+  WTRANS=$(ls -t "$HOME/.claude/projects/"*"/${SID_FULL}".jsonl 2>/dev/null | head -1)
 fi
 if [ -z "$WTRANS" ] || [ ! -f "$WTRANS" ]; then
   # Log the skip — useful for diagnosing "watcher never spawned" tickets.
   mkdir -p .agent/LOGS 2>/dev/null
   {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) spawn-skip: transcript not found for SID=${SID}"
-    echo "  globbed: ~/.claude/projects/*/${SID}*.jsonl"
+    echo "  globbed: ~/.claude/projects/*/${SID_FULL}.jsonl"
   } >> "$SPAWN_LOG" 2>/dev/null
   exit 0
 fi
@@ -79,7 +80,7 @@ mkdir -p .agent/LOGS 2>/dev/null
 # but not $, backticks, or quotes in a path. printf %q makes each value safe
 # for that second parse.
 WATCHER_BIN_Q=$(printf '%q' "$WATCHER_BIN")
-SID_Q=$(printf '%q' "$SID")
+SID_Q=$(printf '%q' "$SID_FULL")
 PWD_Q=$(printf '%q' "$(pwd)")
 WTRANS_Q=$(printf '%q' "$WTRANS")
 if tmux new -d -s "$TMUX_SESSION" \

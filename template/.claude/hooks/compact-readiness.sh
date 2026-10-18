@@ -22,7 +22,8 @@ import sys
 import tempfile
 import time
 
-EVENT = re.compile(r"[0-9]{8}T[0-9]{6}Z-[A-Za-z0-9._-]+\.md")
+# The watcher uses Unicode isalnum(); agent-log uses ASCII hashes.
+EVENT = re.compile(r"[0-9]{8}T[0-9]{6}Z-[\w.-]+\.md")
 MARKER = r"^(DECISION:|D[0-9]+( |:)|Decided:)"
 ADVISORY = re.compile(r"\b(decisions?|decided|chosen|chose|selected|agreed|verdict)\b"
                       r"|\bD[0-9]+\b|\bdefault [A-D]\b", re.I)
@@ -80,8 +81,12 @@ def save_checkpoint(covered):
 
 def events():
     root = Path(".agent/events")
-    return sorted(p.name for p in root.glob("*.md")
-                  if p.is_file() and EVENT.fullmatch(p.name))
+    names = []
+    for path in root.glob("*"):
+        if not path.is_file() or not EVENT.fullmatch(path.name):
+            fail("unexpected event filename: " + repr(path.name))
+        names.append(path.name)
+    return sorted(names)
 
 
 def body_lines(name):
@@ -89,7 +94,7 @@ def body_lines(name):
     for line in (Path(".agent/events") / name).read_text().splitlines():
         match = re.match(r"^ {0,3}(`{3,})(.*)$", line)
         if match:
-            if not fence:
+            if not fence and "`" not in match[2]:
                 fence = len(match[1])
             elif len(match[1]) >= fence and not match[2].strip():
                 fence = 0
@@ -226,7 +231,8 @@ def main():
                          for p in LOGS.glob(".tool-call-counter." + sid[:12] + "*")
                          if not p.name.endswith(".lock") and len(p.name[len(".tool-call-counter."):]) > 12)
             if any(p != sid for p in peers) and (key != sid or len(sid) <= 12):
-                fail("ambiguous session queue: pass an unambiguous --session")
+                fail("ambiguous legacy session queue: review and archive " + str(path)
+                     + "; full --session IDs cannot disambiguate its ownership (see README.md)")
             paths.append(path)
         elif not sid:
             fail("session unknown with staged rows: pass --session")
@@ -240,14 +246,14 @@ def main():
         names = events()
         newer = [n for n in names if n not in covered]
         count = marked(newer)
-        blocks, info, advisory = [], [], []
+        blocks, hard_blocks, info, advisory = [], [], [], []
         info.append("%d uncovered events; %d marked-decision events" % (len(newer), count))
         if not Path(".agent/DECISIONS.md").is_file():
-            blocks.append("DECISIONS.md is missing")
+            hard_blocks.append("DECISIONS.md is missing")
         elif count:
             blocks.append("DECISIONS.md: reconcile marked decisions, including their reasons")
         if not Path(".agent/TASKS.md").is_file():
-            blocks.append("TASKS.md is missing")
+            hard_blocks.append("TASKS.md is missing")
         elif count or len(newer) >= minimum:
             blocks.append("TASKS.md: reconcile item status and blockers")
         pending = {p: queue_rows(p, sid) for p in paths}
@@ -260,8 +266,8 @@ def main():
                 fail("staged row ids were not shown to this session or have changed; run the check again")
         remaining = ids - selected
         if remaining:
-            blocks.append("%d pending decisions for this session; review ROW_IDs below, then use "
-                          "--mark --staged-handled ROW_ID ..." % len(remaining))
+            hard_blocks.append("%d pending decisions for this session; review ROW_IDs below, then use "
+                               "--mark --staged-handled ROW_ID ..." % len(remaining))
         info.extend("ROW_ID " + i for i in sorted(ids))
         info.append("%d pending decisions for this session" % len(ids))
         bg = LOGS / (".bg-tasks." + sid + ".jsonl")
@@ -284,7 +290,24 @@ def main():
             if not isinstance(registry, list) or any(not isinstance(r, dict) for r in registry):
                 fail("invalid live background registry")
             live = {r["id"]: r for r in registry if r.get("status") == "running"}
-            base = {r["id"]: r for r in rows if r["id"] in live}
+            base, freshest = {}, {}
+            for row in rows:
+                ident = row["id"]
+                if ident not in live:
+                    continue
+                started = row.get("started")
+                if type(started) not in (int, float) or not 0 < started < float("inf"):
+                    fail("background task %s: missing or invalid registry start time" % ident)
+                if ident not in base:
+                    base[ident] = dict(row)
+                    freshest[ident] = started
+                else:
+                    merged = base[ident]
+                    merged["started"] = min(merged["started"], started)
+                    merged["nudged"] = max(merged.get("nudged", 0), row.get("nudged", 0))
+                    if started >= freshest[ident]:
+                        merged["path"] = row.get("path", "")
+                        freshest[ident] = started
             for ident, row in base.items():
                 def names_task(command, task):
                     return task["id"] in command or bool(task.get("path") and task["path"] in command)
@@ -292,9 +315,9 @@ def main():
                                    for key, r in live.items() if key != ident)
                 watcher = any(names_task(live[ident].get("command", ""), other)
                               for key, other in base.items() if key != ident)
-                if not covered_task and not watcher and time.time() - row.get("started", time.time()) >= interval:
-                    blocks.append("background %s task %s found without a heartbeat; arm a Monitor or stop it"
-                                  % (row.get("kind", "?"), ident))
+                if not covered_task and not watcher and time.time() - row["started"] >= interval:
+                    hard_blocks.append("background %s task %s found without a heartbeat; arm a Monitor or stop it"
+                                       % (row.get("kind", "?"), ident))
         wc = Path(".agent/sessions") / sid / "WORKING_CONTEXT.md"
         if sid and wc.is_file() and wc.stat().st_size:
             age = max(0, int(time.time() - wc.stat().st_mtime))
@@ -315,6 +338,7 @@ def main():
                     total_advisory += 1
                     if len(advisory) < limit:
                         advisory.append("advisory %s: %s" % (name, line))
+        blocks += hard_blocks
         print("compact-readiness: %s (session %s [%s])" %
               ("NOT READY" if blocks else "READY", sid or "unknown", how))
         for line in blocks:
@@ -341,9 +365,12 @@ def main():
                     stream.flush()
                     os.fsync(stream.fileno())
                 print("Appended status: handled-by-session for %d rows in %s" % (len(reviewed), path))
-        if remaining or (blocks and not args.force):
-            print("Checkpoint unchanged: blocking items remain. Reconcile them, then use --mark --force; "
-                  "pending rows always require --staged-handled ROW_ID ...")
+        if hard_blocks:
+            print("Checkpoint unchanged: --force overrides register reconciliation only; "
+                  "it cannot override missing files, live heartbeat blockers or pending rows.")
+            return 1
+        if blocks and not args.force:
+            print("Checkpoint unchanged: reconcile registers, then use --mark --force.")
             return 1
         if events() != names:
             fail("events changed during --mark; retry after reviewing the new events")

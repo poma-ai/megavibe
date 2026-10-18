@@ -174,9 +174,25 @@ _NEW=0
 if [ -f "$DONE_FLAG" ]; then
   [ "$PCT" -ge "$SOFT_PCT" ] || [ "$PCT" -ge "$HARD_PCT" ] || exit 0
   _RC=0
-  _NEW=$("$READY" --decisions-since .agent/.registers-checkpoint 2>/dev/null) || _RC=$?
-  [ "$_RC" -le 1 ] || exit 0
-  case "$_NEW" in ''|*[!0-9]*) exit 0 ;; esac
+  _NEW=$("$READY" --decisions-since .agent/.registers-checkpoint 2>&1) || _RC=$?
+  case "$_NEW" in ''|*[!0-9]*) _RC=2 ;; esac
+  if [ "$_RC" -gt 1 ]; then
+    # A failed probe is advisory, never grounds to rearm or consume a block.
+    if [ "$EVENT" = "Stop" ]; then
+      ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
+      [ "$ACTIVE" = "true" ] && exit 0
+      [ -f "$BLOCKED_FLAG" ] && exit 0
+    fi
+    N=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+    case "$N" in ''|*[!0-9]*) N=0 ;; esac
+    if [ "$N" -eq 0 ] || [ $(( N % REMIND_EVERY )) -eq 0 ]; then
+      printf '%s' "$_NEW" | jq -Rs '{systemMessage:
+        ("compact-readiness: unable to check done-flag coverage (ADVISORY); " +
+         (split("\n")[0:3] | join(" ") | .[0:500]))}' 2>/dev/null || true
+    fi
+    echo $(( N + 1 )) > "$COUNT_FILE" 2>/dev/null || true
+    exit 0
+  fi
   [ "$_NEW" -gt 0 ] || exit 0
   rm -f "$DONE_FLAG" "$COUNT_FILE" 2>/dev/null || true
   REARMED=" The close-out is open again: ${_NEW} marked-decision event(s) after the register checkpoint."
