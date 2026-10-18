@@ -408,10 +408,11 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
       # (compact-readiness.sh). Once per tier per session, so the cost is nil;
       # `|| true` keeps its "not ready" exit status out of this hook's ERR trap.
       if [ "$CURRENT_TIER" -ge 2 ]; then
-        _RO=""; _RO=$("$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" 2>/dev/null) || true
+        _RO=""; _RO=$(printf '%s' "$INPUT" | "$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" --hook-input - 2>&1) || true
+        [ -n "$_RO" ] || _RO="compact-readiness: unable to check (no report)"
         [ -n "$_RO" ] && COMPACT_NUDGE="${COMPACT_NUDGE}
 🧭 ${_RO}
-After reconciling the registers, record coverage with compact-readiness.sh --mark. If register blockers remain, use --mark --force; add --staged-handled only for reviewed pending rows."
+After reconciling the registers, record coverage with compact-readiness.sh --mark. If register blockers remain, use --mark --force; add --staged-handled ROW_ID ... with the exact reviewed IDs printed by the check."
       fi
 
       # If FULL_CONTEXT.md is large, also hint at agent-log.sh fold (the superseded
@@ -599,8 +600,10 @@ if [ -n "$NUDGE_MSG" ]; then
   _EV=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null || echo PostToolUse)
   _UMSG="$NUDGE_MSG"; [ -n "$USER_ONLY_MSG" ] && _UMSG="${NUDGE_MSG}
 ${USER_ONLY_MSG}"
-  jq -n --arg msg "$_UMSG" --arg ctx "$NUDGE_MSG" --arg ev "${_EV:-PostToolUse}" \
-    '{systemMessage: $msg, hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null || true
+  # NUL separates shell strings; pass report bodies through stdin, not argv.
+  printf '%s\0%s\0%s' "$_UMSG" "$NUDGE_MSG" "${_EV:-PostToolUse}" |
+    jq -Rs 'split("\u0000") | {systemMessage: .[0], hookSpecificOutput:
+      {hookEventName: .[2], additionalContext: .[1]}}' 2>/dev/null || true
 elif [ -n "$USER_ONLY_MSG" ]; then
-  jq -n --arg msg "$USER_ONLY_MSG" '{systemMessage: $msg}' 2>/dev/null || true
+  printf '%s' "$USER_ONLY_MSG" | jq -Rs '{systemMessage: .}' 2>/dev/null || true
 fi

@@ -157,30 +157,10 @@ case "$CMD" in
     # being line-edited out of a file nobody can reconstruct.
     migrate_legacy
     cutoff="${BEFORE:-$(date -u -v-30d +%Y-%m-%d 2>/dev/null || date -u -d '30 days ago' +%Y-%m-%d)}"
-    cutoff_ts="$(printf '%s' "$cutoff" | tr -d '-')"
-    moved=0
-    tmp="$(mktemp "$AGENT_DIR/.snapshot.XXXXXX")" || exit 1
-    folded="$(mktemp "$AGENT_DIR/.folded.XXXXXX")" || exit 1
-    cat "$SNAPSHOT" > "$tmp" 2>/dev/null || true
-    for f in "$LOG_DIR"/*.md; do
-      [ -e "$f" ] || continue
-      day="$(basename "$f" | cut -c1-8)"
-      if [ "$day" \< "$cutoff_ts" ]; then
-        cat "$f" >> "$tmp"
-        printf '%s\n' "$f" >> "$folded"
-        moved=$((moved + 1))
-      fi
-    done
-    # Land the snapshot BEFORE removing anything. Deleting as we copied meant an
-    # interrupted fold lost those entries from the snapshot and the event log
-    # both; this way the worst case is a duplicate, which a re-fold cannot cause
-    # because the files are already gone.
-    keep_mode "$tmp" "$SNAPSHOT"
-    mv -f "$tmp" "$SNAPSHOT"
-    while IFS= read -r f; do [ -n "$f" ] && rm -f "$f"; done < "$folded"
-    rm -f "$folded"
+    # Fold only covered events, under the checkpoint lock. The helper lands
+    # the snapshot before deleting events and prunes obsolete coverage IDs.
+    "$(dirname "$0")/compact-readiness.sh" --project "$PROJECT" --fold-before "$cutoff"
     render
-    echo "agent-log: folded $moved entries older than $cutoff into $SNAPSHOT"
     ;;
 
   path)

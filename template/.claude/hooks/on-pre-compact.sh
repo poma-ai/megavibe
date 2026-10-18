@@ -379,12 +379,12 @@ After compaction, the only required action is: run /rehydrate (it regenerates WO
 # both DECISIONS.md and TASKS.md were a day stale under a zero counter. This is
 # the check that compares them with the events, counts the decisions the
 # watcher staged and nobody reviewed, and lists background tasks without a
-# heartbeat (compact-readiness.sh; exit 1 = not ready). Its lines are composed
-# by that script from counts and file names only. `|| READY_RC=$?` keeps a
+# heartbeat (compact-readiness.sh; exit 1 = not ready). Its advisory preview is bounded; row identities are printed in full. `|| READY_RC=$?` keeps a
 # "not ready" exit status out of this hook's ERR trap.
 READY_RC=0; READY_OUT=""
 _RS=""; [ "$_PC_SIDF" != "none" ] && _RS="$_PC_SIDF"
-READY_OUT=$("$(dirname "$0")/compact-readiness.sh" ${_RS:+--session "$_RS"} 2>/dev/null) || READY_RC=$?
+READY_OUT=$(printf '%s' "$INPUT" | "$(dirname "$0")/compact-readiness.sh" ${_RS:+--session "$_RS"} --hook-input - 2>&1) || READY_RC=$?
+[ -n "$READY_OUT" ] || READY_OUT="compact-readiness: unable to check (exit $READY_RC; no report)"
 if [ -n "$READY_OUT" ]; then
   MSG="$MSG
 
@@ -461,4 +461,4 @@ echo "════════════════════════�
 echo "" >&2
 
 # Kept for older Claude Code versions that may still show it; current ones discard it.
-jq -n --arg msg "$MSG" '{systemMessage: $msg}' 2>/dev/null || true
+printf '%s' "$MSG" | jq -Rs '{systemMessage: .}' 2>/dev/null || true

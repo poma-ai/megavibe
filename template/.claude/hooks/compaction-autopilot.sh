@@ -138,8 +138,10 @@ if [ "$EVENT" = "Stop" ] && [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ] &&
   # Block only if the once-only marker was actually written: a marker that
   # cannot be persisted (permissions, full disk) would make this block every
   # turn, and an infrastructure failure must never trap the session.
+  OUTPUT=$(printf '%s' "$REHYDRATE_TASK" | jq -Rs '{decision:"block", reason:.}' 2>/dev/null) || exit 0
+  [ -n "$OUTPUT" ] || exit 0
   : > "$R_BLOCKED" 2>/dev/null || exit 0
-  jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
+  printf '%s\n' "$OUTPUT"
   exit 0
 fi
 
@@ -165,16 +167,12 @@ fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
 
-# Skip the content probe when filename comparison finds no newer event.
-# A successful probe is reused below; do not scan the same events twice.
+# Probe identity coverage; random suffixes and late arrivals are unordered.
+# Reuse a positive probe below instead of scanning the event bodies twice.
 REARMED=""
 _NEW=0
 if [ -f "$DONE_FLAG" ]; then
   [ "$PCT" -ge "$SOFT_PCT" ] || [ "$PCT" -ge "$HARD_PCT" ] || exit 0
-  _CUT=$(cat .agent/.registers-checkpoint 2>/dev/null || true)
-  _CANDIDATE=$(LC_ALL=C ls -1 .agent/events 2>/dev/null |
-    LC_ALL=C awk -v c="$_CUT" 'substr($0,9,1)=="T" && substr($0,16,2)=="Z-" && $0>c {print; exit}')
-  [ -n "$_CANDIDATE" ] || exit 0
   _RC=0
   _NEW=$("$READY" --decisions-since .agent/.registers-checkpoint 2>/dev/null) || _RC=$?
   [ "$_RC" -le 1 ] || exit 0
@@ -193,7 +191,7 @@ CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
    shipped, what was corrected, what the next session must not re-derive.
 4. Run .claude/hooks/compact-readiness.sh and reconcile each [!] item.
    Record coverage with --mark; if register blockers remain after synthesis,
-   use --mark --force. Add --staged-handled only after reviewing pending rows.
+   use --mark --force. Add --staged-handled ROW_ID ... using the exact IDs printed by the check.
    Only after marking succeeds, run:
    touch .agent/LOGS/.closeout-done.'"${SID}"'
 The context watcher keeps the narrative fresh but cannot do this synthesis.'"${REARMED}"
@@ -208,7 +206,8 @@ readiness() {
     printf '%s' 'Run compact-readiness.sh for staged rows and background tasks.'
     return 0
   fi
-  out=$("$READY" ${SID_FULL:+--session "$SID_FULL"} 2>/dev/null) || true
+  out=$(printf '%s' "$INPUT" | "$READY" ${SID_FULL:+--session "$SID_FULL"} --hook-input - 2>&1) || true
+  [ -n "$out" ] || out="compact-readiness: unable to check (no report)"
   [ -n "$out" ] && printf '\nReadiness now:\n%s' "$out"
   return 0
 }
@@ -221,9 +220,11 @@ if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then
   ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
   [ "$ACTIVE" = "true" ] && exit 0
   [ -f "$BLOCKED_FLAG" ] && exit 0          # once per session, never a loop
-  : > "$BLOCKED_FLAG" 2>/dev/null || exit 0   # same rule as the rehydrate block
-  jq -n --arg r "Context is at ${PCT}%. ${CLOSEOUT_TASK}$(readiness)" \
-    '{decision:"block", reason:$r}' 2>/dev/null || true
+  OUTPUT=$(printf '%s' "Context is at ${PCT}%. ${CLOSEOUT_TASK}$(readiness)" |
+    jq -Rs '{decision:"block", reason:.}' 2>/dev/null) || exit 0
+  [ -n "$OUTPUT" ] || exit 0
+  : > "$BLOCKED_FLAG" 2>/dev/null || exit 0
+  printf '%s\n' "$OUTPUT"
   exit 0
 fi
 
@@ -232,8 +233,8 @@ if [ "$EVENT" = "PostToolUse" ] && [ "$PCT" -ge "$SOFT_PCT" ]; then
   N=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
   case "$N" in ''|*[!0-9]*) N=0 ;; esac
   if [ "$N" -eq 0 ] || [ $(( N % REMIND_EVERY )) -eq 0 ]; then
-    jq -n --arg c "Context is at ${PCT}% (soft threshold ${SOFT_PCT}%). ${CLOSEOUT_TASK}$(readiness)" \
-      '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
+    printf '%s' "Context is at ${PCT}% (soft threshold ${SOFT_PCT}%). ${CLOSEOUT_TASK}$(readiness)" |
+      jq -Rs '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:.}}' 2>/dev/null || true
   fi
   echo $(( N + 1 )) > "$COUNT_FILE" 2>/dev/null || true
 fi
