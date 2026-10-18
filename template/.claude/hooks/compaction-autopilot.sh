@@ -51,18 +51,18 @@ set -u
 # The session signals it is done by writing .closeout-done.<sid>, which
 # agent-log.sh does NOT do for it — the session writes it deliberately after the
 # synthesis, so "I logged something" cannot be mistaken for "I closed out".
-# The flag is per fill cycle, and a fill cycle without a compaction can last
-# days (measured 2026-10-18: a flag from the evening before silenced this hook
-# through 28 h of further work and ~150 events), so it expires by itself once
-# a decision-like event is newer than it (compact-readiness.sh
-# --decisions-since). The nudges carry that script's report, so the session is
-# told what is missing, not only that something is.
+# The flag stands only while the register checkpoint covers every marked
+# decision event. File timestamps do not establish register coverage.
 #
 # Opt out entirely with MEGAVIBE_CLOSEOUT=0.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
-[ "${MEGAVIBE_CLOSEOUT:-1}" != "0" ] || exit 0
+case "${MEGAVIBE_CLOSEOUT-1}" in
+  0) exit 0 ;;
+  1) ;;
+  *) echo "MEGAVIBE_CLOSEOUT: expected 0 or 1" >&2; exit 2 ;;
+esac
 
 INPUT=$(cat)
 EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null) || exit 0
@@ -83,12 +83,25 @@ DONE_FLAG="${LOGDIR}/.closeout-done.${SID}"
 BLOCKED_FLAG="${LOGDIR}/.closeout-blocked.${SID}"
 COUNT_FILE="${LOGDIR}/.closeout-count.${SID}"
 
-SOFT_PCT="${MEGAVIBE_CLOSEOUT_SOFT_PCT:-85}"
-HARD_PCT="${MEGAVIBE_CLOSEOUT_HARD_PCT:-95}"
-REMIND_EVERY="${MEGAVIBE_CLOSEOUT_REMIND_EVERY:-25}"
-case "$SOFT_PCT" in ''|*[!0-9]*) SOFT_PCT=85 ;; esac
-case "$HARD_PCT" in ''|*[!0-9]*) HARD_PCT=95 ;; esac
-case "$REMIND_EVERY" in ''|*[!0-9]*) REMIND_EVERY=25 ;; esac
+SOFT_PCT="${MEGAVIBE_CLOSEOUT_SOFT_PCT-85}"
+HARD_PCT="${MEGAVIBE_CLOSEOUT_HARD_PCT-95}"
+REMIND_EVERY="${MEGAVIBE_CLOSEOUT_REMIND_EVERY-25}"
+decimal() {
+  local value="$2"
+  case "$value" in ''|*[!0-9]*) echo "$1: expected a decimal integer" >&2; return 2 ;; esac
+  while [ "${value#0}" != "$value" ]; do value="${value#0}"; done
+  value="${value:-0}"
+  [ "${#value}" -le 6 ] && [ "$value" -gt 0 ] || {
+    echo "$1: expected 1..999999" >&2; return 2;
+  }
+  printf '%s' "$value"
+}
+SOFT_PCT=$(decimal MEGAVIBE_CLOSEOUT_SOFT_PCT "$SOFT_PCT") || exit 2
+HARD_PCT=$(decimal MEGAVIBE_CLOSEOUT_HARD_PCT "$HARD_PCT") || exit 2
+REMIND_EVERY=$(decimal MEGAVIBE_CLOSEOUT_REMIND_EVERY "$REMIND_EVERY") || exit 2
+[ "$SOFT_PCT" -le 100 ] && [ "$HARD_PCT" -le 100 ] || {
+  echo "close-out percentages must be at most 100" >&2; exit 2;
+}
 
 # --- REHYDRATE comes first, always -----------------------------------------
 # Before the context measurement on purpose: it acts on a flag, not on a guess
@@ -152,25 +165,23 @@ fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
 
-# Already closed out this fill cycle: no close-out work left. (After the
-# rehydrate block on purpose: a stale .closeout-done from before a manual
-# /compact, which on-compact.sh may not see, must not swallow the rehydrate
-# escalation.) But a fill cycle without a compaction can run for days, so the
-# flag stands only while no decision-like event is newer than the close-out —
-# or than DECISIONS.md, when that was written later: a session that recorded
-# its decisions after closing out has done the work the nudge would ask for.
-# The probe reads file names and greps the few events since, and runs only
-# once a stage could fire. A probe that cannot answer keeps the flag: silence
-# is never grounds for forcing.
+# Skip the content probe when filename comparison finds no newer event.
+# A successful probe is reused below; do not scan the same events twice.
 REARMED=""
+_NEW=0
 if [ -f "$DONE_FLAG" ]; then
   [ "$PCT" -ge "$SOFT_PCT" ] || [ "$PCT" -ge "$HARD_PCT" ] || exit 0
-  _REF="$DONE_FLAG"; [ .agent/DECISIONS.md -nt "$DONE_FLAG" ] && _REF=.agent/DECISIONS.md
-  _NEW=""; _NEW=$("$READY" --decisions-since "$_REF" 2>/dev/null) || true
-  case "$_NEW" in ''|*[!0-9]*) _NEW=0 ;; esac
+  _CUT=$(cat .agent/.registers-checkpoint 2>/dev/null || true)
+  _CANDIDATE=$(LC_ALL=C ls -1 .agent/events 2>/dev/null |
+    LC_ALL=C awk -v c="$_CUT" 'substr($0,9,1)=="T" && substr($0,16,2)=="Z-" && $0>c {print; exit}')
+  [ -n "$_CANDIDATE" ] || exit 0
+  _RC=0
+  _NEW=$("$READY" --decisions-since .agent/.registers-checkpoint 2>/dev/null) || _RC=$?
+  [ "$_RC" -le 1 ] || exit 0
+  case "$_NEW" in ''|*[!0-9]*) exit 0 ;; esac
   [ "$_NEW" -gt 0 ] || exit 0
   rm -f "$DONE_FLAG" "$COUNT_FILE" 2>/dev/null || true
-  REARMED=" The close-out of this fill cycle was marked done, but ${_NEW} event(s) since then look like decisions, so it is open again."
+  REARMED=" The close-out is open again: ${_NEW} marked-decision event(s) after the register checkpoint."
 fi
 
 CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
@@ -180,7 +191,10 @@ CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
    on.
 3. Write one close-out summary via .claude/hooks/agent-log.sh append: what
    shipped, what was corrected, what the next session must not re-derive.
-4. Run .claude/hooks/compact-readiness.sh and act on each [!] line; then run:
+4. Run .claude/hooks/compact-readiness.sh and reconcile each [!] item.
+   Record coverage with --mark; if register blockers remain after synthesis,
+   use --mark --force. Add --staged-handled only after reviewing pending rows.
+   Only after marking succeeds, run:
    touch .agent/LOGS/.closeout-done.'"${SID}"'
 The context watcher keeps the narrative fresh but cannot do this synthesis.'"${REARMED}"
 
@@ -188,6 +202,12 @@ The context watcher keeps the narrative fresh but cannot do this synthesis.'"${R
 # "not ready" exit status out of this hook's ERR trap.
 readiness() {
   local out=""
+  if [ -n "$REARMED" ]; then
+    printf '\nReadiness now:\ncompact-readiness: NOT READY\n'
+    printf '%s\n' "- [!] ${_NEW} marked-decision events after checkpoint: reconcile DECISIONS.md and TASKS.md."
+    printf '%s' 'Run compact-readiness.sh for staged rows and background tasks.'
+    return 0
+  fi
   out=$("$READY" ${SID_FULL:+--session "$SID_FULL"} 2>/dev/null) || true
   [ -n "$out" ] && printf '\nReadiness now:\n%s' "$out"
   return 0

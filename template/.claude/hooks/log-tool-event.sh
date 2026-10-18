@@ -410,7 +410,8 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
       if [ "$CURRENT_TIER" -ge 2 ]; then
         _RO=""; _RO=$("$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" 2>/dev/null) || true
         [ -n "$_RO" ] && COMPACT_NUDGE="${COMPACT_NUDGE}
-🧭 ${_RO}"
+🧭 ${_RO}
+After reconciling the registers, record coverage with compact-readiness.sh --mark. If register blockers remain, use --mark --force; add --staged-handled only for reviewed pending rows."
       fi
 
       # If FULL_CONTEXT.md is large, also hint at agent-log.sh fold (the superseded

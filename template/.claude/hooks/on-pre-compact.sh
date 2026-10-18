@@ -388,7 +388,7 @@ READY_OUT=$("$(dirname "$0")/compact-readiness.sh" ${_RS:+--session "$_RS"} 2>/d
 if [ -n "$READY_OUT" ]; then
   MSG="$MSG
 
-🧭 COMPACT READINESS (exit ${READY_RC} from .claude/hooks/compact-readiness.sh; run it yourself before a manual /compact):
+🧭 COMPACT READINESS (exit ${READY_RC} from .claude/hooks/compact-readiness.sh; reconcile [!] items, then record coverage with --mark; see --help):
 ${READY_OUT}"
 fi
 
