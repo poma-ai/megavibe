@@ -1,5 +1,6 @@
 #!/bin/bash
-# Exit 0: ready; 1: blockers; 2: invalid input or unable to check.
+# Advisory: exit 0 = no findings; 1 = NOT READY; 2 = unable to check.
+# Reports write nothing. --mark records event coverage, never queue handling.
 # Coverage is by immutable filename, never timestamp or filename ordering.
 command -v python3 >/dev/null 2>&1 || {
   echo 'compact-readiness: unable to check: python3 is required' >&2
@@ -12,7 +13,6 @@ import argparse
 import contextlib
 import datetime as dt
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -122,10 +122,7 @@ def session(requested):
         return "", "unknown"
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", sid) or sid in (".", ".."):
         fail("invalid session id")
-    # Directories and full background-state keys are authoritative identities.
-    known = {p.name for p in Path(".agent/sessions").glob("*") if p.is_dir()}
-    known.update(p.name[len(".bg-tasks."):-len(".jsonl")]
-                 for p in LOGS.glob(".bg-tasks.*.jsonl"))
+    known = identities()
     if sid not in known and len(sid) <= 12:
         matches = {s for s in known if s.startswith(sid)}
         if len(matches) > 1:
@@ -135,28 +132,50 @@ def session(requested):
     return sid, how
 
 
-def row_id(path, index, row):
-    digest = hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=True,
-                                      separators=(",", ":")).encode()).hexdigest()
-    return "%s:%d:%s" % (path.name, index, digest)
+def valid_sid(sid):
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]{1,64}", sid)) and sid not in (".", "..")
 
 
-def queue_rows(path, sid):
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    if any(not isinstance(row, dict) for row in rows):
-        fail("invalid pending row: " + str(path))
-    mine = {sid, sid[:12]}
-    handled = set()
-    for row in rows:
-        if row.get("status") == "handled-by-session" and row.get("session_id") in mine:
-            ids = row.get("handled_rows", [])
-            if not isinstance(ids, list) or any(type(i) not in (str, int) for i in ids):
-                fail("invalid handling marker: " + str(path))
-            handled.update(ids)
-    return {row_id(path, i, row): row for i, row in enumerate(rows, 1)
-            if row.get("status") == "pending" and i not in handled
-            and row_id(path, i, row) not in handled
-            and row.get("session_id", sid[:12]) in mine}
+def identities():
+    known = {p.name for p in Path(".agent/sessions").glob("*") if p.is_dir()}
+    known.update(p.name[len(".bg-tasks."):-len(".jsonl")]
+                 for p in LOGS.glob(".bg-tasks.*.jsonl"))
+    # Short queue/counter keys are aliases, not evidence of an exact identity.
+    for pattern, prefix, suffix in (("pending-decisions.*.jsonl", "pending-decisions.", ".jsonl"),
+                                     (".tool-call-counter.*", ".tool-call-counter.", "")):
+        for path in LOGS.glob(pattern):
+            key = path.name[len(prefix):]
+            if suffix:
+                key = key[:-len(suffix)]
+            if path.is_file() and not path.name.endswith(".lock") and len(key) > 12:
+                known.add(key)
+    return {s for s in known if valid_sid(s)}
+
+
+def pending_counts(sid):
+    result = []
+    peers = {s for s in identities() if s.startswith(sid[:12])}
+    for path in sorted(LOGS.glob("pending-decisions.*.jsonl")):
+        key = path.name[len("pending-decisions."):-len(".jsonl")]
+        if not valid_sid(key):
+            fail("invalid session queue filename: " + repr(path.name))
+        if not sid:
+            fail("session unknown with staged rows: pass --session")
+        if key not in (sid, sid[:12]):
+            continue
+        if any(p != sid for p in peers) and (key != sid or len(sid) <= 12):
+            fail("ambiguous legacy session queue; ownership unknown: " + str(path))
+        count = 0
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                fail("invalid pending row: " + str(path))
+            if row.get("status") == "pending":
+                if row.get("session_id", key) not in (sid, sid[:12]):
+                    fail("pending row ownership does not match queue: " + str(path))
+                count += 1
+        result.append((path, count))
+    return result
 
 
 def fold(before):
@@ -183,22 +202,17 @@ def fold(before):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check explicit register coverage.")
+    parser = argparse.ArgumentParser(description="Advisory register coverage report; never blocks compaction.", allow_abbrev=False)
     parser.add_argument("--project", default=".")
     parser.add_argument("--session")
-    parser.add_argument("--decisions-since", metavar="CHECKPOINT")
     parser.add_argument("--mark", action="store_true")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--staged-handled", nargs="+", metavar="ROW_ID")
     parser.add_argument("--hook-input", metavar="JSON_FILE", help="live hook payload; - reads stdin")
     parser.add_argument("--fold-before", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if any(value == "" for value in (args.project, args.session, args.decisions_since)):
+    if any(value == "" for value in (args.project, args.session, args.hook_input, args.fold_before)):
         parser.error("option values must not be empty")
-    if (args.force or args.staged_handled) and not args.mark:
-        parser.error("--force and --staged-handled require --mark")
-    if sum(bool(v) for v in (args.decisions_since, args.mark, args.fold_before)) > 1:
-        parser.error("probe, mark and fold are mutually exclusive")
+    if args.mark and args.fold_before:
+        parser.error("mark and fold are mutually exclusive")
     minimum = number("MEGAVIBE_READY_TASKS_MIN_EVENTS", 3)
     limit = number("MEGAVIBE_READY_ADVISORY_LIMIT", 20, 0, 1000)
     interval = max(60, min(600, number("MEGAVIBE_BG_CHECK_SECS", 300)))
@@ -208,68 +222,41 @@ def main():
     os.chdir(args.project)
     if not Path(".agent").is_dir():
         fail("no .agent/ in project")
-    if args.decisions_since:
-        covered = checkpoint(Path(args.decisions_since))
-        count = marked([n for n in events() if n not in covered])
-        print(count)
-        return int(count > 0)
     if args.fold_before:
         with Path(str(CP) + ".lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             return fold(args.fold_before)
     sid, how = session(args.session)
-    if args.staged_handled and not sid:
-        fail("--staged-handled requires --session")
-    paths = []
-    for path in LOGS.glob("pending-decisions.*.jsonl"):
-        key = path.name[len("pending-decisions."):-len(".jsonl")]
-        if sid and key in (sid, sid[:12]):
-            peers = {p.name for p in Path(".agent/sessions").glob(sid[:12] + "*") if p.is_dir()}
-            peers.update(p.name[len(".bg-tasks."):-len(".jsonl")]
-                         for p in LOGS.glob(".bg-tasks." + sid[:12] + "*.jsonl"))
-            peers.update(p.name[len(".tool-call-counter."):]
-                         for p in LOGS.glob(".tool-call-counter." + sid[:12] + "*")
-                         if not p.name.endswith(".lock") and len(p.name[len(".tool-call-counter."):]) > 12)
-            if any(p != sid for p in peers) and (key != sid or len(sid) <= 12):
-                fail("ambiguous legacy session queue: review and archive " + str(path)
-                     + "; full --session IDs cannot disambiguate its ownership (see README.md)")
-            paths.append(path)
-        elif not sid:
-            fail("session unknown with staged rows: pass --session")
     with contextlib.ExitStack() as stack:
-        # Serialize marks/folds and queue observations with the watcher's locks.
-        locks = ([Path(str(CP) + ".lock")] if args.mark else [])
-        locks += sorted(Path(str(p) + ".lock") for p in paths)
-        for path in locks:
-            fcntl.flock(stack.enter_context(path.open("a")), fcntl.LOCK_EX)
+        # Only coverage writers take a lock. Reports never create lock files.
+        if args.mark:
+            lock = stack.enter_context(Path(str(CP) + ".lock").open("a"))
+            fcntl.flock(lock, fcntl.LOCK_EX)
         covered = checkpoint(CP)
         names = events()
+        if args.mark:
+            # The caller asserts review; this is not a readiness certificate.
+            # Fold alone prunes prior identities, under the same lock.
+            save_checkpoint(covered | set(names))
+            covered |= set(names)
+            print("Coverage recorded for %d observed events; readiness is reported separately." % len(names))
         newer = [n for n in names if n not in covered]
         count = marked(newer)
-        blocks, hard_blocks, info, advisory = [], [], [], []
+        blocks, info, advisory = [], [], []
         info.append("%d uncovered events; %d marked-decision events" % (len(newer), count))
         if not Path(".agent/DECISIONS.md").is_file():
-            hard_blocks.append("DECISIONS.md is missing")
+            blocks.append("DECISIONS.md is missing")
         elif count:
             blocks.append("DECISIONS.md: reconcile marked decisions, including their reasons")
         if not Path(".agent/TASKS.md").is_file():
-            hard_blocks.append("TASKS.md is missing")
+            blocks.append("TASKS.md is missing")
         elif count or len(newer) >= minimum:
             blocks.append("TASKS.md: reconcile item status and blockers")
-        pending = {p: queue_rows(p, sid) for p in paths}
-        ids = {i for rows in pending.values() for i in rows}
-        receipt = LOGS / (".readiness-shown." + sid + ".json")
-        selected = set(args.staged_handled or [])
-        if selected:
-            shown = set(json.loads(receipt.read_text())) if receipt.exists() else set()
-            if not selected <= shown or not selected <= ids:
-                fail("staged row ids were not shown to this session or have changed; run the check again")
-        remaining = ids - selected
-        if remaining:
-            hard_blocks.append("%d pending decisions for this session; review ROW_IDs below, then use "
-                               "--mark --staged-handled ROW_ID ..." % len(remaining))
-        info.extend("ROW_ID " + i for i in sorted(ids))
-        info.append("%d pending decisions for this session" % len(ids))
+        pending = pending_counts(sid)
+        for path, count_pending in pending:
+            if count_pending:
+                blocks.append("%d pending decisions for this session: %s" % (count_pending, path))
+        info.append("%d pending decisions for this session" % sum(n for _, n in pending))
         bg = LOGS / (".bg-tasks." + sid + ".jsonl")
         rows = [json.loads(line) for line in bg.read_text().splitlines()] if sid and bg.exists() else []
         for row in rows:
@@ -316,7 +303,7 @@ def main():
                 watcher = any(names_task(live[ident].get("command", ""), other)
                               for key, other in base.items() if key != ident)
                 if not covered_task and not watcher and time.time() - row["started"] >= interval:
-                    hard_blocks.append("background %s task %s found without a heartbeat; arm a Monitor or stop it"
+                    blocks.append("background %s task %s found without a heartbeat; arm a Monitor or stop it"
                                        % (row.get("kind", "?"), ident))
         wc = Path(".agent/sessions") / sid / "WORKING_CONTEXT.md"
         if sid and wc.is_file() and wc.stat().st_size:
@@ -325,7 +312,7 @@ def main():
                         (wc, age // 60, "required" if age > 3600 else "optional"))
         else:
             info.append("no WORKING_CONTEXT for session " + (sid or "unknown"))
-        result = subprocess.run(["git", "status", "--porcelain"], stdout=subprocess.PIPE,
+        result = subprocess.run(["git", "status", "--porcelain"], stdout=subprocess.PIPE, env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"),
                                 stderr=subprocess.DEVNULL, text=True)
         info.append("uncommitted work: %d paths (survives compaction)" % len(result.stdout.splitlines())
                     if result.returncode == 0 else "uncommitted work: not a git repository")
@@ -338,54 +325,22 @@ def main():
                     total_advisory += 1
                     if len(advisory) < limit:
                         advisory.append("advisory %s: %s" % (name, line))
-        blocks += hard_blocks
-        print("compact-readiness: %s (session %s [%s])" %
+        print("compact-readiness: %s (session %s [%s]; advisory only)" %
               ("NOT READY" if blocks else "READY", sid or "unknown", how))
-        for line in blocks:
-            print("- [!] " + line)
-        for line in info:
-            print("- [i] " + line)
-        for line in advisory:
-            print(("- [ADVISORY] " + line)[:200])
+        for label, lines, cap in (("!", blocks, 20), ("i", info, 20),
+                                  ("ADVISORY", advisory, limit)):
+            for line in lines[:cap]:
+                print(("- [%s] %s" % (label, " ".join(line.split())))[:200])
+            if len(lines) > cap:
+                print("- [%s] and %d more" % (label, len(lines) - cap))
         if total_advisory > limit:
             print("- [ADVISORY] and %d more" % (total_advisory - limit))
-        if not args.mark:
-            if sid and ids:
-                LOGS.mkdir(exist_ok=True)
-                atomic(receipt, json.dumps(sorted(ids)))
-            return int(bool(blocks))
-        # The exact observed identities alone may be acknowledged, even if a
-        # watcher appended more rows while this mark waited for the queue lock.
-        for path, rows in pending.items():
-            reviewed = sorted(selected.intersection(rows))
-            if reviewed:
-                with path.open("a") as stream:
-                    stream.write(json.dumps(dict(status="handled-by-session", session_id=sid,
-                                                 handled_rows=reviewed)) + "\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                print("Appended status: handled-by-session for %d rows in %s" % (len(reviewed), path))
-        if hard_blocks:
-            print("Checkpoint unchanged: --force overrides register reconciliation only; "
-                  "it cannot override missing files, live heartbeat blockers or pending rows.")
-            return 1
-        if blocks and not args.force:
-            print("Checkpoint unchanged: reconcile registers, then use --mark --force.")
-            return 1
-        if events() != names:
-            fail("events changed during --mark; retry after reviewing the new events")
-        snapshot = Path(".agent/snapshot.md")
-        cutoffs = re.findall(r"^<!-- registers-fold-cutoff: ([0-9]{8}) -->$",
-                             snapshot.read_text() if snapshot.exists() else "", re.M)
-        cutoff = max(cutoffs, default="")
-        save_checkpoint({n for n in covered if n[:8] >= cutoff} | set(names))
-        print("Checkpoint marked: " + max(names, default="(no events)"))
-        return 0
+        return int(bool(blocks))
 
 
 try:
     sys.exit(main())
 except (OSError, ValueError, TypeError, KeyError) as error:
-    print("compact-readiness: unable to check: " + str(error), file=sys.stderr)
+    print(("compact-readiness: unable to check: " + " ".join(str(error).split()))[:200], file=sys.stderr)
     sys.exit(2)
 PY

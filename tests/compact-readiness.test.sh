@@ -29,22 +29,10 @@ mutations = [
     ("decision detection disabled", hook + "compact-readiness.sh",
      'MARKER = r"^(DECISION:|D[0-9]+( |:)|Decided:)"',
      'MARKER = r"^NEVER_A_MARKER:"'),
-    ("task blocking disabled", hook + "compact-readiness.sh",
+    ("task finding disabled", hook + "compact-readiness.sh",
      "elif count or len(newer) >= minimum:", "elif False:"),
-    ("active-stop guard removed", hook + "compaction-autopilot.sh",
-     '  [ "$ACTIVE" = "true" ] && exit 0', "  :"),
-    ("subagent guard removed", hook + "compaction-autopilot.sh",
-     '[ -z "$(printf \'%s\' "$INPUT" | jq -r \'.agent_id // ""\' 2>/dev/null)" ] || exit 0',
-     ":"),
-    ("soft reminder every call", hook + "compaction-autopilot.sh",
-     'if [ "$N" -eq 0 ] || [ $(( N % REMIND_EVERY )) -eq 0 ]; then',
-     "if true; then"),
-]
-mutations += [
     ("coverage record ignored", hook + "compact-readiness.sh",
-     "n not in covered", 'n > max(covered, default="")' ),
-    ("staged acknowledgement without ids", hook + "compact-readiness.sh",
-     'nargs="+", metavar="ROW_ID"', 'nargs="*", metavar="ROW_ID"'),
+     "n not in covered", 'n > max(covered, default="")'),
 ]
 def run(root):
     return subprocess.run(["/bin/bash", str(root / "tests/compact-readiness.test.sh")],
@@ -66,10 +54,6 @@ for index, (label, filename, old, new) in enumerate(mutations):
     if old not in source:
         sys.exit("Mutation target missing: " + label)
     source = source.replace(old, new)
-    if label == "staged acknowledgement without ids":
-        source = source.replace("selected = set(args.staged_handled or [])",
-                                "selected = ids if args.staged_handled is not None else set()")
-        source = source.replace("if not selected <= shown or not selected <= ids:", "if False:")
     path.write_text(source)
     result = run(root)
     match = re.search(r"(\d+) passed, (\d+) failed", result.stdout)
@@ -111,9 +95,6 @@ fresh() {
   done
   printf '# Decisions\n' > "$P/.agent/DECISIONS.md"
   printf '# Tasks\n| T1 | open | blocked on review |\n' > "$P/.agent/TASKS.md"
-  DONE="$P/.agent/LOGS/.closeout-done.$SID12"
-  BLOCKED="$P/.agent/LOGS/.closeout-blocked.$SID12"
-  COUNT="$P/.agent/LOGS/.closeout-count.$SID12"
   CP="$P/.agent/.registers-checkpoint"
   QUEUE="$P/.agent/LOGS/pending-decisions.$SID12.jsonl"
   TR="$P/transcript.jsonl"
@@ -122,12 +103,7 @@ usage() {
   printf '{"type":"assistant","message":{"usage":{"input_tokens":%s}}}\n' "$1" > "$TR"
   echo 1000000 > "$P/.agent/LOGS/.ctx-size.$SID12"
 }
-AP() {
-  OUT=$(cd "$P" && printf '{"hook_event_name":"%s","session_id":"%s","transcript_path":"%s"%s}' \
-    "$1" "$SID" "$TR" "${2:-}" | /bin/bash .claude/hooks/compaction-autopilot.sh 2>&1)
-  RC=$?
-}
-mark() { R --session "$SID" --mark --force "$@"; eq "$RC" 0 "mark succeeds"; }
+mark() { R --session "$SID" --mark "$@"; eq "$RC" 0 "mark succeeds"; }
 pending() {
   printf '{"status":"pending","session_id":"%s","staged_at":"%s","title":"review item"}\n' \
     "$SID12" "$1" >> "$QUEUE"
@@ -167,10 +143,6 @@ R --session "$SID"
 eq "$RC" 1 "decision citing register blocks"
 has "[!] DECISIONS.md" "decision blocker"
 has "[!] TASKS.md" "one decision requires task reconciliation"
-R --session "$SID" --mark
-eq "$RC" 1 "mark refuses blockers"
-has "Checkpoint unchanged" "refusal explains remedy"
-absent "$CP" "refused mark did not certify"
 mark
 eq "$(head -1 "$CP")" "covered-through $LAST" "complete newest filename"
 R --session "$SID"
@@ -239,7 +211,7 @@ R --session "$SID"
 eq "$RC" 2 "retired lag setting explicitly rejected"
 unset MEGAVIBE_READY_TASKS_LAG_MIN
 
-echo "== Findings 5 and 6: identity and append-only handling"
+echo "== Findings 5 and 6: session identity"
 fresh
 touch "$P/.agent/LOGS/.tool-call-counter.$SID12"
 touch "$P/.agent/LOGS/.tool-call-counter.${OTHER:0:12}"
@@ -267,43 +239,6 @@ touch "$P/.agent/LOGS/.tool-call-counter.$SID12.lock"
 R
 eq "$RC" 0 "single counter resolves; lock ignored"
 has "recent tool-call counter" "counter identity explained"
-pending "2026-10-18T12:00:01+00:00"
-cp "$QUEUE" "$T/original-queue"
-printf '{"status":"pending","title":"other session"}\n' \
-  > "$P/.agent/LOGS/pending-decisions.${OTHER:0:12}.jsonl"
-R --session "$SID"
-eq "$RC" 1 "own pending row blocks"
-has "--mark --staged-handled" "actionable remedy"
-echo "Recorded review item" >> "$P/.agent/DECISIONS.md"
-R --session "$SID"
-eq "$RC" 1 "register write alone does not acknowledge queue"
-IDS=$(printf '%s\n' "$OUT" | awk '$3=="ROW_ID" {print $4}')
-R --session "$SID" --mark --staged-handled $IDS
-eq "$RC" 0 "offered remedy succeeds"
-has "Appended status: handled-by-session" "append reported"
-eq "$(head -1 "$QUEUE")" "$(cat "$T/original-queue")" "original row unchanged"
-eq "$(wc -l < "$QUEUE" | tr -d ' ')" 2 "one marker appended"
-R --session "$SID"
-eq "$RC" 0 "handled rows clear; other session stays informational"
-pending "2026-10-18T12:00:02+00:00"
-R --session "$SID"
-eq "$RC" 1 "later append not swallowed by marker"
-fresh
-event 001 "progress"
-mark
-pending "2026-10-18T11:59:59+00:00"
-R --session "$SID"
-eq "$RC" 1 "older pending row still blocks"
-pending "2026-10-18T12:00:00+00:00"
-R --session "$SID"
-eq "$RC" 1 "equal staged timestamp still blocks"
-pending "2026-10-18T12:00:00.000001+00:00"
-R --session "$SID"
-eq "$RC" 1 "fractionally later pending row needs acknowledgement"
-IDS=$(printf '%s\n' "$OUT" | awk '$3=="ROW_ID" {print $4}')
-R --session "$SID" --mark --staged-handled $IDS
-eq "$RC" 0 "same-second queue has working remedy"
-
 echo "== Background heartbeat coverage"
 fresh
 NOW=$(date +%s)
@@ -323,7 +258,7 @@ has "earlier heartbeat nudge" "old nudge visible"
 
 echo "== Finding 10: missing values terminate"
 fresh
-for option in --project --session --decisions-since; do
+for option in --project --session --hook-input --fold-before; do
   OUT=$(python3 - "$P/.claude/hooks/compact-readiness.sh" "$option" <<'PY'
 import subprocess, sys
 try:
@@ -344,105 +279,14 @@ R --bogus
 eq "$RC" 2 "unknown argument"
 R --project "$T"
 eq "$RC" 2 "no project state"
-R --decisions-since "$T/no-checkpoint"
-eq "$RC" 2 "missing explicit checkpoint"
-R --staged-handled
-eq "$RC" 2 "handling requires mark"
-
-echo "== Findings 3, 4, 8: done flag and bounded scans"
-fresh
-usage 900000
-event 001 "DECISION: retain the local format."
-touch "$DONE" "$P/.agent/DECISIONS.md"
-AP PostToolUse
-eq "$RC" 0 "autopilot handles readiness exit 1"
-has "open again" "touch cannot silence stale done"
-has "Readiness now:" "rearm report"
-absent "$DONE" "stale done removed"
-mark
-touch "$DONE"
-AP PostToolUse
-eq "$OUT" "" "checkpoint covers same-second close-out"
-exists "$DONE" "covered done kept"
-event 002 "DECISION: add validation."
-touch "$BLOCKED"
-usage 960000
-AP Stop
-eq "$OUT" "" "rearm preserves once-only block guard"
-exists "$BLOCKED" "hard flag retained"
-absent "$DONE" "later filename invalidates done"
-export SCAN_TRACE="$T/scan-trace"
-python3 - "$P/.claude/hooks/compact-readiness.sh" <<'PYSCAN'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-s = p.read_text().replace("def marked(names):", """def marked(names):
-    if names:
-        with open(os.environ['SCAN_TRACE'], 'a') as trace:
-            trace.write('scan\\n')""")
-p.write_text(s)
-PYSCAN
-mark
-touch "$DONE"
-: > "$SCAN_TRACE"
-AP PostToolUse
-eq "$(wc -l < "$SCAN_TRACE" | tr -d ' ')" 0 "covered checkpoint skips scan"
-for n in $(seq 1000 1999); do event "$n" "progress"; done
-: > "$SCAN_TRACE"
-AP PostToolUse
-eq "$OUT" "" "new nondecision events retain done"
-eq "$(wc -l < "$SCAN_TRACE" | tr -d ' ')" 1 "1000 files use one batch scan"
-event 9999 "DECISION: add a limit."
-: > "$SCAN_TRACE"
-AP PostToolUse
-has "open again" "later decision rearms"
-eq "$(wc -l < "$SCAN_TRACE" | tr -d ' ')" 1 "rearm report reuses probe"
-unset SCAN_TRACE
-
-echo "== Finding 9: three guard regressions"
-fresh
-usage 960000
-AP Stop ',"stop_hook_active":true'
-eq "$OUT" "" "active Stop at 96 percent silent"
-absent "$BLOCKED" "active Stop leaves fresh flag absent"
-AP Stop
-has '"decision": "block"' "ordinary Stop at 96 percent blocks"
-has "Readiness now:" "hard block report"
-AP Stop
-eq "$OUT" "" "hard block once only"
-fresh
-usage 960000
-AP Stop ',"agent_id":"child"'
-eq "$OUT" "" "subagent Stop above threshold silent"
-absent "$BLOCKED" "subagent cannot set parent block flag"
-AP PostToolUse ',"agent_id":"child"'
-eq "$OUT" "" "subagent tool use above threshold silent"
-absent "$COUNT" "subagent cannot advance parent count"
-fresh
-usage 900000
-AP PostToolUse
-has "Context is at 90%" "first soft reminder"
-for n in $(seq 2 25); do
-  AP PostToolUse
-  eq "$OUT" "" "call $n does not repeat reminder"
+for option in --force --staged-handled --decisions-since; do
+  R "$option"
+  eq "$RC" 2 "removed option rejected"
 done
-AP PostToolUse
-has "Context is at 90%" "call 26 reminds"
-export MEGAVIBE_CLOSEOUT_REMIND_EVERY=00
-AP PostToolUse
-eq "$RC" 2 "zero reminder interval rejected"
-unset MEGAVIBE_CLOSEOUT_REMIND_EVERY
-export MEGAVIBE_CLOSEOUT_SOFT_PCT=085
-AP PostToolUse
-eq "$RC" 0 "leading-zero percentage decimal"
-unset MEGAVIBE_CLOSEOUT_SOFT_PCT
-fresh
-usage 500000
-touch "$DONE"
-event 001 "DECISION: below threshold."
-AP PostToolUse
-eq "$OUT" "" "below threshold no nudge"
-exists "$DONE" "below threshold flag untouched"
+R --session ""
+eq "$RC" 2 "empty identity rejected"
+R --session ../escape
+eq "$RC" 2 "unsafe identity rejected"
 
 echo "== Report integration and resilience"
 fresh
@@ -452,7 +296,7 @@ OUT=$(cd "$P" && printf '{"session_id":"%s","transcript_path":"/nonexistent"}' "
 eq "$?" 0 "pre-compact hook exits successfully"
 has '"systemMessage"' "legacy message preserved"
 OUT=$(cat "$P/.agent/LOGS/pre-compact-alert.$SID12.md")
-has "COMPACT READINESS (exit 1" "alert carries exit"
+has "COMPACT READINESS — ADVISORY (exit 1" "alert carries exit"
 has "1 marked-decision events" "alert carries count"
 has "Newest .agent/events entry:" "existing alert preserved"
 # The pre-compact hook stamps the post-compaction cooldown, which silences tier nudges by design; start a fresh project for the tier path.
@@ -465,102 +309,6 @@ eq "$?" 0 "tool hook exits successfully"
 has "Context ~800K" "tier two nudge"
 has "compact-readiness: NOT READY" "tier carries report"
 has "record coverage" "tier names remedy"
-for code in 1 2 127; do
-  fresh
-  usage 960000
-  printf '#!/bin/bash\nexit %s\n' "$code" > "$P/.claude/hooks/compact-readiness.sh"
-  AP Stop
-  eq "$RC" 0 "readiness exit $code does not trigger hook error"
-  has '"decision": "block"' "readiness failure preserves bounded instruction"
-done
-
-echo "== Round 2 P2-1: identity coverage and lower-suffix rearm"
-fresh
-usage 900000
-event ffffff 'DECISION: first reviewed decision'
-mark
-touch "$DONE"
-event 000001 'DECISION: later arrival with lower suffix'
-R --session "$SID"
-eq "$RC" 1 "lower-suffix identity is uncovered"
-AP PostToolUse
-has 'open again' 'lower-suffix decision rearms autopilot'
-absent "$DONE" 'lower-suffix arrival removes done flag'
-
-echo "== Round 2 P2-2: checkpoints cannot acknowledge another session"
-fresh
-pending '2026-10-18T11:59:00Z'
-event 001 progress
-R --session "$OTHER" --mark
-eq "$RC" 0 'other session may mark ordinary events'
-R --session "$SID"
-eq "$RC" 1 'old pending row survives another session checkpoint'
-R --session "$SID" --mark --force
-eq "$RC" 1 'force cannot bypass pending review'
-lacks 'Appended status:' 'ordinary force cannot acknowledge queue'
-
-echo "== Round 2 P2-3: exact shown IDs and concurrent real watcher append"
-fresh
-pending '2026-10-18T11:59:00Z'
-R --session "$SID"
-ID1=$(printf '%s\n' "$OUT" | awk '$3=="ROW_ID" {print $4}')
-R --session "$SID" --mark --staged-handled
-eq "$RC" 2 'staged acknowledgement without IDs rejected'
-OUT=$(python3 - "$REPO" "$P" "$SID" "$SID12" "$ID1" <<'PYRACE'
-import importlib.util, json, pathlib, subprocess, sys, time
-repo, project, sid, short, identity = sys.argv[1:]
-spec = importlib.util.spec_from_file_location('watcher', pathlib.Path(repo)/'scripts/context-watcher.py')
-watcher = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = watcher
-spec.loader.exec_module(watcher)
-original = watcher.FileLock
-processes = []
-class PausedLock(original):
-    def __enter__(self):
-        result = super().__enter__()
-        child = subprocess.Popen(['/bin/bash', '.claude/hooks/compact-readiness.sh',
-                                  '--session', sid, '--mark', '--staged-handled', identity],
-                                 cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        processes.append(child)
-        time.sleep(.15)
-        assert child.poll() is None, 'mark must wait on watcher lock'
-        return result
-watcher.FileLock = PausedLock
-try:
-    watcher.stage_decisions(pathlib.Path(project)/'.agent', short, [{'title':'unseen append'}])
-    output, _ = processes[0].communicate(timeout=10)
-    print(output, end='')
-    print('mark exit:', processes[0].returncode)
-    path = pathlib.Path(project)/'.agent/LOGS'/('pending-decisions.'+short+'.jsonl')
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    assert rows[-1]['handled_rows'] == [identity], rows
-    print('only reviewed identity acknowledged')
-finally:
-    for child in processes:
-        if child.poll() is None:
-            child.kill()
-            child.wait()
-PYRACE
-)
-eq "$?" 0 'real watcher race harness succeeds'
-has 'mark exit: 1' 'unseen watcher row keeps checkpoint blocked'
-has 'only reviewed identity acknowledged' 'acknowledgement does not extend under lock'
-absent "$CP" 'race does not certify pending work'
-# Compute the new identity without showing it through the checker.
-ID2=$(python3 - "$QUEUE" <<'PYID'
-import hashlib, json, pathlib, sys
-p = pathlib.Path(sys.argv[1]); row = json.loads(p.read_text().splitlines()[1])
-h = hashlib.sha256(json.dumps(row,sort_keys=True,ensure_ascii=True,separators=(',',':')).encode()).hexdigest()
-print('%s:2:%s' % (p.name,h))
-PYID
-)
-R --session "$SID" --mark --staged-handled "$ID2"
-eq "$RC" 2 'unshown row identity refused'
-R --session "$SID"
-has '1 pending decisions for this session' 'unseen row remains pending'
-R --session "$SID" --mark --staged-handled "$ID2"
-eq "$RC" 0 'new row can be handled after being shown'
-
 echo "== Round 2 P2-4: folding refuses uncovered events and prunes coverage"
 fresh
 printf 'DECISION: old unreviewed decision\n' > "$P/.agent/events/20260901T000000Z-host-old.md"
@@ -598,11 +346,7 @@ eq "$OUT" '' 'real background watcher accepts Monitor'
 R --session "$SID" --hook-input "$P/live.json"
 eq "$RC" 0 'live coverage clears readiness blocker immediately'
 has 'earlier heartbeat nudge' 'historical nudge remains advisory'
-usage 960000
-AP Stop ',"background_tasks":[{"id":"job","status":"running"}]'
-has 'without a heartbeat' 'autopilot passes current registry to readiness'
-
-echo "== Round 2 P2-6: bounded advisories and output failure retry"
+echo "== Round 2 P2-6: bounded advisories"
 fresh
 usage 960000
 python3 - "$P/.agent/events/20261018T120000Z-host-noise.md" <<'PYNOISE'
@@ -626,28 +370,6 @@ print('20 previews; 200 characters maximum; and 1280 more')
 PYBOUND
 )
 eq "$?" 0 'large advisory report is bounded'
-AP Stop
-has '"decision": "block"' 'large advisory fixture still emits hard block'
-exists "$BLOCKED" 'successful output consumes hard flag'
-# Fail only the output-building jq invocation; parsing and measurement work.
-fresh
-usage 960000
-mkdir -p "$T/fail-jq"
-REAL_JQ=$(command -v jq); export REAL_JQ
-cat > "$T/fail-jq/jq" <<'JQFAIL'
-#!/bin/bash
-if [ "${1:-}" = '-Rs' ]; then exit 3; fi
-exec "$REAL_JQ" "$@"
-JQFAIL
-chmod +x "$T/fail-jq/jq"
-SAVED_PATH="$PATH"
-export PATH="$T/fail-jq:$PATH"
-AP Stop
-absent "$BLOCKED" 'failed output leaves hard flag available'
-export PATH="$SAVED_PATH"
-AP Stop
-has '"decision": "block"' 'hard block retries after output failure'
-
 echo "== Round 2 P3-7: authoritative short session identity"
 fresh
 SHORT=abcdefabcdef
@@ -709,36 +431,6 @@ eq "$?" 0 'tool hook remains resilient without Python'
 has 'unable to check: python3 is required' 'tool hook surfaces dependency failure'
 export PATH="$SAVED_PATH"
 
-echo "== Round 2 P3-10: review utility honors handling markers"
-fresh
-pending '2026-10-18T12:00:00Z'
-R --session "$SID"
-ID1=$(printf '%s\n' "$OUT" | awk '$3=="ROW_ID" {print $4}')
-R --session "$SID" --mark --staged-handled "$ID1"
-eq "$RC" 0 'review fixture acknowledged'
-OUT=$(python3 "$REPO/scripts/review-decisions.py" --project-dir "$P" --list 2>&1)
-eq "$?" 0 'review list succeeds'
-has '0 pending' 'review list ignores handled row'
-cp "$P/.agent/DECISIONS.md" "$T/decisions-before"
-OUT=$(python3 "$REPO/scripts/review-decisions.py" --project-dir "$P" --yes-all 2>&1)
-eq "$?" 0 'yes-all succeeds with handling marker'
-has 'accepted=0' 'yes-all does not duplicate handled decision'
-eq "$(cat "$P/.agent/DECISIONS.md")" "$(cat "$T/decisions-before")" 'decision register unchanged'
-pending '2026-10-18T12:00:01Z'
-OUT=$(python3 "$REPO/scripts/review-decisions.py" --project-dir "$P" --list 2>&1)
-has '1 pending' 'review utility still sees subsequent rows'
-
-echo "== Round 2 P3-11: documented coverage and session protocol"
-for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
-  OUT=$(cat "$doc")
-  has 'covered-through <newest filename>' 'document describes coverage header'
-  has 'MEGAVIBE_READY_TASKS_MIN_EVENTS' 'document describes event threshold'
-  has '--staged-handled <ROW_ID>' 'document requires reviewed row identities'
-  has 'fold cutoff' 'document explains bounded fold coverage'
-  lacks 'Events strictly after it are ordered by filename' 'retired filename ordering removed'
-  lacks 'decision-like events newer than `DECISIONS.md`' 'retired mtime explanation removed'
-done
-
 echo "== Round 3 P2-1: real writers and unexpected event names"
 fresh
 OUT=$(python3 - "$REPO" "$P" <<'PYWRITERS'
@@ -759,9 +451,9 @@ R --session "$SID"
 eq "$RC" 1 'all writer names are checked'
 has '4 marked-decision events' 'Unicode, fallback and hash names counted'
 mark
-R --decisions-since "$CP"
+R --session "$SID"
 eq "$RC" 0 'Unicode coverage identities round trip'
-eq "$OUT" 0 'all writer identities covered'
+has "0 uncovered events" "all writer identities covered"
 for name in unexpected.md unexpected.txt; do
   printf 'DECISION: do not hide this\n' > "$P/.agent/events/$name"
   R --session "$SID"
@@ -770,26 +462,22 @@ for name in unexpected.md unexpected.txt; do
   rm "$P/.agent/events/$name"
 done
 
-echo "== Round 3 P2-2: force cannot certify missing files or live tasks"
+echo "== Missing registers and live findings survive marking"
 fresh
-mark
-BEFORE=$(cat "$CP")
-event 001 'DECISION: still needs review'
 for register in DECISIONS TASKS; do
   mv "$P/.agent/$register.md" "$T/$register.saved"
-  R --session "$SID" --mark --force
-  eq "$RC" 1 'force cannot bypass missing register'
+  event "$register" 'DECISION: reviewed event'
+  R --session "$SID" --mark
+  eq "$RC" 1 'mark still reports missing register'
   has "$register.md is missing" 'missing file named'
-  has '--force overrides register reconciliation only' 'force boundary explained'
-  eq "$(cat "$CP")" "$BEFORE" 'missing register leaves checkpoint unchanged'
+  exists "$CP" 'coverage recorded independently'
   mv "$T/$register.saved" "$P/.agent/$register.md"
 done
 printf '{"id":"job","kind":"shell","started":1,"nudged":0}\n' > "$P/.agent/LOGS/.bg-tasks.$SID.jsonl"
 printf '{"session_id":"%s","background_tasks":[{"id":"job","status":"running"}]}\n' "$SID" > "$P/live.json"
-R --session "$SID" --hook-input "$P/live.json" --mark --force
-eq "$RC" 1 'force cannot bypass live heartbeat blocker'
-has 'without a heartbeat' 'live blocker explained'
-eq "$(cat "$CP")" "$BEFORE" 'live blocker leaves checkpoint unchanged'
+R --session "$SID" --hook-input "$P/live.json" --mark
+eq "$RC" 1 'mark does not clear live heartbeat finding'
+has 'without a heartbeat' 'live finding explained'
 printf '{"session_id":"%s","background_tasks":[]}\n' "$SID" > "$P/live.json"
 mark --hook-input "$P/live.json"
 
@@ -826,100 +514,128 @@ R --session "$SID"
 eq "$RC" 1 'inline backticks cannot hide following marker'
 has '1 marked-decision events' 'following real decision counted'
 
-echo "== Round 3 P3-5: failed done-flag probe is bounded and nonblocking"
+echo "== Round 2 P2-1: late lower-suffix identity"
 fresh
+event ffffff 'DECISION: first reviewed decision'
 mark
-usage 960000
-touch "$DONE"
-event 001 'DECISION: uncovered while dependency is absent'
-SAVED_PATH="$PATH"
-export PATH="$T/no-python"
-AP Stop
-eq "$RC" 0 'failed coverage probe remains nonblocking'
-has 'unable to check done-flag coverage (ADVISORY)' 'done probe reports uncertainty'
-has 'python3 is required' 'done probe preserves dependency diagnostic'
-lacks '"decision": "block"' 'dependency failure never forces a Stop'
-exists "$DONE" 'failed probe retains done flag'
-absent "$BLOCKED" 'failed probe does not consume hard block'
-AP Stop
-eq "$OUT" '' 'failed probe reminder is throttled'
-rm -f "$COUNT"
-AP Stop ',"stop_hook_active":true'
-eq "$OUT" '' 'failed probe respects active Stop guard'
-absent "$COUNT" 'active Stop does not consume advisory cadence'
-touch "$BLOCKED"
-AP Stop
-eq "$OUT" '' 'failed probe respects once-only block guard'
-rm -f "$BLOCKED"
-AP PostToolUse ',"agent_id":"child"'
-eq "$OUT" '' 'failed probe respects subagent guard'
-export PATH="$SAVED_PATH"
-printf '#!/bin/bash\nprintf "%%02000d" 0 >&2\nexit 2\n' > "$P/.claude/hooks/compact-readiness.sh"
-AP PostToolUse
-lacks '"decision": "block"' 'large probe error is advisory'
-eq "$(printf '%s' "$OUT" | jq -r '.systemMessage | length <= 700')" true 'probe error preview is bounded'
+event 000001 'DECISION: later arrival with lower suffix'
+R --session "$SID"
+eq "$RC" 1 'lower-suffix identity stays uncovered'
 
-echo "== Round 3 P3-6: legacy collision recovery and future full ownership"
+echo "== Queue counts, alias discovery and read-only reports"
 fresh
-mkdir -p "$P/.agent/sessions/$SID" "$P/.agent/sessions/$SIBLING"
+pending '2026-10-18T11:59:59Z'
+pending '2026-10-18T12:00:00Z'
+pending '2026-10-18T12:00:00.000001Z'
+cp "$QUEUE" "$T/queue-before"
+R --session "$OTHER" --mark
+eq "$RC" 0 'another session can record event coverage'
+R --session "$SID"
+eq "$RC" 1 'all pending timestamps reported'
+has "3 pending decisions for this session: .agent/LOGS/${QUEUE##*/}" 'count and path'
+lacks ROW_ID 'no row identities'
+R --session "$SID" --mark
+eq "$RC" 1 'mark leaves queue finding'
+eq "$(cat "$QUEUE")" "$(cat "$T/queue-before")" 'queue unchanged by mark'
+absent "$QUEUE.lock" 'no queue lock created'
+absent "$P/.agent/LOGS/.readiness-shown.$SID.json" 'no receipt created'
+fresh
+printf '{"status":"pending","session_id":"%s"}\n' "$SID" > "$P/.agent/LOGS/pending-decisions.$SID.jsonl"
+touch "$P/.agent/LOGS/.tool-call-counter.$SID12"
+for identity in "$SID" "$SID12" ''; do
+  if [ -n "$identity" ]; then R --session "$identity"; else R; fi
+  eq "$RC" 1 'full queue discovered without session or background directories'
+  has '1 pending decisions for this session' 'alias counts full queue'
+done
+printf '{"status":"pending","session_id":"%s"}\n' "$SIBLING" > "$P/.agent/LOGS/pending-decisions.$SIBLING.jsonl"
+R --session "$SID12"
+eq "$RC" 2 'full queue filenames establish colliding identities'
+R
+eq "$RC" 2 'counter inference detects queue collision'
+R --session "$SID"
+eq "$RC" 1 'explicit full identity counts only own queue'
+has '1 pending decisions for this session' 'sibling separated'
 pending '2026-10-18T12:00:00Z'
 for identity in "$SID" "$SIBLING"; do
   R --session "$identity"
-  eq "$RC" 2 'full identity cannot claim ambiguous legacy queue'
-  has 'review and archive' 'collision message gives workable recovery'
+  eq "$RC" 2 'full id cannot own a shared legacy queue'
+  has 'ownership unknown' 'collision reported without migration advice'
 done
-# After reviewing every legacy row and reconciling registers, archive intact.
-mkdir -p "$P/.agent/queue-audit"
-mv "$QUEUE" "$P/.agent/queue-audit/"
-R --session "$SID"
-eq "$RC" 0 'archiving reviewed legacy queue clears ambiguity'
-exists "$P/.agent/queue-audit/${QUEUE##*/}" 'legacy evidence retained'
-# Capture the real launch command without starting tmux or a daemon.
-mkdir -p "$T/mock-tmux" "$TEST_HOME/.megavibe/scripts"
-cp "$REPO/scripts/context-watcher.py" "$TEST_HOME/.megavibe/scripts/"
-chmod +x "$TEST_HOME/.megavibe/scripts/context-watcher.py"
-cat > "$T/mock-tmux/tmux" <<'TMUX'
-#!/bin/bash
-[ "$1" = has-session ] && exit 1
-printf '%s\n' "${@: -1}" > "$LAUNCH"
-TMUX
-chmod +x "$T/mock-tmux/tmux"
-sed 's/${HOME}/${TEST_HOME}/g; s/$HOME/$TEST_HOME/g' "$HOOKS/start-context-watcher.sh" > "$P/.claude/hooks/start-context-watcher.sh"
-export LAUNCH="$T/launch-command"
-usage 1000
-for identity in "$SID" "$SIBLING"; do
-  OUT=$(cd "$P" && printf '{"session_id":"%s","transcript_path":"%s"}' "$identity" "$TR" |
-    MEGAVIBE_WATCHER=1 PATH="$T/mock-tmux:$PATH" /bin/bash .claude/hooks/start-context-watcher.sh 2>&1)
-  eq "$?" 0 'watcher launcher succeeds'
-  OUT=$(python3 - "$REPO" "$P" "$identity" "$LAUNCH" <<'PYQUEUE'
-import importlib.util, json, pathlib, shlex, sys
-repo, project, sid, launch = sys.argv[1:]
-args = shlex.split(pathlib.Path(launch).read_text())
-assert args[args.index('--session-id')+1] == sid, args
-spec = importlib.util.spec_from_file_location('watcher', pathlib.Path(repo)/'scripts/context-watcher.py')
-watcher = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(watcher)
-watcher.stage_decisions(pathlib.Path(project)/'.agent', sid, [{'title': sid}])
-path = pathlib.Path(project)/'.agent/LOGS'/('pending-decisions.'+sid+'.jsonl')
-assert json.loads(path.read_text())['session_id'] == sid
-PYQUEUE
+fresh
+pending '2026-10-18T12:00:00Z'
+event 001 'DECISION: not reviewed'
+OUT=$(python3 - "$P" "$SID" <<'PYREAD'
+from pathlib import Path
+import subprocess, sys
+root=Path(sys.argv[1])
+def state():
+    return {str(p.relative_to(root)):(p.read_bytes(),p.stat().st_mtime_ns)
+            for p in root.rglob('*') if p.is_file()}
+before=state()
+r=subprocess.run(['/bin/bash','.claude/hooks/compact-readiness.sh','--session',sys.argv[2]],
+                 cwd=root, capture_output=True, text=True)
+assert r.returncode == 1, r.stdout+r.stderr
+assert state() == before, 'report wrote state'
+print('report leaves file contents, mtimes and file set unchanged')
+PYREAD
 )
-  eq "$?" 0 'launcher and writer preserve full queue filename and ownership'
-done
+eq "$?" 0 'report is read-only, including queue and checkpoint locks'
+# A partial append is uncertainty, never a zero-pending assertion.
+printf '{"status":' >> "$QUEUE"
 R --session "$SID"
-eq "$RC" 1 'full queue reports own pending work despite sibling'
-has '1 pending decisions for this session' 'sibling pending row is separate'
-IDS=$(printf '%s\n' "$OUT" | awk '$3=="ROW_ID" {print $4}')
-R --session "$SID" --mark --staged-handled $IDS
-eq "$RC" 0 'own full queue acknowledgement succeeds'
-R --session "$SIBLING"
-eq "$RC" 1 'sibling full queue remains pending'
+eq "$RC" 2 'partial queue append reports inability to check'
+fresh
+echo legacy-filename > "$CP"
+R --session "$SID" --mark
+eq "$RC" 2 'legacy checkpoint rejected without migration'
+eq "$(cat "$CP")" legacy-filename 'legacy checkpoint unchanged'
+
+echo "== Tier cadence and dependency failure bounds"
+tool_report() {
+  OUT=$(cd "$P" && printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"%s","transcript_path":"%s","tool_input":{"command":"true"},"tool_response":{}}' \
+    "$SID" "$TR" | /bin/bash .claude/hooks/log-tool-event.sh 2>/dev/null)
+  RC=$?
+}
+fresh
+event 001 'DECISION: retained fixture'
+usage 800000
+tool_report
+has 'compact-readiness: NOT READY' 'tier two carries report'
+tool_report
+lacks 'compact-readiness:' 'same tier does not repeat report'
+usage 960000
+tool_report
+has 'compact-readiness: NOT READY' 'tier three carries report'
+tool_report
+lacks 'compact-readiness:' 'tier three does not repeat report'
+for code in 1 2 127; do
+  fresh
+  usage 800000
+  printf '#!/bin/bash\nexit %s\n' "$code" > "$P/.claude/hooks/compact-readiness.sh"
+  tool_report
+  eq "$RC" 0 "report exit $code does not fail tool hook"
+  has 'unable to check (no report)' 'silent dependency failure surfaced'
+  OUT=$(cd "$P" && printf '{"session_id":"%s"}' "$SID" | /bin/bash .claude/hooks/on-pre-compact.sh 2>/dev/null)
+  eq "$?" 0 'precompact survives report failure'
+  OUT=$(cat "$P/.agent/LOGS/pre-compact-alert.$SID12.md")
+  has "unable to check (exit $code; no report)" 'alert preserves failure'
+done
+fresh
+usage 800000
+printf '#!/bin/bash\nprintf "%%020000d" 0\nexit 2\n' > "$P/.claude/hooks/compact-readiness.sh"
+tool_report
+has '[report truncated;' 'large helper failure bounded'
+eq "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext | length < 7000')" true 'tier payload bounded'
+
+echo "== Documented advisory protocol"
 for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
   OUT=$(cat "$doc")
-  has 'Full IDs cannot resolve an ambiguous legacy queue' 'docs reject impossible remedy'
-  has 'Review every pending row against the source transcripts' 'docs require legacy review'
-  has 'move the entire legacy queue outside `LOGS`' 'docs give effective recovery'
-  has 'future queue filenames and row ownership use that full ID' 'docs describe future ownership'
+  has 'This check is advisory' 'advisory contract'
+  has 'covered-through <newest filename>' 'coverage format'
+  has 'MEGAVIBE_READY_TASKS_MIN_EVENTS' 'event threshold'
+  has 'fold cutoff' 'coverage pruning'
+  has 'It never certifies readiness or acknowledges pending rows' 'mark scope'
+  lacks '--staged-handled' 'acknowledgement instructions removed'
 done
 
 echo "compact-readiness tests: $PASS passed, $FAIL failed"

@@ -51,26 +51,17 @@ set -u
 # The session signals it is done by writing .closeout-done.<sid>, which
 # agent-log.sh does NOT do for it — the session writes it deliberately after the
 # synthesis, so "I logged something" cannot be mistaken for "I closed out".
-# The flag stands only while the register checkpoint covers every marked
-# decision event. File timestamps do not establish register coverage.
 #
 # Opt out entirely with MEGAVIBE_CLOSEOUT=0.
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
-case "${MEGAVIBE_CLOSEOUT-1}" in
-  0) exit 0 ;;
-  1) ;;
-  *) echo "MEGAVIBE_CLOSEOUT: expected 0 or 1" >&2; exit 2 ;;
-esac
+[ "${MEGAVIBE_CLOSEOUT:-1}" != "0" ] || exit 0
 
 INPUT=$(cat)
 EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null) || exit 0
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 SID="${SID:-default}"
-# The full id, for compact-readiness.sh (its session files are keyed on it).
-SID_FULL=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | tr -cd 'A-Za-z0-9._-' | cut -c1-64)
-READY="$(dirname "$0")/compact-readiness.sh"
 
 # A subagent's tool calls (same session_id, agent_id set) must not run the
 # PARENT's close-out: they measured the subagent's transcript against the
@@ -83,25 +74,12 @@ DONE_FLAG="${LOGDIR}/.closeout-done.${SID}"
 BLOCKED_FLAG="${LOGDIR}/.closeout-blocked.${SID}"
 COUNT_FILE="${LOGDIR}/.closeout-count.${SID}"
 
-SOFT_PCT="${MEGAVIBE_CLOSEOUT_SOFT_PCT-85}"
-HARD_PCT="${MEGAVIBE_CLOSEOUT_HARD_PCT-95}"
-REMIND_EVERY="${MEGAVIBE_CLOSEOUT_REMIND_EVERY-25}"
-decimal() {
-  local value="$2"
-  case "$value" in ''|*[!0-9]*) echo "$1: expected a decimal integer" >&2; return 2 ;; esac
-  while [ "${value#0}" != "$value" ]; do value="${value#0}"; done
-  value="${value:-0}"
-  [ "${#value}" -le 6 ] && [ "$value" -gt 0 ] || {
-    echo "$1: expected 1..999999" >&2; return 2;
-  }
-  printf '%s' "$value"
-}
-SOFT_PCT=$(decimal MEGAVIBE_CLOSEOUT_SOFT_PCT "$SOFT_PCT") || exit 2
-HARD_PCT=$(decimal MEGAVIBE_CLOSEOUT_HARD_PCT "$HARD_PCT") || exit 2
-REMIND_EVERY=$(decimal MEGAVIBE_CLOSEOUT_REMIND_EVERY "$REMIND_EVERY") || exit 2
-[ "$SOFT_PCT" -le 100 ] && [ "$HARD_PCT" -le 100 ] || {
-  echo "close-out percentages must be at most 100" >&2; exit 2;
-}
+SOFT_PCT="${MEGAVIBE_CLOSEOUT_SOFT_PCT:-85}"
+HARD_PCT="${MEGAVIBE_CLOSEOUT_HARD_PCT:-95}"
+REMIND_EVERY="${MEGAVIBE_CLOSEOUT_REMIND_EVERY:-25}"
+case "$SOFT_PCT" in ''|*[!0-9]*) SOFT_PCT=85 ;; esac
+case "$HARD_PCT" in ''|*[!0-9]*) HARD_PCT=95 ;; esac
+case "$REMIND_EVERY" in ''|*[!0-9]*) REMIND_EVERY=25 ;; esac
 
 # --- REHYDRATE comes first, always -----------------------------------------
 # Before the context measurement on purpose: it acts on a flag, not on a guess
@@ -138,12 +116,16 @@ if [ "$EVENT" = "Stop" ] && [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ] &&
   # Block only if the once-only marker was actually written: a marker that
   # cannot be persisted (permissions, full disk) would make this block every
   # turn, and an infrastructure failure must never trap the session.
-  OUTPUT=$(printf '%s' "$REHYDRATE_TASK" | jq -Rs '{decision:"block", reason:.}' 2>/dev/null) || exit 0
-  [ -n "$OUTPUT" ] || exit 0
   : > "$R_BLOCKED" 2>/dev/null || exit 0
-  printf '%s\n' "$OUTPUT"
+  jq -n --arg r "$REHYDRATE_TASK" '{decision:"block", reason:$r}' 2>/dev/null || true
   exit 0
 fi
+
+# Already closed out this fill cycle: no close-out work left. (After the
+# rehydrate block on purpose: a stale .closeout-done from before a manual
+# /compact, which on-compact.sh may not see, must not swallow the rehydrate
+# escalation.)
+[ -f "$DONE_FLAG" ] && exit 0
 
 # --- measure, fresh, every time -------------------------------------------
 # Not the .token-mark file: on the session that motivated this hook, that mark
@@ -167,37 +149,6 @@ fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
 
-# Probe identity coverage; random suffixes and late arrivals are unordered.
-# Reuse a positive probe below instead of scanning the event bodies twice.
-REARMED=""
-_NEW=0
-if [ -f "$DONE_FLAG" ]; then
-  [ "$PCT" -ge "$SOFT_PCT" ] || [ "$PCT" -ge "$HARD_PCT" ] || exit 0
-  _RC=0
-  _NEW=$("$READY" --decisions-since .agent/.registers-checkpoint 2>&1) || _RC=$?
-  case "$_NEW" in ''|*[!0-9]*) _RC=2 ;; esac
-  if [ "$_RC" -gt 1 ]; then
-    # A failed probe is advisory, never grounds to rearm or consume a block.
-    if [ "$EVENT" = "Stop" ]; then
-      ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
-      [ "$ACTIVE" = "true" ] && exit 0
-      [ -f "$BLOCKED_FLAG" ] && exit 0
-    fi
-    N=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
-    case "$N" in ''|*[!0-9]*) N=0 ;; esac
-    if [ "$N" -eq 0 ] || [ $(( N % REMIND_EVERY )) -eq 0 ]; then
-      printf '%s' "$_NEW" | jq -Rs '{systemMessage:
-        ("compact-readiness: unable to check done-flag coverage (ADVISORY); " +
-         (split("\n")[0:3] | join(" ") | .[0:500]))}' 2>/dev/null || true
-    fi
-    echo $(( N + 1 )) > "$COUNT_FILE" 2>/dev/null || true
-    exit 0
-  fi
-  [ "$_NEW" -gt 0 ] || exit 0
-  rm -f "$DONE_FLAG" "$COUNT_FILE" 2>/dev/null || true
-  REARMED=" The close-out is open again: ${_NEW} marked-decision event(s) after the register checkpoint."
-fi
-
 CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
 1. Append the decisions of this session to .agent/DECISIONS.md — each with the
    reasoning, so nobody re-derives it. Not a list of what changed.
@@ -205,28 +156,8 @@ CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
    on.
 3. Write one close-out summary via .claude/hooks/agent-log.sh append: what
    shipped, what was corrected, what the next session must not re-derive.
-4. Run .claude/hooks/compact-readiness.sh and reconcile each [!] item.
-   Record coverage with --mark; if register blockers remain after synthesis,
-   use --mark --force. Add --staged-handled ROW_ID ... using the exact IDs printed by the check.
-   Only after marking succeeds, run:
-   touch .agent/LOGS/.closeout-done.'"${SID}"'
-The context watcher keeps the narrative fresh but cannot do this synthesis.'"${REARMED}"
-
-# The readiness report, so the nudge says what is missing. `|| true` keeps its
-# "not ready" exit status out of this hook's ERR trap.
-readiness() {
-  local out=""
-  if [ -n "$REARMED" ]; then
-    printf '\nReadiness now:\ncompact-readiness: NOT READY\n'
-    printf '%s\n' "- [!] ${_NEW} marked-decision events after checkpoint: reconcile DECISIONS.md and TASKS.md."
-    printf '%s' 'Run compact-readiness.sh for staged rows and background tasks.'
-    return 0
-  fi
-  out=$(printf '%s' "$INPUT" | "$READY" ${SID_FULL:+--session "$SID_FULL"} --hook-input - 2>&1) || true
-  [ -n "$out" ] || out="compact-readiness: unable to check (no report)"
-  [ -n "$out" ] && printf '\nReadiness now:\n%s' "$out"
-  return 0
-}
+4. Then run: touch .agent/LOGS/.closeout-done.'"${SID}"'
+The context watcher keeps the narrative fresh but cannot do this synthesis.'
 
 # --- HARD: Stop hook, refuse to end the turn ------------------------------
 if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then
@@ -236,11 +167,9 @@ if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then
   ACTIVE=$(printf '%s' "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null) || ACTIVE="true"
   [ "$ACTIVE" = "true" ] && exit 0
   [ -f "$BLOCKED_FLAG" ] && exit 0          # once per session, never a loop
-  OUTPUT=$(printf '%s' "Context is at ${PCT}%. ${CLOSEOUT_TASK}$(readiness)" |
-    jq -Rs '{decision:"block", reason:.}' 2>/dev/null) || exit 0
-  [ -n "$OUTPUT" ] || exit 0
-  : > "$BLOCKED_FLAG" 2>/dev/null || exit 0
-  printf '%s\n' "$OUTPUT"
+  : > "$BLOCKED_FLAG" 2>/dev/null || exit 0   # same rule as the rehydrate block
+  jq -n --arg r "Context is at ${PCT}%. ${CLOSEOUT_TASK}" \
+    '{decision:"block", reason:$r}' 2>/dev/null || true
   exit 0
 fi
 
@@ -249,8 +178,8 @@ if [ "$EVENT" = "PostToolUse" ] && [ "$PCT" -ge "$SOFT_PCT" ]; then
   N=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
   case "$N" in ''|*[!0-9]*) N=0 ;; esac
   if [ "$N" -eq 0 ] || [ $(( N % REMIND_EVERY )) -eq 0 ]; then
-    printf '%s' "Context is at ${PCT}% (soft threshold ${SOFT_PCT}%). ${CLOSEOUT_TASK}$(readiness)" |
-      jq -Rs '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:.}}' 2>/dev/null || true
+    jq -n --arg c "Context is at ${PCT}% (soft threshold ${SOFT_PCT}%). ${CLOSEOUT_TASK}" \
+      '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
   fi
   echo $(( N + 1 )) > "$COUNT_FILE" 2>/dev/null || true
 fi

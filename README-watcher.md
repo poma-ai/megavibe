@@ -39,7 +39,7 @@ python3 ~/.megavibe/scripts/review-decisions.py --yes-all  # accept everything (
 
 Accepted decisions get appended to `.agent/DECISIONS.md` continuing the existing sequence number; rejected ones stay in the staging JSONL with `status: rejected` for audit.
 
-A staged row that nobody reviews stays pending forever and never reaches `DECISIONS.md` — nothing in the session reads this file. `.claude/hooks/compact-readiness.sh` counts the current session's pending rows as a blocking item (measured 2026-10-18: 31 pending in one session, 45 across four, the oldest six weeks old), so the session is told before a compaction rather than never.
+A staged row that nobody reviews stays pending forever and never reaches `DECISIONS.md` — nothing in the session reads this file. `.claude/hooks/compact-readiness.sh` reports the current session's pending-row count and queue path as advisory text (measured 2026-10-18: 31 pending in one session, 45 across four, the oldest six weeks old), so the session is told before a compaction rather than never.
 
 ## Enabling / disabling
 

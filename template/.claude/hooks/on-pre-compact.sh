@@ -81,7 +81,7 @@ IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 # Mark that rehydration is needed. on-compact.sh normally sets this too, but
 # it may not run for a manual /compact, so this is the floor.
 # The nag count (log-tool-event.sh) restarts with each compaction.
-# The autopilot's once-per-fill-cycle flags (rehydrate AND close-out) are re-armed here too,
+# The rehydration reminder is re-armed here too,
 # because on-compact.sh (which also does it) may not run for a manual /compact.
 # Not when a non-empty WORKING_CONTEXT (full-id or legacy 12-char directory) was
 # written within the hour: on-compact.sh applies the same rule, but it may not
@@ -99,8 +99,7 @@ done
 if [ "$IS_SUBAGENT" -eq 0 ]; then
   if [ "$_PC_FRESH" -eq 1 ]; then rm -f "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
   else echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true; fi
-  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" \
-        "${LOGDIR}/.closeout-done.${SID}" "${LOGDIR}/.closeout-blocked.${SID}" "${LOGDIR}/.closeout-count.${SID}" 2>/dev/null || true
+  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" 2>/dev/null || true
 fi
 
 # --- Invalidate the read-delta re-Read cache ---
@@ -373,22 +372,16 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 
 After compaction, the only required action is: run /rehydrate (it regenerates WORKING_CONTEXT.md via the chain reviewers.sh digest-chain prints: Codex then the Claude subagent, or capped Gemini then the subagent where there is no Codex). The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
 
-# --- Compact readiness: the registers against the event log ---
-# The counter above reads 0 whenever anything wrote to .agent/ (an event, a
-# watcher flush), and the line counts say nothing about currency: on 2026-10-18
-# both DECISIONS.md and TASKS.md were a day stale under a zero counter. This is
-# the check that compares them with the events, counts the decisions the
-# watcher staged and nobody reviewed, and lists background tasks without a
-# heartbeat (compact-readiness.sh; exit 1 = not ready). Its advisory preview is bounded; row identities are printed in full. `|| READY_RC=$?` keeps a
-# "not ready" exit status out of this hook's ERR trap.
+# Advisory report only; a finding or failed check never blocks compaction.
 READY_RC=0; READY_OUT=""
 _RS=""; [ "$_PC_SIDF" != "none" ] && _RS="$_PC_SIDF"
 READY_OUT=$(printf '%s' "$INPUT" | "$(dirname "$0")/compact-readiness.sh" ${_RS:+--session "$_RS"} --hook-input - 2>&1) || READY_RC=$?
 [ -n "$READY_OUT" ] || READY_OUT="compact-readiness: unable to check (exit $READY_RC; no report)"
+READY_OUT=$(printf '%s' "$READY_OUT" | jq -Rrs 'if length > 6000 then .[0:6000] + "\n[report truncated; run compact-readiness.sh directly]" else . end')
 if [ -n "$READY_OUT" ]; then
   MSG="$MSG
 
-🧭 COMPACT READINESS (exit ${READY_RC} from .claude/hooks/compact-readiness.sh; reconcile [!] items, then record coverage with --mark; see --help):
+🧭 COMPACT READINESS — ADVISORY (exit ${READY_RC} from .claude/hooks/compact-readiness.sh; reconcile [!] items, then record coverage with --mark; see --help):
 ${READY_OUT}"
 fi
 

@@ -403,16 +403,14 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
-      # Tiers 2 and 3 say "flush ALL pending state": say what is missing, from
-      # the check that compares the registers with the event log
-      # (compact-readiness.sh). Once per tier per session, so the cost is nil;
-      # `|| true` keeps its "not ready" exit status out of this hook's ERR trap.
+      # Advisory text once per tier (2 and 3); never a compaction gate.
       if [ "$CURRENT_TIER" -ge 2 ]; then
         _RO=""; _RO=$(printf '%s' "$INPUT" | "$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" --hook-input - 2>&1) || true
         [ -n "$_RO" ] || _RO="compact-readiness: unable to check (no report)"
+        _RO=$(printf '%s' "$_RO" | jq -Rrs 'if length > 6000 then .[0:6000] + "\n[report truncated; run compact-readiness.sh directly]" else . end')
         [ -n "$_RO" ] && COMPACT_NUDGE="${COMPACT_NUDGE}
 🧭 ${_RO}
-After reconciling the registers, record coverage with compact-readiness.sh --mark. If register blockers remain, use --mark --force; add --staged-handled ROW_ID ... with the exact reviewed IDs printed by the check."
+Advisory only. After reconciling the registers, record coverage with compact-readiness.sh --mark. Marking does not acknowledge staged rows or certify readiness."
       fi
 
       # If FULL_CONTEXT.md is large, also hint at agent-log.sh fold (the superseded

@@ -18,9 +18,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import contextlib
-import fcntl
-import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -40,38 +37,14 @@ def load_rows(p: Path) -> list[dict]:
     if not p.exists():
         return rows
     for line in p.read_text().splitlines():
-        # Line position is part of legacy handling IDs; never silently reindex.
-        row = json.loads(line)
-        if not isinstance(row, dict):
-            raise ValueError(f"Invalid queue row in {p}")
-        rows.append(row)
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
     return rows
-
-
-def pending_indexes(path: Path, rows: list[dict]) -> list[int]:
-    """Honor append-only handling markers, including legacy integer row IDs."""
-    key = path.name[len("pending-decisions."):-len(".jsonl")]
-    handled = {}
-    for marker in rows:
-        if marker.get("status") != "handled-by-session":
-            continue
-        sid = marker.get("session_id", "")
-        if sid != key and sid[:12] != key:
-            continue
-        for identity in marker.get("handled_rows", []):
-            handled.setdefault(sid, set()).add(identity)
-    pending = []
-    for index, row in enumerate(rows, 1):
-        if row.get("status") != "pending":
-            continue
-        digest = hashlib.sha256(json.dumps(row, sort_keys=True, ensure_ascii=True,
-                                          separators=(",", ":")).encode()).hexdigest()
-        identity = f"{path.name}:{index}:{digest}"
-        owner = row.get("session_id", key)
-        if not any(owner in (sid, sid[:12]) and (index in ids or identity in ids)
-                   for sid, ids in handled.items()):
-            pending.append(index - 1)
-    return pending
 
 
 def write_rows(p: Path, rows: list[dict]) -> None:
@@ -139,59 +112,55 @@ def main() -> int:
               + (f"for session {args.session}" if args.session else ""))
         return 0
 
-    with contextlib.ExitStack() as stack:
+    if args.list:
         for f in files:
-            lock = stack.enter_context(Path(str(f) + ".lock").open("a"))
-            fcntl.flock(lock, fcntl.LOCK_EX)
-        if args.list:
-            for f in files:
-                pending = pending_indexes(f, load_rows(f))
-                print(f"  {f.name}: {len(pending)} pending")
-            return 0
-
-        next_num = next_decision_number(decisions_md)
-        accepted_blocks: list[str] = []
-        counts = {"accepted": 0, "rejected": 0, "skipped": 0}
-
-        for f in files:
-            rows = load_rows(f)
-            pending_idx = pending_indexes(f, rows)
-            if not pending_idx:
-                continue
-
-            for n, i in enumerate(pending_idx, 1):
-                row = rows[i]
-                if args.yes_all:
-                    choice = "a"
-                else:
-                    choice = prompt_user(row, n, len(pending_idx))
-
-                if choice == "q":
-                    # Persist whatever we decided so far in this file before exiting
-                    write_rows(f, rows)
-                    if accepted_blocks:
-                        _flush_accepted(decisions_md, accepted_blocks)
-                    _summary(counts)
-                    return 0
-                elif choice == "a":
-                    accepted_blocks.append(render_decision_row(next_num, row))
-                    rows[i]["status"] = "accepted"
-                    rows[i]["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-                    next_num += 1
-                    counts["accepted"] += 1
-                elif choice == "r":
-                    rows[i]["status"] = "rejected"
-                    rows[i]["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-                    counts["rejected"] += 1
-                else:  # s = skip — leave as pending
-                    counts["skipped"] += 1
-
-            write_rows(f, rows)
-
-        if accepted_blocks:
-            _flush_accepted(decisions_md, accepted_blocks)
-        _summary(counts)
+            pending = [r for r in load_rows(f) if r.get("status") == "pending"]
+            print(f"  {f.name}: {len(pending)} pending")
         return 0
+
+    next_num = next_decision_number(decisions_md)
+    accepted_blocks: list[str] = []
+    counts = {"accepted": 0, "rejected": 0, "skipped": 0}
+
+    for f in files:
+        rows = load_rows(f)
+        pending_idx = [i for i, r in enumerate(rows) if r.get("status") == "pending"]
+        if not pending_idx:
+            continue
+
+        for n, i in enumerate(pending_idx, 1):
+            row = rows[i]
+            if args.yes_all:
+                choice = "a"
+            else:
+                choice = prompt_user(row, n, len(pending_idx))
+
+            if choice == "q":
+                # Persist whatever we decided so far in this file before exiting
+                write_rows(f, rows)
+                if accepted_blocks:
+                    _flush_accepted(decisions_md, accepted_blocks)
+                _summary(counts)
+                return 0
+            elif choice == "a":
+                accepted_blocks.append(render_decision_row(next_num, row))
+                rows[i]["status"] = "accepted"
+                rows[i]["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+                next_num += 1
+                counts["accepted"] += 1
+            elif choice == "r":
+                rows[i]["status"] = "rejected"
+                rows[i]["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+                counts["rejected"] += 1
+            else:  # s = skip — leave as pending
+                counts["skipped"] += 1
+
+        write_rows(f, rows)
+
+    if accepted_blocks:
+        _flush_accepted(decisions_md, accepted_blocks)
+    _summary(counts)
+    return 0
 
 
 def _flush_accepted(decisions_md: Path, blocks: list[str]) -> None:
