@@ -373,6 +373,24 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 
 After compaction, the only required action is: run /rehydrate (it regenerates WORKING_CONTEXT.md via the chain reviewers.sh digest-chain prints: Codex then the Claude subagent, or capped Gemini then the subagent where there is no Codex). The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
 
+# --- Compact readiness: the registers against the event log ---
+# The counter above reads 0 whenever anything wrote to .agent/ (an event, a
+# watcher flush), and the line counts say nothing about currency: on 2026-10-18
+# both DECISIONS.md and TASKS.md were a day stale under a zero counter. This is
+# the check that compares them with the events, counts the decisions the
+# watcher staged and nobody reviewed, and lists background tasks without a
+# heartbeat (compact-readiness.sh; exit 1 = not ready). Its lines are composed
+# by that script from counts and file names only. `|| READY_RC=$?` keeps a
+# "not ready" exit status out of this hook's ERR trap.
+READY_RC=0; READY_OUT=""
+_RS=""; [ "$_PC_SIDF" != "none" ] && _RS="$_PC_SIDF"
+READY_OUT=$("$(dirname "$0")/compact-readiness.sh" ${_RS:+--session "$_RS"} 2>/dev/null) || READY_RC=$?
+if [ -n "$READY_OUT" ]; then
+  MSG="$MSG
+
+🧭 COMPACT READINESS (exit ${READY_RC} from .claude/hooks/compact-readiness.sh; run it yourself before a manual /compact):
+${READY_OUT}"
+fi
 
 # Add the register-currency warning to the report. This is the one part of it
 # that can contradict the reassuring line counts above, which is why it is also

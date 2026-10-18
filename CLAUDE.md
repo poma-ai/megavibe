@@ -23,7 +23,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (31 hooks; canonical list in init.sh) | Medium |
+| `template/.claude/hooks/*.sh` | Hook scripts template (32 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/agents/summarizer.md` | Summarization fallback (sonnet) — second in the chain, behind Codex and ahead of Gemini | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called on the ship round (critical work included), and whenever it is the only reader | Medium — affects every review |
 | `scripts/reviewers.sh` | The `MEGAVIBE_REVIEWERS` allow-list — which of non-negotiable 4's reviewers are switched on. Consulted by the review scripts **only under `--as-reviewer`** (they are also the general Codex/Gemini transport), and by `on-session-start.sh`. Front end: `megavibe reviewers` | Medium — gates every review |
@@ -216,4 +216,4 @@ These are NOT currently implemented but are worth considering as megavibe evolve
 
 - `init.sh` settings merge uses `jq -s` with reduce — fragile if template `settings.json` structure changes. Always test the merge path.
 - `on-compact.sh` builds JSON via `jq -Rs` — escaping is delicate. Test with content containing quotes, newlines, special chars.
-- `log-tool-event.sh` counter resets on ANY write to `.agent/*.md`. By design (prefers low false-negatives over precision).
+- `log-tool-event.sh` counter resets on ANY write to `.agent/*.md`. By design (prefers low false-negatives over precision) — which also means it reads 0 whenever an event or the watcher wrote, and says nothing about whether `DECISIONS.md` and `TASKS.md` are current (2026-10-18: both a day stale under a zero counter). `compact-readiness.sh` is the check for that; `on-pre-compact.sh` and the close-out nudges carry its report.

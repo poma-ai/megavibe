@@ -51,6 +51,12 @@ set -u
 # The session signals it is done by writing .closeout-done.<sid>, which
 # agent-log.sh does NOT do for it — the session writes it deliberately after the
 # synthesis, so "I logged something" cannot be mistaken for "I closed out".
+# The flag is per fill cycle, and a fill cycle without a compaction can last
+# days (measured 2026-10-18: a flag from the evening before silenced this hook
+# through 28 h of further work and ~150 events), so it expires by itself once
+# a decision-like event is newer than it (compact-readiness.sh
+# --decisions-since). The nudges carry that script's report, so the session is
+# told what is missing, not only that something is.
 #
 # Opt out entirely with MEGAVIBE_CLOSEOUT=0.
 
@@ -62,6 +68,9 @@ INPUT=$(cat)
 EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // ""' 2>/dev/null) || exit 0
 SID=$(printf '%s' "$INPUT" | jq -r '.session_id // "default"' 2>/dev/null | cut -c1-12)
 SID="${SID:-default}"
+# The full id, for compact-readiness.sh (its session files are keyed on it).
+SID_FULL=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | tr -cd 'A-Za-z0-9._-' | cut -c1-64)
+READY="$(dirname "$0")/compact-readiness.sh"
 
 # A subagent's tool calls (same session_id, agent_id set) must not run the
 # PARENT's close-out: they measured the subagent's transcript against the
@@ -121,12 +130,6 @@ if [ "$EVENT" = "Stop" ] && [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ] &&
   exit 0
 fi
 
-# Already closed out this fill cycle: no close-out work left. (After the
-# rehydrate block on purpose: a stale .closeout-done from before a manual
-# /compact, which on-compact.sh may not see, must not swallow the rehydrate
-# escalation.)
-[ -f "$DONE_FLAG" ] && exit 0
-
 # --- measure, fresh, every time -------------------------------------------
 # Not the .token-mark file: on the session that motivated this hook, that mark
 # said 75% while the statusline said 86%, because it only updates on certain
@@ -149,6 +152,27 @@ fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
 
+# Already closed out this fill cycle: no close-out work left. (After the
+# rehydrate block on purpose: a stale .closeout-done from before a manual
+# /compact, which on-compact.sh may not see, must not swallow the rehydrate
+# escalation.) But a fill cycle without a compaction can run for days, so the
+# flag stands only while no decision-like event is newer than the close-out —
+# or than DECISIONS.md, when that was written later: a session that recorded
+# its decisions after closing out has done the work the nudge would ask for.
+# The probe reads file names and greps the few events since, and runs only
+# once a stage could fire. A probe that cannot answer keeps the flag: silence
+# is never grounds for forcing.
+REARMED=""
+if [ -f "$DONE_FLAG" ]; then
+  [ "$PCT" -ge "$SOFT_PCT" ] || [ "$PCT" -ge "$HARD_PCT" ] || exit 0
+  _REF="$DONE_FLAG"; [ .agent/DECISIONS.md -nt "$DONE_FLAG" ] && _REF=.agent/DECISIONS.md
+  _NEW=""; _NEW=$("$READY" --decisions-since "$_REF" 2>/dev/null) || true
+  case "$_NEW" in ''|*[!0-9]*) _NEW=0 ;; esac
+  [ "$_NEW" -gt 0 ] || exit 0
+  rm -f "$DONE_FLAG" "$COUNT_FILE" 2>/dev/null || true
+  REARMED=" The close-out of this fill cycle was marked done, but ${_NEW} event(s) since then look like decisions, so it is open again."
+fi
+
 CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
 1. Append the decisions of this session to .agent/DECISIONS.md — each with the
    reasoning, so nobody re-derives it. Not a list of what changed.
@@ -156,8 +180,18 @@ CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
    on.
 3. Write one close-out summary via .claude/hooks/agent-log.sh append: what
    shipped, what was corrected, what the next session must not re-derive.
-4. Then run: touch .agent/LOGS/.closeout-done.'"${SID}"'
-The context watcher keeps the narrative fresh but cannot do this synthesis.'
+4. Run .claude/hooks/compact-readiness.sh and act on each [!] line; then run:
+   touch .agent/LOGS/.closeout-done.'"${SID}"'
+The context watcher keeps the narrative fresh but cannot do this synthesis.'"${REARMED}"
+
+# The readiness report, so the nudge says what is missing. `|| true` keeps its
+# "not ready" exit status out of this hook's ERR trap.
+readiness() {
+  local out=""
+  out=$("$READY" ${SID_FULL:+--session "$SID_FULL"} 2>/dev/null) || true
+  [ -n "$out" ] && printf '\nReadiness now:\n%s' "$out"
+  return 0
+}
 
 # --- HARD: Stop hook, refuse to end the turn ------------------------------
 if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then
@@ -168,7 +202,7 @@ if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then
   [ "$ACTIVE" = "true" ] && exit 0
   [ -f "$BLOCKED_FLAG" ] && exit 0          # once per session, never a loop
   : > "$BLOCKED_FLAG" 2>/dev/null || exit 0   # same rule as the rehydrate block
-  jq -n --arg r "Context is at ${PCT}%. ${CLOSEOUT_TASK}" \
+  jq -n --arg r "Context is at ${PCT}%. ${CLOSEOUT_TASK}$(readiness)" \
     '{decision:"block", reason:$r}' 2>/dev/null || true
   exit 0
 fi
@@ -178,7 +212,7 @@ if [ "$EVENT" = "PostToolUse" ] && [ "$PCT" -ge "$SOFT_PCT" ]; then
   N=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
   case "$N" in ''|*[!0-9]*) N=0 ;; esac
   if [ "$N" -eq 0 ] || [ $(( N % REMIND_EVERY )) -eq 0 ]; then
-    jq -n --arg c "Context is at ${PCT}% (soft threshold ${SOFT_PCT}%). ${CLOSEOUT_TASK}" \
+    jq -n --arg c "Context is at ${PCT}% (soft threshold ${SOFT_PCT}%). ${CLOSEOUT_TASK}$(readiness)" \
       '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}' 2>/dev/null || true
   fi
   echo $(( N + 1 )) > "$COUNT_FILE" 2>/dev/null || true

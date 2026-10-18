@@ -403,6 +403,16 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
       esac
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
+      # Tiers 2 and 3 say "flush ALL pending state": say what is missing, from
+      # the check that compares the registers with the event log
+      # (compact-readiness.sh). Once per tier per session, so the cost is nil;
+      # `|| true` keeps its "not ready" exit status out of this hook's ERR trap.
+      if [ "$CURRENT_TIER" -ge 2 ]; then
+        _RO=""; _RO=$("$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" 2>/dev/null) || true
+        [ -n "$_RO" ] && COMPACT_NUDGE="${COMPACT_NUDGE}
+🧭 ${_RO}"
+      fi
+
       # If FULL_CONTEXT.md is large, also hint at agent-log.sh fold (the superseded
       # /prune-context asked an AI which lines to delete from the rendered file; fold
       # moves old events into the snapshot and the rendered view stays identical).

@@ -235,7 +235,7 @@ copy_if_missing() {
 # not exist yet, safety hooks included, and every tool call in the next
 # session failed on them until init.sh ran again.
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh compact-readiness.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"
