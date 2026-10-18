@@ -407,7 +407,10 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
       if [ "$CURRENT_TIER" -ge 2 ]; then
         _RO=""; _RO=$(printf '%s' "$INPUT" | "$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" --hook-input - 2>&1) || true
         [ -n "$_RO" ] || _RO="compact-readiness: unable to check (no report)"
-        _RO=$(printf '%s' "$_RO" | jq -Rrs 'if length > 6000 then .[0:6000] + "\n[report truncated; run compact-readiness.sh directly]" else . end')
+        # 2000 chars: the nudge is emitted twice (systemMessage + additionalContext) and
+        # JSON-escaped, and the whole hook output must stay under the 10,000-character
+        # delivery limit (measured 2026-10-19: a 6000-char cap reached 10-15k serialized).
+        _RO=$(printf '%s' "$_RO" | jq -Rrs 'if length > 2000 then .[0:2000] + "\n[report truncated; run compact-readiness.sh directly]" else . end')
         [ -n "$_RO" ] && COMPACT_NUDGE="${COMPACT_NUDGE}
 🧭 ${_RO}
 Advisory only. After reconciling the registers, record coverage with compact-readiness.sh --mark. Marking does not acknowledge staged rows or certify readiness."
