@@ -361,6 +361,16 @@ bytes() { python3 -c 'import sys; d = open(sys.argv[1], "rb").read(); print(d.co
 eq "$(bytes "$P/.agent/snapshot.md")" "1 0" 'fold copies event bytes unchanged (no replacement character)'
 OUT=$(cat "$P/.agent/snapshot.md")
 has 'DECISION: late old arrival' 'second fold keeps earlier history'
+# Only the snapshot's leading line is metadata; an event quoting the marker is history (ship round 3, P2).
+printf 'Example of the fold header:\n```\n<!-- registers-fold-cutoff: 20991231 -->\n```\n' > "$P/.agent/events/20260903T000000Z-host-quote.md"
+mark
+OUT=$(cd "$P" && /bin/bash .claude/hooks/agent-log.sh fold --before 2026-10-01 2>&1); RC=$?
+eq "$RC" 0 'fold of an event quoting the marker succeeds'
+OUT=$(cd "$P" && /bin/bash .claude/hooks/agent-log.sh fold --before 2026-10-01 2>&1); RC=$?
+eq "$RC" 0 'repeated fold succeeds'
+eq "$(grep -c 'registers-fold-cutoff: 20991231' "$P/.agent/snapshot.md")" 1 'quoted marker survives a repeated fold'
+eq "$(head -n 1 "$P/.agent/snapshot.md")" '<!-- registers-fold-cutoff: 20261001 -->' 'the real cutoff stays in the leading line'
+eq "$(grep -c 'registers-fold-cutoff: 20261001' "$P/.agent/snapshot.md")" 1 'exactly one header line'
 
 echo "== Round 2 P2-5: live Monitor overrides historical nudge"
 fresh

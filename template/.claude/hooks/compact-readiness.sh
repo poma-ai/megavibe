@@ -192,9 +192,12 @@ def fold(before):
         fail("fold refused: uncovered events; reconcile registers and --mark first")
     snapshot = Path(".agent/snapshot.md")
     old = snapshot.read_bytes() if snapshot.exists() else b""
-    prior = re.findall(rb"^<!-- registers-fold-cutoff: ([0-9]{8}) -->$", old, re.M)
-    cutoff = max([cutoff] + [p.decode() for p in prior])
-    old = re.sub(rb"^<!-- registers-fold-cutoff: [0-9]{8} -->\n?", b"", old, flags=re.M)
+    # Only the leading line is metadata. The same text further down is folded history (an event
+    # quoting the marker): a multiline scan deleted such a line and took its date (ship round 3, P2).
+    header = re.match(rb"<!-- registers-fold-cutoff: ([0-9]{8}) -->\n?", old)
+    if header:
+        cutoff = max(cutoff, header[1].decode())
+        old = old[header.end():]
     # The snapshot is history: events are copied byte for byte. Decoding with a replacement
     # character is for reports only; here it would be silent data loss (fix round 2026-10-19, P1).
     data = ("<!-- registers-fold-cutoff: " + cutoff + " -->\n").encode() + old
