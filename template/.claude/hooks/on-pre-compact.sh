@@ -415,7 +415,7 @@ PRUNE_THRESHOLD=500
 if [ "$FC_LINES" -gt "$PRUNE_THRESHOLD" ] 2>/dev/null; then
   MSG="$MSG
 
-🧹 FULL_CONTEXT.md is ${FC_LINES} lines (above the ${PRUNE_THRESHOLD}-line threshold). It is rendered from write-once events and /rehydrate reads a bounded slice, so the size alone is not a problem. If .agent/events/ has accumulated a lot of old entries, run .claude/hooks/agent-log.sh fold after /rehydrate: it moves events older than 30 days into .agent/snapshot.md, loses nothing, and FULL_CONTEXT.md renders identically before and after. This is distinct from /compact, which summarizes the live conversation."
+🧹 FULL_CONTEXT.md is ${FC_LINES} lines (above the ${PRUNE_THRESHOLD}-line threshold). It is rendered from write-once events and /rehydrate reads a bounded slice, so the size alone is not a problem. If .agent/events/ has accumulated a lot of old entries, run .claude/hooks/agent-log.sh fold after /rehydrate: it moves events older than 30 days into .agent/snapshot.md, loses nothing, and FULL_CONTEXT.md renders the same apart from one fold-cutoff comment line. It refuses uncovered events: review the registers and run .claude/hooks/compact-readiness.sh --mark first. This is distinct from /compact, which summarizes the live conversation."
 fi
 
 # --- Where the report goes ---

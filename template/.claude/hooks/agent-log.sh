@@ -24,7 +24,7 @@
 # Usage:
 #   agent-log append [--project DIR]                  # entry text on stdin
 #   agent-log render [--project DIR]
-#   agent-log fold [--before YYYY-MM-DD] [--project DIR]
+#   agent-log fold [--before YYYY-MM-DD] [--project DIR]   # refuses uncovered events: compact-readiness.sh --mark first
 #   agent-log path [--project DIR]
 set -euo pipefail
 

@@ -2,6 +2,8 @@
 # Advisory: exit 0 = no findings; 1 = NOT READY; 2 = unable to check.
 # Reports write nothing. --mark records event coverage, never queue handling.
 # Coverage is by immutable filename, never timestamp or filename ordering.
+# Session: --session, else $CLAUDE_CODE_SESSION_ID, else the one tool-call counter touched in the last 24 h
+# (two such counters are ambiguous: exit 2). Pass --session from a hook or when several sessions share the project.
 command -v python3 >/dev/null 2>&1 || {
   echo 'compact-readiness: unable to check: python3 is required' >&2
   exit 2
@@ -63,7 +65,7 @@ def atomic(path, text):
 def checkpoint(path):
     if not path.exists() and path == CP:
         return set()
-    lines = path.read_text().splitlines()
+    lines = path.read_text(errors="replace").splitlines()
     # A legacy single-filename checkpoint cannot prove identity coverage.
     if not lines or not lines[0].startswith("covered-through "):
         fail("invalid coverage record; review events and remove legacy checkpoint: " + str(path))
@@ -83,6 +85,10 @@ def events():
     root = Path(".agent/events")
     names = []
     for path in root.glob("*"):
+        # Dotfiles and non-.md entries (.DS_Store, iCloud placeholders, conflict copies) are not events; render
+        # and fold never read them, so they must not disable the report either (ship review 2026-10-19).
+        if path.name.startswith(".") or not path.name.endswith(".md"):
+            continue
         if not path.is_file() or not EVENT.fullmatch(path.name):
             fail("unexpected event filename: " + repr(path.name))
         names.append(path.name)
@@ -91,7 +97,7 @@ def events():
 
 def body_lines(name):
     fence = 0
-    for line in (Path(".agent/events") / name).read_text().splitlines():
+    for line in (Path(".agent/events") / name).read_text(errors="replace").splitlines():
         match = re.match(r"^ {0,3}(`{3,})(.*)$", line)
         if match:
             if not fence and "`" not in match[2]:
@@ -166,7 +172,7 @@ def pending_counts(sid):
         if any(p != sid for p in peers) and (key != sid or len(sid) <= 12):
             fail("ambiguous legacy session queue; ownership unknown: " + str(path))
         count = 0
-        for line in path.read_text().splitlines():
+        for line in path.read_text(errors="replace").splitlines():
             row = json.loads(line)
             if not isinstance(row, dict):
                 fail("invalid pending row: " + str(path))
@@ -190,7 +196,7 @@ def fold(before):
     cutoff = max([cutoff] + prior)
     old = re.sub(r"^<!-- registers-fold-cutoff: [0-9]{8} -->\n?", "", old, flags=re.M)
     text = "<!-- registers-fold-cutoff: " + cutoff + " -->\n" + old
-    text += "".join((Path(".agent/events") / n).read_text() for n in names)
+    text += "".join((Path(".agent/events") / n).read_text(errors="replace") for n in names)
     # Publish history first. A crash can duplicate history, never lose it.
     atomic(snapshot, text)
     for n in names:
@@ -258,7 +264,7 @@ def main():
                 blocks.append("%d pending decisions for this session: %s" % (count_pending, path))
         info.append("%d pending decisions for this session" % sum(n for _, n in pending))
         bg = LOGS / (".bg-tasks." + sid + ".jsonl")
-        rows = [json.loads(line) for line in bg.read_text().splitlines()] if sid and bg.exists() else []
+        rows = [json.loads(line) for line in bg.read_text(errors="replace").splitlines()] if sid and bg.exists() else []
         for row in rows:
             if int(row.get("nudged", 0)) > 0:
                 advisory.append("background task %s: earlier heartbeat nudge" % row.get("id", "?"))
@@ -300,8 +306,8 @@ def main():
             for ident, row in base.items():
                 def names_task(command, task):
                     return task["id"] in command or bool(task.get("path") and task["path"] in command)
-                covered_task = any(names_task(r.get("command", ""), row)
-                                   for key, r in live.items() if key != ident)
+                # Same rule as watch-background.sh: any running command naming this task counts, its own included.
+                covered_task = any(names_task(r.get("command", ""), row) for r in live.values())
                 watcher = any(names_task(live[ident].get("command", ""), other)
                               for key, other in base.items() if key != ident)
                 if not covered_task and not watcher and time.time() - row["started"] >= interval:

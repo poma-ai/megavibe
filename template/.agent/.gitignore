@@ -35,3 +35,6 @@ events.jsonl
 
 # .gitkeep files (scaffolding only)
 .gitkeep
+
+# registers-checkpoint lock (ephemeral; taken by compact-readiness.sh --mark and agent-log.sh fold)
+.registers-checkpoint.lock

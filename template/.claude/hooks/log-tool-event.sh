@@ -424,7 +424,7 @@ Advisory only. After reconciling the registers, record coverage with compact-rea
       FC_LINES_NUDGE="${FC_LINES_NUDGE:-0}"
       if [ "$FC_LINES_NUDGE" -gt 500 ] 2>/dev/null; then
         COMPACT_NUDGE="${COMPACT_NUDGE}
-🧹 FULL_CONTEXT.md is ${FC_LINES_NUDGE} lines — after flushing, you can tidy the event log with .claude/hooks/agent-log.sh fold (moves old events into the snapshot, loses nothing, the rendered view stays identical; distinct from /compact)."
+🧹 FULL_CONTEXT.md is ${FC_LINES_NUDGE} lines — after flushing, you can tidy the event log with .claude/hooks/agent-log.sh fold (moves old events into the snapshot, loses nothing, the rendered view changes only by one fold-cutoff comment line; it refuses uncovered events, so review the registers and run .claude/hooks/compact-readiness.sh --mark first; distinct from /compact)."
       fi
     fi
   fi

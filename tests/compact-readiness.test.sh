@@ -454,11 +454,16 @@ mark
 R --session "$SID"
 eq "$RC" 0 'Unicode coverage identities round trip'
 has "0 uncovered events" "all writer identities covered"
-for name in unexpected.md unexpected.txt; do
+printf 'DECISION: do not hide this\n' > "$P/.agent/events/unexpected.md"
+R --session "$SID"
+eq "$RC" 2 'unexpected event name prevents false readiness'
+has 'unexpected event filename:' 'unexpected filename diagnostic'
+rm "$P/.agent/events/unexpected.md"
+for name in unexpected.txt .DS_Store; do   # not events: render and fold never read them, so the report ignores them
   printf 'DECISION: do not hide this\n' > "$P/.agent/events/$name"
   R --session "$SID"
-  eq "$RC" 2 'unexpected event name prevents false readiness'
-  has 'unexpected event filename:' 'unexpected filename diagnostic'
+  eq "$RC" 0 "non-event entry $name is ignored"
+  has "0 uncovered events" "non-event entry $name is not counted"
   rm "$P/.agent/events/$name"
 done
 
