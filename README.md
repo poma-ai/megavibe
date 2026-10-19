@@ -342,7 +342,7 @@ A session hands you work in one visible place instead of burying it in the hidde
 
 | What | Where |
 |------|-------|
-| Hooks (31 scripts) | `.claude/hooks/` |
+| Hooks (32 scripts) | `.claude/hooks/` |
 | Rules (6 files) | `.claude/rules/` |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (8 commands) | `.claude/skills/` |

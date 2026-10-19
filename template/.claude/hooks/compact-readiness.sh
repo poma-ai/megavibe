@@ -85,8 +85,9 @@ def events():
     root = Path(".agent/events")
     names = []
     for path in root.glob("*"):
-        # Dotfiles and non-.md entries (.DS_Store, iCloud placeholders, conflict copies) are not events; render
-        # and fold never read them, so they must not disable the report either (ship review 2026-10-19).
+        # Dotfiles and non-.md entries (.DS_Store, iCloud placeholders) are not events; render never reads
+        # them, so they must not disable the report either (ship review 2026-10-19). A stray *.md (a sync
+        # conflict copy, "name 2.md") IS rendered, so it is reported by name below and must be renamed or removed.
         if path.name.startswith(".") or not path.name.endswith(".md"):
             continue
         if not path.is_file() or not EVENT.fullmatch(path.name):
