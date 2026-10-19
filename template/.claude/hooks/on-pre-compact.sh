@@ -408,8 +408,8 @@ fi
 # --- Optional fold hint (appended only if FULL_CONTEXT.md is large) ---
 # FULL_CONTEXT.md is RENDERED from the write-once event log, so its size is not a
 # problem in itself (/rehydrate reads a bounded slice). What accumulates is the number of
-# event files; agent-log.sh fold moves old ones into snapshot.md and the rendered view
-# stays identical. The old /prune-context skill, which asked an AI which lines to delete
+# event files; agent-log.sh fold moves old ones into snapshot.md (it refuses uncovered
+# events; the rendered view then differs by one fold-cutoff comment line). The old /prune-context skill, which asked an AI which lines to delete
 # from the rendered file, is superseded. Distinct from /compact (the live conversation).
 PRUNE_THRESHOLD=500
 if [ "$FC_LINES" -gt "$PRUNE_THRESHOLD" ] 2>/dev/null; then

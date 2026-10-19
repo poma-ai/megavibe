@@ -308,9 +308,10 @@ def main():
             for ident, row in base.items():
                 def names_task(command, task):
                     return task["id"] in command or bool(task.get("path") and task["path"] in command)
-                # Same rule as watch-background.sh: any running command naming this task counts, its own included.
-                covered_task = any(names_task(r.get("command", ""), row) for r in live.values())
-                watcher = any(names_task(live[ident].get("command", ""), other)
+                # Same rule as watch-background.sh: any running command naming this task counts, its own
+                # included; a null command reads as "" there (.command // ""), so it does here (ship round 2, P2).
+                covered_task = any(names_task(r.get("command") or "", row) for r in live.values())
+                watcher = any(names_task(live[ident].get("command") or "", other)
                               for key, other in base.items() if key != ident)
                 if not covered_task and not watcher and time.time() - row["started"] >= interval:
                     blocks.append("background %s task %s found without a heartbeat; arm a Monitor or stop it"

@@ -250,6 +250,14 @@ eq "$RC" 1 "live missing heartbeat blocks"
 has "background shell task job" "task named"
 R --session "$SID12" --hook-input "$P/live.json"
 eq "$RC" 1 "unambiguous prefix finds heartbeat"
+# A live entry may carry "command": null; watch-background.sh reads it as "" (.command // ""), so must this.
+printf '{"session_id":"%s","background_tasks":[{"id":"job","status":"running","command":null},{"id":"m","status":"running","command":null}]}\n' "$SID" > "$P/live.json"
+R --session "$SID" --hook-input "$P/live.json"
+eq "$RC" 1 "null live commands still yield a finding, not exit 2"
+has "background shell task job" "task named with null commands"
+printf '{"session_id":"%s","background_tasks":[{"id":"job","status":"running","command":null},{"id":"m","status":"running","command":"tail -f job.out"}]}\n' "$SID" > "$P/live.json"
+R --session "$SID" --hook-input "$P/live.json"
+eq "$RC" 0 "null command on the covered task keeps the heartbeat visible"
 printf '{"id":"old","nudged":%s}\n{"id":"quiet","nudged":0}\n' "$((NOW - 5000))" \
   > "$P/.agent/LOGS/.bg-tasks.$SID.jsonl"
 R --session "$SID"
@@ -309,6 +317,16 @@ eq "$?" 0 "tool hook exits successfully"
 has "Context ~800K" "tier two nudge"
 has "compact-readiness: NOT READY" "tier carries report"
 has "record coverage" "tier names remedy"
+# The nudge budget is on the JSON-escaped form: control characters escape at 6 chars each (ship round 2, P3).
+fresh
+ESC=$(printf '\033%.0s' $(seq 1 200))
+for i in $(seq 1 25); do event "$(printf '%03d' "$i")" "We selected ${ESC} this"; done
+usage 800000
+OUT=$(cd "$P" && printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"%s","transcript_path":"%s","tool_input":{"command":"true"},"tool_response":{}}' \
+  "$SID" "$TR" | /bin/bash .claude/hooks/log-tool-event.sh 2>/dev/null)
+eq "$?" 0 "tool hook survives control characters"
+has "report truncated" "escaped report is truncated"
+[ "${#OUT}" -le 10000 ]; eq "$?" 0 "serialized hook output stays under the 10,000-character delivery limit (${#OUT})"
 echo "== Round 2 P2-4: folding refuses uncovered events and prunes coverage"
 fresh
 printf 'DECISION: old unreviewed decision\n' > "$P/.agent/events/20260901T000000Z-host-old.md"

@@ -410,7 +410,9 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
         # 2000 chars: the nudge is emitted twice (systemMessage + additionalContext) and
         # JSON-escaped, and the whole hook output must stay under the 10,000-character
         # delivery limit (measured 2026-10-19: a 6000-char cap reached 10-15k serialized).
-        _RO=$(printf '%s' "$_RO" | jq -Rrs 'if length > 2000 then .[0:2000] + "\n[report truncated; run compact-readiness.sh directly]" else . end')
+        # The budget is on the JSON-escaped form: a report full of control characters escapes at 6 chars each
+        # and reached 15k serialized under a raw-text cap (ship round 2, P3).
+        _RO=$(printf '%s' "$_RO" | jq -Rrs 'def fit: if (tojson | length) <= 2000 then . else (.[0:(length * 9 / 10 | floor)] | fit) end; . as $raw | fit | if . == $raw then . else . + "\n[report truncated; run compact-readiness.sh directly]" end')
         [ -n "$_RO" ] && COMPACT_NUDGE="${COMPACT_NUDGE}
 🧭 ${_RO}
 Advisory only. After reconciling the registers, record coverage with compact-readiness.sh --mark. Marking does not acknowledge staged rows or certify readiness."
@@ -418,7 +420,8 @@ Advisory only. After reconciling the registers, record coverage with compact-rea
 
       # If FULL_CONTEXT.md is large, also hint at agent-log.sh fold (the superseded
       # /prune-context asked an AI which lines to delete from the rendered file; fold
-      # moves old events into the snapshot and the rendered view stays identical).
+      # moves old events into the snapshot; the rendered view changes only by one fold-cutoff
+      # comment line, and fold refuses uncovered events).
       # Distinct from /compact. Tier-gated so wc -l runs at most once per tier per session.
       FC_LINES_NUDGE=$(wc -l < .agent/FULL_CONTEXT.md 2>/dev/null | tr -d ' ' || echo "0")
       FC_LINES_NUDGE="${FC_LINES_NUDGE:-0}"
