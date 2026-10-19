@@ -332,6 +332,17 @@ eq "$RC" 1 'late pre-cutoff identity still blocks'
 mark
 R --session "$SID"
 eq "$RC" 0 'late old reviewed identity stays covered until folded'
+printf 'DECISION: preserve this byte: \377\n' > "$P/.agent/events/20260902T000000Z-host-bytes.md"
+R --session "$SID"
+eq "$RC" 1 'event with invalid UTF-8 still reports its decision'
+mark
+OUT=$(cd "$P" && /bin/bash .claude/hooks/agent-log.sh fold --before 2026-10-01 2>&1); RC=$?
+eq "$RC" 0 'fold of an invalid UTF-8 event succeeds'
+absent "$P/.agent/events/20260902T000000Z-host-bytes.md" 'invalid UTF-8 event moved'
+bytes() { python3 -c 'import sys; d = open(sys.argv[1], "rb").read(); print(d.count(b"\xff"), d.count(b"\xef\xbf\xbd"))' "$1"; }
+eq "$(bytes "$P/.agent/snapshot.md")" "1 0" 'fold copies event bytes unchanged (no replacement character)'
+OUT=$(cat "$P/.agent/snapshot.md")
+has 'DECISION: late old arrival' 'second fold keeps earlier history'
 
 echo "== Round 2 P2-5: live Monitor overrides historical nudge"
 fresh

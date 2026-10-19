@@ -50,7 +50,7 @@ def number(name, default, low=1, high=1000000):
 def atomic(path, text):
     fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
     try:
-        with os.fdopen(fd, "w") as stream:
+        with os.fdopen(fd, "wb" if isinstance(text, bytes) else "w") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
@@ -191,14 +191,16 @@ def fold(before):
     if any(n not in covered for n in names):
         fail("fold refused: uncovered events; reconcile registers and --mark first")
     snapshot = Path(".agent/snapshot.md")
-    old = snapshot.read_text() if snapshot.exists() else ""
-    prior = re.findall(r"^<!-- registers-fold-cutoff: ([0-9]{8}) -->$", old, re.M)
-    cutoff = max([cutoff] + prior)
-    old = re.sub(r"^<!-- registers-fold-cutoff: [0-9]{8} -->\n?", "", old, flags=re.M)
-    text = "<!-- registers-fold-cutoff: " + cutoff + " -->\n" + old
-    text += "".join((Path(".agent/events") / n).read_text(errors="replace") for n in names)
+    old = snapshot.read_bytes() if snapshot.exists() else b""
+    prior = re.findall(rb"^<!-- registers-fold-cutoff: ([0-9]{8}) -->$", old, re.M)
+    cutoff = max([cutoff] + [p.decode() for p in prior])
+    old = re.sub(rb"^<!-- registers-fold-cutoff: [0-9]{8} -->\n?", b"", old, flags=re.M)
+    # The snapshot is history: events are copied byte for byte. Decoding with a replacement
+    # character is for reports only; here it would be silent data loss (fix round 2026-10-19, P1).
+    data = ("<!-- registers-fold-cutoff: " + cutoff + " -->\n").encode() + old
+    data += b"".join((Path(".agent/events") / n).read_bytes() for n in names)
     # Publish history first. A crash can duplicate history, never lose it.
-    atomic(snapshot, text)
+    atomic(snapshot, data)
     for n in names:
         (Path(".agent/events") / n).unlink()
     live = set(events())
