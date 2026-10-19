@@ -367,6 +367,12 @@ for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
   echo "  synced: .claude/rules/$(basename "$rule")"
 done
 
+# --- Shared-knowledge detail (loaded on demand by rules/shared-memory.md) ---
+if [ -f "$TEMPLATE_DIR/.claude/shared-memory-full.md" ]; then
+  atomic_install "$TEMPLATE_DIR/.claude/shared-memory-full.md" "$PROJECT/.claude/shared-memory-full.md"
+  echo "  synced: .claude/shared-memory-full.md"
+fi
+
 # --- verify.sh example (opt-in — inert until the user copies it into place) ---
 if [ -f "$TEMPLATE_DIR/.claude/verify.sh.example" ]; then
   atomic_install "$TEMPLATE_DIR/.claude/verify.sh.example" "$PROJECT/.claude/verify.sh.example" 755
@@ -424,7 +430,7 @@ fi
 # Add megavibe entries to .gitignore (idempotent)
 GITIGNORE_ENTRIES=("CLAUDE.local.md" "events.jsonl")
 # Only add .claude/ subpaths if .claude/ isn't already gitignored as a whole
-CLAUDE_SUBPATH_ENTRIES=(".claude/hooks/" ".claude/rules/" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
+CLAUDE_SUBPATH_ENTRIES=(".claude/hooks/" ".claude/rules/" ".claude/shared-memory-full.md" ".claude/skills/" ".claude/agents/" ".claude/settings.json")
 if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git" ]; then
   [ -f "$PROJECT/.gitignore" ] || touch "$PROJECT/.gitignore"
   # If .claude/ is already ignored, skip all subpath entries

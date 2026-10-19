@@ -4,6 +4,11 @@
 # Clones differ in remote scheme, directory and worktree path; only the remote is
 # stable. Exits 1 with no output when there is no remote or it does not normalize
 # to a valid id, so a caller can skip labelling instead of inventing one.
+# Also exits 1 when memory-config.sh is not beside this file (symlinks are not
+# followed): the reserved shared labels are then unknown.
+# Limits: the host is dropped (the same org/name on two forges is one id), and
+# paths deeper than org/name (GitLab subgroups, Azure DevOps) or organisations
+# containing `_` or `.` exit 1.
 #
 # Usage: repo-id.sh [dir]
 
@@ -46,7 +51,14 @@ name=$(printf '%s' "$name" | tr 'A-Z' 'a-z')
 id="$org/$name"
 # The shared scopes are reserved ids: a real repo of the same name must not
 # silently become one of them.
-for reserved in "${MEGAVIBE_MEMORY_GENERAL:-}" "${MEGAVIBE_MEMORY_COMPANY:-}"; do
+# The labels come from memory-config.sh (the user's own settings), never from the
+# process env, which a cloned repo can set.
+mc="$(dirname "$0")/memory-config.sh"
+# Without it the shared labels are unknown and the guard below cannot run: skip
+# the repo scope rather than risk writing into a shared one.
+[ -x "$mc" ] || exit 1
+labels=$("$mc" 2>/dev/null | sed -n -E 's/^MEGAVIBE_MEMORY_(GENERAL|COMPANY)=//p' || true)
+for reserved in $labels; do
   reserved=$(printf '%s' "$reserved" | tr 'A-Z' 'a-z' | tr -d '[:space:]')
   reserved="${reserved%/}"; reserved="${reserved%.git}"
   [ -z "$reserved" ] || [ "$id" != "$reserved" ] || exit 1
