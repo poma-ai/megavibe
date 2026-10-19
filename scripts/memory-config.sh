@@ -14,20 +14,21 @@
 # Consequence: a variable exported in a shell or set in a project's own settings
 # is NOT honoured. Put these in ~/.claude/settings.json (env block).
 #
-# An empty value means unset. A variable found only in the process env prints
-# `IGNORED KEY` (name only, known names only). No jq, no readable user settings, an unresolvable
+# An empty value means unset. A known variable found in the process env but not
+# in the file prints `IGNORED KEY` (name only). No jq, no readable user settings, an unresolvable
 # home: prints `UNAVAILABLE (reason)` and nothing else (feature off). Always
 # exits 0.
 
 # No -e on purpose: every path must end in exit 0 with whatever it printed.
 set -uo pipefail
 
-# Resolve id and jq from fixed system locations and drop startup hooks, so a
-# planted PATH entry or exported function cannot answer for them. This does not
-# help against BASH_ENV, which bash reads before line one; see the README limits.
+# Resolve the commands used here from fixed system locations and drop exported
+# functions under the names this script calls, plus the startup hooks. Best
+# effort only: BASH_ENV is read before line one, and a function under a builtin's
+# name (set, unset, exit, [) is not covered; the README lists this as a limit.
 PATH=/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin
 unset BASH_ENV ENV
-unset -f id jq printf eval 2>/dev/null
+unset -f id jq printf eval compgen grep 2>/dev/null
 
 command -v jq &>/dev/null || { echo "UNAVAILABLE (jq not found)"; exit 0; }
 
@@ -55,14 +56,16 @@ names=$([ -f "$settings" ] && jq -r '
     else empty end
 ' "$settings" 2>/dev/null)
 [ -z "$names" ] || printf '%s\n' "$names"
+present=$([ -f "$settings" ] && jq -r '(.env // {}) | if type == "object" then keys[] else empty end' "$settings" 2>/dev/null)
 
-# Known names present in the process env but not usable from the user file are
-# not honoured; say so by name (never by value) so the user can move them. Only
-# the known names are checked, so a repo cannot make the script echo text of its
-# choosing.
+# Known names present in the process env but absent from the user file are not
+# honoured; say so by name (never by value) so the user can move them. A key the
+# file has with any value, empty included, is the user's own and is not reported.
+# Only the known names are checked, so a repo cannot make the script echo text
+# of its choosing.
 for k in MEGAVIBE_MEMORY_SERVER MEGAVIBE_MEMORY_DOCS MEGAVIBE_MEMORY_DOCS_ASK MEGAVIBE_MEMORY_GENERAL MEGAVIBE_MEMORY_COMPANY; do
   compgen -e 2>/dev/null | grep -x "$k" >/dev/null || continue
-  grep -Eq "^(INVALID )?$k(=|$)" <<<"$names" || echo "IGNORED $k"
+  grep -qx "$k" <<<"$present" || echo "IGNORED $k"
 done
 # Claude Code reads another config dir when CLAUDE_CONFIG_DIR is set, and managed
 # settings can set env too; this script reads neither. A fixed notice, not the
