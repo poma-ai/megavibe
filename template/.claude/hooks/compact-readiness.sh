@@ -266,6 +266,8 @@ def main():
                     "no background tasks recorded for this session")
         if args.hook_input:
             payload = json.load(os.fdopen(3) if args.hook_input == "-" else open(args.hook_input))
+            if not isinstance(payload, dict):
+                fail("hook input is not a JSON object")  # inability to check is exit 2, never a finding
             if payload.get("session_id") != sid:
                 fail("live registry session does not match --session")
             registry = payload.get("background_tasks")

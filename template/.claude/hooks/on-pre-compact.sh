@@ -99,7 +99,10 @@ done
 if [ "$IS_SUBAGENT" -eq 0 ]; then
   if [ "$_PC_FRESH" -eq 1 ]; then rm -f "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
   else echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true; fi
-  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" 2>/dev/null || true
+  rm -f "${LOGDIR}/.rehydrate-nudge.${SID}" "${LOGDIR}/.rehydrate-blocked.${SID}" "${LOGDIR}/.rehydrate-nagcount.${SID}" \
+        "${LOGDIR}/.closeout-done.${SID}" "${LOGDIR}/.closeout-blocked.${SID}" "${LOGDIR}/.closeout-count.${SID}" 2>/dev/null || true
+  # The close-out flags go too: a manual /compact gets no SessionStart:compact, so this is the only place that
+  # re-arms compaction-autopilot's close-out nudge for the next cycle (ship review 2026-10-19, P2).
 fi
 
 # --- Invalidate the read-delta re-Read cache ---
