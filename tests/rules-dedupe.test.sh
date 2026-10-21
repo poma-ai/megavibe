@@ -161,5 +161,26 @@ check "registered in settings on startup|resume" 'jq -e ".hooks.SessionStart[] |
 (cd "$RC" && echo '{}' | HOME="$T/h2" bash -c "$cmd" >/dev/null 2>&1); rc=$?
 check "registered command runs (rc 0)" '[ "$rc" = 0 ]'
 
+# 16. Ship-round 2 cases.
+# a) A/link/../child: logical and physical name different directories -> nothing.
+PA="$T/pa"; PB="$T/pb"; mkproj "$PA" a.md; mkdir -p "$PB/deep"; mkproj "$PA/child" a.md; mkproj "$PB/child" a.md; ln -s "$PB/deep" "$PA/link"
+bash "$H" "$PA/link/../child" "$TPL" >/dev/null
+check "dotdot through a link: B's copy untouched" '[ -f "$PB/child/.claude/rules/a.md" ]'
+# b) A rule tracked in a repository nested in .claude/rules.
+NR="$P/nr"; mkproj "$NR" a.md; git -C "$NR/.claude/rules" init -q; git -C "$NR/.claude/rules" add a.md
+bash "$H" "$NR" "$TPL" >/dev/null; bash "$H" --init "$NR" "$TPL" >/dev/null
+check "nested repo in rules dir: tracked rule kept" '[ -f "$NR/.claude/rules/a.md" ]'
+NR2="$P/nr2"; mkproj "$NR2" a.md; git -C "$NR2/.claude" init -q; git -C "$NR2/.claude" add rules/a.md
+bash "$H" --init "$NR2" "$TPL" >/dev/null
+check "nested repo in .claude: tracked rule kept" '[ -f "$NR2/.claude/rules/a.md" ]'
+# c) A git that exits 1 without answering counts as unknown -> kept.
+SG="$P/sg"; mkproj "$SG" a.md; mkdir -p "$SG/.git" "$T/stub"; printf '#!/bin/sh\necho "xcrun: error: invalid active developer path" >&2\nexit 1\n' > "$T/stub/git"; chmod +x "$T/stub/git"
+PATH="$T/stub:$PATH" bash "$H" "$SG" "$TPL" >/dev/null
+check "git stub exiting 1: rule kept" '[ -f "$SG/.claude/rules/a.md" ]'
+# d) A plain (non-git) child still gets deduped (no .git anywhere up).
+PL="$P/plain"; mkproj "$PL" a.md
+bash "$H" "$PL" "$TPL" >/dev/null
+check "non-git child: deduped" '[ ! -e "$PL/.claude/rules/a.md" ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -35,20 +35,23 @@ set -u
 INIT=0; HOOK=0
 # No arguments = called as a hook: the hook command carries none, because
 # init.sh quotes each registered command as one path.
-if [ "$#" = 0 ]; then HOOK=1; cat >/dev/null 2>&1 || true; fi
+if [ "$#" = 0 ]; then HOOK=1; [ -t 0 ] || cat >/dev/null 2>&1 || true; fi
 [ "${1:-}" = "--init" ] && { INIT=1; shift; }
 PROJECT="${1:-.}"
 TEMPLATE_RULES="${2:-${MEGAVIBE_HOME:-$HOME/.megavibe}/template/.claude/rules}"
 
 [ -d "$PROJECT/.agent" ] && [ -d "$PROJECT/.claude" ] || exit 0
 [ -d "$TEMPLATE_RULES" ] || exit 0
-OWN_DIR="$PROJECT/.claude/rules"
 # Never act through a linked .claude or rules directory: it belongs to another
 # project (a worktree's .claude is the main checkout's), whose own run decides
 # by where that project lives.
-[ -L "$PROJECT/.claude" ] || [ -L "$OWN_DIR" ] && exit 0
 LOGICAL="$(cd "$PROJECT" 2>/dev/null && pwd -L)" || exit 0
 PHYSICAL="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || exit 0
+# The logical spelling must name the directory the files are in (A/link/..
+# resolves differently for cd and for open()); all file work uses PHYSICAL.
+[ "$LOGICAL" -ef "$PHYSICAL" ] || exit 0
+OWN_DIR="$PHYSICAL/.claude/rules"
+[ -L "$PHYSICAL/.claude" ] || [ -L "$OWN_DIR" ] && exit 0
 HOME="${HOME:-/nonexistent}"
 HOME_P="$(cd "$HOME" 2>/dev/null && pwd -P)"
 
@@ -97,17 +100,21 @@ nearest_copy() {
   return 1
 }
 
-tracked() {  # tracked <dir> <file>: true unless git positively says untracked
-  local d
-  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
-  # Not inside any git work tree (no .git entry up the tree): untracked.
-  while [ "$d" != "/" ] && [ ! -e "$d/.git" ]; do d="$(dirname "$d")"; done
-  [ -e "$d/.git" ] || return 1
+tracked() {  # tracked <file>: true unless git positively says untracked
+  local d n w out
+  d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 0
+  n="$(basename "$1")"
+  # Asked from the file's own directory, so a repository nested in .claude
+  # or .claude/rules is the one that answers. No .git entry anywhere up from
+  # there: untracked.
+  w="$d"
+  while [ "$w" != "/" ] && [ ! -e "$w/.git" ]; do w="$(dirname "$w")"; done
+  [ -e "$w/.git" ] || return 1
   command -v git >/dev/null 2>&1 || return 0
-  # ls-files exits 1 for an untracked path; any other failure (a broken or
-  # unreadable index, dubious ownership) is an unknown, and unknown = tracked.
-  git -C "$1" ls-files --error-unmatch -- "$2" >/dev/null 2>&1
-  [ $? -ne 1 ]
+  # Untracked only when git succeeds and lists nothing; any failure (a broken
+  # index, dubious ownership, a stub git) is an unknown, and unknown = tracked.
+  out="$(git -C "$d" ls-files -- "$n" 2>/dev/null)" || return 0
+  [ -n "$out" ]
 }
 
 install() {  # install <src> <dest>: atomic copy
@@ -127,8 +134,7 @@ for tpl in "$TEMPLATE_RULES"/*.md; do
   if [ "$INIT" = 1 ]; then
     for c in "$(nearest_copy "$LOGICAL" "$n")" "$(nearest_copy "$PHYSICAL" "$n")"; do
       [ -n "$c" ] && ! cmp -s "$c" "$tpl" || continue
-      cdir="$(dirname "$(dirname "$(dirname "$c")")")"
-      tracked "$cdir" ".claude/rules/$n" && continue
+      tracked "$c" && continue
       install "$tpl" "$c" && refreshed=$((refreshed + 1))
     done
   fi
@@ -144,7 +150,7 @@ for tpl in "$TEMPLATE_RULES"/*.md; do
     # init.sh has always overwritten these files (infrastructure), so under
     # --init a stale copy goes too; at session start only identical ones do.
     if [ -f "$own" ] && [ ! -L "$own" ] && { [ "$INIT" = 1 ] || cmp -s "$own" "$tpl" || cmp -s "$own" "$cov_l"; } \
-       && ! tracked "$PROJECT" ".claude/rules/$n" && [ ! "$own" -ef "$cov_l" ] && [ ! "$own" -ef "$cov_p" ]; then
+       && ! tracked "$own" && [ ! "$own" -ef "$cov_l" ] && [ ! "$own" -ef "$cov_p" ]; then
       rm -f "$own" && removed=$((removed + 1))
     else
       kept=$((kept + 1))
