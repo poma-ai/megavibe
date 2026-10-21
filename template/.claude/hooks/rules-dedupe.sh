@@ -119,8 +119,11 @@ tracked() {  # tracked <file>: true unless git positively says untracked
     if [ -e "$w/.git" ] || [ -L "$w/.git" ]; then
       found=1
       command -v git >/dev/null 2>&1 || return 0
+      # A literal, case-insensitive pathspec: on a case-insensitive filesystem
+      # a tracked Delegation.md is the same file as delegation.md.
       out="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
-             git -c core.fsmonitor=false -C "$w" ls-files -- "$n" 2>/dev/null)" || return 0
+             -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS \
+             git -c core.fsmonitor=false -C "$w" ls-files -- ":(icase,literal)$n" 2>/dev/null)" || return 0
       [ -n "$out" ] && return 0
     fi
     [ "$w" = "/" ] && break

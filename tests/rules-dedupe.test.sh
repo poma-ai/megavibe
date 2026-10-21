@@ -242,5 +242,16 @@ bash "$H" "$FM" "$TPL" >/dev/null
 check "fsmonitor not invoked" '[ ! -e "$T/fsmon.ran" ]'
 check "fsmonitor repo: tracked rule kept" '[ -f "$FM/.claude/rules/a.md" ]'
 
+# 21. Case alias on a case-insensitive filesystem: a tracked Delegation.md is kept.
+CI="$P/ci"; mkproj "$CI"; cp "$TPL/a.md" "$CI/.claude/rules/A.md"; git -C "$CI" init -q; git -C "$CI" add .claude/rules/A.md
+if [ -e "$CI/.claude/rules/a.md" ]; then
+  bash "$H" "$CI" "$TPL" >/dev/null; bash "$H" --init "$CI" "$TPL" >/dev/null
+  check "case alias: tracked A.md kept" '[ -n "$(git -C "$CI" ls-files .claude/rules)" ] && [ -z "$(git -C "$CI" ls-files --deleted)" ]'
+else ok; fi
+# 22. Pathspec magic characters in a tracked file's directory still match literally.
+MG="$P/m[1]"; mkproj "$MG" a.md; git -C "$MG" init -q; git -C "$MG" add .claude/rules/a.md
+bash "$H" "$MG" "$TPL" >/dev/null
+check "glob chars in dir: tracked rule kept" '[ -f "$MG/.claude/rules/a.md" ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
