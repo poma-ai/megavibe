@@ -46,13 +46,15 @@ TEMPLATE_RULES="${2:-${MEGAVIBE_HOME:-$HOME/.megavibe}/template/.claude/rules}"
 # Never act through a linked .claude or rules directory: it belongs to another
 # project (a worktree's .claude is the main checkout's), whose own run decides
 # by where that project lives.
-LOGICAL="$(cd "$PROJECT" 2>/dev/null && pwd -L)" || exit 0
-PHYSICAL="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || exit 0
+# A sentinel keeps a trailing newline that $(...) would strip (a directory
+# named "child<newline>" would otherwise resolve to its sibling "child").
+LOGICAL="$(cd "$PROJECT" 2>/dev/null && pwd -L && echo x)" || exit 0; LOGICAL="${LOGICAL%$'\n'x}"
+PHYSICAL="$(cd "$PROJECT" 2>/dev/null && pwd -P && echo x)" || exit 0; PHYSICAL="${PHYSICAL%$'\n'x}"
+# Parents are walked line by line: a path containing a newline is refused.
+case "$LOGICAL$PHYSICAL" in *$'\n'*) exit 0 ;; esac
 # The logical spelling must name the directory the files are in (A/link/..
 # resolves differently for cd and for open()); all file work uses PHYSICAL.
 [ "$LOGICAL" -ef "$PHYSICAL" ] || exit 0
-# Parents are walked line by line: a path containing a newline is refused.
-case "$LOGICAL$PHYSICAL" in *$'\n'*) exit 0 ;; esac
 OWN_DIR="$PHYSICAL/.claude/rules"
 [ -L "$PHYSICAL/.claude" ] || [ -L "$OWN_DIR" ] && exit 0
 HOME_P="$(cd "$HOME" 2>/dev/null && pwd -P)"
@@ -182,7 +184,7 @@ msg=""
 [ "$removed" -gt 0 ] && msg="${msg}${removed} removed (a megavibe parent directory carries them); "
 [ "$installed" -gt 0 ] && msg="${msg}${installed} installed or updated; "
 [ "$refreshed" -gt 0 ] && msg="${msg}${refreshed} parent copies refreshed to the template; "
-[ "$kept" -gt 0 ] && [ "$INIT" = 1 ] && msg="${msg}${kept} kept although a parent carries them (tracked by git, linked, or not a regular file); "
+[ "$kept" -gt 0 ] && [ "$INIT" = 1 ] && [ -n "$msg" ] && msg="${msg}${kept} kept although a parent carries them (tracked by git, linked, or not a regular file); "
 [ -n "$msg" ] || exit 0
 msg="rules: ${msg%; }; applies from the next session"
 if [ "$HOOK" = 1 ]; then

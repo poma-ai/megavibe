@@ -203,5 +203,13 @@ check "--init: tracked covered stale copy synced" 'cmp -s "$GD/.claude/rules/a.m
 (cd "$HM" && env -u HOME bash "$H" "$HM" "$TPL" >/dev/null 2>&1); rc=$?
 check "HOME unset: exit 0" '[ "$rc" = 0 ]'
 
+# 18. Trailing newline in a directory name must not resolve to the sibling.
+TN="$T/tn"; mkproj "$TN" a.md; mkproj "$TN/child" a.md; mkproj "$TN/child"$'\n' a.md
+bash "$H" "$TN/child"$'\n' "$TPL" >/dev/null
+check "trailing newline (arg): sibling untouched" '[ -f "$TN/child/.claude/rules/a.md" ]'
+(cd "$TN/child"$'\n' && echo '{}' | MEGAVIBE_HOME="$T/mvh" bash "$H" >/dev/null)
+check "trailing newline (hook mode): sibling untouched" '[ -f "$TN/child/.claude/rules/a.md" ]'
+check "trailing newline: its own copy untouched too" '[ -f "$TN/child"$'"'"'\n'"'"'/.claude/rules/a.md ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

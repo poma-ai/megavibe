@@ -375,9 +375,12 @@ if [ -f "$_dedupe" ]; then
     [ "$_nested" = "$PROJECT" ] && continue
     # .agent/events is made by every init.sh run; a template's .agent has none.
     [ -d "$_nested/.agent/events" ] || continue
+    # A project whose own hooks predate this has nothing to restore a removed
+    # copy if this parent later loses it: its own next init.sh run handles it.
+    [ -f "$_nested/.claude/hooks/rules-dedupe.sh" ] || continue
     _out="$(bash "$_dedupe" "$_nested" "$TEMPLATE_DIR/.claude/rules")"
     [ -n "$_out" ] && echo "  ${_nested#"$PROJECT"/}: $_out"
-  done < <(find "$PROJECT" -maxdepth 5 \( -name node_modules -o -name .git -o -name Library -o -name .venv -o -name venv \) -prune \
+  done < <(find "$PROJECT" -maxdepth 5 \( -name node_modules -o -name .git -o -name Library -o -name .venv -o -name venv -o -name .cache -o -name __pycache__ -o -name site-packages -o -name target -o -name dist -o -name build -o -name .next \) -prune \
              -o -type d -path '*/.claude/rules' -print 2>/dev/null)
 else
   for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
