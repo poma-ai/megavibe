@@ -32,6 +32,7 @@
 # this script (at session start) reinstalls it; the next session has it.
 set -u
 
+HOME="${HOME:-/nonexistent}"
 INIT=0; HOOK=0
 # No arguments = called as a hook: the hook command carries none, because
 # init.sh quotes each registered command as one path.
@@ -50,9 +51,10 @@ PHYSICAL="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || exit 0
 # The logical spelling must name the directory the files are in (A/link/..
 # resolves differently for cd and for open()); all file work uses PHYSICAL.
 [ "$LOGICAL" -ef "$PHYSICAL" ] || exit 0
+# Parents are walked line by line: a path containing a newline is refused.
+case "$LOGICAL$PHYSICAL" in *$'\n'*) exit 0 ;; esac
 OWN_DIR="$PHYSICAL/.claude/rules"
 [ -L "$PHYSICAL/.claude" ] || [ -L "$OWN_DIR" ] && exit 0
-HOME="${HOME:-/nonexistent}"
 HOME_P="$(cd "$HOME" 2>/dev/null && pwd -P)"
 
 # Parents of one spelling of the path, nearest first, excluding $HOME and /:
@@ -101,20 +103,27 @@ nearest_copy() {
 }
 
 tracked() {  # tracked <file>: true unless git positively says untracked
-  local d n w out
+  local d n w out found=0
   d="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 0
-  n="$(basename "$1")"
-  # Asked from the file's own directory, so a repository nested in .claude
-  # or .claude/rules is the one that answers. No .git entry anywhere up from
-  # there: untracked.
+  n="$d/$(basename "$1")"
+  # Every repository up the tree is asked (one nested in .claude/rules does
+  # not hide an outer one that tracks the file), with no inherited GIT_DIR
+  # and friends pointing git somewhere else. Untracked only when there is no
+  # repository at all, or every one of them answers and lists nothing; any
+  # failure (a broken index, dubious ownership, a stub git) counts as tracked.
   w="$d"
-  while [ "$w" != "/" ] && [ ! -e "$w/.git" ]; do w="$(dirname "$w")"; done
-  [ -e "$w/.git" ] || return 1
-  command -v git >/dev/null 2>&1 || return 0
-  # Untracked only when git succeeds and lists nothing; any failure (a broken
-  # index, dubious ownership, a stub git) is an unknown, and unknown = tracked.
-  out="$(git -C "$d" ls-files -- "$n" 2>/dev/null)" || return 0
-  [ -n "$out" ]
+  while :; do
+    if [ -e "$w/.git" ]; then
+      found=1
+      command -v git >/dev/null 2>&1 || return 0
+      out="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
+             git -C "$w" ls-files -- "$n" 2>/dev/null)" || return 0
+      [ -n "$out" ] && return 0
+    fi
+    [ "$w" = "/" ] && break
+    w="$(dirname "$w")"
+  done
+  return 1
 }
 
 install() {  # install <src> <dest>: atomic copy
@@ -153,6 +162,11 @@ for tpl in "$TEMPLATE_RULES"/*.md; do
        && ! tracked "$own" && [ ! "$own" -ef "$cov_l" ] && [ ! "$own" -ef "$cov_p" ]; then
       rm -f "$own" && removed=$((removed + 1))
     else
+      # Kept (tracked, linked or not a regular file). Under --init a tracked,
+      # regular copy is still synced to the template, as init.sh always did.
+      if [ "$INIT" = 1 ] && [ -f "$own" ] && [ ! -L "$own" ] && ! cmp -s "$own" "$tpl"; then
+        install "$tpl" "$own" && installed=$((installed + 1))
+      fi
       kept=$((kept + 1))
     fi
   else

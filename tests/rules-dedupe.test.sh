@@ -182,5 +182,26 @@ PL="$P/plain"; mkproj "$PL" a.md
 bash "$H" "$PL" "$TPL" >/dev/null
 check "non-git child: deduped" '[ ! -e "$PL/.claude/rules/a.md" ]'
 
+# 17. Ship-round 3 cases.
+# a) Outer repo tracks the rule, an empty repo sits inside .claude/rules: kept.
+OR="$P/or"; mkproj "$OR" a.md; git -C "$OR" init -q; git -C "$OR" add .claude/rules/a.md; git -C "$OR/.claude/rules" init -q
+bash "$H" "$OR" "$TPL" >/dev/null; bash "$H" --init "$OR" "$TPL" >/dev/null
+check "outer repo tracks, inner repo empty: kept" '[ -f "$OR/.claude/rules/a.md" ]'
+# b) An inherited GIT_DIR pointing elsewhere does not make a tracked file untracked.
+GD="$P/gd"; mkproj "$GD" a.md; git -C "$GD" init -q; git -C "$GD" add .claude/rules/a.md; git init -q "$T/elsewhere-repo"
+GIT_DIR="$T/elsewhere-repo/.git" bash "$H" "$GD" "$TPL" >/dev/null
+check "inherited GIT_DIR: tracked rule kept" '[ -f "$GD/.claude/rules/a.md" ]'
+# c) A newline in the path: refused.
+NL="$T/x"$'\n'"y"; mkdir -p "$NL"; mkproj "$NL/c" a.md
+bash "$H" "$NL/c" "$TPL" >/dev/null
+check "newline in path: nothing removed" '[ -f "$NL/c/.claude/rules/a.md" ]'
+# d) Under --init a tracked, covered, stale copy is synced to the template.
+echo stale > "$GD/.claude/rules/a.md"
+bash "$H" --init "$GD" "$TPL" >/dev/null
+check "--init: tracked covered stale copy synced" 'cmp -s "$GD/.claude/rules/a.md" "$TPL/a.md"'
+# e) HOME unset: exit 0.
+(cd "$HM" && env -u HOME bash "$H" "$HM" "$TPL" >/dev/null 2>&1); rc=$?
+check "HOME unset: exit 0" '[ "$rc" = 0 ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
