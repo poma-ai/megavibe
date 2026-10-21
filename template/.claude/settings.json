@@ -129,6 +129,11 @@
             "type": "command",
             "command": ".claude/hooks/status-sync.sh",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/rules-dedupe.sh",
+            "timeout": 10
           }
         ]
       },

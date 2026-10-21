@@ -1,5 +1,8 @@
 #!/bin/bash
 # Usage: rules-dedupe.sh [--init] <project> [template-rules-dir]
+#        rules-dedupe.sh          (no arguments: a SessionStart hook on startup and
+#                                  resume; project = cwd, stdin drained, note
+#                                  printed as a systemMessage)
 #
 # Claude Code loads .claude/rules/*.md from the project AND from every parent
 # directory (measured 2026-10-21 with `claude -p` in a scratch tree; it walks
@@ -29,7 +32,10 @@
 # this script (at session start) reinstalls it; the next session has it.
 set -u
 
-INIT=0
+INIT=0; HOOK=0
+# No arguments = called as a hook: the hook command carries none, because
+# init.sh quotes each registered command as one path.
+if [ "$#" = 0 ]; then HOOK=1; cat >/dev/null 2>&1 || true; fi
 [ "${1:-}" = "--init" ] && { INIT=1; shift; }
 PROJECT="${1:-.}"
 TEMPLATE_RULES="${2:-${MEGAVIBE_HOME:-$HOME/.megavibe}/template/.claude/rules}"
@@ -43,6 +49,7 @@ OWN_DIR="$PROJECT/.claude/rules"
 [ -L "$PROJECT/.claude" ] || [ -L "$OWN_DIR" ] && exit 0
 LOGICAL="$(cd "$PROJECT" 2>/dev/null && pwd -L)" || exit 0
 PHYSICAL="$(cd "$PROJECT" 2>/dev/null && pwd -P)" || exit 0
+HOME="${HOME:-/nonexistent}"
 HOME_P="$(cd "$HOME" 2>/dev/null && pwd -P)"
 
 # Parents of one spelling of the path, nearest first, excluding $HOME and /:
@@ -57,24 +64,50 @@ parents() {
   done
 }
 
-# covering_copy <chain-root> <name>: the nearest parent copy usable as the
-# single copy, printed; non-zero if there is none.
+# A parent's rules count only through real directories: a linked .claude or
+# .claude/rules belongs to some other checkout, which is never written here
+# and whose loading through the link is not relied on.
+parent_copy() {  # parent_copy <parent> <name>: usable copy path, or non-zero
+  local c="$1/.claude/rules/$2"
+  [ -d "$1/.agent/events" ] || return 1
+  [ -L "$1/.claude" ] || [ -L "$1/.claude/rules" ] && return 1
+  [ -f "$c" ] && [ ! -L "$c" ] && [ -r "$c" ] || return 1
+  printf '%s\n' "$c"
+}
+
+# covering_copy <chain-root> <name> <template>: the nearest parent copy with
+# the template's bytes, printed; non-zero if there is none.
 covering_copy() {
   local a c
   while IFS= read -r a; do
     [ -n "$a" ] || continue
-    [ -d "$a/.agent/events" ] || continue
-    c="$a/.claude/rules/$2"
-    [ -f "$c" ] && [ ! -L "$c" ] && [ -r "$c" ] || continue
-    printf '%s\n' "$c"; return 0
+    c="$(parent_copy "$a" "$2")" || continue
+    cmp -s "$c" "$3" && { printf '%s\n' "$c"; return 0; }
   done < <(parents "$1")
   return 1
 }
 
-tracked() {  # tracked <dir> <file>: true if git tracks it (unknown = tracked)
+# nearest_copy <chain-root> <name>: the nearest usable parent copy, any bytes.
+nearest_copy() {
+  local a c
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    c="$(parent_copy "$a" "$2")" && { printf '%s\n' "$c"; return 0; }
+  done < <(parents "$1")
+  return 1
+}
+
+tracked() {  # tracked <dir> <file>: true unless git positively says untracked
+  local d
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
+  # Not inside any git work tree (no .git entry up the tree): untracked.
+  while [ "$d" != "/" ] && [ ! -e "$d/.git" ]; do d="$(dirname "$d")"; done
+  [ -e "$d/.git" ] || return 1
   command -v git >/dev/null 2>&1 || return 0
-  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  # ls-files exits 1 for an untracked path; any other failure (a broken or
+  # unreadable index, dubious ownership) is an unknown, and unknown = tracked.
   git -C "$1" ls-files --error-unmatch -- "$2" >/dev/null 2>&1
+  [ $? -ne 1 ]
 }
 
 install() {  # install <src> <dest>: atomic copy
@@ -91,9 +124,8 @@ for tpl in "$TEMPLATE_RULES"/*.md; do
   n="$(basename "$tpl")"
   own="$OWN_DIR/$n"
 
-  cov_l="$(covering_copy "$LOGICAL" "$n")"; cov_p="$(covering_copy "$PHYSICAL" "$n")"
   if [ "$INIT" = 1 ]; then
-    for c in "$cov_l" "$cov_p"; do
+    for c in "$(nearest_copy "$LOGICAL" "$n")" "$(nearest_copy "$PHYSICAL" "$n")"; do
       [ -n "$c" ] && ! cmp -s "$c" "$tpl" || continue
       cdir="$(dirname "$(dirname "$(dirname "$c")")")"
       tracked "$cdir" ".claude/rules/$n" && continue
@@ -101,13 +133,11 @@ for tpl in "$TEMPLATE_RULES"/*.md; do
     done
   fi
 
-  # Covered only if both spellings of the path find a parent copy, and both
-  # copies are the template's bytes (a stale or custom parent copy is not a
-  # substitute for this project's own).
+  # Covered only if both spellings of the path find a parent copy with the
+  # template's bytes (a stale or custom parent copy is no substitute).
+  cov_l="$(covering_copy "$LOGICAL" "$n" "$tpl")"; cov_p="$(covering_copy "$PHYSICAL" "$n" "$tpl")"
   covered=0
-  if [ -n "$cov_l" ] && [ -n "$cov_p" ] && cmp -s "$cov_l" "$tpl" && cmp -s "$cov_p" "$tpl"; then
-    covered=1
-  fi
+  [ -n "$cov_l" ] && [ -n "$cov_p" ] && covered=1
 
   if [ "$covered" = 1 ]; then
     [ -e "$own" ] || [ -L "$own" ] || continue
@@ -132,6 +162,12 @@ msg=""
 [ "$removed" -gt 0 ] && msg="${msg}${removed} removed (a megavibe parent directory carries them); "
 [ "$installed" -gt 0 ] && msg="${msg}${installed} installed or updated; "
 [ "$refreshed" -gt 0 ] && msg="${msg}${refreshed} parent copies refreshed to the template; "
-[ "$kept" -gt 0 ] && [ "$INIT" = 1 ] && msg="${msg}${kept} kept although a parent carries them (edited or tracked here); "
-[ -n "$msg" ] && echo "rules: ${msg%; }; applies from the next session"
+[ "$kept" -gt 0 ] && [ "$INIT" = 1 ] && msg="${msg}${kept} kept although a parent carries them (tracked by git, linked, or not a regular file); "
+[ -n "$msg" ] || exit 0
+msg="rules: ${msg%; }; applies from the next session"
+if [ "$HOOK" = 1 ]; then
+  command -v jq >/dev/null 2>&1 && jq -n --arg m "$msg" '{systemMessage: $m}'
+else
+  echo "$msg"
+fi
 exit 0

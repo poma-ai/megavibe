@@ -27,12 +27,6 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 # Only act on fresh startup (not compact — that's handled by on-compact.sh)
 [ "$SOURCE" = "startup" ] || exit 0
 
-# A project nested in another megavibe project would load both copies of
-# every rule; this keeps one, at the top, effective from the next session.
-# Before the early exits below, so a project with short registers is covered.
-RULES_NOTE=""
-[ -f .claude/hooks/rules-dedupe.sh ] && RULES_NOTE=$(bash .claude/hooks/rules-dedupe.sh . 2>/dev/null || true)
-
 # NOTE: Context-watcher spawn moved to start-context-watcher.sh — that hook
 # registers for SessionStart with matchers `startup` AND `resume`, so the
 # watcher comes up on /megavibe-restart and `claude --continue` too. This
@@ -46,10 +40,7 @@ LESSONS_LINES=$(wc -l < ".agent/LESSONS.md" 2>/dev/null || echo "0")
 LESSONS_LINES=$(echo "$LESSONS_LINES" | tr -d ' ')
 
 # If nothing to orient with, skip silently
-if [ "$DECISIONS_LINES" -le 5 ] && [ "$LESSONS_LINES" -le 5 ]; then
-  [ -n "$RULES_NOTE" ] && jq -n --arg msg "$RULES_NOTE" '{systemMessage: $msg}'
-  exit 0
-fi
+[ "$DECISIONS_LINES" -gt 5 ] || [ "$LESSONS_LINES" -gt 5 ] || exit 0
 
 # Extract session ID
 SID=$(echo "$INPUT" | jq -r '.session_id // "default"' | cut -c1-12)
@@ -358,7 +349,5 @@ Codex: ${CODEX_STATUS}" ;; esac
 [ -n "$REVIEWER_USER" ] && USER_MSG="${USER_MSG}${REVIEWER_USER}"
 [ -n "$REVIEWER_LINE" ] && USER_MSG="${USER_MSG}${REVIEWER_LINE}"
 [ -n "$REVIEWER_DEFAULT_NOTE" ] && USER_MSG="${USER_MSG}${REVIEWER_DEFAULT_NOTE}"
-[ -n "$RULES_NOTE" ] && USER_MSG="${USER_MSG}
-${RULES_NOTE}"
 jq -n --arg ctx "$SHORT" --arg msg "$USER_MSG" \
   '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

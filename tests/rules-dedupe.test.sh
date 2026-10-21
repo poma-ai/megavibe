@@ -129,5 +129,37 @@ HOME="$T/h2" bash "$REPO/init.sh" "$RC" > "$T/i3.log" 2>&1; rc3=$?
 check "init.sh on child again: rc 0, still no copy" '[ "$rc3" = 0 ] && [ ! -e "$RC/.claude/rules/delegation.md" ]'
 check "init.sh on child again: no rules line printed" '! grep -q "^  rules:" "$T/i3.log"'
 
+# 15. Ship-round 1 cases.
+# a) git cannot read its index: the file counts as tracked and is kept.
+GI="$P/gi"; mkproj "$GI" a.md; git -C "$GI" init -q; git -C "$GI" add .claude/rules/a.md; chmod 000 "$GI/.git/index"
+bash "$H" "$GI" "$TPL" >/dev/null; bash "$H" --init "$GI" "$TPL" >/dev/null
+chmod 644 "$GI/.git/index"
+check "unreadable git index: tracked file kept" '[ -f "$GI/.claude/rules/a.md" ]'
+# b) A parent whose .claude or rules dir is a link neither covers nor is refreshed.
+O="$T/other"; mkdir -p "$O/.claude/rules"; echo old > "$O/.claude/rules/a.md"
+LP="$T/lp"; LC="$LP/c"; mkdir -p "$LP/.agent/events"; ln -s "$O/.claude" "$LP/.claude"; mkproj "$LC" a.md
+bash "$H" --init "$LC" "$TPL" >/dev/null
+check "linked parent .claude: unrelated file not refreshed" '[ "$(cat "$O/.claude/rules/a.md")" = old ]'
+check "linked parent .claude: own copy kept" '[ -f "$LC/.claude/rules/a.md" ]'
+LP2="$T/lp2"; LC2="$LP2/c"; mkdir -p "$LP2/.agent/events" "$LP2/.claude"; ln -s "$O/.claude/rules" "$LP2/.claude/rules"; mkproj "$LC2" a.md
+bash "$H" --init "$LC2" "$TPL" >/dev/null
+check "linked parent rules dir: unrelated file not refreshed" '[ "$(cat "$O/.claude/rules/a.md")" = old ]'
+# c) Stale nearest parent, identical grandparent: covered (plain mode).
+GP="$T/gp"; GPP="$GP/p"; GPC="$GPP/c"; mkproj "$GP" a.md; mkproj "$GPP"; echo stale > "$GPP/.claude/rules/a.md"; mkproj "$GPC" a.md
+bash "$H" "$GPC" "$TPL" >/dev/null
+check "stale nearest parent, identical grandparent: covered" '[ ! -e "$GPC/.claude/rules/a.md" ]'
+# d) Hook mode: no arguments, project = cwd, stdin drained, JSON out.
+HM="$P/hm"; mkproj "$HM" a.md
+out=$(cd "$HM" && echo '{"source":"resume"}' | MEGAVIBE_HOME="$T/mvh" bash "$H")
+mkdir -p "$T/mvh/template/.claude"; ln -s "$TPL" "$T/mvh/template/.claude/rules"
+out=$(cd "$HM" && echo '{"source":"resume"}' | MEGAVIBE_HOME="$T/mvh" bash "$H")
+check "hook mode: removed in cwd project" '[ ! -e "$HM/.claude/rules/a.md" ]'
+check "hook mode: JSON systemMessage" 'printf "%s" "$out" | jq -e ".systemMessage | test(\"removed\")" >/dev/null'
+# e) The registered command, as init.sh writes it into settings.json, runs.
+cmd=$(jq -r '.. | .command? // empty | select(test("rules-dedupe"))' "$RC/.claude/settings.json" | head -1)
+check "registered in settings on startup|resume" 'jq -e ".hooks.SessionStart[] | select(.matcher==\"startup|resume\") | .hooks[] | select(.command|test(\"rules-dedupe\"))" "$RC/.claude/settings.json" >/dev/null'
+(cd "$RC" && echo '{}' | HOME="$T/h2" bash -c "$cmd" >/dev/null 2>&1); rc=$?
+check "registered command runs (rc 0)" '[ "$rc" = 0 ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
