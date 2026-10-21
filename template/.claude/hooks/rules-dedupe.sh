@@ -120,7 +120,7 @@ tracked() {  # tracked <file>: true unless git positively says untracked
       found=1
       command -v git >/dev/null 2>&1 || return 0
       out="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \
-             git -C "$w" ls-files -- "$n" 2>/dev/null)" || return 0
+             git -c core.fsmonitor=false -C "$w" ls-files -- "$n" 2>/dev/null)" || return 0
       [ -n "$out" ] && return 0
     fi
     [ "$w" = "/" ] && break

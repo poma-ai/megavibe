@@ -343,7 +343,7 @@ A session hands you work in one visible place instead of burying it in the hidde
 | What | Where |
 |------|-------|
 | Hooks (33 scripts) | `.claude/hooks/` |
-| Rules (6 files) | `.claude/rules/`. Claude Code also loads the rules of every parent directory, so a megavibe project nested in another (`~/dev/proj` under `~/dev`) keeps no copy of the rules the parent carries: `rules-dedupe.sh` (run by `init.sh` and at session start) removes the project's identical copies and reinstalls one if no copy exists anywhere up the tree |
+| Rules (6 files) | `.claude/rules/`. Claude Code also loads the rules of every parent directory, so a megavibe project nested in another (`~/dev/proj` under `~/dev`) keeps no copy of the rules the parent carries: `rules-dedupe.sh` (run by `init.sh` and on session start and resume) removes the project's untracked copies (identical ones at session start, any under `init.sh`, which always overwrote them) and reinstalls one, from the next session, if no copy exists anywhere up the tree. Copies tracked by git, linked, or edited (outside `init.sh`) are kept |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
 | Skills (8 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |

@@ -229,5 +229,18 @@ NS="$R/noreg"; mkproj "$NS"; cp "$REPO/template/.claude/rules/delegation.md" "$N
 HOME="$T/h2" bash "$REPO/init.sh" "$R" > "$T/i5.log" 2>&1
 check "nested without registration: copy kept" '[ -f "$NS/.claude/rules/delegation.md" ]'
 
+# 20. Ship-round 6 cases.
+# a) A nested project registered on startup only is skipped.
+SO="$R/startonly"; mkproj "$SO"; cp "$REPO/template/.claude/rules/delegation.md" "$SO/.claude/rules/"; mkdir -p "$SO/.claude/hooks"; cp "$H" "$SO/.claude/hooks/"
+echo '{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":".claude/hooks/rules-dedupe.sh"}]}]}}' > "$SO/.claude/settings.json"
+HOME="$T/h2" bash "$REPO/init.sh" "$R" > "$T/i6.log" 2>&1
+check "nested registered on startup only: copy kept" '[ -f "$SO/.claude/rules/delegation.md" ]'
+# b) A slow core.fsmonitor is not invoked.
+FM="$P/fm"; mkproj "$FM" a.md; git -C "$FM" init -q; git -C "$FM" add .claude/rules/a.md
+printf '#!/bin/sh\ntouch "%s/fsmon.ran"; sleep 3\n' "$T" > "$T/fsmon.sh"; chmod +x "$T/fsmon.sh"; git -C "$FM" config core.fsmonitor "$T/fsmon.sh"
+bash "$H" "$FM" "$TPL" >/dev/null
+check "fsmonitor not invoked" '[ ! -e "$T/fsmon.ran" ]'
+check "fsmonitor repo: tracked rule kept" '[ -f "$FM/.claude/rules/a.md" ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

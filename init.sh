@@ -378,8 +378,11 @@ if [ -f "$_dedupe" ]; then
     # A project whose own hooks predate this has nothing to restore a removed
     # copy if this parent later loses it: its own next init.sh run handles it.
     [ -f "$_nested/.claude/hooks/rules-dedupe.sh" ] || continue
-    jq -e '[.hooks.SessionStart[]? | select((.matcher // "") | test("startup")) | .hooks[]? | (.command // "")]
-           | any(test("rules-dedupe\\.sh"))' "$_nested/.claude/settings.json" >/dev/null 2>&1 || continue
+    # Both startup and resume must run the helper there, or a missing rule
+    # could stay missing across resumed sessions.
+    jq -e 'def reg($m): [.hooks.SessionStart[]? | select((.matcher // "") | split("|") | index($m))
+                         | .hooks[]? | (.command // "")] | any(test("rules-dedupe\\.sh"));
+           reg("startup") and reg("resume")' "$_nested/.claude/settings.json" >/dev/null 2>&1 || continue
     _out="$(bash "$_dedupe" "$_nested" "$TEMPLATE_DIR/.claude/rules")"
     [ -n "$_out" ] && echo "  ${_nested#"$PROJECT"/}: $_out"
   done < <(find "$PROJECT" -maxdepth 5 \( -name node_modules -o -name .git -o -name Library -o -name .venv -o -name venv -o -name .cache -o -name __pycache__ -o -name site-packages -o -name target -o -name dist -o -name build -o -name .next \) -prune \
