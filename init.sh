@@ -235,7 +235,7 @@ copy_if_missing() {
 # not exist yet, safety hooks included, and every tool call in the next
 # session failed on them until init.sh ran again.
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh compact-readiness.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh compact-readiness.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh rules-dedupe.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"
@@ -361,11 +361,31 @@ if [ "$HOOKS_MISSING" -gt 0 ]; then
 fi
 
 # --- Rule files (infrastructure — always overwrite) ---
-for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
-  [ -f "$rule" ] || continue
-  atomic_install "$rule" "$PROJECT/.claude/rules/$(basename "$rule")"
-  echo "  synced: .claude/rules/$(basename "$rule")"
-done
+# Claude Code also loads .claude/rules/ from every parent directory, so a
+# megavibe project inside another (~/dev/proj under ~/dev) would load each
+# rule twice. rules-dedupe.sh keeps one copy, at the top: it installs or
+# refreshes this project's rules except those a megavibe parent carries, and
+# removes the project's identical copies of those. Nested megavibe projects
+# below this one get the same treatment, since this run's copies now cover them.
+_dedupe="$TEMPLATE_DIR/.claude/hooks/rules-dedupe.sh"
+if [ -f "$_dedupe" ]; then
+  bash "$_dedupe" --init "$PROJECT" "$TEMPLATE_DIR/.claude/rules" | sed 's/^/  /'
+  while IFS= read -r _rules_dir; do
+    _nested="${_rules_dir%/.claude/rules}"
+    [ "$_nested" = "$PROJECT" ] && continue
+    # .agent/events is made by every init.sh run; a template's .agent has none.
+    [ -d "$_nested/.agent/events" ] || continue
+    _out="$(bash "$_dedupe" "$_nested" "$TEMPLATE_DIR/.claude/rules")"
+    [ -n "$_out" ] && echo "  ${_nested#"$PROJECT"/}: $_out"
+  done < <(find "$PROJECT" -maxdepth 5 \( -name node_modules -o -name .git -o -name Library -o -name .venv -o -name venv \) -prune \
+             -o -type d -path '*/.claude/rules' -print 2>/dev/null)
+else
+  for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
+    [ -f "$rule" ] || continue
+    atomic_install "$rule" "$PROJECT/.claude/rules/$(basename "$rule")"
+    echo "  synced: .claude/rules/$(basename "$rule")"
+  done
+fi
 
 # --- verify.sh example (opt-in — inert until the user copies it into place) ---
 if [ -f "$TEMPLATE_DIR/.claude/verify.sh.example" ]; then
