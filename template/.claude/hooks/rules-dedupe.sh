@@ -115,7 +115,8 @@ tracked() {  # tracked <file>: true unless git positively says untracked
   # failure (a broken index, dubious ownership, a stub git) counts as tracked.
   w="$d"
   while :; do
-    if [ -e "$w/.git" ]; then
+    # A .git that is a dangling link is a repository we cannot read: unknown.
+    if [ -e "$w/.git" ] || [ -L "$w/.git" ]; then
       found=1
       command -v git >/dev/null 2>&1 || return 0
       out="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \

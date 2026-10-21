@@ -211,5 +211,23 @@ check "trailing newline (arg): sibling untouched" '[ -f "$TN/child/.claude/rules
 check "trailing newline (hook mode): sibling untouched" '[ -f "$TN/child/.claude/rules/a.md" ]'
 check "trailing newline: its own copy untouched too" '[ -f "$TN/child"$'"'"'\n'"'"'/.claude/rules/a.md ]'
 
+# 19. Ship-round 5 cases.
+# a) A dangling .git link counts as a repository that cannot answer: kept.
+DG="$P/dg"; mkproj "$DG" a.md; ln -s "$T/no-such-gitdir" "$DG/.git"
+bash "$H" "$DG" "$TPL" >/dev/null
+check "dangling .git link: rule kept" '[ -f "$DG/.claude/rules/a.md" ]'
+# b) init.sh's nested scan does not escape the target through a newline in a name.
+E="$T/esc"; mkdir -p "$E/tgt" "$E/p/outside/.claude/rules" "$E/p/outside/.agent/events"; mkdir -p "$E/tgt/split"$'\n'"../p/outside/.claude/rules"
+cp "$REPO/template/.claude/rules/"*.md "$E/p/outside/.claude/rules/"; mkdir -p "$E/p/outside/.claude/hooks"; cp "$H" "$E/p/outside/.claude/hooks/"
+echo '{"hooks":{"SessionStart":[{"matcher":"startup|resume","hooks":[{"type":"command","command":".claude/hooks/rules-dedupe.sh"}]}]}}' > "$E/p/outside/.claude/settings.json"
+mkdir -p "$E/.agent/events" "$E/.claude/rules"; cp "$REPO/template/.claude/rules/"*.md "$E/.claude/rules/"
+before=$(ls "$E/p/outside/.claude/rules" | wc -l)
+(cd "$E/tgt" && HOME="$T/h3" bash "$REPO/init.sh" "$E/tgt" > "$T/i4.log" 2>&1)
+check "newline in nested name: outside project untouched" '[ "$(ls "$E/p/outside/.claude/rules" | wc -l)" = "$before" ]'
+# c) A nested project with the helper but no SessionStart registration is skipped.
+NS="$R/noreg"; mkproj "$NS"; cp "$REPO/template/.claude/rules/delegation.md" "$NS/.claude/rules/"; mkdir -p "$NS/.claude/hooks"; cp "$H" "$NS/.claude/hooks/"; echo '{}' > "$NS/.claude/settings.json"
+HOME="$T/h2" bash "$REPO/init.sh" "$R" > "$T/i5.log" 2>&1
+check "nested without registration: copy kept" '[ -f "$NS/.claude/rules/delegation.md" ]'
+
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
