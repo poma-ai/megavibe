@@ -1266,7 +1266,7 @@ case("settings_gate: one readable directory is enough", None if te.settings_gate
 case("lsof_unescape: \\xNN bytes, a tab and a backslash", None if te.lsof_unescape(rb"/a/K\xc3\xbcche \xc3\xa9\tx\\y") == "/a/Küche é\tx\\y" else te.lsof_unescape(rb"/a/K\xc3\xbcche \xc3\xa9\tx\\y"), True)
 case("lsof_unescape: a literal backslash-x-4-1 is not a byte", None if te.lsof_unescape(rb"/a/\\x41") == "/a/\\x41" else te.lsof_unescape(rb"/a/\\x41"), True)
 case("lsof_unescape: newline, return, backspace, formfeed, DEL", None if te.lsof_unescape(rb"/a/\n\r\b\f\x7f") == "/a/\n\r\b\f\x7f" else "wrong", True)
-case("lsof_unescape: a plain path is unchanged", None if te.lsof_unescape(rb"/Users/x/dev/proj") == "/Users/x/dev/proj" else "wrong", True)
+case("lsof_unescape: a plain path is unchanged", None if te.lsof_unescape(rb"/Volumes/x/dev/proj") == "/Volumes/x/dev/proj" else "wrong", True)
 case("lsof_unescape: caret notation is ambiguous and gives None", None if te.lsof_unescape(rb"/a/b^Ac") is None and te.lsof_unescape(rb"/a/b^[c") is None else "decoded", True)
 import shutil, subprocess
 CHILD = ("import importlib.util, sys\n"
