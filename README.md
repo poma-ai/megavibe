@@ -280,7 +280,7 @@ Inside a megavibe session:
 | `/rehydrate` | **After compaction or stale context** — full AI-powered recovery. Post-compact this is the ONLY slash command you need to type; until it has run, the hooks remind the session on the 1st, 10th and 30th tool call after a 5-minute grace window, and block one Stop at the first turn end after a reminder. |
 | `/prune-context` | **Superseded** by `.claude/hooks/agent-log.sh fold` (moves old events into `.agent/snapshot.md`; no content is lost); kept for old projects. **Distinct from `/compact`** (built-in conversation summarizer) |
 | `/doc-review` | After material doc/code changes — multi-reviewer (Claude `reviewer` subagent + Codex) review of `CLAUDE.md` + every `README*.md` for drift, contradictions, dead pointers, bloat |
-| `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session opens with a short summary of what it changed |
+| `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session's start-up message carries a short note of what it changed (see [Updating](#updating)) |
 | `/init-feature <description \| issue link>` | **Before starting a feature** — takes prose or a GitHub issue link; produces a scoped summary and a complexity/token estimate you confirm or send back, then you pick: write a spec or vibe it, and whether to post the result to that ticket or open a new one |
 | `/finish-feature [base]` | **After finishing one** — measures turns, tool calls and tokens actually spent from the transcript, scores them against what `/init-feature` predicted, comments the result on the PR and offers to merge it |
 | `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
@@ -399,6 +399,8 @@ curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | 
 ```
 
 Or if you have a local clone: `bash megavibe/setup.sh`
+
+**What changed?** `megavibe update` (which `/megavibe-restart` also runs) writes a short plain-language note of what the update changed, so the next session can show it. At update time it makes one bounded call, `claude -p --model haiku`, over the commit messages of the range: no tools, no settings or hooks, a scratch working directory, 25 seconds at most (`MEGAVIBE_UPDATE_SUMMARY_TIMEOUT=<seconds>` changes the bound, `MEGAVIBE_UPDATE_SUMMARY=0` skips the call), and `ANTHROPIC_API_KEY` masked so it uses your subscription. The note is kept in `~/.megavibe/.update-summary`, keyed to the new version. The next session in a megavibe project shows it once as a start-up message (`announce-update.sh`, a SessionStart hook); nothing is typed into the session for you and the model is not handed the update log. When no note could be made (no `claude` or `perl` on the machine, a timeout, any error, or a switched-off call), the message lists the first few commit subjects instead. Two updates with no session between them are announced as one range; an update nobody opened a session after for a week is dropped.
 
 ---
 
