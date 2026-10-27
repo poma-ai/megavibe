@@ -87,45 +87,51 @@ EOF
 # ---------------------------------------------------------------------------
 # The Trash greenlight script: ~/.megavibe/scripts/trash-empty.sh.
 #
-# It is the one deleting path, and what gates it is NOT this hook but Claude Code's
-# permission prompt: setup.sh installs `permissions.ask` rules for it, and an ask rule
-# is honoured under bypassPermissions and forwarded to the phone. Those rules match the
-# command text as written (`bash <script>`, an absolute or $HOME spelling, a copy, `sh -c`
-# or a glob all slip a path-anchored rule), so this gate's job is to let exactly ONE
-# spelling reach the prompt and to refuse every other command that names the script or
-# reaches into its directory by a spelling the rules would miss:
-#   - the exact command `~/.megavibe/scripts/trash-empty.sh [--all]`, with nothing else in
-#     the call: exit 0 here (no permission decision is made; the ask rule prompts next);
-#   - any other command whose text, quotes and brackets stripped, contains `trash-e`; or that
-#     names .megavibe/scripts/ with a $, glob, brace, bracket or backtick after it; or that
-#     starts a home-anchored path at a dot directory whose name is globbed or expanded and
-#     globs on (`~/.m*/scripts/t*-e*sh`); or that cd/pushd into .megavibe or .megavibe/scripts:
-#     blocked.
-# The early exit also sidesteps the crude no-python fallback further down, which would
-# otherwise refuse the asked form. Python is not needed for any of this.
-# HACK: a net, not a wall. Known holes: a script FILE that calls it, a name assembled
-# from pieces the text never shows together (a variable set in a file, `ls` + eval).
-# The catch-all ask rule `Bash(*trash-empty*)` still prompts whenever the plain name
-# appears, and the script itself refuses to run unless it is invoked from its install
-# path with the ask rules installed.
-# Known over-blocks: ANY Bash text containing `trash-e` is refused, including `git add
-# scripts/trash-empty.sh`, `bash -n`, `shellcheck`, `grep` and a commit message that names
-# it; so is `cd ~/.megavibe` and a glob under `~/.megavibe/` or `~/.m*`. Use the Read and
-# Grep tools, `git add scripts/` (the directory), `git commit -F file`, absolute paths.
+# It is the one deleting path. What gates it is Claude Code's permission prompt (setup.sh
+# installs `permissions.ask` rules; an ask rule is honoured under bypassPermissions and is
+# forwarded to the phone). What keeps that gate from being walked around is the script
+# itself: it runs only when the Claude Code shell above it was asked for exactly
+# `~/.megavibe/scripts/trash-empty.sh [--all]` (README, "Trash greenlight"). A spelling that
+# reaches the file without the ask rules matching (a glob, a symlinked directory, a variable,
+# `cd` first) is therefore harmless: the script exits 5 before it touches anything.
+#
+# This block is only the first net, so the agent gets a clear message here instead of a
+# refusal later, and only the reviewed spelling reaches the prompt:
+#   - the exact command, alone in the call: exit 0 here (no permission decision is made; the
+#     ask rule prompts next). It also keeps the crude no-python fallback below from refusing it;
+#   - any other command whose text names the script (trash-empty, trash-em*, trash-e*; quotes,
+#     backslashes, brackets, braces and newlines ignored, case ignored): blocked;
+#   - a home-anchored path with a glob that could complete to .megavibe (~/.m*, ~/.meg?vibe):
+#     blocked;
+#   - osascript, launchctl, crontab or a new Terminal window that mentions .megavibe or the
+#     script: blocked (they start a process outside Claude Code's process tree; the script
+#     refuses those anyway).
+# HACK: a net, not a wall. Known holes: a name assembled from pieces the text never shows
+# together, a script FILE that calls it; the script itself is the lock for both.
+# Known over-blocks: any Bash text that names the script is refused, including `git add
+# scripts/trash-empty.sh`, `bash -n`, `grep`, `cat` and a commit message that mentions it; use
+# the Read and Grep tools, `git add scripts/` (the directory), a loop over the directory for
+# lint, `git commit -F file`.
 # ---------------------------------------------------------------------------
 _TE=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]{},\n" | tr '[:upper:]' '[:lower:]')
 _TE_RAW=$(printf '%s' "$COMMAND" | tr '[:upper:]' '[:lower:]')
 case "$_TE|$_TE_RAW" in
-  *trash-e*|*.megavibe*|*/.m*|*/.\**|*/.\?*|*/.\[*|*/.\{*|*/.\$*)
+  *trash-e*|*/.m*|*launchctl*|*osascript*|*osacompile*|*crontab*|*terminal*|*iterm*)
     _TE_EXACT='^[[:space:]]*~/\.megavibe/scripts/trash-empty\.sh([[:blank:]]+--all)?[[:space:]]*$'
     if [[ $COMMAND =~ $_TE_EXACT ]]; then
       exit 0
     fi
-    if printf '%s' "$_TE" | grep -Eq 'trash-e' \
-       || printf '%s' "$_TE_RAW" | grep -Eq '\.megavibe/scripts/[^[:space:]]*[$*?{[`]' \
-       || printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.[m*?[{$][^[:space:]]*[*?{[]' \
-       || printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:];&|(])(cd|pushd)[[:space:]]+[^[:space:];&|]*\.megavibe(/scripts)?/?([[:space:];&|)]|$)'; then
-      echo "Blocked: trash-empty.sh may only be run exactly as ~/.megavibe/scripts/trash-empty.sh [--all] (alone in the call; the user is asked for permission). To read it use the Read tool; to name it in a commit message use git commit -F." >&2
+    _TE_WHY=""
+    if printf '%s' "$_TE" | grep -Eq 'trash-e(m|[*?]|[^a-z0-9]|$)'; then
+      _TE_WHY="names trash-empty.sh"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?]'; then
+      _TE_WHY="has a glob that could expand to ~/.megavibe"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(osascript|osacompile|launchctl|crontab|(^|[[:space:];&|(])open[[:space:]].*(terminal|iterm))' \
+         && printf '%s' "$_TE_RAW" | grep -Eq '\.megavibe|trash-e|scripts/t'; then
+      _TE_WHY="starts a process outside Claude Code that mentions ~/.megavibe or trash-empty.sh"
+    fi
+    if [ -n "$_TE_WHY" ]; then
+      echo "Blocked: this command $_TE_WHY. ~/.megavibe/scripts/trash-empty.sh may only be run exactly as typed, alone in the call, so Claude Code asks the user first. To read it use the Read tool; to name it in a commit message use git commit -F." >&2
       exit 2
     fi
     ;;

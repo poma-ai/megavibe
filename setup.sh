@@ -51,7 +51,7 @@ msudo() {
 trash_ask_rules() {
   jq -n --arg h "$HOME" '["Bash(~/.megavibe/scripts/trash-empty.sh *)", ("Bash(" + $h + "/.megavibe/scripts/trash-empty.sh *)"), "Bash(*trash-empty*)"]'
 }
-TRASH_ASK_PRESENT='(.permissions.ask // []) as $a | all($r[]; . as $x | $a | any(.[]; . == $x))'
+TRASH_ASK_PRESENT='type == "object" and ((.permissions // {}) | type) == "object" and (((.permissions // {}).ask // []) | type) == "array" and ((.permissions.ask // []) as $a | all($r[]; . as $x | $a | any(.[]; . == $x)))'
 TRASH_ASK_MERGE='(.permissions // {}) as $p | .permissions = ($p + {ask: (($p.ask // []) as $a | $a + ($r - $a))})'
 
 # merge_trash_ask FILE LABEL: add the rules to a settings file (created if missing); idempotent.
@@ -63,7 +63,8 @@ merge_trash_ask() {
       echo -e "  ${YELLOW}skip${RESET} Trash greenlight ask rules in $label (already present)"
       return 0
     fi
-    tmp="${f}.tmp"
+    # A private temp file beside the original: settings.json may hold secrets in its env block.
+    tmp="$(umask 077; mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || { warn "could not write beside $label — left untouched; trash-empty.sh will refuse to run"; return 0; }
     if ! jq --argjson r "$rules" "$TRASH_ASK_MERGE" "$f" > "$tmp" 2>/dev/null || ! jq -e . "$tmp" >/dev/null 2>&1; then
       warn "could not add the Trash greenlight ask rules to $label (is it valid JSON, with permissions.ask a list?) — left untouched; trash-empty.sh will refuse to run"
       rm -f "$tmp" 2>/dev/null || true
@@ -99,6 +100,8 @@ merge_trash_ask() {
 # msudo). Opt-in, because a managed file changes what Claude Code reads; and if an organisation
 # delivers managed settings by MDM or remote policy, Claude Code takes the first managed source and
 # ignores this local file. Lists are unioned with the user's settings, so nothing else changes.
+# An existing file is backed up ONCE, to <file>.megavibe-backup, and never overwritten after that:
+# the first backup is the original, which is the one worth keeping.
 # MEGAVIBE_MANAGED_SETTINGS_FILE points it at another file (tests); no sudo is used where the
 # directory is writable.
 trash_greenlight_managed() {
@@ -129,7 +132,7 @@ trash_greenlight_managed() {
   info "Managed settings: $target"
   echo "  adds only permissions.ask rules for ~/.megavibe/scripts/trash-empty.sh${priv:+; needs sudo (asks for your password)}"
   if ! { ${priv:+$priv} mkdir -p "$dir" \
-         && { [ ! -f "$target" ] || ${priv:+$priv} cp "$target" "${target}.megavibe-backup"; } \
+         && { [ ! -f "$target" ] || [ -e "${target}.megavibe-backup" ] || ${priv:+$priv} cp "$target" "${target}.megavibe-backup"; } \
          && ${priv:+$priv} cp "$tmp" "$target" \
          && ${priv:+$priv} chmod 644 "$target"; }; then
     fail "could not write $target"; rm -f "$tmp"; return 1
@@ -1059,9 +1062,12 @@ if [ -f "$USER_SETTINGS" ]; then
     cp "$USER_SETTINGS" "${USER_SETTINGS}.megavibe-backup"
     # Merge megavibe defaults (statusLine + attribution) into existing settings
     # jq * does recursive merge — user overrides are preserved if set after setup
-    jq --argjson mv "$MEGAVIBE_SETTINGS" '. * $mv' \
-      "$USER_SETTINGS" > "${USER_SETTINGS}.tmp"
-    mv "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
+    # The temp file is private (settings.json may hold secrets in its env block), and the result is
+    # copied OVER the file rather than moved: mv would replace a symlinked settings.json with a regular
+    # file and give it the temp file's mode instead of keeping the user's.
+    (umask 077; jq --argjson mv "$MEGAVIBE_SETTINGS" '. * $mv' "$USER_SETTINGS" > "${USER_SETTINGS}.tmp")
+    cp "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
+    rm -f "${USER_SETTINGS}.tmp"
     ok "settings.json updated (statusLine + attribution; backup at ${USER_SETTINGS}.megavibe-backup)"
   else
     warn "Could not merge settings (jq not available)"
@@ -1078,7 +1084,9 @@ fi
 if [ "$(uname -s)" = "Darwin" ]; then
   if command -v jq &>/dev/null; then
     merge_trash_ask "$USER_SETTINGS" "~/.claude/settings.json"
-    # Claude Code reads CLAUDE_CONFIG_DIR instead when it is set; trash-empty.sh checks both.
+    # Claude Code reads CLAUDE_CONFIG_DIR instead when it is set, so the prompt needs the rules
+    # there. trash-empty.sh ignores that variable and checks only ~/.claude/settings.json (or the
+    # managed file), which is why the rules go to both.
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
       merge_trash_ask "$CLAUDE_CONFIG_DIR/settings.json" "$CLAUDE_CONFIG_DIR/settings.json"
     fi
