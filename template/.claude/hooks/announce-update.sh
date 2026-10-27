@@ -4,21 +4,26 @@ set -u
 
 # Megavibe — tell the user what an update actually changed.
 #
-# `megavibe update` (and the /megavibe-restart path, which runs it) leaves two
-# files under ~/.megavibe:
-#   .update-changelog  commit subjects plus the deployed files that changed
-#   .update-summary    a short plain-language note written at update time by
-#                      `claude -p --model haiku`; its first line names the
-#                      version it describes. Absent when none could be made.
-# This hook shows the note once, at session start, as a systemMessage: text for
-# the user to read. No turn is started, nothing is typed for them, and nothing
-# goes into the model's context. With no usable note it shows a few commit
-# subjects instead.
+# `megavibe update` (and the /megavibe-restart path, which runs it) leaves ONE
+# file, ~/.megavibe/.update-changelog, and this hook shows it once, at session
+# start, as a systemMessage: text for the user to read. No turn is started,
+# nothing is typed for them, and nothing goes into the model's context.
 #
-# Claimed with mv, not read-then-delete: two sessions starting at once would
-# otherwise both announce. mv is atomic, so exactly one wins and the loser
-# exits silently. The changelog is the claim; the summary is taken only after
-# winning it, and only when it is keyed to the same version as the changelog.
+# Layout, written by the launcher and read here by position (never by searching
+# for markers: commit subjects are untrusted text and come last):
+#   line 1     megavibe updated: <old8> -> <new8> (<n> commits)
+#   line 2     summary: <k>        k = 0..8; older launchers wrote a blank line
+#   next k     a plain-language note made at update time by `claude -p --model haiku`
+#   then       a blank line, "Commits:" with the subjects, the deployed files
+# With no note it shows the first few commit subjects instead.
+#
+# One file, claimed with mv, is the whole race story: two sessions starting at
+# once would otherwise both announce, and a note kept in a second file could be
+# swapped for another update's between the check and the take. mv is atomic, so
+# exactly one session wins and the loser exits silently; what the winner then
+# reads is a private, immutable copy. This hook never waits: an updater that is
+# mid-way through publishing a newer record simply means this session finds
+# nothing, and the newer record is announced by the next one.
 #
 # Triggered by: SessionStart (matcher: startup|resume). Exit 0 always.
 
@@ -27,53 +32,78 @@ command -v jq &>/dev/null || exit 0
 
 MV_HOME="${MEGAVIBE_HOME:-${HOME:-/tmp}/.megavibe}"
 CHANGELOG="$MV_HOME/.update-changelog"
-SUMMARY="$MV_HOME/.update-summary"
 
 # A hook killed between the mv and the read orphans its claim permanently,
 # taking the announcement with it. Reap stale ones rather than accumulating a
-# file per crash. A summary nobody claimed within the changelog's own week (its
-# changelog was dropped, or never written) has nothing left to attach to.
-find "$MV_HOME" -maxdepth 1 \( -name '.update-changelog.claimed.*' -o -name '.update-summary.claimed.*' \) -mtime +1 -delete 2>/dev/null
-find "$MV_HOME" -maxdepth 1 -name '.update-summary' -mtime +7 -delete 2>/dev/null
+# file per crash.
+find "$MV_HOME" -maxdepth 1 -name '.update-changelog.claimed.*' -mtime +1 -delete 2>/dev/null
+
+# An updater killed (Ctrl-C included) while it held the pending record leaves it
+# in .update-changelog.updating.<pid>, touched when it was taken. A live updater
+# holds it for a few minutes at most (the summary call is bounded to 120 s), so a
+# claim older than ten is an orphan: put it back (no-clobber, a newer record
+# wins) and announce it.
+if [ ! -e "$CHANGELOG" ]; then
+  for orphan in "$CHANGELOG".updating.*; do
+    [ -f "$orphan" ] || continue
+    [ -n "$(find "$orphan" -mmin +10 2>/dev/null)" ] || continue
+    mv -n "$orphan" "$CHANGELOG" 2>/dev/null
+    [ -e "$CHANGELOG" ] && break
+  done
+fi
+find "$MV_HOME" -maxdepth 1 -name '.update-changelog.updating.*' -mtime +1 -delete 2>/dev/null
 
 [ -f "$CHANGELOG" ] || exit 0
 
 # An update nobody has opened a session since is worth announcing; one from a
 # fortnight ago is noise that survived because the user works in a project
-# megavibe was never inited into.
+# megavibe was never inited into. Dropped here, lazily, at the next session
+# start after it turns a week old, not by a timer.
 if [ -n "$(find "$CHANGELOG" -mtime +7 2>/dev/null)" ]; then
-  rm -f "$CHANGELOG" "$SUMMARY" 2>/dev/null
+  rm -f "$CHANGELOG" 2>/dev/null
   exit 0
 fi
 
 CLAIM="$CHANGELOG.claimed.$$"
-SUMCLAIM="$SUMMARY.claimed.$$"
 mv "$CHANGELOG" "$CLAIM" 2>/dev/null || exit 0
-trap 'rm -f "$CLAIM" "$SUMCLAIM" 2>/dev/null' EXIT
+trap 'rm -f "$CLAIM" 2>/dev/null' EXIT
 RAW=$(cat "$CLAIM" 2>/dev/null || echo "")
 [ -n "$RAW" ] || exit 0
 
+# Everything below is byte-wise (LC_ALL=C): awk, cut and tr abort on text that
+# is not valid UTF-8 in a UTF-8 locale, and commit subjects are whatever someone
+# typed. jq repairs a stray invalid byte into U+FFFD when it builds the JSON.
+export LC_ALL=C
+
+# Control characters out of anything that reaches the terminal: C0, DEL and the
+# C1 range U+0080-U+009F (UTF-8 c2 80-9f), which includes the one-code-point CSI
+# U+009B. Commit subjects are written by whoever can push, and the note derives
+# from them.
+clean() { tr -d '\000-\010\013-\037\177' | awk '{ gsub(/\302[\200-\237]/, ""); print }'; }
+
 # "megavibe updated: <old> -> <new> (<n> commits)"
 HDR=$(printf '%s\n' "$RAW" | head -n 1)
-NEW=$(printf '%s' "$HDR" | sed -n 's/^megavibe updated: [0-9a-f][0-9a-f]* -> \([0-9a-f][0-9a-f]*\).*/\1/p')
 COUNT=$(printf '%s' "$HDR" | sed -n 's/.*(\([0-9][0-9]*\) commits).*/\1/p')
 
-# Control characters out of anything that reaches the terminal: commit subjects
-# are written by whoever can push, and the summary derives from them.
-clean() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+# Line 2 says how many note lines follow; anything else (an older launcher's
+# blank line) means none.
+LINE2=$(printf '%s\n' "$RAW" | sed -n 2p)
+K=0
+case "$LINE2" in
+  'summary: '[0-8]) K="${LINE2#summary: }" ;;
+esac
 
 NOTE=""
-if [ -n "$NEW" ] && [ -f "$SUMMARY" ] \
-   && [ "$(head -n 1 "$SUMMARY" 2>/dev/null)" = "megavibe-update-summary: $NEW" ] \
-   && mv "$SUMMARY" "$SUMCLAIM" 2>/dev/null; then
-  NOTE=$(tail -n +2 "$SUMCLAIM" 2>/dev/null | clean | head -n 8 | head -c 1500)
+if [ "$K" -gt 0 ]; then
+  NOTE=$(printf '%s\n' "$RAW" | sed -n "3,$((K + 2))p" | clean | head -c 1500)
 fi
 
 if [ -z "$(printf '%s' "$NOTE" | tr -d '[:space:]')" ]; then
   # No note: the first few commit subjects, which is all a changelog line can
   # honestly be. The "Commits:" block runs to the first blank line; a "  ... "
-  # line is the writer's own truncation marker, not a commit.
-  SUBJ=$(printf '%s\n' "$RAW" | awk '/^Commits:$/ { f = 1; next } f && /^$/ { exit } f && !/^  \.\.\. / { print }' | clean)
+  # line is the writer's own truncation marker, not a commit. The note's lines
+  # are skipped by position first.
+  SUBJ=$(printf '%s\n' "$RAW" | tail -n +"$((K + 3))" | awk '/^Commits:$/ { f = 1; next } f && /^$/ { exit } f && !/^  \.\.\. / { print }' | clean)
   TOTAL=$(printf '%s\n' "$SUBJ" | grep -c . 2>/dev/null)
   TOTAL="${TOTAL:-0}"
   NOTE=$(printf '%s\n' "$SUBJ" | grep . | head -n 5 | cut -c1-100 | sed 's/^/- /')
