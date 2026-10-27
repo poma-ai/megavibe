@@ -137,6 +137,20 @@ case "$_TE|$_TE_RAW" in
     ;;
 esac
 
+# A PermissionRequest hook is run by Claude Code instead of asking the user, and can answer Yes: it
+# would answer the prompt in front of trash-empty.sh without the human. block-permission-hooks.sh
+# refuses the Write/Edit route; this is the Bash route (jq, a redirect, sed -i) as a text rule.
+# Over-block: any Bash text that mentions PermissionRequest next to a settings or hooks file, even
+# to read it (use the Read and Grep tools). Not covered: an interpreter that assembles the name.
+case "$_TE_RAW" in
+  *permissionrequest*)
+    case "$_TE_RAW" in
+      *settings*|*hooks.json*|*/.claude/*)
+        echo "Blocked: this command mentions PermissionRequest next to a Claude Code settings or hooks file. A PermissionRequest hook answers permission prompts for the user (including the one in front of ~/.megavibe/scripts/trash-empty.sh), so it is not something to write on the user's behalf; to read one use the Read or Grep tool." >&2
+        exit 2 ;;
+    esac ;;
+esac
+
 _TRASH_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
 _TRASH_CMD=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]" | tr '[:upper:]' '[:lower:]')
 case "$_TRASH_CMD $(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" in

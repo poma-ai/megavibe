@@ -708,6 +708,11 @@ out=$(te 2>&1); rc=$?
 check "replaced entry: skipped and reported, exit 1" '[ $rc = 1 ] && printf "%s" "$out" | grep -q "replaced since it was marked droppable"'
 check "replaced entry: the replacement survives" '[ "$(cat "$H/.Trash/$SWT")" = impostor ]'
 /bin/rm -f "$H/.Trash/$SWT"
+# a droppable item that is no longer in the Trash (restored, or emptied in Finder) is closed with a row, not retried forever
+out=$(te 2>&1); rc=$?
+check "an item that is no longer in the Trash: reported as gone, exit 0, closed with an emptied row" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "^gone:" && printf "%s" "$out" | grep -q "gone=1" && jq -e "select(.action==\"emptied\" and .ok==true and .detail==\"already gone from the Trash\")" "$H/.megavibe/trash/reviewed.jsonl" >/dev/null'
+out=$(te 2>&1); rc=$?
+check "...and it is not droppable any more" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "nothing marked droppable"'
 # a failing delete is reported, recorded as not ok, the rest of that entry keeps its name, and the next item still goes
 mkdir -p "$TW/stuck/sub"; echo s > "$TW/stuck/sub/f"; echo n > "$TW/next"
 tr_ -r "$TW/stuck" "$TW/next"; mark_ droppable "/stuck" "/next"
@@ -983,21 +988,22 @@ check "step 5 on a symlinked settings.json: still a symlink, the target is updat
 
 
 # 10. Provenance: the decision "was this process started by Claude Code's Bash tool with exactly the asked command"
-# is a pure function over the process table, the command lines and the signer, so it is tested here on fixture chains.
-# (A real Claude Code shell cannot be started from a test; section 8 shows the real gate refusing from here.)
+# is a pure function over the process table, the command lines and the signature check, so it is tested here on fixture
+# chains. (A real Claude Code shell cannot be started from a test; section 8 shows the real gate refusing from here.)
 TE_PROG="$T/te_prog.py"
 sed -n '/^#--- TE_PY BEGIN/,/^#--- TE_PY END/p' "$REPO/scripts/trash-empty.sh" > "$TE_PROG"
 check "the embedded python program was extracted and compiles" '[ -s "$TE_PROG" ] && python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$TE_PROG"'
 cat > "$T/prov_test.py" <<'PY'
-import importlib.util, os, sys
+import importlib.util, os, sys, tempfile
 spec = importlib.util.spec_from_file_location("te", sys.argv[1]); te = importlib.util.module_from_spec(spec); spec.loader.exec_module(te)
+HOME = "/opt/u"
 ASKED = "~/.megavibe/scripts/trash-empty.sh"
 ZSH = ("/bin/zsh -c source /opt/u/.claude/shell-snapshots/snapshot-zsh-1792582976889-ivotnz.sh 2>/dev/null || true && "
        "setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2>/dev/null || true && { \\builtin unalias -- 'unsetenv'; "
        "\\builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval '%s' < /dev/null && pwd -P >| /tmp/claude-780a-cwd")
 BASH = ("/bin/bash -c source /opt/u/.claude/shell-snapshots/snapshot-bash-1792-abc.sh 2>/dev/null || true && "
         "shopt -u extglob 2>/dev/null || true && eval '%s' < /dev/null && pwd -P >| /tmp/claude-1b2c-cwd")
-REAL, FAKE = "/real/claude", "/tmp/fake/claude"
+REAL, FAKE = 97, 96            # pids of the real signed claude and of a look-alike
 n_ok = n_bad = 0
 
 
@@ -1010,15 +1016,13 @@ def case(name, got, want_ok):
         print("FAIL: %s (got %r)" % (name, got))
 
 
-def chain(cmd, mode="droppable", top_comm="claude", top_exe=REAL, team_of=None):
+def chain(cmd, mode="droppable", top_comm="claude", signed=(REAL,)):
     table = {100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (97, "/bin/zsh"), 97: (96, top_comm), 96: (95, "/bin/bash"), 95: (1, "login")}
-    teams = {REAL: te.CLAUDE_TEAM, FAKE: ""} if team_of is None else team_of
-    return te.provenance(table, lambda p: cmd if p == 98 else "", lambda p: top_exe if p == 97 else "/x/%d" % p,
-                         lambda e: teams.get(e, ""), 100, mode)
+    return te.provenance(table, lambda p: cmd if p == 98 else "", lambda p: p in signed, 100, mode, HOME)
 
 
-def q(s):                       # a command payload as the harness quotes it
-    return s.replace("'", "'\\''")
+def q(s, style="dq"):            # a command payload as the harness quotes it: '"'"' (measured) or '\'' (equivalent)
+    return s.replace("'", "'\"'\"'" if style == "dq" else "'\\''")
 
 
 # the asked command, both harness shapes, both modes
@@ -1032,7 +1036,7 @@ case("a leading newline in the payload", chain(ZSH % ("\\012" + ASKED)), True)
 # the mode must agree with the run
 case("text has --all, run is droppable", chain(ZSH % (ASKED + " --all"), "droppable"), False)
 case("text has no --all, run is --all", chain(ZSH % ASKED, "all"), False)
-# every other text, including the reviewers' spellings
+# every other text, including the reviewers' spellings, in both quote renderings
 for name, text in [
     ("bash <script>", "bash " + ASKED), ("sh <script>", "sh " + ASKED), ("env prefix", "env X=1 " + ASKED), ("assignment prefix", "X=1 " + ASKED),
     ("function then the script", "f(){ :; }; " + ASKED), ("sourced", ". " + ASKED), ("&& more", ASKED + " && echo hi"), ("; more", ASKED + "; echo hi"),
@@ -1044,63 +1048,158 @@ for name, text in [
     ("sh -c", "sh -c '" + ASKED + "'"), ("name only in a comment", "# " + ASKED + "\n./tr*h-e*"),
     ("echo of the name", "echo " + ASKED), ("two asked forms", ASKED + "\n" + ASKED),
 ]:
-    case("refused: " + name, chain(ZSH % q(text), "all" if "--all" in text else "droppable"), False)
-# a payload that tries to fake the harness's own quoting is rendered with '\'' and never matches
-fake_payload = "echo x; eval '" + ASKED + "' < /dev/null"
-case("a payload that contains the eval text itself", chain(ZSH % q(fake_payload)), False)
+    for style in ("dq", "bs"):
+        case("refused (%s quoting): %s" % (style, name), chain(ZSH % q(text, style), "all" if "--all" in text else "droppable"), False)
+# a payload that tries to fake the harness's own quoting never reproduces `eval '~...` outside the real start
+for style in ("dq", "bs"):
+    case("a payload that contains the eval text itself (%s)" % style, chain(ZSH % q("echo x; eval '" + ASKED + "' < /dev/null", style)), False)
+    case("a payload that ends in the approved text (%s)" % style, chain(ZSH % q("echo hi; " + "eval '" + ASKED + "'", style)), False)
 case("a payload that closes the quote and appends", chain((ZSH % ASKED).replace("' < /dev/null", "'\\'' ; echo pwned ; '\\'''  < /dev/null")), False)
-# the shape of the harness itself
-case("trailing junk after < /dev/null", chain((ZSH % ASKED) + " && echo pwned"), False)
+# the shape of the harness itself: what a hook, an MCP server or a helper command would produce is rejected
+case("a bare bash -c ... && eval (what a helper command would run)", chain("/bin/bash -c true && eval '%s' < /dev/null" % ASKED), False)
+case("the same with a pwd tail but no snapshot", chain("/bin/bash -c true && eval '%s' < /dev/null && pwd -P >| /tmp/claude-1b2c-cwd" % ASKED), False)
+case("the snapshot but no pwd tail", chain((ZSH % ASKED).replace(" && pwd -P >| /tmp/claude-780a-cwd", "")), False)
+case("a cwd file that is not claude-<hex>-cwd", chain((ZSH % ASKED).replace("/tmp/claude-780a-cwd", "/tmp/claude-ZZ-cwd")), False)
+case("a snapshot from another home", chain((ZSH % ASKED).replace("/opt/u/.claude", "/opt/other/.claude")), False)
+case("a snapshot name that is not snapshot-<shell>-<n>-<id>.sh", chain((ZSH % ASKED).replace("snapshot-zsh-1792582976889-ivotnz.sh", "evil.sh")), False)
+case("trailing junk after the cwd file", chain((ZSH % ASKED) + " && echo pwned"), False)
 case("not a -c shell", chain((ZSH % ASKED).replace("-c source", "source")), False)
 case("a shell that is not zsh or bash", chain((ZSH % ASKED).replace("/bin/zsh", "/bin/sh")), False)
+case("a shell outside the system directories", chain((ZSH % ASKED).replace("/bin/zsh", "/tmp/zsh")), False)
 case("the eval payload is not single-quoted", chain((ZSH % ASKED).replace("eval '", 'eval "').replace("' < /dev/null", '" < /dev/null')), False)
 case("no eval at all", chain("/bin/zsh -c " + ASKED), False)
 case("empty command line", chain(""), False)
 # who is above
 case("no claude above", te.provenance({100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (97, "/bin/zsh"), 97: (1, "login")},
-                                      lambda p: ZSH % ASKED, lambda p: REAL, lambda e: te.CLAUDE_TEAM, 100, "droppable"), False)
-case("a process called claude that is not signed by Anthropic (a renamed shell, daemonised)", chain(ZSH % ASKED, top_exe=FAKE), False)
-case("a claude signed by someone else", chain(ZSH % ASKED, team_of={REAL: "ABCDE12345"}), False)
-case("the signer cannot be read", chain(ZSH % ASKED, team_of={}), False)
+                                      lambda p: ZSH % ASKED, lambda p: True, 100, "droppable", HOME), False)
+case("a process called claude that does not satisfy Anthropic's requirement (a renamed shell)", chain(ZSH % ASKED, signed=()), False)
 case("a basename that only contains claude", chain(ZSH % ASKED, top_comm="/usr/bin/claude-wrapper"), False)
-case("claude by path is claude", chain(ZSH % ASKED, top_comm="/opt/u/.local/share/claude/versions/2.1.311/claude"), True)
+case("claude by path is claude", chain(ZSH % ASKED, top_comm="/opt/u/.local/share/claude/versions/2.1.303/claude"), True)
 case("claude is the script's direct parent: no harness shell",
-     te.provenance({100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (1, "claude")}, lambda p: ZSH % ASKED, lambda p: REAL, lambda e: te.CLAUDE_TEAM, 100, "droppable"), False)
+     te.provenance({100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (1, "claude")}, lambda p: ZSH % ASKED, lambda p: True, 100, "droppable", HOME), False)
 case("claude is the python program's parent",
-     te.provenance({100: (99, "/usr/bin/python3"), 99: (1, "claude")}, lambda p: ZSH % ASKED, lambda p: REAL, lambda e: te.CLAUDE_TEAM, 100, "droppable"), False)
+     te.provenance({100: (99, "/usr/bin/python3"), 99: (1, "claude")}, lambda p: ZSH % ASKED, lambda p: True, 100, "droppable", HOME), False)
 # a look-alike BELOW the real claude: the topmost claude decides, and its harness text is what counts
 table = {100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (97, "/bin/zsh"), 97: (96, "claude"), 96: (95, "/bin/zsh"), 95: (94, "claude"), 94: (1, "login")}
 cmds = {98: ZSH % ASKED, 96: ZSH % q("echo the agent's own command")}
-exes = {97: FAKE, 95: REAL}
+signed = lambda p: p == 95
 case("a fake claude below the real one whose argv carries the name: the real harness text decides",
-     te.provenance(table, lambda p: cmds.get(p, ""), lambda p: exes.get(p, ""), lambda e: {REAL: te.CLAUDE_TEAM}.get(e, ""), 100, "droppable"), False)
+     te.provenance(table, lambda p: cmds.get(p, ""), signed, 100, "droppable", HOME), False)
+reason = te.provenance(table, lambda p: cmds.get(p, ""), signed, 100, "droppable", HOME)
+case("a claude nested in another claude's Bash call gets a message that says so", None if reason and "started from another claude" in reason else reason, True)
 cmds[96] = ZSH % ASKED
 case("the same chain when the real harness text IS the asked form",
-     te.provenance(table, lambda p: cmds.get(p, ""), lambda p: exes.get(p, ""), lambda e: {REAL: te.CLAUDE_TEAM}.get(e, ""), 100, "droppable"), True)
+     te.provenance(table, lambda p: cmds.get(p, ""), signed, 100, "droppable", HOME), True)
 cycle = {100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (99, "/bin/zsh")}
-case("a cycle in the process table ends", te.provenance(cycle, lambda p: ZSH % ASKED, lambda p: REAL, lambda e: te.CLAUDE_TEAM, 100, "droppable"), False)
+case("a cycle in the process table ends", te.provenance(cycle, lambda p: ZSH % ASKED, lambda p: True, 100, "droppable", HOME), False)
 deep = {i: (i - 1, "/bin/sh") for i in range(1000, 100, -1)}; deep[100] = (1, "login")
-case("a very deep chain ends", te.provenance(deep, lambda p: "", lambda p: "", lambda e: "", 1000, "droppable"), False)
+case("a very deep chain ends", te.provenance(deep, lambda p: "", lambda p: False, 1000, "droppable", HOME), False)
+# the harness and claude pids come back for the settings check
+res = te.provenance_ex({100: (99, "/usr/bin/python3"), 99: (98, "/bin/bash"), 98: (97, "/bin/zsh"), 97: (1, "claude")}, lambda p: ZSH % ASKED, lambda p: True, 100, "droppable", HOME)
+case("provenance_ex returns the harness shell and claude pids", None if res == (None, 98, 97) else res, True)
 # the real accessors (not the claude check, which needs a real Claude Code ancestor)
 tab = te.ps_table()
 case("ps_table lists this process and its parent", None if os.getpid() in tab and tab[os.getpid()][0] == os.getppid() else "missing", True)
 case("ps_cmd shows this process", None if "python" in te.ps_cmd(os.getpid()).lower() else "no python in " + te.ps_cmd(os.getpid()), True)
-case("ps_exe names an existing executable file", None if os.path.isfile(te.ps_exe(os.getpid())) else repr(te.ps_exe(os.getpid())), True)
-case("an Apple-signed binary is not Anthropic's", None if te.team_of("/bin/zsh") != te.CLAUDE_TEAM else "claimed", True)
-case("a path that does not exist has no signer", None if te.team_of("/nonexistent/claude") == "" else "claimed", True)
-# if this test happens to run under a real Claude Code, its signature must verify as Anthropic's
+case("an Apple-signed python is not Anthropic's", None if not te.ps_signed(os.getpid()) else "claimed", True)
+case("a pid that does not exist is not signed", None if not te.ps_signed(2 ** 22 - 7) else "claimed", True)
+case("ps_cwd reads this process's working directory", None if os.path.realpath(te.ps_cwd(os.getpid())) == os.path.realpath(os.getcwd()) else te.ps_cwd(os.getpid()), True)
+case("ps_cwd of a pid that does not exist is empty", None if te.ps_cwd(2 ** 22 - 7) == "" else "not empty", True)
+# if this test happens to run under a real Claude Code, its live signature must verify as Anthropic's
 cur, seen = os.getpid(), set()
 while cur > 1 and cur in tab and cur not in seen:
     seen.add(cur)
     if os.path.basename(tab[cur][1].strip()) == "claude":
-        case("a real claude ancestor verifies as Anthropic's signed binary", None if te.team_of(te.ps_exe(cur)) == te.CLAUDE_TEAM else "team " + te.team_of(te.ps_exe(cur)), True)
+        case("a real claude ancestor satisfies Anthropic's requirement (codesign -v on the live pid)", None if te.ps_signed(cur) else "not signed", True)
     cur = tab[cur][0]
+
+# ---- section 11, part 1: PermissionRequest hooks in settings files -------------------------------------
+T = tempfile.mkdtemp(prefix="permhook-")
+def put(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+HOOK = '{"hooks":{"PermissionRequest":[{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}}'
+case("a PermissionRequest hook is seen", None if te.permission_hook_in(put(T + "/a.json", HOOK)) else "missed", True)
+case("an empty PermissionRequest list is not a hook", None if not te.permission_hook_in(put(T + "/b.json", '{"hooks":{"PermissionRequest":[]}}')) else "flagged", True)
+case("other hooks are not it", None if not te.permission_hook_in(put(T + "/c.json", '{"hooks":{"PreToolUse":[{"matcher":"Bash"}]}}')) else "flagged", True)
+case("a file that does not parse is judged by its text", None if te.permission_hook_in(put(T + "/d.json", '{ // comment\n "hooks": {"PermissionRequest": [ {"x":1}, ]}}')) else "missed", True)
+case("an unparsable file without the word is fine", None if not te.permission_hook_in(put(T + "/e.json", '{ // comment\n "hooks": {} ,}')) else "flagged", True)
+case("a missing file is fine", None if not te.permission_hook_in(T + "/nope.json") else "flagged", True)
+case("hooks that is not an object is fine", None if not te.permission_hook_in(put(T + "/f.json", '{"hooks":["PermissionRequest"]}')) else "flagged", True)
+home, managed = T + "/home", T + "/managed.json"
+put(home + "/.claude/settings.json", "{}")
+proj = T + "/proj"; put(proj + "/.claude/settings.local.json", HOOK); deep_cwd = proj + "/a/b/c"; os.makedirs(deep_cwd)
+other = T + "/other"; put(other + "/.claude/settings.json", "{}")
+case("a project hook is found from a directory below the project", None if te.permission_hook_source(home, managed, [deep_cwd]) == os.path.realpath(proj) + "/.claude/settings.local.json" else te.permission_hook_source(home, managed, [deep_cwd]), True)
+case("another project with no hook is clean", None if te.permission_hook_source(home, managed, [other]) is None else "flagged", True)
+case("no working directory means only the user-level files count", None if te.permission_hook_source(home, managed, []) is None else "flagged", True)
+case("an empty cwd string is skipped", None if te.permission_hook_source(home, managed, [""]) is None else "flagged", True)
+put(home + "/.claude/settings.local.json", HOOK)
+case("the user's settings.local.json counts", None if te.permission_hook_source(home, managed, []) == home + "/.claude/settings.local.json" else "missed", True)
+os.remove(home + "/.claude/settings.local.json"); put(managed, HOOK)
+case("the managed file counts", None if te.permission_hook_source(home, managed, []) == managed else "missed", True)
 print("PROVENANCE %d passed %d failed" % (n_ok, n_bad))
 PY
 prov_out=$(python3 -I "$T/prov_test.py" "$TE_PROG" 2>&1)
 printf '%s\n' "$prov_out" | grep '^FAIL' | while IFS= read -r l; do printf '%s\n' "$l"; done
 pn=$(printf '%s\n' "$prov_out" | sed -n 's/^PROVENANCE \([0-9]*\) passed \([0-9]*\) failed$/\1/p'); pf=$(printf '%s\n' "$prov_out" | sed -n 's/^PROVENANCE \([0-9]*\) passed \([0-9]*\) failed$/\2/p')
 if [ -n "$pn" ]; then PASS=$((PASS + pn)); FAIL=$((FAIL + pf)); else bad "provenance tests did not run: $prov_out"; fi
+
+# 11. PermissionRequest hooks, part 2: the script refuses while one is configured, and the guards refuse to write one.
+mk_perm() {  # mk_perm <home dir name>: a fake home whose settings are good, so only the hook can stop the run
+  local h="$T/$1"; mk_home "$h"; echo keep > "$h/.Trash/k"; echo "$h"
+}
+HK='{"permissions":{"ask":["Bash(~/.megavibe/scripts/trash-empty.sh *)","Bash(*trash-empty*)"]},"hooks":{"PermissionRequest":[{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}}'
+HP=$(mk_perm th-perm1); printf '%s\n' "$HK" > "$HP/.claude/settings.json"
+out=$(run_in "$HP" --all 2>&1); rc=$?
+check "a PermissionRequest hook in ~/.claude/settings.json: exit 6, nothing deleted, the file is named" '[ $rc = 6 ] && [ -e "$HP/.Trash/k" ] && printf "%s" "$out" | grep -q "PermissionRequest hook" && printf "%s" "$out" | grep -q "$HP/.claude/settings.json"'
+HP=$(mk_perm th-perm2); printf '%s\n' "$HK" > "$HP/.claude/settings.local.json"
+run_in "$HP" --all >/dev/null 2>&1; rc=$?
+check "a PermissionRequest hook in ~/.claude/settings.local.json: exit 6" '[ $rc = 6 ] && [ -e "$HP/.Trash/k" ]'
+HP=$(mk_perm th-perm3); printf '%s\n' "$HK" > "$T/managed.json"
+run_in "$HP" --all >/dev/null 2>&1; rc=$?; /bin/rm -f "$T/managed.json"
+check "a PermissionRequest hook in the managed settings: exit 6" '[ $rc = 6 ] && [ -e "$HP/.Trash/k" ]'
+HP=$(mk_perm th-perm4); jq '.hooks = {"PermissionRequest": []}' "$HP/.claude/settings.json" > "$HP/.claude/s.tmp" && mv "$HP/.claude/s.tmp" "$HP/.claude/settings.json"
+run_in "$HP" --all >/dev/null 2>&1; rc=$?
+check "an empty PermissionRequest list is not a hook: the run goes on" '[ $rc = 0 ] && [ ! -e "$HP/.Trash/k" ]'
+HP=$(mk_perm th-perm5); jq '.hooks = {"PreToolUse": [{"matcher":"Bash","hooks":[{"type":"command","command":"x"}]}]}' "$HP/.claude/settings.json" > "$HP/.claude/s.tmp" && mv "$HP/.claude/s.tmp" "$HP/.claude/settings.json"
+run_in "$HP" --all >/dev/null 2>&1; rc=$?
+check "other hooks do not stop the run" '[ $rc = 0 ] && [ ! -e "$HP/.Trash/k" ]'
+# the guard on Write, Edit and MultiEdit
+pg() { printf '%s' "$1" | bash "$HOOKS/block-permission-hooks.sh" >/dev/null 2>&1; echo $?; }
+wj() { jq -nc --arg tool "$1" --arg path "$2" --arg content "${3:-}" --arg old "${4:-}" --arg new "${5:-}" \
+        '{tool_name:$tool, tool_input:({file_path:$path} + (if $tool=="Write" then {content:$content} elif $tool=="Edit" then {old_string:$old,new_string:$new} else {edits:[{old_string:$old,new_string:$new}]} end))}'; }
+PRJ='{"hooks":{"PermissionRequest":[{"matcher":"Bash"}]}}'
+check "guard: Write of a PermissionRequest hook into settings.json refused" '[ "$(pg "$(wj Write /h/.claude/settings.json "$PRJ")")" = 2 ]'
+check "guard: Write into settings.local.json refused" '[ "$(pg "$(wj Write /p/.claude/settings.local.json "$PRJ")")" = 2 ]'
+check "guard: Write into managed-settings.json refused" '[ "$(pg "$(wj Write "/Library/Application Support/ClaudeCode/managed-settings.json" "$PRJ")")" = 2 ]'
+check "guard: Write into a plugin hooks.json refused" '[ "$(pg "$(wj Write /p/plugin/hooks/hooks.json "$PRJ")")" = 2 ]'
+check "guard: Edit adding it refused" '[ "$(pg "$(wj Edit /h/.claude/settings.json "" "{}" "{\"hooks\":{\"PermissionRequest\":[{}]}}")")" = 2 ]'
+check "guard: MultiEdit adding it refused" '[ "$(pg "$(wj MultiEdit /h/.claude/settings.json "" "{}" "{\"hooks\":{\"PermissionRequest\":[{}]}}")")" = 2 ]'
+check "guard: the name in any case refused" '[ "$(pg "$(wj Write /h/.claude/settings.json "{\"hooks\":{\"PERMISSIONREQUEST\":[{}]}}")")" = 2 ]'
+check "guard: an agent frontmatter hook refused" '[ "$(pg "$(wj Write /p/.claude/agents/x.md "---\nhooks:\n  PermissionRequest:\n    - matcher: Bash\n---\n")")" = 2 ]'
+check "guard: a skill frontmatter hook refused" '[ "$(pg "$(wj Write /p/.claude/skills/x/SKILL.md "hooks: PermissionRequest")")" = 2 ]'
+check "guard: Write of settings without it allowed" '[ "$(pg "$(wj Write /h/.claude/settings.json "{\"env\":{}}")")" = 0 ]'
+check "guard: a README that talks about it allowed" '[ "$(pg "$(wj Write /p/README.md "PermissionRequest hooks answer prompts")")" = 0 ]'
+check "guard: a markdown file outside .claude/agents|skills|commands allowed" '[ "$(pg "$(wj Write /p/.claude/rules/x.md "PermissionRequest")")" = 0 ]'
+check "guard: a file called settings.txt allowed" '[ "$(pg "$(wj Write /p/settings.txt "PermissionRequest")")" = 0 ]'
+check "guard: other tools ignored" '[ "$(pg "$(wj Read /h/.claude/settings.json "PermissionRequest" "PermissionRequest" "PermissionRequest")")" = 0 ]'
+printf '%s\n' "$PRJ" > "$T/with-hook-settings.json"
+check "guard: an Edit elsewhere in a file that already configures one refused" '[ "$(pg "$(wj Edit "$T/with-hook-settings.json" "" "Bash" "Write")")" = 2 ]'
+check "guard: an Edit that removes the hook text allowed" '[ "$(pg "$(wj Edit "$T/with-hook-settings.json" "" "PermissionRequest" "Nothing")")" = 0 ]'
+check "guard: a Write that replaces such a file with clean settings allowed" '[ "$(pg "$(wj Write "$T/with-hook-settings.json" "{}")")" = 0 ]'
+check "guard: an Edit of a settings file that does not exist yet and does not mention it allowed" '[ "$(pg "$(wj Edit "$T/missing/settings.json" "" "a" "b")")" = 0 ]'
+check "guard is registered under Write|Edit|MultiEdit in the template settings" 'jq -e ".hooks.PreToolUse[] | select(.matcher==\"Write|Edit|MultiEdit\") | .hooks | map(.command) | index(\".claude/hooks/block-permission-hooks.sh\") != null" "$REPO/template/.claude/settings.json" >/dev/null'
+check "guard is in init.sh's canonical hook list and is executable in the template" 'grep -q "block-permission-hooks.sh" "$REPO/init.sh" && [ -x "$HOOKS/block-permission-hooks.sh" ]'
+# the Bash route, as a text rule in block-dangerous-bash.sh
+gt 2 "jq '.hooks.PermissionRequest = [{}]' ~/.claude/settings.json > /tmp/x" "bash route: jq writing it into settings refused"
+gt 2 "echo '{\"hooks\":{\"PermissionRequest\":[]}}' >> .claude/settings.local.json" "bash route: a redirect into settings.local.json refused"
+gt 2 "sed -i '' 's/x/PermissionRequest/' /tmp/proj/.claude/hooks.json" "bash route: sed on a hooks.json refused"
+gt 2 "grep PermissionRequest ~/.claude/settings.json" "bash route: reading it with grep is an over-block (use the Grep tool)"
+gt 0 "echo PermissionRequest" "bash route: the bare word allowed"
+gt 0 "git log --oneline" "bash route: unrelated command allowed"
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

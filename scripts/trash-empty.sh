@@ -1,31 +1,42 @@
 #!/bin/bash -p
 # Empty what the Trash review marked droppable (or, with --all, the whole Trash),
-# but only behind a permission prompt the human answers.
+# but only behind a permission prompt.
 #
 #   ~/.megavibe/scripts/trash-empty.sh          delete the items marked "droppable" in the review
 #   ~/.megavibe/scripts/trash-empty.sh --all    delete everything in ~/.Trash
 #
 # This is the one place megavibe really deletes. Megavibe sessions run with
 # permissions bypassed, and every consent check an agent can run itself was shown
-# forgeable (environment overrides, transcript appends, pseudo-terminals). What an
-# agent cannot answer for the user is Claude Code's own permission prompt: an ASK
+# forgeable (environment overrides, transcript appends, pseudo-terminals). What an agent
+# cannot do from a Bash command is answer Claude Code's own permission prompt: an ASK
 # rule is honoured under bypassPermissions, and the prompt is forwarded to the phone
 # under Remote Control. setup.sh installs the rules; this script is what they gate:
 #
 #   Bash(~/.megavibe/scripts/trash-empty.sh *)    the one spelling the hook lets through
 #   Bash(*trash-empty*)                           catch-all: any command text naming it prompts
 #
-# A text rule cannot see every spelling that reaches a file (a glob, a symlinked
-# directory, a variable), so the script does not trust the text it was started with:
-# it PROVES the prompt happened. Claude Code runs every Bash call as a child of the
-# `claude` process, via `<shell> -c 'source <snapshot> ... && eval '<COMMAND AS TYPED>'
-# < /dev/null && pwd -P >| <file>'`. That shell's command line is the text the permission
-# rules matched, and nothing the agent runs can change it. The script walks its ancestors
-# and runs only if the topmost `claude` ancestor is Anthropic's signed binary and the
-# shell right below it has exactly `eval '~/.megavibe/scripts/trash-empty.sh' < /dev/null`
-# (or the same with ` --all`, matching its own argument). Anything else, including a
-# plain terminal, exits 5. It relies on Claude Code's current way of running commands and
-# fails closed if that changes.
+# A text rule cannot see every spelling that reaches a file (a glob, a symlinked directory,
+# a variable), so the script does not trust the text it was started with. It checks what
+# Claude Code's own shell was given. Claude Code runs a Bash call as a child of its `claude`
+# process through `<shell> -c 'source <home>/.claude/shell-snapshots/snapshot-...sh 2>/dev/null
+# || true && ... && eval '<COMMAND AS TYPED>' < /dev/null && pwd -P >| /tmp/claude-<hex>-cwd'`
+# (measured on Claude Code 2.1.30x with zsh), and that shell's command line is the text the
+# permission rules matched. The script walks its ancestors and runs only if the topmost
+# `claude` is a running process that satisfies Anthropic's code-signing requirement (codesign
+# on the live pid) and the shell right below it has exactly that shape with the payload
+# `~/.megavibe/scripts/trash-empty.sh` (or the same with ` --all`, matching its own argument).
+# Anything else, including a plain terminal, exits 5.
+#
+# What that proves is: Claude Code's own shell was given exactly the approved command, which
+# Claude Code prompts for. It does NOT prove a human answered. A PermissionRequest hook in
+# Claude Code's own configuration can answer the prompt, so the script refuses (exit 6) while
+# one is visible in a settings file it can read (managed, ~/.claude, and the .claude of the
+# session's working directory and every directory above it), and a hook guard blocks writing
+# one. Other configuration an agent can rewrite (plugins, agent and skill frontmatter, a second
+# `claude` started with other settings, an MCP server or hook command written to imitate the
+# shell's shape) is outside what this script checks, and so is an agent writing deleting code
+# of its own. README, "Trash greenlight", states that boundary. This relies on Claude Code's
+# current way of running commands and fails closed if that changes.
 #
 # Everything else here is about not trusting the caller's environment:
 #   - `#!/bin/bash -p`: no BASH_ENV/ENV, no functions imported from the environment. The
@@ -43,8 +54,9 @@
 #     directory inside the Trash, verifies it is the object the ledger recorded (device
 #     and inode) AFTER the claim, and deletes with directory-relative calls that never
 #     follow a symlink (a symlink in the Trash is unlinked, its target untouched). Two
-#     ledger records for one object that disagree (kept vs droppable) skip it. It takes
-#     the review's apply lock, so it never runs in the middle of a review.
+#     ledger records for one object that disagree (kept vs droppable) skip it. A droppable
+#     item that is no longer in the Trash gets an `emptied` row ("already gone") and does not
+#     fail the run. It takes the review's apply lock, so it never runs in the middle of a review.
 #
 # The delete uses plain unlink/rmdir on purpose: the rm-to-trash.sh hook rewrites the
 # command text Claude runs, never the inside of a script, so this really deletes, and that
@@ -52,14 +64,15 @@
 #
 # Exit: 0 done (or nothing to do); 1 something failed or was skipped; 2 usage;
 #       3 environment (not -p, not Darwin, wrong home, not the install path, no Trash);
-#       4 the permission rules are not installed; 5 not run from an approved Claude Code call.
+#       4 the permission rules are not installed; 5 not run from an approved Claude Code call;
+#       6 a PermissionRequest hook is configured.
 #
 # Known limits (README, "Trash greenlight"): the installed script is a file the user's own
 # account can edit, so an edited copy runs after a legitimate Yes; the prompt is consent to
 # delete what the review marked droppable, and those marks are written by `trash-review.py
 # apply`, which an agent can also run; the rule-presence check reads a file the same account
-# can edit (the managed settings file is the answer to that); an agent can still write code
-# of its own that deletes from ~/.Trash, as before this script existed.
+# can edit (the managed settings file is the answer to that, not to hooks); an agent can still
+# write code of its own that deletes from ~/.Trash, as before this script existed.
 
 case $- in
   *p*) ;;
@@ -101,8 +114,8 @@ def _hook(point, **kw): pass  # TE_HOOK
 
 RULE_PATH = "Bash(~/.megavibe/scripts/trash-empty.sh *)"
 RULE_ANY = "Bash(*trash-empty*)"
-CLAUDE_TEAM = "Q6L2SF6YDW"          # Anthropic's Developer ID team (codesign -dv on the claude binary)
-PS, CODESIGN = "/bin/ps", "/usr/bin/codesign"
+CLAUDE_TEAM = "Q6L2SF6YDW"          # Anthropic's Developer ID team (the OU of its signing certificate)
+PS, CODESIGN, LSOF = "/bin/ps", "/usr/bin/codesign", "/usr/sbin/lsof"
 RENAME_EXCL = 0x4
 
 
@@ -117,14 +130,23 @@ def show(s):
 
 # ---- who is asking: the Claude Code harness shell must carry exactly the asked command ----
 
-# ps renders a newline as \012 and a tab as \011. The command is the single-quoted eval
-# payload; a quote inside a payload is always rendered '\'' so it can never reproduce
-# `eval '~` itself. The payload must be the asked form and nothing else.
+# ps renders a newline as \012 and a tab as \011. The payload is the single-quoted argument of the
+# harness shell's `eval`; a quote inside a payload is rendered '"'"' (Claude Code 2.1.30x with zsh;
+# '\'' would do the same), so `eval '` followed by the approved path can only occur at the real start
+# of the payload. The whole command line must have the measured shape: the snapshot sourced from the
+# user's own ~/.claude, the eval of the approved payload from /dev/null, and the cwd file at the end.
+# That rejects the bare `bash -c ... && eval '...'` that a hook, an MCP server or a helper command
+# would produce by accident; it does not reject a command line written to imitate the shape
+# (README, "Not covered").
 _WS = r"(?: |\\011|\\012)*"
-HARNESS = re.compile(
-    r"^(?:\S*/)?(?:zsh|bash) (?:-[A-Za-z]+ )*-c .* && eval '" + _WS
-    + r"(~/\.megavibe/scripts/trash-empty\.sh)( --all)?" + _WS
-    + r"' < /dev/null(?: && pwd -P >\| [^\s;&|'\"<>$`\\]+)?$", re.S)
+
+
+def harness_re(home):
+    return re.compile(
+        r"^(?:/bin|/usr/bin|/usr/local/bin|/opt/homebrew/bin)/(?:zsh|bash) (?:-[A-Za-z]+ )*-c (?:-[A-Za-z]+ )*source "
+        + re.escape(home) + r"/\.claude/shell-snapshots/snapshot-(?:zsh|bash)-[0-9]+-[a-z0-9]+\.sh 2>/dev/null \|\| true && (?:.* && )?eval '"
+        + _WS + r"(~/\.megavibe/scripts/trash-empty\.sh)( --all)?" + _WS
+        + r"' < /dev/null && pwd -P >\| /tmp/claude-[0-9a-f]+-cwd$", re.S)
 
 
 def ps_table():
@@ -139,61 +161,66 @@ def ps_table():
 
 
 def ps_cmd(pid):
-    p = subprocess.run([PS, "-ww", "-o", "command=", "-p", str(pid)], stdout=subprocess.PIPE,
+    p = subprocess.run([PS, "-ww", "-o", "command=", "-p", str(int(pid))], stdout=subprocess.PIPE,
                        stderr=subprocess.DEVNULL, universal_newlines=True, errors="replace")
     return p.stdout.rstrip("\n")
 
 
-def ps_exe(pid):
-    try:
-        lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-        buf = ctypes.create_string_buffer(4096)
-        n = lib.proc_pidpath(int(pid), buf, ctypes.sizeof(buf))
-        return buf.value.decode("utf-8", "replace") if n > 0 else ""
-    except OSError:
-        return ""
+def ps_signed(pid):
+    """True when the RUNNING process `pid` satisfies Anthropic's Developer ID requirement. codesign -v on a
+    live pid checks the process itself, not a path that could name a different file than the one running."""
+    req = 'anchor apple generic and certificate leaf[subject.OU] = "%s"' % CLAUDE_TEAM
+    p = subprocess.run([CODESIGN, "-v", "-R=" + req, str(int(pid))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return p.returncode == 0
 
 
-def team_of(exe):
-    if not exe:
-        return ""
-    p = subprocess.run([CODESIGN, "-dv", "--verbose=2", exe], stdout=subprocess.PIPE,
-                       stderr=subprocess.PIPE, universal_newlines=True, errors="replace")
-    m = re.search(r"^TeamIdentifier=(\S+)$", p.stderr, re.M)
-    return m.group(1) if m else ""
+def ps_cwd(pid):
+    """The working directory of `pid` ("" when it cannot be read)."""
+    p = subprocess.run([LSOF, "-a", "-p", str(int(pid)), "-d", "cwd", "-Fn"], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, universal_newlines=True, errors="replace")
+    for line in p.stdout.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return ""
 
 
-def provenance(table, cmd_of, exe_of, team_for, start, mode):
-    """None when this process was started by Claude Code's Bash tool with exactly the asked
-    command; otherwise the reason it was not. Pure over the accessors it is given."""
+def provenance_ex(table, cmd_of, signed_of, start, mode, home):
+    """(reason, harness pid, claude pid). The reason is None when this process was started by Claude Code's Bash
+    tool with exactly the asked command. Pure over the accessors it is given."""
     chain, seen, cur = [], set(), start
     while cur > 1 and cur not in seen and cur in table and len(chain) < 64:
         seen.add(cur)
         ppid, comm = table[cur]
         chain.append((cur, comm))
         cur = ppid
-    top = None                         # the TOPMOST claude: a look-alike can only sit below the real one
-    for i, (_, comm) in enumerate(chain):
-        if os.path.basename(comm.strip()) == "claude":
-            top = i
-    if top is None:
-        return "no Claude Code process above this script"
+    claudes = [i for i, (_, comm) in enumerate(chain) if os.path.basename(comm.strip()) == "claude"]
+    if not claudes:
+        return "no Claude Code process above this script", None, None
+    top = claudes[-1]                  # the TOPMOST claude: a look-alike can only sit below the real one
     if top < 3:                        # chain: this program, the shell script, the harness shell, claude
-        return "no harness shell between this script and Claude Code"
-    if team_for(exe_of(chain[top][0])) != CLAUDE_TEAM:
-        return "the claude process is not Anthropic's signed Claude Code"
-    cmd = cmd_of(chain[top - 1][0])
+        return "no harness shell between this script and Claude Code", None, None
+    cpid, hpid = chain[top][0], chain[top - 1][0]
+    if not signed_of(cpid):
+        return "the claude process is not Anthropic's signed Claude Code", None, None
+    cmd = cmd_of(hpid)
     if not cmd:
-        return "cannot read the harness shell's command line"
-    m = HARNESS.match(cmd)
+        return "cannot read the harness shell's command line", None, None
+    m = harness_re(home).match(cmd)
     if not m:
-        return "the harness shell was not asked for exactly ~/.megavibe/scripts/trash-empty.sh"
+        if len(claudes) > 1:
+            return ("this runs inside a claude that was itself started from another claude's Bash call, and the outermost "
+                    "session's shell was not given exactly ~/.megavibe/scripts/trash-empty.sh as its only command"), None, None
+        return "the shell Claude Code ran this in was not given exactly ~/.megavibe/scripts/trash-empty.sh as its only command", None, None
     if bool(m.group(2)) != (mode == "all"):
-        return "the approved command and this run disagree about --all"
-    return None
+        return "the approved command and this run disagree about --all", None, None
+    return None, hpid, cpid
 
 
-# ---- is the prompt installed -------------------------------------------------------------
+def provenance(table, cmd_of, signed_of, start, mode, home):
+    return provenance_ex(table, cmd_of, signed_of, start, mode, home)[0]
+
+
+# ---- is the prompt installed, and can something else answer it ----------------------------
 
 def has_rules(path):
     try:
@@ -204,6 +231,43 @@ def has_rules(path):
     perms = d.get("permissions") if isinstance(d, dict) else None
     ask = perms.get("ask") if isinstance(perms, dict) else None
     return isinstance(ask, list) and RULE_PATH in ask and RULE_ANY in ask
+
+
+def permission_hook_in(path):
+    """True when the settings file at `path` configures a PermissionRequest hook: a hook that Claude Code runs
+    instead of asking you, and that can answer Yes for you. A file that does not parse is judged by its text."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return False
+    try:
+        d = json.loads(text)
+    except ValueError:
+        return "PermissionRequest" in text
+    hooks = d.get("hooks") if isinstance(d, dict) else None
+    return isinstance(hooks, dict) and bool(hooks.get("PermissionRequest"))
+
+
+def permission_hook_source(home, managed, cwds):
+    """The first settings file that configures a PermissionRequest hook, or None. Looked at: the managed file, the user's
+    settings.json and settings.local.json, and for each working directory given, .claude/settings.json and
+    .claude/settings.local.json in it and in every directory above it. Plugins and agent or skill frontmatter are not."""
+    sources = [managed, os.path.join(home, ".claude", "settings.json"), os.path.join(home, ".claude", "settings.local.json")]
+    for c in cwds:
+        d = os.path.realpath(c) if c else ""
+        while d:
+            sources += [os.path.join(d, ".claude", "settings.json"), os.path.join(d, ".claude", "settings.local.json")]
+            if d == "/":
+                break
+            d = os.path.dirname(d)
+    seen = set()
+    for s in sources:
+        if s not in seen:
+            seen.add(s)
+            if permission_hook_in(s):
+                return s
+    return None
 
 
 # ---- ledger ----------------------------------------------------------------------------
@@ -399,11 +463,20 @@ def main():
         die(3, "run it from its install path: ~/.megavibe/scripts/trash-empty.sh (not a copy or a symlink)")
     if not (has_rules(MANAGED) or has_rules(os.path.join(home, ".claude", "settings.json"))):
         die(4, "the permission prompt that gates this script is not installed; run setup.sh (it adds the permissions.ask rules)")
+    cwds = []
     if REQUIRE_PROVENANCE:
-        why = provenance(ps_table(), ps_cmd, ps_exe, team_of, os.getpid(), mode)
+        why, hpid, cpid = provenance_ex(ps_table(), ps_cmd, ps_signed, os.getpid(), mode, home)
         if why:
             die(5, why + ". Run it as typed from a Claude Code session so you get the approval prompt, "
                          "or empty the Trash in Finder.")
+        cwds = [c for c in (ps_cwd(hpid), ps_cwd(cpid)) if c]
+        if not cwds:
+            print("note: could not read the session's working directory, so project settings were not checked "
+                  "for a PermissionRequest hook", file=sys.stderr)
+    hook = permission_hook_source(home, MANAGED, cwds)
+    if hook:
+        die(6, "%s configures a PermissionRequest hook, which can answer the approval prompt without you. "
+               "Remove it, or empty the Trash in Finder." % hook)
 
     sys.setrecursionlimit(5000)
     ldir = os.path.join(home, ".megavibe", "trash")
@@ -425,7 +498,7 @@ def main():
     _hook("after_open_trash", home=home, tfd=trash.fd)
     ledger_rows, reviewed_rows = read_jsonl(os.path.join(ldir, "ledger.jsonl")), read_jsonl(os.path.join(ldir, "reviewed.jsonl"))
     recs, latest = merged_ledger(ledger_rows), latest_decisions(reviewed_rows)
-    emptied = failed = skipped = kb = 0
+    emptied = failed = skipped = gone = kb = 0
     out_rows = []
 
     def row(rec, ok, detail):
@@ -435,8 +508,13 @@ def main():
         return r["kb"]
 
     def done(name, state, detail, recs_for):
-        nonlocal emptied, failed, skipped, kb
-        if state == "ok":
+        nonlocal emptied, failed, skipped, gone, kb
+        if state == "gone":            # restored, backed up or emptied in Finder since it was marked: nothing left to do
+            gone += 1
+            print("gone:    %s (no longer in the Trash)" % show(name))
+            for rec in recs_for:
+                row(rec, True, "already gone from the Trash")
+        elif state == "ok":
             emptied += 1
             print("emptied: " + show(name))
             for rec in recs_for:
@@ -471,8 +549,11 @@ def main():
                     continue
                 try:
                     st = os.stat(name, dir_fd=trash.fd, follow_symlinks=False)
-                except OSError:
-                    done(name, "skip", "already gone", [])
+                except FileNotFoundError:
+                    done(name, "gone", "", [c])
+                    continue
+                except OSError as e:
+                    done(name, "skip", "cannot look at it: " + e.strerror, [])
                     continue
                 if (st.st_dev, st.st_ino) != (c["dev"], c["ino"]):
                     done(name, "skip", "replaced since it was marked droppable", [])
@@ -490,8 +571,11 @@ def main():
                     continue
                 try:
                     st = os.stat(name, dir_fd=trash.fd, follow_symlinks=False)
-                except OSError:
-                    done(name, "skip", "already gone", [])
+                except FileNotFoundError:
+                    done(name, "gone", "", [])
+                    continue
+                except OSError as e:
+                    done(name, "skip", "cannot look at it: " + e.strerror, [])
                     continue
                 _hook("after_check", home=home, tfd=trash.fd, name=name)
                 tp = os.path.join(trash.path, name)
@@ -501,8 +585,8 @@ def main():
     finally:                           # even on an unexpected error: leave no quarantine, record what was done
         trash.finish()
         append_rows(os.path.join(ldir, "reviewed.jsonl"), out_rows)
-    summary = "mode=%s emptied=%d failed=%d skipped=%d kb=%d" % (mode, emptied, failed, skipped, kb)
-    if emptied or failed or skipped:
+    summary = "mode=%s emptied=%d failed=%d skipped=%d gone=%d kb=%d" % (mode, emptied, failed, skipped, gone, kb)
+    if emptied or failed or skipped or gone:
         print(summary)
     try:
         with open(os.path.join(ldir, "empty.log"), "a", encoding="utf-8") as f:
