@@ -208,13 +208,26 @@ def ps_signed(pid):
     return p.returncode == 0
 
 
+_LSOF_ESC = re.compile(rb"\\x([0-9a-fA-F]{2})|\\([\\tnrbf])")
+_LSOF_CTL = {b"t": b"\t", b"n": b"\n", b"r": b"\r", b"b": b"\b", b"f": b"\f", b"\\": b"\\"}
+
+
+def lsof_unescape(raw):
+    """Undo lsof -Fn's escaping of a path (bytes in, str out): `\\\\` for a backslash, `\\t \\n \\r \\b \\f`, and `\\xNN` for
+    every byte it will not print, which under LC_ALL=C (this program's locale) is every non-ASCII byte. Other control
+    characters come out as ^X, which cannot be told from a literal ^X, so such a path gives None."""
+    if re.search(rb"\^[@A-Z\[\\\]^_]", raw):
+        return None
+    return os.fsdecode(_LSOF_ESC.sub(lambda m: bytes([int(m.group(1), 16)]) if m.group(1) else _LSOF_CTL[m.group(2)], raw))
+
+
 def ps_cwd(pid):
-    """The working directory of `pid` ("" when it cannot be read)."""
-    p = subprocess.run([LSOF, "-a", "-p", str(int(pid)), "-d", "cwd", "-Fn"], stdout=subprocess.PIPE,
-                       stderr=subprocess.DEVNULL, universal_newlines=True, errors="replace")
-    for line in p.stdout.splitlines():
-        if line.startswith("n"):
-            return line[1:]
+    """The working directory of `pid`: "" when it cannot be read, "\\0" (never a path) when lsof's output for it is ambiguous."""
+    p = subprocess.run([LSOF, "-a", "-p", str(int(pid)), "-d", "cwd", "-Fn"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    for line in p.stdout.split(b"\n"):
+        if line.startswith(b"n"):
+            path = lsof_unescape(line[1:])
+            return path if path is not None else "\0"
     return ""
 
 
@@ -318,6 +331,14 @@ def settings_gate(home, managed, hpid, cpid, cwd_of):
     if not cwds:
         return 5, ("cannot read the working directory of Claude Code's shell, so the project's settings cannot be checked "
                    "for a PermissionRequest hook. Empty the Trash in Finder")
+    for c in cwds:                     # a directory that is not there is a path that was misread, and its settings go unread
+        try:
+            ok = os.path.isdir(os.path.realpath(c))
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
+            return 5, ("the working directory of Claude Code's shell (%s) is not a directory this script can open, so the "
+                       "project's settings cannot be checked for a PermissionRequest hook. Empty the Trash in Finder" % show(c))
     hook = permission_hook_source(home, managed, cwds)
     return (6, hook_message(hook)) if hook else None
 

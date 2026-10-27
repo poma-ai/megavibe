@@ -1262,6 +1262,49 @@ g = te.settings_gate(home, managed, 1, 2, lambda p: deep_cwd)
 case("settings_gate: a project hook -> exit 6 naming the file, telling the agent to ask the user", None if g and g[0] == 6 and "settings.local.json" in g[1] and "Ask the user" in g[1] else g, True)
 case("settings_gate: a clean project -> None", None if te.settings_gate(home, managed, 1, 2, lambda p: other) is None else "flagged", True)
 case("settings_gate: one readable directory is enough", None if te.settings_gate(home, managed, 1, 2, lambda p: other if p == 2 else "") is None else "flagged", True)
+# a project path that lsof escapes (non-ASCII bytes show as \xNN under LC_ALL=C, tab and backslash as \t and \\) must still be read
+case("lsof_unescape: \\xNN bytes, a tab and a backslash", None if te.lsof_unescape(rb"/a/K\xc3\xbcche \xc3\xa9\tx\\y") == "/a/Küche é\tx\\y" else te.lsof_unescape(rb"/a/K\xc3\xbcche \xc3\xa9\tx\\y"), True)
+case("lsof_unescape: a literal backslash-x-4-1 is not a byte", None if te.lsof_unescape(rb"/a/\\x41") == "/a/\\x41" else te.lsof_unescape(rb"/a/\\x41"), True)
+case("lsof_unescape: newline, return, backspace, formfeed, DEL", None if te.lsof_unescape(rb"/a/\n\r\b\f\x7f") == "/a/\n\r\b\f\x7f" else "wrong", True)
+case("lsof_unescape: a plain path is unchanged", None if te.lsof_unescape(rb"/Users/x/dev/proj") == "/Users/x/dev/proj" else "wrong", True)
+case("lsof_unescape: caret notation is ambiguous and gives None", None if te.lsof_unescape(rb"/a/b^Ac") is None and te.lsof_unescape(rb"/a/b^[c") is None else "decoded", True)
+import shutil, subprocess
+CHILD = ("import importlib.util, sys\n"
+         "s = importlib.util.spec_from_file_location('te', sys.argv[1]); te = importlib.util.module_from_spec(s); s.loader.exec_module(te)\n"
+         "g = te.settings_gate(sys.argv[3], sys.argv[4], int(sys.argv[2]), int(sys.argv[2]), te.ps_cwd)\n"
+         "print(g[0] if g else 'clean')\n")
+def under_the_scripts_environment(pid):      # the program as trash-empty.sh starts it: env -i, LC_ALL=C, python3 -I
+    r = subprocess.run(["/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "LC_ALL=C", "/usr/bin/python3", "-I", "-c", CHILD, sys.argv[1], str(pid), home, managed],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    return r.stdout.strip() or r.stderr.strip()[-200:]
+base = T + "/cwdtest"
+for label, nm in [("non-ASCII and a space", "Küche é"), ("a tab and a backslash", "t\tab\\x"), ("all of them", "ü é\tz\\q\\x41"), ("a newline", "n\nl")]:
+    d = os.path.join(base, nm); os.makedirs(d)
+    p = subprocess.Popen(["/bin/sleep", "60"], cwd=d)          # a process of ours with that working directory, killed by its handle below
+    try:
+        got = te.ps_cwd(p.pid)
+        case("ps_cwd reads a cwd with %s exactly" % label, None if got == os.path.realpath(d) else got, True)
+        put(d + "/.claude/settings.local.json", HOOK)
+        g = te.settings_gate(home, managed, p.pid, p.pid, te.ps_cwd)
+        case("settings_gate sees a planted PermissionRequest hook in a cwd with %s" % label, None if g and g[0] == 6 and "settings.local.json" in g[1] else g, True)
+        case("...and so does the program under env -i LC_ALL=C python3 -I, exactly as trash-empty.sh starts it (%s)" % label, None if under_the_scripts_environment(p.pid) == "6" else under_the_scripts_environment(p.pid), True)
+        put(d + "/.claude/settings.local.json", "{}")
+        case("settings_gate is clean without the hook in a cwd with %s" % label, None if te.settings_gate(home, managed, p.pid, p.pid, te.ps_cwd) is None else "flagged", True)
+        case("...and clean under env -i LC_ALL=C python3 -I (%s)" % label, None if under_the_scripts_environment(p.pid) == "clean" else under_the_scripts_environment(p.pid), True)
+    finally:
+        p.kill(); p.wait()
+d = os.path.join(base, "c^Ad"); os.makedirs(d)
+p = subprocess.Popen(["/bin/sleep", "60"], cwd=d)
+try:
+    case("ps_cwd of a cwd with a caret sequence is ambiguous: not a path", None if te.ps_cwd(p.pid) == "\0" else te.ps_cwd(p.pid), True)
+    g = te.settings_gate(home, managed, p.pid, p.pid, te.ps_cwd)
+    case("settings_gate refuses (5) when the cwd is ambiguous", None if g and g[0] == 5 else g, True)
+finally:
+    p.kill(); p.wait()
+case("settings_gate refuses (5) a cwd that does not exist", None if (te.settings_gate(home, managed, 1, 2, lambda p: T + "/no/such/dir") or (0,))[0] == 5 else "passed", True)
+case("settings_gate refuses (5) a cwd that is a file", None if (te.settings_gate(home, managed, 1, 2, lambda p: T + "/a.json") or (0,))[0] == 5 else "passed", True)
+case("settings_gate refuses (5) a cwd with a NUL", None if (te.settings_gate(home, managed, 1, 2, lambda p: "/tmp/\0x") or (0,))[0] == 5 else "passed", True)
+case("settings_gate: a good cwd next to a bad one still refuses (5)", None if (te.settings_gate(home, managed, 1, 2, lambda p: other if p == 1 else T + "/no/such/dir") or (0,))[0] == 5 else "passed", True)
 put(home + "/.claude/settings.local.json", HOOK)
 case("the user's settings.local.json counts", None if te.permission_hook_source(home, managed, []) == home + "/.claude/settings.local.json" else "missed", True)
 os.remove(home + "/.claude/settings.local.json"); put(managed, HOOK)
