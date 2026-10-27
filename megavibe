@@ -1008,6 +1008,16 @@ if [ "${1:-}" = "route" ]; then
   exit 0
 fi
 
+# megavibe trash-greenlight: put the Trash greenlight's permission rules in the MANAGED settings file
+# (root-owned, so an agent running as the user cannot remove them). Opt-in; asks for the sudo password.
+if [ "${1:-}" = "trash-greenlight" ]; then
+  shift
+  # An older installed setup.sh would not know the flag and would run a whole install instead.
+  grep -q -- '--trash-greenlight-managed' "$MEGAVIBE_HOME/setup.sh" 2>/dev/null \
+    || { echo "The installed setup.sh does not have the Trash greenlight yet. Run 'bash setup.sh' from the megavibe repo first."; exit 1; }
+  exec bash "$MEGAVIBE_HOME/setup.sh" --trash-greenlight-managed "$@"
+fi
+
 if [ "${1:-}" = "reviewers" ]; then
   shift
   RV="$MEGAVIBE_HOME/scripts/reviewers.sh"
@@ -1779,7 +1789,7 @@ if [ -n "$REPO_DIR" ]; then
     for _s in "$REPO_DIR/scripts/"*.py "$REPO_DIR/scripts/gemini-review.sh" \
               "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh" \
               "$REPO_DIR/scripts/disk-watch.sh" "$REPO_DIR/scripts/usage-route.sh" \
-              "$REPO_DIR/scripts/trash.sh"; do
+              "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \

@@ -38,6 +38,121 @@ msudo() {
   return "$rc"
 }
 
+# ─── Trash greenlight: the permission rules that gate scripts/trash-empty.sh ───
+# trash-empty.sh is the one place megavibe really deletes (README, "Trash greenlight").
+# What gates it is Claude Code's own permission prompt: `permissions.ask` rules are
+# honoured under bypassPermissions and the prompt reaches the phone under Remote Control.
+# The rules are written as an ARRAY UNION into permissions.ask: the `. * $mv` merge used for
+# statusLine below replaces arrays, and would drop the user's own ask rules. Order is kept,
+# existing entries are kept, nothing else in the file is touched.
+#   Bash(~/.megavibe/scripts/trash-empty.sh *)         the one spelling the hook lets through
+#   Bash(<HOME>/.megavibe/scripts/trash-empty.sh *)    the same, expanded (whether ~ is matched literally is not documented)
+#   Bash(*trash-empty*)                                catch-all: any command text naming the script prompts
+trash_ask_rules() {
+  jq -n --arg h "$HOME" '["Bash(~/.megavibe/scripts/trash-empty.sh *)", ("Bash(" + $h + "/.megavibe/scripts/trash-empty.sh *)"), "Bash(*trash-empty*)"]'
+}
+TRASH_ASK_PRESENT='type == "object" and ((.permissions // {}) | type) == "object" and (((.permissions // {}).ask // []) | type) == "array" and ((.permissions.ask // []) as $a | all($r[]; . as $x | $a | any(.[]; . == $x)))'
+TRASH_ASK_MERGE='(.permissions // {}) as $p | .permissions = ($p + {ask: (($p.ask // []) as $a | $a + ($r - $a))})'
+
+# merge_trash_ask FILE LABEL: add the rules to a settings file (created if missing); idempotent.
+# Returns 0 when the rules are there afterwards (added, or already present), 1 after a warning.
+merge_trash_ask() {
+  local f="$1" label="$2" rules tmp stamp
+  rules="$(trash_ask_rules)" || return 1
+  if [ -f "$f" ]; then
+    if jq -e --argjson r "$rules" "$TRASH_ASK_PRESENT" "$f" >/dev/null 2>&1; then
+      echo -e "  ${YELLOW}skip${RESET} Trash greenlight ask rules in $label (already present)"
+      return 0
+    fi
+    # A private temp file beside the original: settings.json may hold secrets in its env block.
+    tmp="$(umask 077; mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || { warn "could not write beside $label — left untouched; trash-empty.sh will refuse to run"; return 1; }
+    if ! jq --argjson r "$rules" "$TRASH_ASK_MERGE" "$f" > "$tmp" 2>/dev/null || ! jq -e . "$tmp" >/dev/null 2>&1; then
+      warn "could not add the Trash greenlight ask rules to $label (is it valid JSON, with permissions.ask a list?) — left untouched; trash-empty.sh will refuse to run"
+      rm -f "$tmp" 2>/dev/null || true
+      return 1
+    fi
+    stamp=$(date +%Y%m%d-%H%M%S)
+    # cp, not mv: a symlinked settings.json (dotfiles) stays a link and the mode is kept.
+    if ! cp "$f" "${f}.pre-trashask-${stamp}" 2>/dev/null; then
+      warn "could not back up $label — left untouched; trash-empty.sh will refuse to run"
+      rm -f "$tmp" 2>/dev/null || true
+      return 1
+    fi
+    if ! cp "$tmp" "$f" 2>/dev/null; then
+      warn "could not rewrite $label — backup kept at ${f}.pre-trashask-${stamp}"
+      rm -f "$tmp" 2>/dev/null || true
+      return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    ok "Trash greenlight: ask rules for trash-empty.sh added to $label (backup: $(basename "$f").pre-trashask-${stamp})"
+  else
+    mkdir -p "$(dirname "$f")" 2>/dev/null || { warn "could not create $(dirname "$f")"; return 1; }
+    if ( umask 077; jq -n --argjson r "$rules" '{permissions: {ask: $r}}' > "$f" ) 2>/dev/null; then
+      ok "Trash greenlight: $label created with the ask rules for trash-empty.sh"
+    else
+      warn "could not write $label — trash-empty.sh will refuse to run"
+      return 1
+    fi
+  fi
+}
+
+# setup.sh --trash-greenlight-managed (also: megavibe trash-greenlight): the same rules in the
+# MANAGED settings file, which sits above user and project settings and cannot be edited by an
+# agent running as the user (root-owned; written with sudo, and only with a human at a terminal:
+# msudo). Opt-in, because a managed file changes what Claude Code reads; and if an organisation
+# delivers managed settings by MDM or remote policy, Claude Code takes the first managed source and
+# ignores this local file. Lists are unioned with the user's settings, so nothing else changes.
+# An existing file is backed up ONCE, to <file>.megavibe-backup, and never overwritten after that:
+# the first backup is the original, which is the one worth keeping.
+# MEGAVIBE_MANAGED_SETTINGS_FILE points it at another file (tests); no sudo is used where the
+# directory is writable.
+trash_greenlight_managed() {
+  local target="${MEGAVIBE_MANAGED_SETTINGS_FILE:-/Library/Application Support/ClaudeCode/managed-settings.json}"
+  local rules tmp dir d priv=msudo
+  if [ -z "${MEGAVIBE_MANAGED_SETTINGS_FILE:-}" ] && [ "$(uname -s)" != "Darwin" ]; then
+    fail "the Trash greenlight is macOS only"; return 1
+  fi
+  command -v jq &>/dev/null || { fail "jq is required (brew install jq)"; return 1; }
+  rules="$(trash_ask_rules)" || return 1
+  dir="$(dirname "$target")"
+  if [ -e "$target" ] && ! jq -e . "$target" >/dev/null 2>&1; then
+    fail "$target exists but is not valid JSON — not touching it"; return 1
+  fi
+  if [ -f "$target" ] && jq -e --argjson r "$rules" "$TRASH_ASK_PRESENT" "$target" >/dev/null 2>&1; then
+    echo -e "  ${YELLOW}skip${RESET} Trash greenlight ask rules in $target (already present)"; return 0
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/megavibe-managed.XXXXXX")" || { fail "mktemp failed"; return 1; }
+  if [ -f "$target" ]; then
+    jq --argjson r "$rules" "$TRASH_ASK_MERGE" "$target" > "$tmp" 2>/dev/null \
+      || { fail "could not merge the rules into $target (permissions.ask is not a list?)"; rm -f "$tmp"; return 1; }
+  else
+    jq -n --argjson r "$rules" '{permissions: {ask: $r}}' > "$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  jq -e . "$tmp" >/dev/null 2>&1 || { fail "merge produced invalid JSON — not writing"; rm -f "$tmp"; return 1; }
+  d="$dir"; while [ ! -d "$d" ]; do d="$(dirname "$d")"; done
+  if [ -w "$d" ] && { [ ! -e "$target" ] || [ -w "$target" ]; }; then priv=""; fi
+  info "Managed settings: $target"
+  echo "  adds only permissions.ask rules for ~/.megavibe/scripts/trash-empty.sh${priv:+; needs sudo (asks for your password)}"
+  if ! { ${priv:+$priv} mkdir -p "$dir" \
+         && { [ ! -f "$target" ] || [ -e "${target}.megavibe-backup" ] || ${priv:+$priv} cp "$target" "${target}.megavibe-backup"; } \
+         && ${priv:+$priv} cp "$tmp" "$target" \
+         && ${priv:+$priv} chmod 644 "$target"; }; then
+    fail "could not write $target"; rm -f "$tmp"; return 1
+  fi
+  rm -f "$tmp"
+  if jq -e --argjson r "$rules" "$TRASH_ASK_PRESENT" "$target" >/dev/null 2>&1; then
+    ok "Trash greenlight: ask rules in $target"
+    echo "  Run /status in a Claude Code session to confirm it lists Managed settings."
+    warn "If your organisation delivers managed settings by MDM or remote policy, Claude Code reads that source and ignores this file."
+  else
+    fail "$target does not contain the rules after writing"; return 1
+  fi
+}
+
+if [ "${1:-}" = "--trash-greenlight-managed" ]; then
+  if trash_greenlight_managed; then exit 0; else exit 1; fi
+fi
+
 NEEDS_LOGIN=()
 
 # ─── npm global prefix (Linux/WSL: avoid EACCES on /usr/local) ─────
@@ -629,7 +744,7 @@ fi
 # (always overwrite) so updates propagate without a per-project init step.
 if [ -d "$SCRIPT_DIR/scripts" ]; then
   mkdir -p "$MEGAVIBE_HOME/scripts"
-  for _py in "$SCRIPT_DIR/scripts/"*.py "$SCRIPT_DIR/scripts/gemini-review.sh" "$SCRIPT_DIR/scripts/codex-review.sh" "$SCRIPT_DIR/scripts/reviewers.sh" "$SCRIPT_DIR/scripts/disk-watch.sh" "$SCRIPT_DIR/scripts/usage-route.sh" "$SCRIPT_DIR/scripts/second-opinion.sh" "$SCRIPT_DIR/scripts/deliverables-index.sh" "$SCRIPT_DIR/scripts/trash.sh"; do
+  for _py in "$SCRIPT_DIR/scripts/"*.py "$SCRIPT_DIR/scripts/gemini-review.sh" "$SCRIPT_DIR/scripts/codex-review.sh" "$SCRIPT_DIR/scripts/reviewers.sh" "$SCRIPT_DIR/scripts/disk-watch.sh" "$SCRIPT_DIR/scripts/usage-route.sh" "$SCRIPT_DIR/scripts/second-opinion.sh" "$SCRIPT_DIR/scripts/deliverables-index.sh" "$SCRIPT_DIR/scripts/trash.sh" "$SCRIPT_DIR/scripts/trash-empty.sh"; do
     [ -f "$_py" ] || continue
     if ! atomic_install "$_py" "$MEGAVIBE_HOME/scripts/$(basename "$_py")" 755; then
       warn "could not install scripts/$(basename "$_py")"
@@ -949,9 +1064,12 @@ if [ -f "$USER_SETTINGS" ]; then
     cp "$USER_SETTINGS" "${USER_SETTINGS}.megavibe-backup"
     # Merge megavibe defaults (statusLine + attribution) into existing settings
     # jq * does recursive merge — user overrides are preserved if set after setup
-    jq --argjson mv "$MEGAVIBE_SETTINGS" '. * $mv' \
-      "$USER_SETTINGS" > "${USER_SETTINGS}.tmp"
-    mv "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
+    # The temp file is private (settings.json may hold secrets in its env block), and the result is
+    # copied OVER the file rather than moved: mv would replace a symlinked settings.json with a regular
+    # file and give it the temp file's mode instead of keeping the user's.
+    (umask 077; jq --argjson mv "$MEGAVIBE_SETTINGS" '. * $mv' "$USER_SETTINGS" > "${USER_SETTINGS}.tmp")
+    cp "${USER_SETTINGS}.tmp" "$USER_SETTINGS"
+    rm -f "${USER_SETTINGS}.tmp"
     ok "settings.json updated (statusLine + attribution; backup at ${USER_SETTINGS}.megavibe-backup)"
   else
     warn "Could not merge settings (jq not available)"
@@ -959,6 +1077,29 @@ if [ -f "$USER_SETTINGS" ]; then
 else
   echo "$MEGAVIBE_SETTINGS" | jq . > "$USER_SETTINGS"
   ok "~/.claude/settings.json created (statusLine + attribution)"
+fi
+
+# ─── 5a. Trash greenlight: ask rules for scripts/trash-empty.sh ─────
+# macOS only (the Trash and its ledger). Without these rules trash-empty.sh refuses to run
+# (exit 4), so a missing or failed merge is safe. See the helpers at the top of this file.
+# shellcheck disable=SC2088  # the quoted ~ paths are display labels, not paths
+if [ "$(uname -s)" = "Darwin" ]; then
+  if command -v jq &>/dev/null; then
+    _tg_ok=1
+    merge_trash_ask "$USER_SETTINGS" "~/.claude/settings.json" || _tg_ok=0
+    # Claude Code reads CLAUDE_CONFIG_DIR instead when it is set, so the prompt needs the rules
+    # there. trash-empty.sh ignores that variable and checks only ~/.claude/settings.json (or the
+    # managed file), and expects Claude Code's shell snapshots under ~/.claude, so with the
+    # variable set it refuses (exit 5); the rules still make the plain form prompt.
+    if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
+      merge_trash_ask "$CLAUDE_CONFIG_DIR/settings.json" "$CLAUDE_CONFIG_DIR/settings.json" || _tg_ok=0
+    fi
+    if [ "$_tg_ok" = 1 ]; then
+      echo "  Claude now asks you (also on the phone) before ~/.megavibe/scripts/trash-empty.sh runs. Stronger, opt-in: bash ~/.megavibe/setup.sh --trash-greenlight-managed"
+    fi
+  else
+    warn "Trash greenlight ask rules not installed (jq not available) — trash-empty.sh will refuse to run"
+  fi
 fi
 
 # ─── 5b. Strip legacy user-level hook registrations ─────────────────

@@ -10,6 +10,7 @@ up, or mark them droppable.
 
   trash-review.py trash [rm options] PATH...   what trash.sh runs; exit 3 = not handled, use rmtrash
   trash-review.py status            counts of unreviewed and droppable items
+  trash-review.py droppable [--json]  the items marked droppable that are still in the Trash (read only)
   trash-review.py pending [--json]  unreviewed items still in the Trash (--all: kept and droppable ones too)
   trash-review.py nudge             hook helper: prints a message once per threshold crossing
   trash-review.py group FILE        FILE: {"groups": [{"label": "...", "ids": [...]}]}; registers the
@@ -28,11 +29,15 @@ anything at its destination; an item left in the claim directory by a failed or
 interrupted action is put back into the Trash at the start of the next apply. A move
 to another volume COPIES (a symlink as a symlink) and leaves the original in the Trash.
 
-Nothing here deletes. "droppable" leaves the item in the Trash and counts it in
+Nothing in this file deletes. "droppable" leaves the item in the Trash and counts it in
 `status`, so the user can empty the Trash knowing what is in it. Megavibe sessions
 run with permissions bypassed, and three review rounds found every agent-run
 consent check forgeable (env overrides, transcript appends, pseudo-terminals), so
-the permanent delete stays with the human, in Finder.
+no consent check lives here. The permanent delete is scripts/trash-empty.sh, a shell
+script that runs only behind a Claude Code permission prompt (an ask rule, honoured
+under bypass and forwarded to the phone); it reads the droppable list from here, and
+the user can still empty the Trash in Finder instead. The delete is deliberately not a
+subcommand of this file: `python3 trash-review.py ...` is allowed and easy to type.
 """
 import ctypes, errno, fcntl, json, os, shutil, stat, subprocess, sys, tempfile, time, uuid
 
@@ -347,7 +352,18 @@ def cmd_status():
     d = droppable()
     if d:
         kb = sum(max(r.get("kb", 0), 0) for r in d)
-        print(f"{len(d)} item(s), {human(kb)}, marked droppable: emptying the Trash in Finder frees them")
+        print(f"{len(d)} item(s), {human(kb)}, marked droppable: ~/.megavibe/scripts/trash-empty.sh frees them "
+              f"(a permission prompt asks first, also on the phone), or empty the Trash in Finder")
+
+
+def cmd_droppable(as_json):
+    """Read only: what trash-empty.sh may delete. Every row is checked against the Trash
+    (same entry, same inode) here, and again by the script right before it deletes."""
+    for r in droppable():
+        if as_json:
+            print(json.dumps({k: r.get(k) for k in ("id", "trash_path", "dev", "ino", "kb", "path")}, ensure_ascii=False))
+        else:
+            print(f'{r["id"]}  {max(r.get("kb", 0), 0):>9} KB  {r["path"]}')
 
 
 def cmd_pending(as_json, everything=False):
@@ -595,6 +611,8 @@ def main(a):
         cmd_status()
     elif c == "pending":
         cmd_pending("--json" in a, "--all" in a)
+    elif c == "droppable":
+        cmd_droppable("--json" in a)
     elif c in ("nudge", "nudge-ack"):
         sid = a[a.index("--session") + 1] if "--session" in a and a.index("--session") + 1 < len(a) else ""
         if c == "nudge":

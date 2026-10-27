@@ -41,7 +41,8 @@ set -u
 # hook exists to prevent (it cost a credential file on 2026-09-08). If a file must
 # be unrecoverable, that is the user's call (block-dangerous-bash.sh refuses shred, srm
 # and rm -P unless they allow it). Emptying the Trash is blocked by
-# block-dangerous-bash.sh: it is the only undo, and only the user empties it.
+# block-dangerous-bash.sh: it is the only undo. Only the user empties it, in Finder or by
+# approving the permission prompt in front of ~/.megavibe/scripts/trash-empty.sh (README).
 #
 # Runs in every project, not only megavibe ones — same reasoning as
 # block-dangerous-bash.sh (a recoverable delete is always good); documented as

@@ -231,6 +231,10 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/block-permission-hooks.sh"
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/nudge-quiet-bash.sh"
           }
         ]

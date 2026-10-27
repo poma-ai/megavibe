@@ -56,9 +56,10 @@ EOF
 # rm-to-trash.sh makes the Trash the ONLY undo for every delete an agent performs;
 # emptying it destroys that undo for everything at once, including files nobody
 # looked at (an agent "freeing space" did exactly this on 2026-09-30). No escape
-# hatch on purpose: a human empties it in Finder. Reads (ls, du), restoring one
-# file with mv, and text that merely mentions these words (commit messages, grep
-# patterns, PR bodies) are untouched.
+# hatch for an agent: a human empties it in Finder, or answers the permission prompt
+# in front of ~/.megavibe/scripts/trash-empty.sh (the gate just below). Reads (ls, du),
+# restoring one file with mv, and text that merely mentions these words (commit
+# messages, grep patterns, PR bodies) are untouched.
 #
 # Parsed with shlex like the kubectl guard below, for the same reason: regexes over
 # shell text were defeated by (rm ...), { rm; }, then/do, env VAR=x rm, sudo -u root
@@ -83,6 +84,73 @@ EOF
 # Every review round on this block found a new bypass or over-block, so do not read
 # a clean regression corpus as proof. Upgrade path: a filesystem-level guard.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The Trash greenlight script: ~/.megavibe/scripts/trash-empty.sh.
+#
+# It is the one deleting path. What gates it is Claude Code's permission prompt (setup.sh
+# installs `permissions.ask` rules; an ask rule is honoured under bypassPermissions and is
+# forwarded to the phone). What keeps that gate from being walked around is the script
+# itself: it runs only when the Claude Code shell above it was asked for exactly
+# `~/.megavibe/scripts/trash-empty.sh [--all]` (README, "Trash greenlight"). A spelling that
+# reaches the file without the ask rules matching (a glob, a symlinked directory, a variable,
+# `cd` first) is therefore harmless: the script exits 5 before it touches anything.
+#
+# This block is only the first net, so the agent gets a clear message here instead of a
+# refusal later, and only the reviewed spelling reaches the prompt:
+#   - the exact command, alone in the call: exit 0 here (no permission decision is made; the
+#     ask rule prompts next). It also keeps the crude no-python fallback below from refusing it;
+#   - any other command whose text names the script (trash-empty, trash-em*, trash-e*; quotes,
+#     backslashes, brackets, braces and newlines ignored, case ignored): blocked;
+#   - a home-anchored path whose first part is a glob that could complete to .megavibe and
+#     that goes on below it (~/.m*/scripts/x, ~/.meg?vibe/x): blocked; a plain `ls -d ~/.m*` passes;
+#   - osascript, launchctl, crontab or a new Terminal window that mentions ~/.megavibe or the
+#     script: blocked (they start a process outside Claude Code's process tree; the script
+#     refuses those anyway). `launchctl list | grep com.megavibe` is not a mention.
+# HACK: a net, not a wall. Known holes: a name assembled from pieces the text never shows
+# together, a script FILE that calls it; the script itself is the lock for both.
+# Known over-blocks: any Bash text that names the script is refused, including `git add
+# scripts/trash-empty.sh`, `bash -n`, `grep`, `cat` and a commit message that mentions it; use
+# the Read and Grep tools, `git add scripts/` (the directory), a loop over the directory for
+# lint, `git commit -F file`.
+# ---------------------------------------------------------------------------
+_TE=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]{},\n" | tr '[:upper:]' '[:lower:]')
+_TE_RAW=$(printf '%s' "$COMMAND" | tr '[:upper:]' '[:lower:]')
+case "$_TE|$_TE_RAW" in
+  *trash-e*|*/.m*|*launchctl*|*osascript*|*osacompile*|*crontab*|*terminal*|*iterm*)
+    _TE_EXACT='^[[:space:]]*~/\.megavibe/scripts/trash-empty\.sh( --all)?[[:space:]]*$'
+    if [[ $COMMAND =~ $_TE_EXACT ]]; then
+      exit 0
+    fi
+    _TE_WHY=""
+    if printf '%s' "$_TE" | grep -Eq 'trash-e(m|[*?]|[^a-z0-9]|$)'; then
+      _TE_WHY="names trash-empty.sh"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?][^[:space:]]*/'; then
+      _TE_WHY="has a path whose first part is a glob that could expand to ~/.megavibe"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(osascript|osacompile|launchctl|crontab|(^|[[:space:];&|(])open[[:space:]].*(terminal|iterm))' \
+         && printf '%s' "$_TE_RAW" | grep -Eq '[/~]\.megavibe|trash-e'; then
+      _TE_WHY="starts a process outside Claude Code that mentions ~/.megavibe or trash-empty.sh"
+    fi
+    if [ -n "$_TE_WHY" ]; then
+      echo "Blocked: this command $_TE_WHY. ~/.megavibe/scripts/trash-empty.sh may only be run exactly as typed, alone in the call, so Claude Code asks the user first. To read it use the Read tool; to name it in a commit message use git commit -F." >&2
+      exit 2
+    fi
+    ;;
+esac
+
+# A PermissionRequest hook is run by Claude Code instead of asking the user, and can answer Yes: it
+# would answer the prompt in front of trash-empty.sh without the human. block-permission-hooks.sh
+# refuses the Write/Edit route; this is the Bash route (jq, a redirect, sed -i) as a text rule.
+# Over-block: any Bash text that mentions PermissionRequest next to a settings or hooks file, even
+# to read it (use the Read and Grep tools). Not covered: an interpreter that assembles the name.
+case "$_TE_RAW" in
+  *permissionrequest*)
+    case "$_TE_RAW" in
+      *settings*|*hooks.json*|*/.claude/*)
+        echo "Blocked: this command mentions PermissionRequest next to a Claude Code settings or hooks file. A PermissionRequest hook answers permission prompts for the user (including the one in front of ~/.megavibe/scripts/trash-empty.sh), so it is not something to write on the user's behalf; to read one use the Read or Grep tool." >&2
+        exit 2 ;;
+    esac ;;
+esac
+
 _TRASH_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
 _TRASH_CMD=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]" | tr '[:upper:]' '[:lower:]')
 case "$_TRASH_CMD $(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" in
