@@ -340,7 +340,7 @@ A session hands you work in one visible place instead of burying it in the hidde
 
 ### Per-project (automatic on first `megavibe` run)
 
-Not in your home directory: there `.claude/` is your user-level config, so hooks installed into it would fire in every project, and a session there would run with bypassed permissions but no guard hooks. `megavibe` refuses to start in `~` (cd into a project, or run plain `claude`), and `init.sh ~` installs nothing. If an older launch from `~` already installed hooks, `setup.sh` says which registrations in `~/.claude/settings.json` to delete; it then archives `~/.claude/hooks` on the next run.
+Not in your home directory: there `.claude/` is your user-level config, so hooks installed into it would fire in every project, and a session there would run with bypassed permissions but no guard hooks. `megavibe` refuses to start in `~` (cd into a project, or run plain `claude`), and `init.sh ~` installs nothing. In a folder that is not a repo but holds several (an umbrella like `~/dev`), the launcher names the repos whose own `.agent/` log is newest: there, memory and `.agent/` are one bucket for all of them and, by default, no repo's own decisions, lessons or tasks are read (`MEGAVIBE_EXTRA_AGENT_DIRS` adds other repos' `.agent/` to search only), so launch inside the repo you change and reach a second one with `--add-dir`. If an older launch from `~` already installed hooks, `setup.sh` says which registrations in `~/.claude/settings.json` to delete; it then archives `~/.claude/hooks` on the next run.
 
 | What | Where |
 |------|-------|

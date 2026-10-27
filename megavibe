@@ -1971,7 +1971,7 @@ if [ -d "$LEGACY_USER_HOOKS" ]; then
       if [ "$CHECK_FAILED" = "1" ]; then
         echo "  Note: left ~/.claude/hooks/ in place — could not check ~/.claude settings for registrations pointing into it."
       else
-        echo "  Note: left ~/.claude/hooks/ in place — still referenced by ${STILL_REFERENCED}. If that is not yours, it is firing twice; remove it from ~/.claude/settings.json."
+        echo "  Note: left ~/.claude/hooks/ in place — still referenced by ${STILL_REFERENCED}. If that is not yours, it is firing twice; remove it from the settings file named above."
         [ -d "$HOME/.agent" ] && echo "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, remove every entry pointing into ~/.claude/hooks/ from the settings file(s) named above; once none is left, the next launch archives the folder."
       fi
       touch "$HOME/.claude/.megavibe-hookdir-noted" 2>/dev/null || true
@@ -2089,20 +2089,62 @@ CLAUDE_ARGV=()
 for _a in "$@"; do [ "$_a" = "--no-normalize" ] || CLAUDE_ARGV+=("$_a"); done
 set -- ${CLAUDE_ARGV[@]+"${CLAUDE_ARGV[@]}"}
 
+# Not a repo but holding several (an umbrella like ~/dev): this session's memory
+# and .agent/ are one bucket for all of them, and no repo's own .agent/ is read.
+# Names the repos whose own log is newest, so the user can launch in one. Linked
+# worktrees (their .git file points into a /worktrees/ dir) are left out.
+umbrella_note() {
+  local g r gd t m d now n=0 repos=() rows="" list=""
+  [ -n "${HOME:-}" ] && [ . -ef "$HOME" ] && return 0   # refused just below; no advice for a launch that will not happen
+  while IFS= read -r -d '' g; do
+    r="${g#./}"; r="${r%/.git}"
+    if [ -f "$g" ]; then
+      gd=$(sed -n 's/^gitdir: //p' "$g" 2>/dev/null | head -1) || true
+      case "$gd" in ''|*/worktrees/*) continue ;; esac   # no gitdir: not a checkout
+    fi
+    repos+=("$r")
+  done < <(find . -mindepth 2 -maxdepth 2 -name .git -print0 2>/dev/null)
+  n=${#repos[@]}
+  [ "$n" -ge 3 ] || return 0
+  now=$(date +%s)
+  for r in "${repos[@]}"; do
+    case "$r" in *[[:cntrl:]]*) continue ;; esac   # tab, newline, escapes: never printed
+    [ -d "./$r/.agent/events" ] && [ ! -L "./$r/.agent" ] || continue
+    # The newest event by NAME: event files are named by their UTC write time
+    # (20261027T130904Z-...md) and never rewritten, so the name orders them and a
+    # fold or a stray .DS_Store changes nothing. Only that one file is stat'ed,
+    # BSD and GNU probed separately and checked (see lock_mtime above).
+    t=$( (ls "./$r/.agent/events" 2>/dev/null || true) | grep -E '^[0-9]{8}T[0-9]{6}Z-.*[.]md$' | tail -1) || true
+    [ -n "$t" ] || continue
+    m=$(stat -f '%m' "./$r/.agent/events/$t" 2>/dev/null || true)
+    case "$m" in ''|*[!0-9]*) m=$(stat -c '%Y' "./$r/.agent/events/$t" 2>/dev/null || true) ;; esac
+    case "$m" in ''|*[!0-9]*) continue ;; esac
+    rows="${rows}${t%%-*}	${m}	${r}
+"
+  done
+  printf '  %bHeads up:%b this folder is not a repo but holds %s repos. Here, memory and .agent/ are one\n' "$YELLOW" "$RESET" "$n"
+  printf '  bucket for all of them, and by default no repo'"'"'s own .agent/ (decisions, lessons, tasks) is read.\n'
+  if [ -n "$rows" ]; then
+    # Sorted on the event name's timestamp, newest first; the age is for display only.
+    list=$( (printf '%s' "$rows" | sort -r | head -5 || true) | while IFS=$'\t' read -r t m r; do
+      d=$(( (now - m) / 86400 )); [ "$d" -gt 0 ] || d=0
+      if [ "$d" = 0 ]; then printf '%s (today), ' "$r"; else printf '%s (%sd ago), ' "$r" "$d"; fi
+    done)
+    printf '  %bTheir own logs, newest first: %s%b\n' "$DIM" "${list%, }" "$RESET"
+  fi
+  printf '  %bOne repo: cd <repo> && megavibe. Two: launch in the one you change; --add-dir ../<other> adds its files (not its .agent/).%b\n' "$DIM" "$RESET"
+}
+
+NORMALIZED_FROM=""
 if [ "$NORMALIZE" = "1" ]; then
   GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$GIT_ROOT" ] && [ "$GIT_ROOT" != "$(pwd -P)" ]; then
     echo -e "  ${DIM}Launching from the repo root (${GIT_ROOT##*/}) so this project keeps one memory store.${RESET}"
     echo -e "  ${DIM}Stay here instead: megavibe --no-normalize${RESET}"
+    NORMALIZED_FROM="$(pwd -P)"
     cd "$GIT_ROOT"
   elif [ -z "$GIT_ROOT" ]; then
-    # Not a repo. If it *contains* several, memory here is a shared bucket for
-    # all of them — which is how the ~/dev slug ends up a mixed bag.
-    _sub=$(find . -maxdepth 2 -name .git -mindepth 2 2>/dev/null | head -4 | wc -l | tr -d ' ')
-    if [ "${_sub:-0}" -ge 3 ]; then
-      echo -e "  ${YELLOW}Heads up:${RESET} this directory is not a repo but holds several."
-      echo -e "  ${DIM}Claude's memory here is shared across all of them. Prefer launching inside one.${RESET}"
-    fi
+    umbrella_note
   fi
 fi
 
@@ -2115,7 +2157,7 @@ if [ -n "${HOME:-}" ] && [ . -ef "$HOME" ]; then
   echo -e "  ${YELLOW}megavibe does not run in your home directory${RESET} (its .claude/ is your user-level config)."
   echo -e "  ${DIM}cd into a project first, or run plain claude here.${RESET}"
   # ~ itself a git repo (dotfiles): normalize moved a launch from a subdirectory here.
-  [ "$NORMALIZE" = "1" ] && [ -n "${GIT_ROOT:-}" ] \
+  [ -n "$NORMALIZED_FROM" ] \
     && echo -e "  ${DIM}Launched inside a repo rooted at ~? Stay in that folder with: megavibe --no-normalize${RESET}"
   exit 1
 fi
