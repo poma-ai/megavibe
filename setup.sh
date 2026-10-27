@@ -980,6 +980,11 @@ fi
 # ever shipped, retired ones included. It does not need updating when a hook
 # is added: new hooks are registered per-project, never at user level, so a
 # name that never existed before 2026-04 cannot appear in a legacy block.
+# Exception, closed 2026-10-27: a launch from ~ ran init.sh with $HOME as the
+# project and put newer names there too. init.sh and the launcher refuse $HOME
+# now; for such leftovers the warning below says what to remove. Widening this
+# list automatically was tried and dropped after three review rounds: a file
+# count or ~/.agent cannot tell megavibe's install from a hook the user keeps.
 #
 # A registration can spell the dir several ways and all of them must match.
 # The wrapper matched only the expanded path, so it missed "$HOME/.claude/
@@ -1249,6 +1254,13 @@ if [ -d "$LEGACY_HOOK_DIR" ]; then
     warn "left ${LEGACY_HOOK_DIR}/ in place — could not check ~/.claude settings for registrations pointing into it"
   elif [ "$STILL_REFERENCED" != "0" ]; then
     warn "left ${LEGACY_HOOK_DIR}/ in place — still referenced by ${STILL_REFERENCED}"
+    # Only names from the frozen list above are removed automatically. The others
+    # here usually come from an older launch in ~ (init.sh ran with $HOME as the
+    # project; it refuses that now). Whether one is the user's own cannot be told
+    # reliably from the files, so this says what to do instead of guessing.
+    if [ -d "$HOME/.agent" ]; then
+      warn "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, delete those entries from ~/.claude/settings.json; the next setup run archives the folder."
+    fi
   else
     ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d)"
     # A same-day collision means the dir was archived once today and came

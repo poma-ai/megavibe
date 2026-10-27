@@ -1972,6 +1972,7 @@ if [ -d "$LEGACY_USER_HOOKS" ]; then
         echo "  Note: left ~/.claude/hooks/ in place — could not check ~/.claude settings for registrations pointing into it."
       else
         echo "  Note: left ~/.claude/hooks/ in place — still referenced by ${STILL_REFERENCED}. If that is not yours, it is firing twice; remove it from ~/.claude/settings.json."
+        [ -d "$HOME/.agent" ] && echo "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, delete those entries from ~/.claude/settings.json; the next launch archives the folder."
       fi
       touch "$HOME/.claude/.megavibe-hookdir-noted" 2>/dev/null || true
     fi
@@ -2103,6 +2104,17 @@ if [ "$NORMALIZE" = "1" ]; then
       echo -e "  ${DIM}Claude's memory here is shared across all of them. Prefer launching inside one.${RESET}"
     fi
   fi
+fi
+
+# Never in the home directory. Its .claude/ is the user scope: init.sh would put
+# every project hook there, where it fires in all projects (twice where a project
+# has its own), and a session here would run with bypassed permissions but none
+# of the guard hooks. init.sh refuses too; this stops the launch before the lock
+# creates ~/.agent. -ef compares the inode (symlinks, case variants on APFS).
+if [ -n "${HOME:-}" ] && [ . -ef "$HOME" ]; then
+  echo -e "  ${YELLOW}megavibe does not run in your home directory${RESET} (its .claude/ is your user-level config)."
+  echo -e "  ${DIM}cd into a project first, or run plain claude here.${RESET}"
+  exit 1
 fi
 
 bash "$INIT_SCRIPT" .

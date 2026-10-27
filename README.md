@@ -340,6 +340,8 @@ A session hands you work in one visible place instead of burying it in the hidde
 
 ### Per-project (automatic on first `megavibe` run)
 
+Not in your home directory: there `.claude/` is your user-level config, so hooks installed into it would fire in every project, and a session there would run with bypassed permissions but no guard hooks. `megavibe` refuses to start in `~` (cd into a project, or run plain `claude`), and `init.sh ~` installs nothing. If an older launch from `~` already installed hooks, `setup.sh` says which registrations in `~/.claude/settings.json` to delete; it then archives `~/.claude/hooks` on the next run.
+
 | What | Where |
 |------|-------|
 | Hooks (33 scripts) | `.claude/hooks/` |

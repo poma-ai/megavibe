@@ -23,6 +23,20 @@ if [ ! -d "$PROJECT" ]; then
   exit 1
 fi
 
+# The home directory is never a project. Its .claude/ IS the user scope, so hooks
+# installed here would be registered in ~/.claude/settings.json and fire in every
+# project on the machine, twice where that project has its own; setup.sh then
+# archived ~/.claude/hooks and the next launch from ~ put it back (nine archives
+# on one machine by 2026-10-27). Exit 0, not 1, so a caller running this under
+# set -e carries on; the launcher itself refuses $HOME before it gets here.
+# -ef compares the inode, so a symlink or a differently-cased spelling on a
+# case-insensitive volume is caught too (bash 3.2's pwd -P keeps the typed case).
+if [ -n "${HOME:-}" ] && [ "$PROJECT" -ef "$HOME" ]; then
+  echo "Note: $PROJECT is your home directory; megavibe does not install project hooks here"
+  echo "  (its .claude/ is your user-level config). Launch inside a project for the full setup."
+  exit 0
+fi
+
 # --- Check prerequisites ---
 if ! command -v jq &>/dev/null; then
   echo "Warning: jq is not installed. Hooks require jq to function."
