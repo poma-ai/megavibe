@@ -2,8 +2,11 @@
 # /bin/bash tests/trash.test.sh
 # The Trash ledger and review (scripts/trash.sh, scripts/trash-review.py,
 # hooks/trash-watch.sh), the real-delete guard in block-dangerous-bash.sh and the
-# rm-to-trash.sh rewrite. Uses a fake Trash and a fake rmtrash: nothing here
-# touches ~/.Trash or ~/.megavibe.
+# rm-to-trash.sh rewrite, and the Trash greenlight (scripts/trash-empty.sh, its
+# gate in block-dangerous-bash.sh, setup.sh's ask-rule merge: sections 7-9). Uses a
+# fake Trash, a fake rmtrash and fake HOMEs: nothing here touches ~/.Trash,
+# ~/.megavibe or ~/.claude, and the real trash-empty.sh is never run from its
+# install path (the tests run copies installed under a scratch HOME).
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 HOOKS="$REPO/template/.claude/hooks"
@@ -505,6 +508,341 @@ if command -v rmtrash >/dev/null; then
 else
   echo "skip: rmtrash not installed, rm-to-trash checks not run"
 fi
+
+
+# 7. The greenlight gate in block-dangerous-bash.sh: exactly one spelling of the script reaches
+# Claude Code's permission prompt; every other command that names it, or reaches into its
+# directory by a spelling the ask rules would miss, is refused.
+gt() {  # gt <exit status wanted> <command text> <name> [env VAR=value ...]
+  local want=$1 cmd=$2 name=$3 got; shift 3
+  got=$(bd "$cmd" "$@")
+  if [ "$got" = "$want" ]; then ok; else bad "$name (wanted $want, got $got)"; fi
+}
+SC='~/.megavibe/scripts/trash-empty.sh'
+U=/Users   # a literal /Users/<name>/ in a tracked file trips scripts/leak-scan.sh
+gt 0 "$SC" "greenlight: the asked spelling reaches the prompt"
+gt 0 "$SC --all" "greenlight: --all reaches the prompt"
+gt 0 "  $SC" "greenlight: leading blanks"
+gt 0 "$SC"$'\n' "greenlight: trailing newline"
+gt 2 "bash $SC" "greenlight: bash <script> refused"
+gt 2 "sh $SC" "greenlight: sh <script> refused"
+gt 2 "$U/x/.megavibe/scripts/trash-empty.sh" "greenlight: absolute spelling refused"
+gt 2 '$HOME/.megavibe/scripts/trash-empty.sh' "greenlight: \$HOME spelling refused"
+gt 2 '${HOME}/.megavibe/scripts/trash-empty.sh' "greenlight: \${HOME} spelling refused"
+gt 2 "env X=1 $SC" "greenlight: env prefix refused"
+gt 2 "X=1 $SC" "greenlight: assignment prefix refused"
+gt 2 "HOME=/tmp/x $SC" "greenlight: HOME= prefix refused"
+gt 2 "sh -c '$SC'" "greenlight: sh -c refused"
+gt 2 "bash -c \"$SC\"" "greenlight: bash -c refused"
+gt 2 ". $SC" "greenlight: . <script> refused"
+gt 2 "source $SC" "greenlight: source <script> refused"
+gt 2 "$SC && echo ok" "greenlight: && refused"
+gt 2 "echo hi; $SC" "greenlight: another command in the same call refused"
+gt 2 "$SC;" "greenlight: trailing ; refused"
+gt 2 "$SC # why" "greenlight: trailing comment refused"
+gt 2 "$SC --all --now" "greenlight: extra flag refused"
+gt 2 "$SC --yes" "greenlight: --yes refused"
+gt 2 "$SC"$'\nls' "greenlight: a second line refused"
+gt 2 "$SC"$'\n--all' "greenlight: a newline is not a blank before --all"
+gt 2 "$SC"$' \\\n--all' "greenlight: a continuation before --all refused"
+gt 2 "cp $SC /tmp/x" "greenlight: cp refused"
+gt 2 "ln -s $SC /tmp/x" "greenlight: ln -s refused"
+gt 2 "cat $SC" "greenlight: reading it with cat is an over-block (use the Read tool)"
+gt 2 'git commit -m "add trash-empty"' "greenlight: documented over-block, asserted so a change is deliberate"
+gt 2 "git add scripts/trash-empty.sh" "greenlight: documented over-block (git add the directory instead)"
+gt 0 "git add scripts/" "greenlight: git add of the directory allowed"
+gt 2 "$SC --all && echo done" "greenlight: --all then another command refused"
+gt 2 '~/.megavibe/scripts/tr$(true)ash-empty.sh' "greenlight: substitution inside the name refused"
+gt 2 "~/.megavibe/scripts/trash-em*.sh" "greenlight: glob after trash-em refused"
+gt 2 "~/.megavibe/scripts/tras*-empty.sh" "greenlight: glob earlier in the name refused"
+gt 2 "~/.megavibe/scripts/t?ash-empty.sh" "greenlight: ? glob refused"
+gt 2 "~/.megavibe/scripts/trash-{empty,x}.sh" "greenlight: brace expansion refused"
+gt 2 "~/.megavibe/scripts/trash-{a,e}mpty.sh" "greenlight: brace expansion that hides the e refused"
+gt 2 "~/.megavibe/scripts/trash-[a-f]mpty.sh" "greenlight: character class refused"
+gt 2 "~/.megavibe/scripts/trash-\`echo e\`mpty.sh" "greenlight: backtick refused"
+gt 2 '~/.megavibe/scripts/"trash"-"empty".sh' "greenlight: quoted pieces refused"
+gt 2 "~/.megavibe/scripts/tr''ash-empty.sh" "greenlight: empty quotes inside the name refused"
+gt 2 '~/.megavibe/scripts/t\rash-empty.sh' "greenlight: backslash inside the name refused"
+gt 2 '~/.megavibe/scripts/TRASH-EMPTY.SH' "greenlight: upper case refused"
+gt 2 "~/.megavibe/scripts/tra\\"$'\n'"sh-empty.sh" "greenlight: line continuation inside the name refused"
+gt 2 "cd ~/.megavibe/scripts && ./trash-empty.sh" "greenlight: cd into the directory then run it refused"
+gt 2 "cd ~/.megavibe/scripts && ./tr*.sh" "greenlight: cd into the directory then a glob refused"
+gt 2 "pushd ~/.megavibe/scripts; ./t*" "greenlight: pushd into the directory refused"
+gt 2 "(cd \$HOME/.megavibe/scripts; ./t*)" "greenlight: cd in a subshell refused"
+gt 2 "cd ~/.megavibe; ./scripts/t*-e*sh" "greenlight: cd into ~/.megavibe refused"
+gt 2 "cd ~/.megavibe/ && ls" "greenlight: cd into ~/.megavibe/ refused"
+gt 2 "~/.m*/scripts/t*-e*sh" "greenlight: a globbed dot directory refused"
+gt 2 "~/.megavibe/s*/t*-e*sh" "greenlight: a glob in the middle of the path refused"
+gt 2 '$HOME/.m?gavibe/scripts/t*-e*sh' "greenlight: \$HOME with a ? glob refused"
+gt 2 "$U/x/.[m]egavibe/scripts/t*-e*sh" "greenlight: absolute path with a bracket class refused"
+gt 2 "~/.{megavibe,x}/scripts/t*-e*sh" "greenlight: brace expansion in the dot directory refused"
+gt 2 "echo hi; ~/.m*/scripts/t*-e*sh" "greenlight: the globbed spelling after another command refused"
+gt 2 "python3 -c \"import subprocess; subprocess.run(['$U/x/.megavibe/scripts/trash-empty.sh'])\"" "greenlight: interpreter spelling refused"
+gt 2 "ls ~/.megavibe/scripts/*.sh" "greenlight: a glob in the scripts directory is an over-block"
+gt 0 "python3 ~/.megavibe/scripts/trash-review.py status" "greenlight: trash-review.py status still allowed"
+gt 0 "python3 ~/.megavibe/scripts/trash-review.py droppable --json" "greenlight: trash-review.py droppable allowed"
+gt 0 "bash ~/.megavibe/scripts/trash.sh -rf /tmp/x" "greenlight: trash.sh still allowed"
+gt 0 "~/.megavibe/scripts/codex-review.sh --as-reviewer --prompt x f.md" "greenlight: other scripts in the directory still allowed"
+gt 0 "ls ~/.megavibe/scripts/" "greenlight: listing the directory allowed"
+gt 0 "cd ~/dev/megavibe && git status" "greenlight: cd into a repo named megavibe allowed"
+gt 0 "cd $U/x/dev/megavibe/scripts && ls" "greenlight: cd into the repo's own scripts allowed"
+gt 0 "ls ~/.claude/*.md" "greenlight: a glob under ~/.claude allowed"
+gt 0 "cat ~/.cache/*" "greenlight: a glob under another dot directory allowed"
+gt 0 "ls ~/.*" "greenlight: a lone ~/.* allowed"
+gt 0 "bash -n scripts/*.sh" "greenlight: a repo-relative scripts glob allowed"
+gt 0 "ls $U/x/dev/megavibe/scripts/*.sh" "greenlight: the repo's own scripts glob allowed"
+gt 0 "git status" "greenlight: unrelated command allowed"
+# Without python3 the gate still decides (it is bash and grep only), and the crude fallback further
+# down would otherwise refuse the asked form (it greps for the word "trash-empty").
+mkdir -p "$T/nopy"
+for _t in jq tr grep cat sed awk head tail basename dirname wc date uname; do ln -sf "$(command -v $_t)" "$T/nopy/$_t"; done
+check "no-python PATH really has no python3" '( hash -r; PATH="$T/nopy:/bin"; ! command -v python3 >/dev/null 2>&1 )'
+gt 0 "$SC" "greenlight without python3: asked spelling reaches the prompt" PATH="$T/nopy:/bin"
+gt 0 "$SC --all" "greenlight without python3: --all reaches the prompt" PATH="$T/nopy:/bin"
+gt 2 "bash $SC" "greenlight without python3: bash <script> refused" PATH="$T/nopy:/bin"
+gt 2 'git commit -m "add trash-empty"' "greenlight without python3: over-block kept" PATH="$T/nopy:/bin"
+gt 0 "python3 ~/.megavibe/scripts/trash-review.py status" "greenlight without python3: trash-review.py status allowed" PATH="$T/nopy:/bin"
+# The Trash guard behind it is unchanged: the generic emptying forms are still refused.
+gt 2 "trash-empty" "trash guard: the command word trash-empty refused"
+gt 2 "osascript -e 'tell application \"Finder\" to empty the trash'" "trash guard: Finder empty refused"
+
+# 8. trash-empty.sh itself, in a fake HOME: a fake Trash, the real trash.sh and trash-review.py, a settings
+# file holding the rules. The test knobs trash-review.py honours (MEGAVIBE_TRASH_DIR, MEGAVIBE_TRASH_LEDGER_DIR)
+# stay exported at the top of this file on purpose: the script has to ignore them.
+RAW_TE="$REPO/scripts/trash-empty.sh"
+check "trash-empty.sh passes bash -n" 'bash -n "$RAW_TE"'
+check "trash-empty.sh has the MANAGED line the tests rewrite" 'grep -q "^MANAGED=" "$RAW_TE"'
+check "trash-empty.sh is executable" '[ -x "$RAW_TE" ]'
+RULES_JSON='{"permissions":{"ask":["Bash(~/.megavibe/scripts/trash-empty.sh *)","Bash(*trash-empty*)"]}}'
+mk_home() {  # mk_home <dir> [settings json]: a complete fake HOME with the script installed (MANAGED pointed at $T/managed.json)
+  local h=$1
+  mkdir -p "$h/.Trash" "$h/.megavibe/scripts" "$h/.megavibe/trash" "$h/.claude"
+  cp "$REPO/scripts/trash-review.py" "$h/.megavibe/scripts/"
+  sed "s#^MANAGED=.*#MANAGED=\"$T/managed.json\"#" "$RAW_TE" > "$h/.megavibe/scripts/trash-empty.sh"
+  chmod +x "$h/.megavibe/scripts/trash-empty.sh"
+  printf '%s\n' "${2:-$RULES_JSON}" > "$h/.claude/settings.json"
+}
+H="$T/th"; mk_home "$H"
+check "the rewritten copy points MANAGED into the scratch dir" 'grep -q "^MANAGED=\"$T/managed.json\"" "$H/.megavibe/scripts/trash-empty.sh"'
+te()  { env -u CLAUDE_CONFIG_DIR HOME="$H" bash "$H/.megavibe/scripts/trash-empty.sh" "$@"; }
+tr_() { env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" bash "$TR" "$@"; }
+rv_() { env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" python3 "$H/.megavibe/scripts/trash-review.py" "$@"; }
+ids_() { python3 -c 'import json,sys; print(" ".join(json.loads(l)["id"] for l in sys.stdin if json.loads(l)["path"].endswith(sys.argv[1])))' "$1"; }
+mark_() {  # mark_ <action> <path suffix>...: one group per call, then apply
+  local act=$1 sfx; shift
+  local idl; idl=$(for sfx in "$@"; do rv_ pending --all --json | ids_ "$sfx"; done | tr '\n' ' ')
+  python3 -c 'import json,sys; print(json.dumps({"groups":[{"label":"t","ids":sys.argv[1:]}]}))' $idl > "$T/tg.json"
+  local code; code=$(rv_ group "$T/tg.json" | sed -n 's/^\[\(G[0-9a-f]*\)\].*/\1/p' | head -n 1)
+  printf '{"decisions":[{"group":"%s","action":"%s"}]}' "$code" "$act" > "$T/td.json"
+  rv_ apply "$T/td.json" >/dev/null
+}
+lsT() { ls -A "$H/.Trash" | LC_ALL=C sort; }
+TW="$T/tw"; mkdir -p "$TW/dropdir/sub" "$TW/keep-me" "$TW/pending-me" "$T/outside"
+echo d > "$TW/dropdir/sub/f"; echo k > "$TW/keep-me/f"; echo p > "$TW/pending-me/f"
+echo own > "$H/.Trash/own.txt"
+tr_ -r "$TW/dropdir" "$TW/keep-me" "$TW/pending-me"
+mark_ droppable "/dropdir"; mark_ keep "/keep-me"
+check "droppable lists exactly the marked item" '[ "$(rv_ droppable --json | wc -l | tr -d " ")" = 1 ] && rv_ droppable | grep -q "/dropdir$"'
+check "droppable --json carries id, trash_path, dev, ino, kb, path" 'rv_ droppable --json | jq -e "has(\"id\") and has(\"trash_path\") and has(\"dev\") and has(\"ino\") and has(\"kb\") and has(\"path\")" >/dev/null'
+check "status points at the script" 'rv_ status | grep -q "marked droppable: ~/.megavibe/scripts/trash-empty.sh frees them"'
+check "the global (inherited) fake Trash has droppable-or-not items the script must not touch" '[ -d "$MEGAVIBE_TRASH_DIR" ]'
+GT_BEFORE=$(ls -A "$MEGAVIBE_TRASH_DIR" | LC_ALL=C sort | tr '\n' '|'); GL_BEFORE=$(cat "$MEGAVIBE_TRASH_LEDGER_DIR/reviewed.jsonl" 2>/dev/null | wc -c | tr -d ' ')
+B4=$(lsT | tr '\n' '|')
+out=$(te 2>&1); rc=$?
+check "droppable mode: exit 0" '[ $rc = 0 ]'
+check "droppable mode: the marked item is gone" '! ls "$H/.Trash" | grep -q "^dropdir mv-"'
+check "droppable mode: kept, pending and the human own items remain" 'ls "$H/.Trash" | grep -q "^keep-me mv-" && ls "$H/.Trash" | grep -q "^pending-me mv-" && [ "$(cat "$H/.Trash/own.txt")" = own ]'
+check "droppable mode: nothing outside the fake HOME was touched (inherited env ignored)" '[ "$(ls -A "$MEGAVIBE_TRASH_DIR" | LC_ALL=C sort | tr "\n" "|")" = "$GT_BEFORE" ] && [ "$(cat "$MEGAVIBE_TRASH_LEDGER_DIR/reviewed.jsonl" 2>/dev/null | wc -c | tr -d " ")" = "$GL_BEFORE" ]'
+check "droppable mode: reviewed.jsonl gains an emptied row for it" 'jq -e "select(.action==\"emptied\" and .ok==true)" "$H/.megavibe/trash/reviewed.jsonl" >/dev/null'
+check "droppable mode: status no longer lists it" '! rv_ status | grep -q "marked droppable"'
+check "droppable mode: the summary names what happened" 'printf "%s" "$out" | grep -q "^mode=droppable emptied=1 failed=0 skipped=0"'
+check "droppable mode: empty.log has the line, with the user" 'grep -q " user=$(id -un) mode=droppable emptied=1 failed=0" "$H/.megavibe/trash/empty.log"'
+out=$(te 2>&1); rc=$?
+check "nothing droppable: exit 0 and says so" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "nothing marked droppable"'
+check "nothing droppable: the Trash is unchanged" '[ "$(lsT | tr "\n" "|")" != "" ] && ls "$H/.Trash" | grep -q "^keep-me mv-"'
+# a replaced entry (same name, new object): the review's own list drops it, so it is never offered
+echo r > "$TW/swap"; tr_ "$TW/swap"
+mark_ droppable "/swap"
+SWT=$(ls "$H/.Trash" | grep '^swap mv-'); mv "$H/.Trash/$SWT" "$T/swap-rescued"; echo impostor > "$H/.Trash/$SWT"
+out=$(te 2>&1); rc=$?
+check "replaced entry: not listed any more, nothing deleted, exit 0" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "nothing marked droppable"'
+check "replaced entry: the replacement survives" '[ "$(cat "$H/.Trash/$SWT")" = impostor ]'
+rm -f "$H/.Trash/$SWT"
+# an entry that is a symlink: the link goes, its target stays
+mkdir -p "$T/linktarget"; echo precious > "$T/linktarget/f"; ln -s "$T/linktarget" "$TW/lnk"
+tr_ "$TW/lnk"; mark_ droppable "/lnk"
+out=$(te 2>&1); rc=$?
+check "symlink in the Trash: the link is removed, exit 0" '[ $rc = 0 ] && ! ls -A "$H/.Trash" | grep -q "^lnk mv-"'
+check "symlink in the Trash: its target is intact" '[ "$(cat "$T/linktarget/f")" = precious ]'
+# a forged list that points outside ~/.Trash is refused by the script's own check
+H2="$T/th2"; mk_home "$H2"
+echo victim > "$T/outside/victim"
+printf '#!/usr/bin/env python3\nimport json, os\ns = os.lstat("%s")\nprint(json.dumps({"id": "forged00", "trash_path": "%s", "dev": s.st_dev, "ino": s.st_ino, "kb": 1, "path": "/x"}))\n' "$T/outside/victim" "$T/outside/victim" > "$H2/.megavibe/scripts/trash-review.py"
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$H2" bash "$H2/.megavibe/scripts/trash-empty.sh" 2>&1); rc=$?
+check "forged trash_path outside ~/.Trash: refused, file kept, exit 1" '[ $rc = 1 ] && [ "$(cat "$T/outside/victim")" = victim ] && printf "%s" "$out" | grep -q "recorded outside"'
+# the script's own identity check (the review's list is checked once already): right entry, wrong inode
+echo mine > "$H2/.Trash/entry"
+stub_list() {  # stub_list <home> <id> <trash_path> <inode offset>: a trash-review.py that prints one forged droppable row
+  printf '#!/usr/bin/env python3\nimport json, os\ns = os.lstat("%s")\nprint(json.dumps({"id": "%s", "trash_path": "%s", "dev": s.st_dev, "ino": s.st_ino + %s, "kb": 1, "path": "/x"}))\n' "$3" "$2" "$3" "$4" > "$1/.megavibe/scripts/trash-review.py"
+}
+stub_list "$H2" forged02 "$H2/.Trash/entry" 1
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$H2" bash "$H2/.megavibe/scripts/trash-empty.sh" 2>&1); rc=$?
+check "an entry whose inode is not the recorded one: skipped, kept, exit 1" '[ $rc = 1 ] && [ "$(cat "$H2/.Trash/entry")" = mine ] && printf "%s" "$out" | grep -q "replaced since it was marked droppable"'
+stub_list "$H2" forged03 "$H2/.Trash/entry" 0
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$H2" bash "$H2/.megavibe/scripts/trash-empty.sh" 2>&1); rc=$?
+check "the same stub with the right inode: the entry goes (the check is not just failing everything)" '[ $rc = 0 ] && [ ! -e "$H2/.Trash/entry" ]'
+# a trash_path inside ~/.Trash reached through a symlinked directory is refused too
+mkdir -p "$T/outside/dir"; echo v2 > "$T/outside/dir/victim"; ln -s "$T/outside/dir" "$H2/.Trash/via"
+printf '#!/usr/bin/env python3\nimport json, os\ns = os.lstat("%s")\nprint(json.dumps({"id": "forged01", "trash_path": "%s", "dev": s.st_dev, "ino": s.st_ino, "kb": 1, "path": "/x"}))\n' "$T/outside/dir/victim" "$H2/.Trash/via/victim" > "$H2/.megavibe/scripts/trash-review.py"
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$H2" bash "$H2/.megavibe/scripts/trash-empty.sh" 2>&1); rc=$?
+check "trash_path through a symlinked directory: refused, file kept" '[ $rc = 1 ] && [ "$(cat "$T/outside/dir/victim")" = v2 ]'
+# a failing delete is reported, recorded as not ok, and does not stop the next item
+mkdir -p "$TW/stuck/sub"; echo s > "$TW/stuck/sub/f"; echo n > "$TW/next"
+tr_ -r "$TW/stuck" "$TW/next"; mark_ droppable "/stuck" "/next"
+STK=$(ls "$H/.Trash" | grep '^stuck mv-'); chmod 500 "$H/.Trash/$STK/sub"
+out=$(te 2>&1); rc=$?
+chmod 700 "$H/.Trash/$STK/sub" 2>/dev/null
+check "a delete that fails: exit 1, the next item still goes" '[ $rc = 1 ] && ! ls "$H/.Trash" | grep -q "^next mv-" && printf "%s" "$out" | grep -q "emptied=1 failed=1"'
+check "a failed delete is recorded ok:false and the item stays listed as droppable" 'jq -e "select(.action==\"emptied\" and .ok==false)" "$H/.megavibe/trash/reviewed.jsonl" >/dev/null && rv_ droppable | grep -q "/stuck$"'
+chmod -R u+w "$H/.Trash/$STK" 2>/dev/null; te >/dev/null 2>&1
+check "after the cause is fixed the same item goes" '! ls "$H/.Trash" | grep -q "^stuck mv-"'
+# --all: everything in the Trash, including what no ledger knows
+printf 'x' > "$H/.Trash/-n"; printf 'y' > "$H/.Trash/has space"; mkdir -p "$H/.Trash/adir/in"; echo z > "$H/.Trash/adir/in/f"
+out=$(te --all 2>&1); rc=$?
+check "--all: exit 0 and the Trash is empty" '[ $rc = 0 ] && [ -z "$(ls -A "$H/.Trash")" ]'
+check "--all: a file named -n, a name with a space and a user directory are gone" 'printf "%s" "$out" | grep -q "^emptied: -n$" && printf "%s" "$out" | grep -q "^emptied: has space$"'
+check "--all: ledger items get emptied rows, so nothing stays pending" 'rv_ status | grep -q "^0 unreviewed" && jq -e "select(.action==\"emptied\" and .ok==true and .path != \"\")" "$H/.megavibe/trash/reviewed.jsonl" >/dev/null'
+check "--all: logged as mode=all" 'grep -q "mode=all emptied=" "$H/.megavibe/trash/empty.log"'
+check "--all on an empty Trash: exit 0" 'te --all >/dev/null 2>&1'
+# usage
+out=$(te --yes 2>&1); rc=$?; check "--yes: usage error 2" '[ $rc = 2 ] && printf "%s" "$out" | grep -q usage'
+te --all --yes >/dev/null 2>&1; rc=$?; check "--all --yes: usage error 2" '[ $rc = 2 ]'
+te -h >/dev/null 2>&1; rc=$?; check "-h: usage error 2" '[ $rc = 2 ]'
+te --dry-run >/dev/null 2>&1; rc=$?; check "--dry-run does not exist: 2" '[ $rc = 2 ]'
+# where it may run from
+echo keep > "$H/.Trash/guard.txt"
+mkdir -p "$T/nohome/.megavibe/scripts"
+env HOME="$T/nohome" bash "$H/.megavibe/scripts/trash-empty.sh" >/dev/null 2>&1; rc=$?
+check "another HOME with no script there: exit 3" '[ $rc = 3 ]'
+mkdir -p "$T/nohome2"; env HOME="$T/nohome2" bash "$H/.megavibe/scripts/trash-empty.sh" >/dev/null 2>&1; rc=$?
+check "another HOME without even a scripts directory: exit 3" '[ $rc = 3 ]'
+cp "$H/.megavibe/scripts/trash-empty.sh" "$T/copy.sh"; env -u CLAUDE_CONFIG_DIR HOME="$H" bash "$T/copy.sh" >/dev/null 2>&1; rc=$?
+check "a copy elsewhere: exit 3" '[ $rc = 3 ]'
+ln -s "$H/.megavibe/scripts/trash-empty.sh" "$T/ln.sh"; env -u CLAUDE_CONFIG_DIR HOME="$H" bash "$T/ln.sh" >/dev/null 2>&1; rc=$?
+check "a symlink to it: exit 3" '[ $rc = 3 ]'
+ln -s trash-empty.sh "$H/.megavibe/scripts/alias.sh"; env -u CLAUDE_CONFIG_DIR HOME="$H" bash "$H/.megavibe/scripts/alias.sh" >/dev/null 2>&1; rc=$?
+check "a symlink beside it in the install directory: exit 3" '[ $rc = 3 ]'
+cp "$H/.megavibe/scripts/trash-empty.sh" "$H/.megavibe/scripts/other-name.sh"; env -u CLAUDE_CONFIG_DIR HOME="$H" bash "$H/.megavibe/scripts/other-name.sh" >/dev/null 2>&1; rc=$?
+check "a copy under another name in the install directory: exit 3" '[ $rc = 3 ]'
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$H" bash -c '. "$1"; rc=$?; echo "sourced rc=$rc opts=$-"' x "$H/.megavibe/scripts/trash-empty.sh" 2>&1)
+check "sourced: refused with 3 and it leaks no shell options" 'printf "%s" "$out" | grep -q "refusing to be sourced" && printf "%s" "$out" | grep -q "sourced rc=3" && ! printf "%s" "$out" | sed -n "s/.*opts=//p" | grep -q "u"'
+check "none of the refusals touched the Trash" '[ "$(cat "$H/.Trash/guard.txt")" = keep ]'
+mkdir -p "$T/shim"; printf '#!/bin/sh\necho Linux\n' > "$T/shim/uname"; chmod +x "$T/shim/uname"
+env -u CLAUDE_CONFIG_DIR HOME="$H" PATH="$T/shim:$PATH" bash "$H/.megavibe/scripts/trash-empty.sh" >/dev/null 2>&1; rc=$?
+check "not Darwin: exit 3" '[ $rc = 3 ] && [ -e "$H/.Trash/guard.txt" ]'
+H3="$T/th3"; mk_home "$H3"; /bin/rmdir "$H3/.Trash"
+env -u CLAUDE_CONFIG_DIR HOME="$H3" bash "$H3/.megavibe/scripts/trash-empty.sh" >/dev/null 2>&1; rc=$?
+check "no ~/.Trash: exit 3" '[ $rc = 3 ]'
+mkdir -p "$T/realtrash"; echo q > "$T/realtrash/q"; ln -s "$T/realtrash" "$H3/.Trash"
+env -u CLAUDE_CONFIG_DIR HOME="$H3" bash "$H3/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1; rc=$?
+check "~/.Trash is a symlink: exit 3, the target is untouched" '[ $rc = 3 ] && [ "$(cat "$T/realtrash/q")" = q ]'
+# the permission rules must be installed
+H4="$T/th4"; mk_home "$H4" '{"permissions":{"allow":["Read"]}}'; echo keep > "$H4/.Trash/k"
+te4() { env -u CLAUDE_CONFIG_DIR HOME="$H4" bash "$H4/.megavibe/scripts/trash-empty.sh" "$@"; }
+te4 --all >/dev/null 2>&1; rc=$?
+check "no ask rules: exit 4, nothing deleted" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf '%s\n' '{"permissions":{"ask":["Bash(*trash-empty*)"]}}' > "$H4/.claude/settings.json"; te4 --all >/dev/null 2>&1; rc=$?
+check "only the catch-all rule: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf '%s\n' '{"permissions":{"ask":["Bash(~/.megavibe/scripts/trash-empty.sh *)"]}}' > "$H4/.claude/settings.json"; te4 --all >/dev/null 2>&1; rc=$?
+check "only the path rule: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf '%s\n' '{"permissions":{"allow":["Bash(*trash-empty*)","Bash(~/.megavibe/scripts/trash-empty.sh *)"]}}' > "$H4/.claude/settings.json"; te4 --all >/dev/null 2>&1; rc=$?
+check "the rules under allow instead of ask: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf '%s\n' '{"permissions":{"ask":"Bash(*trash-empty*)"}}' > "$H4/.claude/settings.json"; te4 --all >/dev/null 2>&1; rc=$?
+check "ask is not an array: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf 'not json' > "$H4/.claude/settings.json"; te4 --all >/dev/null 2>&1; rc=$?
+check "settings that are not JSON: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$H4/.claude/settings.json"
+env HOME="$H4" bash -c 'jq() { return 0; }; export -f jq; "$0" --all' "$H4/.megavibe/scripts/trash-empty.sh" >/dev/null 2>&1; rc=$?
+check "a jq function exported by the caller is dropped: still exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+/bin/rm -f "$H4/.claude/settings.json"; te4 --all >/dev/null 2>&1; rc=$?
+check "no settings file: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k" ]'
+printf '%s\n' "$RULES_JSON" > "$T/managed.json"
+te4 --all >/dev/null 2>&1; rc=$?
+check "rules in the managed settings file are enough: exit 0" '[ $rc = 0 ] && [ ! -e "$H4/.Trash/k" ]'
+/bin/rm -f "$T/managed.json"; echo keep2 > "$H4/.Trash/k2"
+# CLAUDE_CONFIG_DIR may not be used to point the check at a settings file of its own making
+mkdir -p "$T/cfg-rules" "$T/cfg-bare"; printf '%s\n' "$RULES_JSON" > "$T/cfg-rules/settings.json"; echo '{}' > "$T/cfg-bare/settings.json"
+env HOME="$H4" CLAUDE_CONFIG_DIR="$T/cfg-rules" bash "$H4/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1; rc=$?
+check "rules only in CLAUDE_CONFIG_DIR, not in ~/.claude: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k2" ]'
+printf '%s\n' "$RULES_JSON" > "$H4/.claude/settings.json"
+env HOME="$H4" CLAUDE_CONFIG_DIR="$T/cfg-bare" bash "$H4/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1; rc=$?
+check "rules in ~/.claude but not in the CLAUDE_CONFIG_DIR Claude would read: exit 4" '[ $rc = 4 ] && [ -e "$H4/.Trash/k2" ]'
+env HOME="$H4" CLAUDE_CONFIG_DIR="$T/cfg-rules" bash "$H4/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1; rc=$?
+check "rules in both: exit 0" '[ $rc = 0 ] && [ ! -e "$H4/.Trash/k2" ]'
+# the hook procedure offers the script, only in its asked spelling, and never --all unprompted
+mkdir -p "$T/projg/.agent"; echo h > "$TW/h1"; tr_ "$TW/h1"
+out=$(cd "$T/projg" && echo '{"session_id":"s-greenlight"}' | env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" MEGAVIBE_TRASH_REVIEW_COUNT=1 bash "$HOOKS/trash-watch.sh")
+check "the review procedure ends with the greenlight step" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | test(\"6\\\\. If .*trash-empty\\\\.sh.*Never add .*--all\")" >/dev/null'
+
+# 9. setup.sh: the ask-rule merge and the opt-in managed-settings step. The helpers are cut out of setup.sh
+# (from trash_ask_rules() to the --trash-greenlight-managed dispatch) and run on scratch files, never on the real
+# settings; msudo is a stub that records the call and fails, so no sudo is ever involved.
+SETUP_FN="$T/setup-fn.sh"
+{
+  echo 'set -uo pipefail; YELLOW=; RESET=; info(){ echo "$1"; }; ok(){ echo "ok: $1"; }; warn(){ echo "warn: $1"; }; fail(){ echo "fail: $1"; }'
+  echo 'msudo(){ echo "msudo called: $*" >> "$MSUDO_LOG"; return 1; }'
+  sed -n '/^trash_ask_rules()/,/^if \[ "\${1:-}" = "--trash-greenlight-managed" \]/p' "$REPO/setup.sh" | sed '$d'
+} > "$SETUP_FN"
+check "the extracted setup.sh helpers define the merge and the managed step" 'grep -q "^merge_trash_ask()" "$SETUP_FN" && grep -q "^trash_greenlight_managed()" "$SETUP_FN" && bash -n "$SETUP_FN"'
+export MSUDO_LOG="$T/msudo.log"
+S1="$T/s1"; mkdir -p "$S1"
+printf '%s\n' '{"permissions":{"allow":["Read","Bash(git status)"],"ask":["Bash(rm *)"],"defaultMode":"dontAsk"},"env":{"A":"1"},"statusLine":{"type":"command"}}' > "$S1/settings.json"
+mt() { ( . "$SETUP_FN"; "$@" ); }
+out=$(HOME="$S1" mt merge_trash_ask "$S1/settings.json" "scratch" 2>&1); rc=$?
+check "ask-rule merge: exit 0 and reports it" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "^ok: Trash greenlight: ask rules"'
+check "ask-rule merge: the user own ask rule is kept, first" '[ "$(jq -r ".permissions.ask[0]" "$S1/settings.json")" = "Bash(rm *)" ]'
+check "ask-rule merge: the three rules are added" '[ "$(jq -r ".permissions.ask | length" "$S1/settings.json")" = 4 ] && jq -e ".permissions.ask | index(\"Bash(*trash-empty*)\") != null and index(\"Bash(~/.megavibe/scripts/trash-empty.sh *)\") != null and index(\"Bash($S1/.megavibe/scripts/trash-empty.sh *)\") != null" "$S1/settings.json" >/dev/null'
+check "ask-rule merge: allow, defaultMode, env and statusLine are untouched" '[ "$(jq -c ".permissions.allow" "$S1/settings.json")" = "[\"Read\",\"Bash(git status)\"]" ] && [ "$(jq -r ".permissions.defaultMode, .env.A, .statusLine.type" "$S1/settings.json" | tr "\n" " ")" = "dontAsk 1 command " ]'
+check "ask-rule merge: a backup of the old file was made" '[ "$(ls "$S1"/settings.json.pre-trashask-* | wc -l | tr -d " ")" = 1 ] && jq -e ".permissions.ask == [\"Bash(rm *)\"]" "$S1"/settings.json.pre-trashask-* >/dev/null'
+cp "$S1/settings.json" "$S1/after-first.json"
+out=$(HOME="$S1" mt merge_trash_ask "$S1/settings.json" "scratch" 2>&1); rc=$?
+check "ask-rule merge: second run is a no-op (skip message, identical bytes, no new backup)" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "already present" && cmp -s "$S1/settings.json" "$S1/after-first.json" && [ "$(ls "$S1"/settings.json.pre-trashask-* | wc -l | tr -d " ")" = 1 ]'
+check "ask-rule merge: the script accepts what setup.sh wrote (producer and consumer agree)" 'H5="$T/th5"; mk_home "$H5" "$(cat "$S1/settings.json")"; echo k > "$H5/.Trash/k"; env -u CLAUDE_CONFIG_DIR HOME="$H5" bash "$H5/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1 && [ ! -e "$H5/.Trash/k" ]'
+S2="$T/s2"; HOME="$S1" mt merge_trash_ask "$S2/settings.json" "scratch" >/dev/null 2>&1
+check "ask-rule merge: a missing file is created with the rules, mode 600" '[ "$(jq -r ".permissions.ask | length" "$S2/settings.json")" = 3 ] && [ "$(stat -f %Lp "$S2/settings.json")" = 600 ]'
+printf '%s\n' '{"env":{"A":"1"}}' > "$S2/nopermissions.json"; HOME="$S1" mt merge_trash_ask "$S2/nopermissions.json" "scratch" >/dev/null 2>&1
+check "ask-rule merge: a file without a permissions block gains one, env kept" '[ "$(jq -r "(.permissions.ask | length), .env.A" "$S2/nopermissions.json" | tr "\n" " ")" = "3 1 " ]'
+printf '%s\n' '{"permissions":{"ask":"Bash(rm *)"}}' > "$S2/bad.json"; cp "$S2/bad.json" "$S2/bad.orig"
+out=$(HOME="$S1" mt merge_trash_ask "$S2/bad.json" "scratch" 2>&1)
+check "ask-rule merge: permissions.ask that is not a list is left untouched with a warning" 'cmp -s "$S2/bad.json" "$S2/bad.orig" && printf "%s" "$out" | grep -q "^warn: could not add"'
+printf 'not json' > "$S2/notjson.json"; cp "$S2/notjson.json" "$S2/notjson.orig"
+out=$(HOME="$S1" mt merge_trash_ask "$S2/notjson.json" "scratch" 2>&1)
+check "ask-rule merge: a file that is not JSON is left untouched with a warning" 'cmp -s "$S2/notjson.json" "$S2/notjson.orig" && printf "%s" "$out" | grep -q "^warn: could not add"'
+printf '%s\n' '{"permissions":{"allow":["Read"]}}' > "$S2/real.json"; ln -s real.json "$S2/link.json"
+HOME="$S1" mt merge_trash_ask "$S2/link.json" "scratch" >/dev/null 2>&1
+check "ask-rule merge: a symlinked settings.json stays a symlink and the target is updated" '[ -L "$S2/link.json" ] && [ "$(jq -r ".permissions.ask | length" "$S2/real.json")" = 3 ]'
+# managed settings: opt-in, fake target, never sudo
+MG="$T/mg/ClaudeCode/managed-settings.json"
+out=$(HOME="$S1" MEGAVIBE_MANAGED_SETTINGS_FILE="$MG" mt trash_greenlight_managed 2>&1); rc=$?
+check "managed: a missing file (and directory) is created with the rules, mode 644, exit 0" '[ $rc = 0 ] && [ "$(jq -r ".permissions.ask | length" "$MG")" = 3 ] && [ "$(stat -f %Lp "$MG")" = 644 ] && printf "%s" "$out" | grep -q "/status"'
+check "managed: it never asked for sudo where the directory is writable" '[ ! -e "$MSUDO_LOG" ]'
+check "managed: the script accepts the managed file alone (no user rules at all)" 'H6="$T/th6"; mk_home "$H6" "{}"; sed -i.bak "s#^MANAGED=.*#MANAGED=\"$MG\"#" "$H6/.megavibe/scripts/trash-empty.sh"; echo k > "$H6/.Trash/k"; env -u CLAUDE_CONFIG_DIR HOME="$H6" bash "$H6/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1 && [ ! -e "$H6/.Trash/k" ]'
+cp "$MG" "$T/mg.after"
+out=$(HOME="$S1" MEGAVIBE_MANAGED_SETTINGS_FILE="$MG" mt trash_greenlight_managed 2>&1); rc=$?
+check "managed: second run is a no-op" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "already present" && cmp -s "$MG" "$T/mg.after"'
+MG2="$T/mg2/managed-settings.json"; mkdir -p "$T/mg2"; printf '%s\n' '{"permissions":{"ask":["Bash(rm *)"],"deny":["Bash(curl *)"]},"allowManagedHooksOnly":false}' > "$MG2"
+HOME="$S1" MEGAVIBE_MANAGED_SETTINGS_FILE="$MG2" mt trash_greenlight_managed >/dev/null 2>&1; rc=$?
+check "managed: an existing file is merged (other keys and rules kept) and backed up" '[ $rc = 0 ] && [ "$(jq -r ".permissions.ask | length" "$MG2")" = 4 ] && [ "$(jq -r ".permissions.deny[0], .allowManagedHooksOnly" "$MG2" | tr "\n" " ")" = "Bash(curl *) false " ] && [ -f "$MG2.megavibe-backup" ]'
+MG3="$T/mg3/managed-settings.json"; mkdir -p "$T/mg3"; printf 'garbage' > "$MG3"
+out=$(HOME="$S1" MEGAVIBE_MANAGED_SETTINGS_FILE="$MG3" mt trash_greenlight_managed 2>&1); rc=$?
+check "managed: a file that is not JSON is refused, untouched" '[ $rc = 1 ] && [ "$(cat "$MG3")" = garbage ] && printf "%s" "$out" | grep -q "not valid JSON"'
+mkdir -p "$T/mg4"; chmod 500 "$T/mg4"
+out=$(HOME="$S1" MEGAVIBE_MANAGED_SETTINGS_FILE="$T/mg4/managed-settings.json" mt trash_greenlight_managed 2>&1); rc=$?
+chmod 700 "$T/mg4"
+check "managed: where the directory is not writable it goes through msudo (stubbed to fail): exit 1, nothing written" '[ $rc = 1 ] && [ ! -e "$T/mg4/managed-settings.json" ] && grep -q "msudo called: mkdir -p $T/mg4" "$MSUDO_LOG"'
+check "managed: --trash-greenlight-managed is dispatched before any install step in setup.sh" '[ "$(grep -n "^if \[ \"\${1:-}\" = \"--trash-greenlight-managed\" \]" "$REPO/setup.sh" | cut -d: -f1)" -lt "$(grep -n "^NEEDS_LOGIN=()" "$REPO/setup.sh" | cut -d: -f1)" ]'
+check "setup.sh and the launcher both install trash-empty.sh" 'grep -q "scripts/trash-empty.sh\" \"\$MEGAVIBE_HOME\|SCRIPT_DIR/scripts/trash-empty.sh" "$REPO/setup.sh" && grep -q "REPO_DIR/scripts/trash-empty.sh" "$REPO/megavibe"'
+check "the launcher has the trash-greenlight subcommand" 'grep -q "\"\${1:-}\" = \"trash-greenlight\"" "$REPO/megavibe"'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

@@ -56,9 +56,10 @@ EOF
 # rm-to-trash.sh makes the Trash the ONLY undo for every delete an agent performs;
 # emptying it destroys that undo for everything at once, including files nobody
 # looked at (an agent "freeing space" did exactly this on 2026-09-30). No escape
-# hatch on purpose: a human empties it in Finder. Reads (ls, du), restoring one
-# file with mv, and text that merely mentions these words (commit messages, grep
-# patterns, PR bodies) are untouched.
+# hatch for an agent: a human empties it in Finder, or answers the permission prompt
+# in front of ~/.megavibe/scripts/trash-empty.sh (the gate just below). Reads (ls, du),
+# restoring one file with mv, and text that merely mentions these words (commit
+# messages, grep patterns, PR bodies) are untouched.
 #
 # Parsed with shlex like the kubectl guard below, for the same reason: regexes over
 # shell text were defeated by (rm ...), { rm; }, then/do, env VAR=x rm, sudo -u root
@@ -83,6 +84,53 @@ EOF
 # Every review round on this block found a new bypass or over-block, so do not read
 # a clean regression corpus as proof. Upgrade path: a filesystem-level guard.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The Trash greenlight script: ~/.megavibe/scripts/trash-empty.sh.
+#
+# It is the one deleting path, and what gates it is NOT this hook but Claude Code's
+# permission prompt: setup.sh installs `permissions.ask` rules for it, and an ask rule
+# is honoured under bypassPermissions and forwarded to the phone. Those rules match the
+# command text as written (`bash <script>`, an absolute or $HOME spelling, a copy, `sh -c`
+# or a glob all slip a path-anchored rule), so this gate's job is to let exactly ONE
+# spelling reach the prompt and to refuse every other command that names the script or
+# reaches into its directory by a spelling the rules would miss:
+#   - the exact command `~/.megavibe/scripts/trash-empty.sh [--all]`, with nothing else in
+#     the call: exit 0 here (no permission decision is made; the ask rule prompts next);
+#   - any other command whose text, quotes and brackets stripped, contains `trash-e`; or that
+#     names .megavibe/scripts/ with a $, glob, brace, bracket or backtick after it; or that
+#     starts a home-anchored path at a dot directory whose name is globbed or expanded and
+#     globs on (`~/.m*/scripts/t*-e*sh`); or that cd/pushd into .megavibe or .megavibe/scripts:
+#     blocked.
+# The early exit also sidesteps the crude no-python fallback further down, which would
+# otherwise refuse the asked form. Python is not needed for any of this.
+# HACK: a net, not a wall. Known holes: a script FILE that calls it, a name assembled
+# from pieces the text never shows together (a variable set in a file, `ls` + eval).
+# The catch-all ask rule `Bash(*trash-empty*)` still prompts whenever the plain name
+# appears, and the script itself refuses to run unless it is invoked from its install
+# path with the ask rules installed.
+# Known over-blocks: ANY Bash text containing `trash-e` is refused, including `git add
+# scripts/trash-empty.sh`, `bash -n`, `shellcheck`, `grep` and a commit message that names
+# it; so is `cd ~/.megavibe` and a glob under `~/.megavibe/` or `~/.m*`. Use the Read and
+# Grep tools, `git add scripts/` (the directory), `git commit -F file`, absolute paths.
+# ---------------------------------------------------------------------------
+_TE=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]{},\n" | tr '[:upper:]' '[:lower:]')
+_TE_RAW=$(printf '%s' "$COMMAND" | tr '[:upper:]' '[:lower:]')
+case "$_TE|$_TE_RAW" in
+  *trash-e*|*.megavibe*|*/.m*|*/.\**|*/.\?*|*/.\[*|*/.\{*|*/.\$*)
+    _TE_EXACT='^[[:space:]]*~/\.megavibe/scripts/trash-empty\.sh([[:blank:]]+--all)?[[:space:]]*$'
+    if [[ $COMMAND =~ $_TE_EXACT ]]; then
+      exit 0
+    fi
+    if printf '%s' "$_TE" | grep -Eq 'trash-e' \
+       || printf '%s' "$_TE_RAW" | grep -Eq '\.megavibe/scripts/[^[:space:]]*[$*?{[`]' \
+       || printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.[m*?[{$][^[:space:]]*[*?{[]' \
+       || printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:];&|(])(cd|pushd)[[:space:]]+[^[:space:];&|]*\.megavibe(/scripts)?/?([[:space:];&|)]|$)'; then
+      echo "Blocked: trash-empty.sh may only be run exactly as ~/.megavibe/scripts/trash-empty.sh [--all] (alone in the call; the user is asked for permission). To read it use the Read tool; to name it in a commit message use git commit -F." >&2
+      exit 2
+    fi
+    ;;
+esac
+
 _TRASH_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
 _TRASH_CMD=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]" | tr '[:upper:]' '[:lower:]')
 case "$_TRASH_CMD $(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" in

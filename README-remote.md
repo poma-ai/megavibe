@@ -15,6 +15,8 @@ Every megavibe session has Remote Control enabled. In your terminal:
 
 Scan the QR code with your phone → Claude app opens → same session. Type on either device. Works immediately, no setup needed.
 
+Permission prompts reach the phone too: Claude Code keeps them open until you answer, from either device. Megavibe relies on that for the Trash greenlight (`~/.megavibe/scripts/trash-empty.sh`, which really deletes): its `permissions.ask` rules prompt even though sessions run with permissions bypassed, so you can free droppable Trash items from the phone, and nothing is deleted until you tap Yes (see the main README, "Trash greenlight").
+
 ### With Telegram (personal assistant + project launcher)
 
 Add a Telegram bot for a richer experience: a personal assistant that answers questions, checks project status, and launches Claude sessions — all from a chat message or voice note on your Watch.
