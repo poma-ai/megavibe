@@ -39,7 +39,7 @@ GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/commits/main"
 VERSION_FILE="$MEGAVIBE_HOME/version"
 UPDATE_STAMP="$MEGAVIBE_HOME/.last-update-check"
 UPDATE_AVAILABLE_FILE="$MEGAVIBE_HOME/.update-available"
-CHANGELOG_FILE="$MEGAVIBE_HOME/.update-changelog"
+NOTES_DIR="$MEGAVIBE_HOME/update-notes"
 
 # ─── Atomic file install ─────────────────────────────────────────────
 #
@@ -296,37 +296,47 @@ check_for_update() {
   fi
 }
 
-# ─── Update changelog and summary ────────────────────────────────────
+# ─── Update notes ────────────────────────────────────────────────────
 #
-# One file, $MEGAVIBE_HOME/.update-changelog, is the whole record of an update
-# nobody has been told about yet. announce-update.sh claims it with an atomic mv
-# at the next session start and shows it once as a SessionStart systemMessage; no
-# turn is started and nothing is typed for the user: the note is read, not
-# conversed with. Layout, which the hook reads by position, never by searching
-# for markers (commit subjects are untrusted text and come last):
-#   line 1     megavibe updated: <old8> -> <new8> (<n> commits)   (also what chains updates)
-#   line 2     summary: <k>                                       (k = 0..8)
+# Every update leaves ONE immutable file, $MEGAVIBE_HOME/update-notes/<old8>-<new8>,
+# written whole (temp file + mv) and never touched again by the launcher: an update
+# never reads, extends, claims or deletes another update's record, so there is
+# nothing to race on and nothing to recover. announce-update.sh takes each pending
+# file with its own mv at session start and shows them, oldest first, as one
+# SessionStart systemMessage; no turn is started and nothing is typed for the user:
+# the note is read, not conversed with. Layout, which the hook reads by position,
+# never by searching for markers (commit subjects are untrusted text and come last):
+#   line 1     ts: <epoch>        when the update STARTED, so two that finish out of
+#                                 order are still shown in the order they happened
+#   line 2     megavibe updated: <old8> -> <new8> (<n> commits)
+#   line 3     summary: <k>       k = 0..8
 #   next k     the plain-language note from `claude -p --model haiku`, if one was made
 #   then       a blank line, "Commits:" with the subjects, and the deployed files
-# One file means one atomic publish and one atomic claim: a record cannot be
-# shown with another update's note. Without a note the hook shows a few subjects.
+# Without a note the hook shows a few subjects instead.
 #
 # The diffstat is restricted to the paths that get deployed into projects —
 # a template hook or rule changing is what alters behaviour for the user,
 # where a commit touching only README.md is noise the summary should drop.
 
-# strip_controls: stdin to stdout without C0 controls (tab and newline stay), DEL
-# or the C1 range U+0080-U+009F (UTF-8 c2 80-9f), which includes the one-code-point
-# CSI U+009B that some terminals act on. Byte-wise (LC_ALL=C): text that is not
-# valid UTF-8 must not abort a stage.
+# strip_controls: stdin to stdout without invalid UTF-8, C0 controls (tab and
+# newline stay), DEL, the C1 range U+0080-U+009F (which includes the one-code-point
+# CSI U+009B that some terminals act on) and the invisible format and bidi controls
+# U+200B-U+200F, U+2028-U+202E, U+2066-U+2069 and U+FEFF. iconv -c goes first: it
+# drops every invalid sequence, so removing a control afterwards cannot join stray
+# bytes into a new one (c2 c2 85 9b would turn into c2 9b once c2 85 went). The awk
+# loops until nothing matches, which also covers a machine without iconv. Byte-wise
+# (LC_ALL=C): text that is not valid UTF-8 must not abort a stage.
 strip_controls() {
-  LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C awk '{ gsub(/\302[\200-\237]/, ""); print }'
+  if command -v iconv &>/dev/null; then iconv -c -f UTF-8 -t UTF-8 2>/dev/null; else cat; fi \
+    | LC_ALL=C tr -d '\000-\010\013-\037\177' \
+    | LC_ALL=C awk '{ while (gsub(/\302[\200-\237]|\342\200[\213-\217\250-\256]|\342\201[\246-\251]|\357\273\277/, "")) { } print }'
 }
 
 # run_bounded SECS INFILE OUTFILE CMD...: run CMD with INFILE on stdin and its
-# stdout in OUTFILE, killing its whole process group after SECS. SECS is a decimal
-# of at most three digits, anything else counts as 25, and the result is clamped to
-# 1-120 here as well as by the caller: `alarm 0` would mean no bound at all.
+# stdout in OUTFILE, killing its whole process group after SECS, and also when CMD
+# exits normally (a child it left behind goes with it). SECS is a decimal of at most
+# three digits, anything else counts as 25, and the result is clamped to 1-120 here
+# as well as by the caller: `alarm 0` would mean no bound at all.
 # Returns 0 when CMD exited 0, 124 on the timeout, 2 when nothing here can bound
 # the call (no perl; macOS has no timeout(1), and an unbounded call is what this
 # exists to avoid), 1 otherwise. Only signals the group it started.
@@ -352,6 +362,7 @@ run_bounded() {
     $SIG{ALRM} = sub { $reap->(124) };
     $SIG{INT} = $SIG{TERM} = $SIG{HUP} = sub { $reap->(130) };
     alarm $secs; waitpid($pid, 0); my $st = $?; alarm 0;
+    if (kill(0, -$pid)) { kill("TERM", -$pid); select(undef, undef, undef, 0.3); kill("KILL", -$pid); }
     exit($st == 0 ? 0 : 1);
   ' "$secs" "$in" "$out" "$@"
 }
@@ -384,17 +395,20 @@ condense_commits() {
 # summarize_update OLD8 NEW8 COUNT DETAIL FILES: sets UPDATE_SUMMARY_TEXT to a short
 # plain-language note (and UPDATE_SUMMARY_LINES to its line count) and returns 0, or
 # returns 1 with both empty. One bounded `claude -p` call to Haiku with no tools, no
-# settings (so none of the user's hooks run), no MCP servers and no skills, from a
-# scratch directory that carries no .agent/ either. A failure, a timeout, no claude,
-# no perl, no jq and an answer that is an error message are all "no summary", never
-# an error: the launch must not wait on or break for this.
-# The answer is read as `--output-format json`: it counts only when is_error is
-# false and `result` is a string, so "Invalid API key" or "Not logged in" text
-# cannot pass for a note, whatever the exit status.
+# settings (so none of the user's hooks, and no apiKeyHelper, are loaded), no MCP
+# servers and no skills, from a scratch directory that carries no .agent/ either.
+# A failure, a timeout, no claude, no perl, no jq and an answer that is an error
+# message are all "no summary", never an error: the launch must not wait on or break
+# for this.
+# The answer is read as `--output-format json` and must be ONE complete JSON document
+# (an object, or an array of messages on older builds) that jq accepts as a whole:
+# with is_error false and a string `result`. Anything else, a truncated or doubled
+# document included, discards everything; no partial output is ever used.
 # MEGAVIBE_UPDATE_SUMMARY=0 switches it off; MEGAVIBE_UPDATE_SUMMARY_TIMEOUT
 # sets the bound in seconds: 1-3 digits, clamped to 1-120, anything else is 25.
-# ANTHROPIC_API_KEY is masked, as the launcher masks it for the session, so this
-# uses the subscription.
+# The variables that would send the call to a console API key or another provider
+# are removed for it, so it uses the subscription; a login that IS a console API key
+# is not affected by that and would still bill a few thousand Haiku tokens per update.
 UPDATE_SUMMARY_TEXT=""
 UPDATE_SUMMARY_LINES=0
 summarize_update() {
@@ -410,7 +424,7 @@ summarize_update() {
     *) secs=25 ;;
   esac
   if [ "$secs" -lt 1 ]; then secs=1; elif [ "$secs" -gt 120 ]; then secs=120; fi
-  local work rc=0 text raw
+  local work rc=0 text raw=""
   work=$(mktemp -d "${TMPDIR:-/tmp}/megavibe-summary.XXXXXX" 2>/dev/null) || return 1
   {
     cat <<'TXT'
@@ -428,16 +442,25 @@ TXT
   } > "$work/in" 2>/dev/null || { rm -rf "$work"; return 1; }
   echo -e "  ${DIM}Summarising the update (up to ${secs}s)...${RESET}"
   ( cd "$work" && run_bounded "$secs" "$work/in" "$work/out" \
-      env -u ANTHROPIC_API_KEY claude -p --model haiku --output-format json --tools "" --no-session-persistence \
+      env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+        -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY \
+        claude -p --model haiku --output-format json --tools "" --no-session-persistence \
         --disable-slash-commands --strict-mcp-config --setting-sources "" ) >/dev/null 2>&1 || rc=$?
   if [ "$rc" = "0" ] && [ -s "$work/out" ]; then
-    # The single result object (an array of messages on older builds), accepted
-    # only when it says it is not an error and carries a string.
-    raw=$(jq -r 'if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end
-                 | select(type == "object" and .is_error == false and (.result | type) == "string")
-                 | .result' "$work/out" 2>/dev/null || echo "")
-    # Control characters and C1 out (an escape sequence in a note printed to a
-    # terminal), at most 8 lines and 1500 bytes, blank edges trimmed.
+    # -s reads the whole input first, so a parse error anywhere fails the run before
+    # a single value is emitted; -e makes "nothing selected" a failure too. Only a
+    # clean exit is believed, and what jq wrote is read from a file, never from a
+    # half-finished pipeline.
+    if jq -e -s -r 'if length != 1 then empty else
+                      .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end)
+                           | select(type == "object" and .is_error == false and (.result | type) == "string")
+                           | .result end' "$work/out" > "$work/result" 2>/dev/null; then
+      raw=$(cat "$work/result" 2>/dev/null || echo "")
+    fi
+  fi
+  if [ -n "$raw" ]; then
+    # Controls out (see strip_controls), at most 8 lines and 1500 bytes, blank
+    # edges trimmed.
     text=$(printf '%s\n' "$raw" | strip_controls 2>/dev/null \
       | LC_ALL=C awk 'NF { on = 1 } on && n < 8 { b[++n] = $0 } END { while (n > 0 && b[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print b[i] }' 2>/dev/null \
       | head -c 1500 || echo "")
@@ -459,66 +482,22 @@ git_commit_detail() {
   git -C "$1" log --no-merges -n 60 --format='%x01%s%n%b' "$2..$3" 2>/dev/null | condense_commits
 }
 
-# Put a claimed record back as the pending one, unless a newer record has been
-# published since. Always removes the claim file.
-restore_changelog_claim() {
-  local claim="$1"
-  [ -f "$claim" ] || return 0
-  [ -e "$CHANGELOG_FILE" ] || mv "$claim" "$CHANGELOG_FILE" 2>/dev/null || true
-  rm -f "$claim" 2>/dev/null || true
-}
-
-# An updater killed (Ctrl-C included) between claiming the pending record and
-# publishing the new one leaves the old record in .update-changelog.updating.<pid>.
-# Put it back once it is too old for a live updater to still own it: the claim
-# is touched when taken, the summary call is bounded to 120 s, and 10 minutes also
-# covers a slow clone or compare request. announce-update.sh does the same.
-restore_orphan_changelog() {
-  local f
-  for f in "$CHANGELOG_FILE".updating.*; do
-    [ -f "$f" ] || continue
-    [ -n "$(find "$f" -mmin +10 2>/dev/null)" ] || continue
-    [ -e "$CHANGELOG_FILE" ] || mv -n "$f" "$CHANGELOG_FILE" 2>/dev/null || true
-  done
-}
-
-# Never fails an update. Every path returns 0; a missing changelog file just
-# means no announcement.
+# Never fails an update. Every path returns 0; a missing record just means no
+# announcement.
 collect_changelog() {
   local src="$1" old="$2" new="$3"
   [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ] || return 0
 
-  restore_orphan_changelog
-
-  # The range this changelog covers. Starts at $old and only moves backwards,
-  # when the chain below finds an un-announced predecessor to absorb.
-  local base="$old"
-
-  # Two updates with no session in between: the second would overwrite the
-  # first, and the announcement still says "since the last session". Chain
-  # instead — if the un-announced record ends exactly where this update starts,
-  # recompute from ITS base so the range stays continuous.
-  #
-  # The record is CLAIMED (atomic mv to a private name) before the slow part, not
-  # read in place. A session can start at any moment during the up-to-120 s
-  # summary call and would announce the predecessor; if this update had already
-  # decided to absorb it, the same range would be announced twice. Whoever wins
-  # the mv owns the record: if this updater wins, the range is A->C and the old
-  # record is dropped once the new one is published (put back if that fails);
-  # if a session won, it announced A->B and this update is just B->C. The
-  # SessionStart hook never waits for either outcome.
-  local claim="$CHANGELOG_FILE.updating.$$" claimed=0 prev_old="" prev_new="" hdr
-  if mv "$CHANGELOG_FILE" "$claim" 2>/dev/null; then
-    claimed=1
-    touch "$claim" 2>/dev/null || true
-    hdr=$(head -n 1 "$claim" 2>/dev/null || echo "")
-    prev_old=$(printf '%s' "$hdr" | sed -n 's/^megavibe updated: \([0-9a-f][0-9a-f]*\) -> \([0-9a-f][0-9a-f]*\).*/\1/p')
-    prev_new=$(printf '%s' "$hdr" | sed -n 's/^megavibe updated: \([0-9a-f][0-9a-f]*\) -> \([0-9a-f][0-9a-f]*\).*/\2/p')
-    if [ -n "$prev_old" ] && [ -n "$prev_new" ] \
-       && case "$old" in "$prev_new"*) true ;; *) false ;; esac; then
-      base="$prev_old"
-    fi
-  fi
+  # The record is named by its range, so the range must be two 8-digit hex ids.
+  local old8 new8 ts
+  old8=$(printf '%s' "$old" | cut -c1-8)
+  new8=$(printf '%s' "$new" | cut -c1-8)
+  case "$old8" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) return 0 ;; esac
+  case "$new8" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) return 0 ;; esac
+  # When the update started, not when its note finishes: that is the order to show
+  # records in. MEGAVIBE_NOW pins it for tests, as usage-route.sh does.
+  ts="${MEGAVIBE_NOW:-}"
+  case "$ts" in ''|*[!0-9]*) ts=$(date +%s 2>/dev/null || echo 0) ;; esac
 
   local subjects="" files="" count="" detail=""
   if is_git_source "$src"; then
@@ -528,17 +507,17 @@ collect_changelog() {
     # clone. That abort would skip the `rm -f $UPDATE_AVAILABLE_FILE` at the end
     # of do_update, leaving "Update available" pinned on every launch after a
     # successful update.
-    subjects=$(git -C "$src" log --no-merges --format='%s' "$base..$new" 2>/dev/null | head -40 || echo "")
-    files=$(git -C "$src" diff --stat "$base" "$new" -- template/ scripts/ setup.sh init.sh megavibe 2>/dev/null | head -40 || echo "")
-    count=$(git -C "$src" rev-list --count --no-merges "$base..$new" 2>/dev/null || echo "")
-    detail=$(git_commit_detail "$src" "$base" "$new" || echo "")
+    subjects=$(git -C "$src" log --no-merges --format='%s' "$old..$new" 2>/dev/null | head -40 || echo "")
+    files=$(git -C "$src" diff --stat "$old" "$new" -- template/ scripts/ setup.sh init.sh megavibe 2>/dev/null | head -40 || echo "")
+    count=$(git -C "$src" rev-list --count --no-merges "$old..$new" 2>/dev/null || echo "")
+    detail=$(git_commit_detail "$src" "$old" "$new" || echo "")
   else
     # A curl install has no local history (--depth 1), so the log has to come
     # from GitHub. The compare endpoint answers from the STORED old SHA, which
     # 404s if history was rewritten — this repo has had that happen twice — so
-    # an empty answer must degrade to no changelog, never to an error.
+    # an empty answer must degrade to no record, never to an error.
     local json
-    json=$(curl -sfL "https://api.github.com/repos/$GITHUB_REPO/compare/$base...$new" 2>/dev/null || echo "")
+    json=$(curl -sfL "https://api.github.com/repos/$GITHUB_REPO/compare/$old...$new" 2>/dev/null || echo "")
     if [ -n "$json" ] && command -v jq &>/dev/null; then
       subjects=$(printf '%s' "$json" | jq -r '.commits[]?.commit.message | split("\n")[0]' 2>/dev/null | head -40 || echo "")
       files=$(printf '%s' "$json" | jq -r '.files[]? | select(.filename | test("^(template/|scripts/|setup\\.sh$|init\\.sh$|megavibe$)")) | "  \(.filename) (+\(.additions)/-\(.deletions))"' 2>/dev/null | head -40 || echo "")
@@ -546,42 +525,18 @@ collect_changelog() {
       detail=$(printf '%s' "$json" | jq -j '.commits[]? | "\u0001" + .commit.message + "\n"' 2>/dev/null | condense_commits || echo "")
     fi
   fi
+  [ -n "$subjects" ] || return 0
 
-  # A chained base can be unreachable (re-clone, gc, rebase) while the plain one
-  # is fine. Falling back keeps the shorter changelog instead of none.
-  if [ -z "$subjects" ] && [ "$base" != "$old" ]; then
-    base="$old"
-    if is_git_source "$src"; then
-      subjects=$(git -C "$src" log --no-merges --format='%s' "$base..$new" 2>/dev/null | head -40 || echo "")
-      files=$(git -C "$src" diff --stat "$base" "$new" -- template/ scripts/ setup.sh init.sh megavibe 2>/dev/null | head -40 || echo "")
-      count=$(git -C "$src" rev-list --count --no-merges "$base..$new" 2>/dev/null || echo "")
-      detail=$(git_commit_detail "$src" "$base" "$new" || echo "")
-    fi
-  fi
-
-  # Nothing to write. A predecessor that does not end where this update
-  # started would now describe a range behind what is installed; drop it
-  # rather than let the next session announce a stale one.
-  if [ -z "$subjects" ]; then
-    if [ "$claimed" = 1 ]; then
-      if [ -n "$prev_new" ] && case "$new" in "$prev_new"*) true ;; *) false ;; esac; then
-        restore_changelog_claim "$claim"   # it already describes what is installed
-      else
-        rm -f "$claim" 2>/dev/null || true
-      fi
-    fi
-    return 0
-  fi
-
-  # The slow part. The pending record, if any, is held in $claim meanwhile.
   [ -n "$detail" ] || detail=$(printf '%s\n' "$subjects" | sed 's/^/* /')
-  if ! summarize_update "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$new" | cut -c1-8)" "$count" "$detail" "$files"; then
+  if ! summarize_update "$old8" "$new8" "$count" "$detail" "$files"; then
     UPDATE_SUMMARY_TEXT=""; UPDATE_SUMMARY_LINES=0
   fi
 
+  mkdir -p "$NOTES_DIR" 2>/dev/null || return 0
+  local tmp="$NOTES_DIR/.tmp.$$"
   {
-    printf 'megavibe updated: %s -> %s (%s commits)\n' \
-      "$(printf '%s' "$base" | cut -c1-8)" "$(printf '%s' "$new" | cut -c1-8)" "${count:-?}"
+    printf 'ts: %s\n' "$ts"
+    printf 'megavibe updated: %s -> %s (%s commits)\n' "$old8" "$new8" "${count:-?}"
     printf 'summary: %s\n' "$UPDATE_SUMMARY_LINES"
     if [ "$UPDATE_SUMMARY_LINES" -gt 0 ]; then printf '%s\n' "$UPDATE_SUMMARY_TEXT"; fi
     printf '\nCommits:\n%s\n' "$subjects"
@@ -595,22 +550,10 @@ collect_changelog() {
         printf '  ... (file list truncated)\n'
       fi
     fi
-  } > "$CHANGELOG_FILE.tmp.$$" 2>/dev/null || {
-    rm -f "$CHANGELOG_FILE.tmp.$$" 2>/dev/null
-    [ "$claimed" = 1 ] && restore_changelog_claim "$claim"
-    return 0
-  }
-  # The hook claims this file with an atomic mv; the write has to be atomic
-  # too, or a session starting mid-write claims a truncated log. A session that
-  # started during the summary call found no record and said nothing: this one
-  # appears whole, or not at all.
-  mv -f "$CHANGELOG_FILE.tmp.$$" "$CHANGELOG_FILE" 2>/dev/null || {
-    rm -f "$CHANGELOG_FILE.tmp.$$" 2>/dev/null
-    [ "$claimed" = 1 ] && restore_changelog_claim "$claim"
-    return 0
-  }
-  # Published: the predecessor it absorbed is part of it now.
-  if [ "$claimed" = 1 ]; then rm -f "$claim" 2>/dev/null || true; fi
+  } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  # The hook takes files with an atomic mv, so the record has to appear whole or
+  # not at all: a session starting mid-write must not take a truncated one.
+  mv -f "$tmp" "$NOTES_DIR/$old8-$new8" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
 
   echo -e "  ${DIM}${count:-?} commit(s). A short note on what changed shows when your next session starts.${RESET}"
 }
