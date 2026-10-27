@@ -101,11 +101,11 @@ EOF
 #     ask rule prompts next). It also keeps the crude no-python fallback below from refusing it;
 #   - any other command whose text names the script (trash-empty, trash-em*, trash-e*; quotes,
 #     backslashes, brackets, braces and newlines ignored, case ignored): blocked;
-#   - a home-anchored path with a glob that could complete to .megavibe (~/.m*, ~/.meg?vibe):
-#     blocked;
-#   - osascript, launchctl, crontab or a new Terminal window that mentions .megavibe or the
+#   - a home-anchored path whose first part is a glob that could complete to .megavibe and
+#     that goes on below it (~/.m*/scripts/x, ~/.meg?vibe/x): blocked; a plain `ls -d ~/.m*` passes;
+#   - osascript, launchctl, crontab or a new Terminal window that mentions ~/.megavibe or the
 #     script: blocked (they start a process outside Claude Code's process tree; the script
-#     refuses those anyway).
+#     refuses those anyway). `launchctl list | grep com.megavibe` is not a mention.
 # HACK: a net, not a wall. Known holes: a name assembled from pieces the text never shows
 # together, a script FILE that calls it; the script itself is the lock for both.
 # Known over-blocks: any Bash text that names the script is refused, including `git add
@@ -117,17 +117,17 @@ _TE=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]{},\n" | tr '[:upper:]' '[:lower:
 _TE_RAW=$(printf '%s' "$COMMAND" | tr '[:upper:]' '[:lower:]')
 case "$_TE|$_TE_RAW" in
   *trash-e*|*/.m*|*launchctl*|*osascript*|*osacompile*|*crontab*|*terminal*|*iterm*)
-    _TE_EXACT='^[[:space:]]*~/\.megavibe/scripts/trash-empty\.sh([[:blank:]]+--all)?[[:space:]]*$'
+    _TE_EXACT='^[[:space:]]*~/\.megavibe/scripts/trash-empty\.sh( --all)?[[:space:]]*$'
     if [[ $COMMAND =~ $_TE_EXACT ]]; then
       exit 0
     fi
     _TE_WHY=""
     if printf '%s' "$_TE" | grep -Eq 'trash-e(m|[*?]|[^a-z0-9]|$)'; then
       _TE_WHY="names trash-empty.sh"
-    elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?]'; then
-      _TE_WHY="has a glob that could expand to ~/.megavibe"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?][^[:space:]]*/'; then
+      _TE_WHY="has a path whose first part is a glob that could expand to ~/.megavibe"
     elif printf '%s' "$_TE_RAW" | grep -Eq '(osascript|osacompile|launchctl|crontab|(^|[[:space:];&|(])open[[:space:]].*(terminal|iterm))' \
-         && printf '%s' "$_TE_RAW" | grep -Eq '\.megavibe|trash-e|scripts/t'; then
+         && printf '%s' "$_TE_RAW" | grep -Eq '[/~]\.megavibe|trash-e'; then
       _TE_WHY="starts a process outside Claude Code that mentions ~/.megavibe or trash-empty.sh"
     fi
     if [ -n "$_TE_WHY" ]; then

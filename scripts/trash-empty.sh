@@ -12,8 +12,11 @@
 # rule is honoured under bypassPermissions, and the prompt is forwarded to the phone
 # under Remote Control. setup.sh installs the rules; this script is what they gate:
 #
-#   Bash(~/.megavibe/scripts/trash-empty.sh *)    the one spelling the hook lets through
-#   Bash(*trash-empty*)                           catch-all: any command text naming it prompts
+#   Bash(~/.megavibe/scripts/trash-empty.sh *)        the one spelling the hook lets through
+#   Bash(<home>/.megavibe/scripts/trash-empty.sh *)   the same with the home directory expanded
+#   Bash(*trash-empty*)                               catch-all: any command text naming it prompts
+#
+# (The script itself requires the first and the last; setup.sh installs all three.)
 #
 # A text rule cannot see every spelling that reaches a file (a glob, a symlinked directory,
 # a variable), so the script does not trust the text it was started with. It checks what
@@ -56,7 +59,17 @@
 #     follow a symlink (a symlink in the Trash is unlinked, its target untouched). Two
 #     ledger records for one object that disagree (kept vs droppable) skip it. A droppable
 #     item that is no longer in the Trash gets an `emptied` row ("already gone") and does not
-#     fail the run. It takes the review's apply lock, so it never runs in the middle of a review.
+#     fail the run; one the ledger cannot identify (no device and inode) is closed once with
+#     an `unemptiable` row. A ledger line that is not UTF-8, or a record that cannot be used,
+#     skips that line or record and the run goes on. It takes the review's apply lock, so it
+#     never runs in the middle of a review, and raises its descriptor limit for deep trees;
+#   - TERM, HUP and INT end it cleanly (the entry it is on goes back under its name; the shell
+#     stub passes them on to the python child). KILL or a power cut can leave a claimed entry in
+#     .megavibe-empty-<hex>/ inside the Trash: the next droppable run, under the lock, finishes
+#     the ones the ledger still marks droppable and puts every other back under its Trash name
+#     (or recovered-<hex>-<slot>), and never writes "already gone" for an object still there.
+#     Killing only the shell stub with KILL leaves the child running to the end of the item it
+#     is on; it finishes and logs by itself. empty.log gets a line per removed item and a total.
 #
 # The delete uses plain unlink/rmdir on purpose: the rm-to-trash.sh hook rewrites the
 # command text Claude runs, never the inside of a script, so this really deletes, and that
@@ -102,7 +115,7 @@ done
 
 read -r -d '' TE_PY <<'EOPY' || true
 #--- TE_PY BEGIN
-import ctypes, errno, fcntl, json, os, pwd, re, stat, subprocess, sys, time, uuid
+import ctypes, errno, fcntl, json, os, pwd, re, resource, signal, stat, subprocess, sys, time, uuid
 
 # Each of these is ONE line the tests replace in a scratch copy (a fake home, a fake managed
 # file, no provenance gate, an interleaving hook). Nothing else in this program is rewritten.
@@ -126,6 +139,27 @@ def die(code, msg):
 
 def show(s):
     return json.dumps(s, ensure_ascii=True)       # names printed to the terminal are escaped
+
+
+def on_signal(signum, frame):
+    """TERM, HUP and INT end the run through SystemExit, so every `finally` runs: what is mid-removal gets its
+    name back and the quarantine directory goes. (KILL cannot be caught: the next run recovers what it left.)"""
+    raise SystemExit(128 + signum)
+
+
+def raise_fd_limit():
+    """rm_at holds one descriptor per directory level, and macOS starts a process at 256."""
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError):
+        return
+    for want in (hard, 10240, 4096):
+        if want > soft or want == resource.RLIM_INFINITY:
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+                return
+            except (ValueError, OSError):
+                continue
 
 
 # ---- who is asking: the Claude Code harness shell must carry exactly the asked command ----
@@ -235,7 +269,8 @@ def has_rules(path):
 
 def permission_hook_in(path):
     """True when the settings file at `path` configures a PermissionRequest hook: a hook that Claude Code runs
-    instead of asking you, and that can answer Yes for you. A file that does not parse is judged by its text."""
+    instead of asking you, and that can answer Yes for you. A file that does not parse is judged by its text, and
+    fails closed: Claude Code may read what Python cannot (comments, trailing commas), so any mention of hooks counts."""
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             text = f.read()
@@ -244,7 +279,7 @@ def permission_hook_in(path):
     try:
         d = json.loads(text)
     except ValueError:
-        return "PermissionRequest" in text
+        return "hooks" in text or "PermissionRequest" in text
     hooks = d.get("hooks") if isinstance(d, dict) else None
     return isinstance(hooks, dict) and bool(hooks.get("PermissionRequest"))
 
@@ -270,12 +305,31 @@ def permission_hook_source(home, managed, cwds):
     return None
 
 
+def hook_message(path):
+    return ("%s configures a PermissionRequest hook, which can answer the approval prompt without you. "
+            "Ask the user to remove it (it is their configuration, not something to change for them), or empty the Trash in Finder." % path)
+
+
+def settings_gate(home, managed, hpid, cpid, cwd_of):
+    """None when no settings source holds a PermissionRequest hook, else (exit code, message). The working directories
+    of Claude Code's shell and of claude itself say which project settings apply; when neither can be read the project
+    files cannot be checked, and that is a refusal like the rest of this script, not a note."""
+    cwds = [c for c in (cwd_of(hpid), cwd_of(cpid)) if c]
+    if not cwds:
+        return 5, ("cannot read the working directory of Claude Code's shell, so the project's settings cannot be checked "
+                   "for a PermissionRequest hook. Empty the Trash in Finder")
+    hook = permission_hook_source(home, managed, cwds)
+    return (6, hook_message(hook)) if hook else None
+
+
 # ---- ledger ----------------------------------------------------------------------------
 
 def read_jsonl(path):
+    """The records of a JSON-lines file. A line that is cut off or is not UTF-8 (an append that ran out of disk space)
+    is skipped, not fatal: errors="replace" keeps one bad byte from making the whole ledger unreadable."""
     rows = []
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 try:
                     r = json.loads(line)
@@ -376,7 +430,13 @@ class Trash:
         try:
             self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as e:
-            die(3, "%s is not a directory (or is a symlink): %s" % (self.path, e.strerror))
+            hint = ""
+            if e.errno in (errno.EPERM, errno.EACCES):
+                hint = (" macOS may be denying this process access to the Trash: give Terminal (or whatever runs Claude Code) "
+                        "Full Disk Access in System Settings, Privacy & Security, or empty the Trash in Finder.")
+            elif e.errno in (errno.ENOTDIR, errno.ELOOP):
+                hint = " It must be a real directory, not a symlink."
+            die(3, "cannot open %s: %s.%s" % (self.path, e.strerror, hint))
         if os.fstat(self.fd).st_uid != os.getuid():
             die(3, "%s is not yours" % self.path)
         self.qname = self.qfd = None
@@ -392,37 +452,44 @@ class Trash:
                 die(3, "cannot make a quarantine directory in %s: %s" % (self.path, e.strerror))
         return self.qfd
 
+    def put_back(self, slot, qfd, name):
+        """Give a claimed entry its name back (never replacing anything). True when it went back."""
+        try:
+            rename_excl(slot, qfd, name, self.fd)
+            return True
+        except OSError:
+            return False
+
     def remove(self, name, want):
         """Claim `name` by an atomic rename, check it is the object `want` (dev, ino) AFTER the claim,
-        then delete it. Returns (state, detail): ok / skip (nothing was deleted) / fail."""
+        then delete it. Returns (state, detail): ok / gone (it vanished before the claim) / skip (nothing
+        was deleted) / fail. A signal (SystemExit) or any other error puts the entry back before it propagates."""
         qfd = self.quarantine()
         self.n += 1
         slot = "%06d" % self.n
         try:
-            os.rename(name, slot, src_dir_fd=self.fd, dst_dir_fd=qfd)
-        except OSError as e:
-            return ("skip" if e.errno == errno.ENOENT else "fail"), "claim failed: " + e.strerror
-        try:
-            got = os.stat(slot, dir_fd=qfd, follow_symlinks=False)
-        except OSError as e:
-            return "fail", "claimed but unreadable: " + e.strerror
-        if (got.st_dev, got.st_ino) != tuple(want):
             try:
-                rename_excl(slot, qfd, name, self.fd)
-                where = "put back"
-            except OSError:
-                where = "could NOT be put back: it is in %s" % self.qname
-            return "skip", "replaced since it was marked (the object now there was %s)" % where
-        _hook("after_claim", home=self.home, tfd=self.fd, name=name, slot=slot, qfd=qfd)
-        try:
-            rm_at(qfd, slot)
-        except (OSError, RecursionError) as e:
+                os.rename(name, slot, src_dir_fd=self.fd, dst_dir_fd=qfd)
+            except OSError as e:
+                return ("gone" if e.errno == errno.ENOENT else "fail"), "claim failed: " + e.strerror
             try:
-                rename_excl(slot, qfd, name, self.fd)       # what is left gets its name back for a later run
-            except OSError:
-                pass
-            return "fail", str(getattr(e, "strerror", None) or e)
-        return "ok", ""
+                got = os.stat(slot, dir_fd=qfd, follow_symlinks=False)
+            except OSError as e:
+                self.put_back(slot, qfd, name)
+                return "fail", "claimed but unreadable: " + e.strerror
+            if (got.st_dev, got.st_ino) != tuple(want):
+                where = "put back" if self.put_back(slot, qfd, name) else "could NOT be put back: it is in %s" % self.qname
+                return "skip", "replaced since it was marked (the object now there was %s)" % where
+            _hook("after_claim", home=self.home, tfd=self.fd, name=name, slot=slot, qfd=qfd)
+            try:
+                rm_at(qfd, slot)
+            except (OSError, RecursionError) as e:
+                self.put_back(slot, qfd, name)           # what is left gets its name back for a later run
+                return "fail", str(getattr(e, "strerror", None) or e)
+            return "ok", ""
+        except BaseException:
+            self.put_back(slot, qfd, name)               # a signal, or anything unexpected: back under its name, then on
+            raise
 
     def finish(self):
         if self.qfd is not None:
@@ -440,9 +507,9 @@ def append_rows(path, rows):
         with open(path, "a", encoding="utf-8") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             for r in rows:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    except OSError as e:
-        print("note: could not record %d row(s) in %s: %s" % (len(rows), path, e.strerror), file=sys.stderr)
+                f.write(json.dumps(r, ensure_ascii=True) + "\n")       # ASCII: a path with a stray surrogate cannot break the write
+    except (OSError, ValueError) as e:
+        print("note: could not record %d row(s) in %s: %s" % (len(rows), path, getattr(e, "strerror", None) or e), file=sys.stderr)
 
 
 def main():
@@ -463,22 +530,22 @@ def main():
         die(3, "run it from its install path: ~/.megavibe/scripts/trash-empty.sh (not a copy or a symlink)")
     if not (has_rules(MANAGED) or has_rules(os.path.join(home, ".claude", "settings.json"))):
         die(4, "the permission prompt that gates this script is not installed; run setup.sh (it adds the permissions.ask rules)")
-    cwds = []
     if REQUIRE_PROVENANCE:
         why, hpid, cpid = provenance_ex(ps_table(), ps_cmd, ps_signed, os.getpid(), mode, home)
         if why:
             die(5, why + ". Run it as typed from a Claude Code session so you get the approval prompt, "
                          "or empty the Trash in Finder.")
-        cwds = [c for c in (ps_cwd(hpid), ps_cwd(cpid)) if c]
-        if not cwds:
-            print("note: could not read the session's working directory, so project settings were not checked "
-                  "for a PermissionRequest hook", file=sys.stderr)
-    hook = permission_hook_source(home, MANAGED, cwds)
-    if hook:
-        die(6, "%s configures a PermissionRequest hook, which can answer the approval prompt without you. "
-               "Remove it, or empty the Trash in Finder." % hook)
+        bad = settings_gate(home, MANAGED, hpid, cpid, ps_cwd)
+    else:
+        hook = permission_hook_source(home, MANAGED, [])
+        bad = (6, hook_message(hook)) if hook else None
+    if bad:
+        die(bad[0], bad[1])
 
     sys.setrecursionlimit(5000)
+    raise_fd_limit()
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, on_signal)
     ldir = os.path.join(home, ".megavibe", "trash")
     try:
         os.makedirs(ldir, exist_ok=True)
@@ -498,11 +565,11 @@ def main():
     _hook("after_open_trash", home=home, tfd=trash.fd)
     ledger_rows, reviewed_rows = read_jsonl(os.path.join(ldir, "ledger.jsonl")), read_jsonl(os.path.join(ldir, "reviewed.jsonl"))
     recs, latest = merged_ledger(ledger_rows), latest_decisions(reviewed_rows)
-    emptied = failed = skipped = gone = kb = 0
-    out_rows = []
+    emptied = failed = skipped = gone = recovered = kb = 0
+    out_rows, log_lines = [], []
 
-    def row(rec, ok, detail):
-        r = {"id": rec["id"], "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "action": "emptied", "ok": ok,
+    def row(rec, ok, detail, action="emptied"):
+        r = {"id": rec["id"], "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "action": action, "ok": ok,
              "kb": max(rec.get("kb", 0), 0) if is_int(rec.get("kb")) else 0, "path": rec.get("path", ""), "detail": detail}
         out_rows.append(r)
         return r["kb"]
@@ -516,9 +583,10 @@ def main():
                 row(rec, True, "already gone from the Trash")
         elif state == "ok":
             emptied += 1
-            print("emptied: " + show(name))
-            for rec in recs_for:
-                kb += row(rec, True, "emptied from the Trash")
+            print("emptied: " + show(name) + (" (%s)" % detail if detail else ""))
+            item_kb = [row(rec, True, detail or "emptied from the Trash") for rec in recs_for]
+            kb += sum(item_kb)
+            log_lines.append("removed name=%s kb=%d" % (show(name), sum(item_kb) if recs_for else -1))
         elif state == "fail":
             failed += 1
             print("failed:  %s (%s)" % (show(name), detail), file=sys.stderr)
@@ -528,39 +596,120 @@ def main():
             skipped += 1
             print("skipped: %s (%s)" % (show(name), detail), file=sys.stderr)
 
+    leftovers_unresolved = False
+
+    def recover():
+        """A run that was killed (KILL, power loss) after it claimed an entry leaves .megavibe-empty-<hex>/<slot> in the Trash.
+        Droppable mode, under the lock, before anything else: an entry whose object the ledger says may go is finished; any
+        other goes back under its Trash name, or under recovered-<hex>-<slot> when that name is taken or unknown."""
+        nonlocal recovered, skipped, emptied, kb
+        closed, unresolved = set(), False
+        try:
+            leftovers = sorted(e.name for e in os.scandir(trash.fd) if e.name.startswith(".megavibe-empty-"))
+        except OSError:
+            return closed, False
+        for qn in leftovers:
+            try:
+                if not stat.S_ISDIR(os.stat(qn, dir_fd=trash.fd, follow_symlinks=False).st_mode):
+                    continue
+                qfd = os.open(qn, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=trash.fd)
+            except OSError:
+                unresolved = True
+                continue
+            try:
+                for slot in sorted(e.name for e in os.scandir(qfd)):
+                    try:
+                        sst = os.stat(slot, dir_fd=qfd, follow_symlinks=False)
+                        ident = (sst.st_dev, sst.st_ino)
+                        matches = [r for r in recs if (r.get("dev"), r.get("ino")) == ident]
+                        drop = [r for r in matches if latest.get(r.get("id")) == "droppable"]
+                        if drop and conflict(drop[0], recs, latest) is None:
+                            rm_at(qfd, slot)
+                            emptied += 1
+                            shown = show(os.path.basename(str(drop[0].get("trash_path") or slot)))
+                            print("emptied: %s (finished after an interrupted run)" % shown)
+                            item_kb = 0
+                            for r in drop:
+                                item_kb += row(r, True, "finished after an interrupted run")
+                                closed.add(r["id"])
+                            kb += item_kb
+                            log_lines.append("removed name=%s kb=%d (finished after an interrupted run)" % (shown, item_kb))
+                            continue
+                        names = []
+                        for r in matches:
+                            tp = r.get("trash_path")
+                            if isinstance(tp, str) and os.path.dirname(tp) == trash.path and os.path.basename(tp) not in ("", ".", ".."):
+                                names.append(os.path.basename(tp))
+                        names.append("recovered-%s-%s" % (qn[len(".megavibe-empty-"):], slot))
+                        for n in names:
+                            try:
+                                rename_excl(slot, qfd, n, trash.fd)
+                            except OSError:
+                                continue
+                            recovered += 1
+                            print("recovered: %s (left in the Trash by an interrupted run) is back as %s" % (show(slot), show(n)))
+                            break
+                        else:
+                            raise OSError(errno.EEXIST, "no free name", slot)
+                    except (OSError, RecursionError, ValueError, UnicodeError) as e:
+                        unresolved = True
+                        skipped += 1
+                        print("skipped: %s (left in %s by an interrupted run, and %s)" % (show(slot), qn, getattr(e, "strerror", None) or e), file=sys.stderr)
+            finally:
+                os.close(qfd)
+            try:
+                os.rmdir(qn, dir_fd=trash.fd)
+            except OSError:
+                unresolved = True
+        return closed, unresolved
+
+    def droppable_one(c):
+        tp = c.get("trash_path")
+        label = tp if isinstance(tp, str) else str(c.get("id"))
+        if not (isinstance(tp, str) and is_int(c.get("dev")) and is_int(c.get("ino"))):
+            # An item the ledger cannot identify (taken by the rmtrash fallback, or on another volume) can never be emptied
+            # here. Say so once, and close it with a row, so it does not fail every later run.
+            done(label, "skip", "no device and inode were recorded, so it cannot be emptied from here: empty it in Finder", [])
+            rec = dict(c)
+            row(rec, True, "no device and inode recorded; cannot be emptied by trash-empty.sh", action="unemptiable")
+            return
+        d, name = os.path.split(tp)
+        if "\0" in tp or tp.endswith("/") or d != trash.path or name in ("", ".", ".."):
+            done(label, "skip", "not a direct child of %s" % trash.path, [])
+            return
+        bad = conflict(c, recs, latest)
+        if bad is not None:
+            done(name, "skip", "another record for this object (%s) is not marked droppable" % bad.get("id"), [])
+            return
+        try:
+            st = os.stat(name, dir_fd=trash.fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if leftovers_unresolved:
+                done(name, "skip", "not in the Trash, but an interrupted run left something it could not put back", [])
+            else:
+                done(name, "gone", "", [c])
+            return
+        except OSError as e:
+            done(name, "skip", "cannot look at it: " + e.strerror, [])
+            return
+        if (st.st_dev, st.st_ino) != (c["dev"], c["ino"]):
+            done(name, "skip", "replaced since it was marked droppable", [])
+            return
+        _hook("after_check", home=home, tfd=trash.fd, name=name)
+        state, detail = trash.remove(name, (c["dev"], c["ino"]))
+        done(name, state, detail, [c])
+
     try:
         if mode == "droppable":
-            cands = [r for r in recs if latest.get(r.get("id")) == "droppable"]
-            if not cands:
+            closed, leftovers_unresolved = recover()
+            cands = [r for r in recs if latest.get(r.get("id")) == "droppable" and r.get("id") not in closed]
+            if not cands and not closed:
                 print("nothing marked droppable; run the Trash review first")
             for c in cands:
-                tp = c.get("trash_path")
-                label = tp if isinstance(tp, str) else str(c.get("id"))
-                if not (isinstance(tp, str) and is_int(c.get("dev")) and is_int(c.get("ino"))):
-                    done(label, "skip", "the ledger record is incomplete", [])
-                    continue
-                d, name = os.path.split(tp)
-                if "\0" in tp or tp.endswith("/") or d != trash.path or name in ("", ".", ".."):
-                    done(label, "skip", "not a direct child of %s" % trash.path, [])
-                    continue
-                bad = conflict(c, recs, latest)
-                if bad is not None:
-                    done(name, "skip", "another record for this object (%s) is not marked droppable" % bad.get("id"), [])
-                    continue
                 try:
-                    st = os.stat(name, dir_fd=trash.fd, follow_symlinks=False)
-                except FileNotFoundError:
-                    done(name, "gone", "", [c])
-                    continue
-                except OSError as e:
-                    done(name, "skip", "cannot look at it: " + e.strerror, [])
-                    continue
-                if (st.st_dev, st.st_ino) != (c["dev"], c["ino"]):
-                    done(name, "skip", "replaced since it was marked droppable", [])
-                    continue
-                _hook("after_check", home=home, tfd=trash.fd, name=name)
-                state, detail = trash.remove(name, (c["dev"], c["ino"]))
-                done(name, state, detail, [c])
+                    droppable_one(c)
+                except (ValueError, UnicodeError, KeyError, TypeError) as e:     # one unusable ledger record must not stop the rest
+                    done(str(c.get("id"))[:60], "skip", "unusable ledger record (%s)" % type(e).__name__, [])
         else:
             try:
                 names = sorted(e.name for e in os.scandir(trash.fd))
@@ -582,16 +731,19 @@ def main():
                 match = [r for r in recs if r.get("trash_path") == tp and (r.get("dev"), r.get("ino")) == (st.st_dev, st.st_ino)]
                 state, detail = trash.remove(name, (st.st_dev, st.st_ino))
                 done(name, state, detail, match)
-    finally:                           # even on an unexpected error: leave no quarantine, record what was done
+    finally:                           # even on a signal or an unexpected error: leave no quarantine, record what was done
         trash.finish()
         append_rows(os.path.join(ldir, "reviewed.jsonl"), out_rows)
-    summary = "mode=%s emptied=%d failed=%d skipped=%d gone=%d kb=%d" % (mode, emptied, failed, skipped, gone, kb)
-    if emptied or failed or skipped or gone:
+    summary = "mode=%s emptied=%d failed=%d skipped=%d gone=%d kb=%d recovered=%d" % (mode, emptied, failed, skipped, gone, kb, recovered)
+    if emptied or failed or skipped or gone or recovered:
         print(summary)
     try:
+        stamp = "%s user=%s" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), pwd.getpwuid(os.getuid()).pw_name)
         with open(os.path.join(ldir, "empty.log"), "a", encoding="utf-8") as f:
-            f.write("%s user=%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), pwd.getpwuid(os.getuid()).pw_name, summary))
-    except OSError:
+            for line in log_lines:                       # one line per removed item, then the totals
+                f.write("%s mode=%s %s\n" % (stamp, mode, line))
+            f.write("%s %s\n" % (stamp, summary))
+    except (OSError, ValueError):
         pass
     return 0 if not failed and not skipped else 1
 
@@ -601,5 +753,15 @@ if __name__ == "__main__":
 #--- TE_PY END
 EOPY
 
-/usr/bin/env -i PATH="$PATH" HOME="${HOME:-}" LC_ALL=C "$PY" -I -c "$TE_PY" "$MODE" "$0" "${HOME:-}"
-exit $?
+# The program runs as a child (its ancestors must include this shell), and TERM, HUP and INT sent to this
+# shell are passed on to it: it then puts back what it was in the middle of and exits. Killing only this shell with
+# KILL leaves the child running to the end of the item it is on; it finishes and logs on its own.
+/usr/bin/env -i PATH="$PATH" HOME="${HOME:-}" LC_ALL=C "$PY" -I -c "$TE_PY" "$MODE" "$0" "${HOME:-}" &
+CHILD=$!
+trap 'kill -TERM "$CHILD" 2>/dev/null' TERM HUP INT
+while :; do
+  wait "$CHILD"
+  RC=$?
+  kill -0 "$CHILD" 2>/dev/null || break
+done
+exit "$RC"

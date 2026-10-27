@@ -55,6 +55,7 @@ TRASH_ASK_PRESENT='type == "object" and ((.permissions // {}) | type) == "object
 TRASH_ASK_MERGE='(.permissions // {}) as $p | .permissions = ($p + {ask: (($p.ask // []) as $a | $a + ($r - $a))})'
 
 # merge_trash_ask FILE LABEL: add the rules to a settings file (created if missing); idempotent.
+# Returns 0 when the rules are there afterwards (added, or already present), 1 after a warning.
 merge_trash_ask() {
   local f="$1" label="$2" rules tmp stamp
   rules="$(trash_ask_rules)" || return 1
@@ -64,32 +65,33 @@ merge_trash_ask() {
       return 0
     fi
     # A private temp file beside the original: settings.json may hold secrets in its env block.
-    tmp="$(umask 077; mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || { warn "could not write beside $label — left untouched; trash-empty.sh will refuse to run"; return 0; }
+    tmp="$(umask 077; mktemp "${f}.tmp.XXXXXX" 2>/dev/null)" || { warn "could not write beside $label — left untouched; trash-empty.sh will refuse to run"; return 1; }
     if ! jq --argjson r "$rules" "$TRASH_ASK_MERGE" "$f" > "$tmp" 2>/dev/null || ! jq -e . "$tmp" >/dev/null 2>&1; then
       warn "could not add the Trash greenlight ask rules to $label (is it valid JSON, with permissions.ask a list?) — left untouched; trash-empty.sh will refuse to run"
       rm -f "$tmp" 2>/dev/null || true
-      return 0
+      return 1
     fi
     stamp=$(date +%Y%m%d-%H%M%S)
     # cp, not mv: a symlinked settings.json (dotfiles) stays a link and the mode is kept.
     if ! cp "$f" "${f}.pre-trashask-${stamp}" 2>/dev/null; then
       warn "could not back up $label — left untouched; trash-empty.sh will refuse to run"
       rm -f "$tmp" 2>/dev/null || true
-      return 0
+      return 1
     fi
     if ! cp "$tmp" "$f" 2>/dev/null; then
       warn "could not rewrite $label — backup kept at ${f}.pre-trashask-${stamp}"
       rm -f "$tmp" 2>/dev/null || true
-      return 0
+      return 1
     fi
     rm -f "$tmp" 2>/dev/null || true
     ok "Trash greenlight: ask rules for trash-empty.sh added to $label (backup: $(basename "$f").pre-trashask-${stamp})"
   else
-    mkdir -p "$(dirname "$f")" 2>/dev/null || { warn "could not create $(dirname "$f")"; return 0; }
+    mkdir -p "$(dirname "$f")" 2>/dev/null || { warn "could not create $(dirname "$f")"; return 1; }
     if ( umask 077; jq -n --argjson r "$rules" '{permissions: {ask: $r}}' > "$f" ) 2>/dev/null; then
       ok "Trash greenlight: $label created with the ask rules for trash-empty.sh"
     else
       warn "could not write $label — trash-empty.sh will refuse to run"
+      return 1
     fi
   fi
 }
@@ -1083,14 +1085,18 @@ fi
 # shellcheck disable=SC2088  # the quoted ~ paths are display labels, not paths
 if [ "$(uname -s)" = "Darwin" ]; then
   if command -v jq &>/dev/null; then
-    merge_trash_ask "$USER_SETTINGS" "~/.claude/settings.json"
+    _tg_ok=1
+    merge_trash_ask "$USER_SETTINGS" "~/.claude/settings.json" || _tg_ok=0
     # Claude Code reads CLAUDE_CONFIG_DIR instead when it is set, so the prompt needs the rules
     # there. trash-empty.sh ignores that variable and checks only ~/.claude/settings.json (or the
-    # managed file), which is why the rules go to both.
+    # managed file), and expects Claude Code's shell snapshots under ~/.claude, so with the
+    # variable set it refuses (exit 5); the rules still make the plain form prompt.
     if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
-      merge_trash_ask "$CLAUDE_CONFIG_DIR/settings.json" "$CLAUDE_CONFIG_DIR/settings.json"
+      merge_trash_ask "$CLAUDE_CONFIG_DIR/settings.json" "$CLAUDE_CONFIG_DIR/settings.json" || _tg_ok=0
     fi
-    echo "  Claude now asks you (also on the phone) before ~/.megavibe/scripts/trash-empty.sh runs. Stronger, opt-in: bash ~/.megavibe/setup.sh --trash-greenlight-managed"
+    if [ "$_tg_ok" = 1 ]; then
+      echo "  Claude now asks you (also on the phone) before ~/.megavibe/scripts/trash-empty.sh runs. Stronger, opt-in: bash ~/.megavibe/setup.sh --trash-greenlight-managed"
+    fi
   else
     warn "Trash greenlight ask rules not installed (jq not available) — trash-empty.sh will refuse to run"
   fi

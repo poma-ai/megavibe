@@ -592,6 +592,15 @@ gt 0 "ls ~/.*" "gate: a lone ~/.* allowed"
 gt 0 "bash -n scripts/*.sh" "gate: a repo-relative scripts glob allowed"
 gt 0 "ls $U/x/dev/megavibe/scripts/*.sh" "gate: the repo's own scripts glob allowed"
 gt 0 "git status" "gate: unrelated command allowed"
+gt 2 "$SC  --all" "gate: two spaces before --all refused (the script takes exactly one)"
+gt 2 "$SC"$'\t'"--all" "gate: a tab before --all refused"
+gt 0 "ls -d ~/.m*" "gate: a plain ~/.m* listing allowed"
+gt 0 "du -sh ~/.m*" "gate: du of ~/.m* allowed"
+gt 0 "launchctl list | grep com.megavibe" "gate: launchctl naming com.megavibe allowed"
+gt 0 "launchctl print gui/501/com.megavibe.remote" "gate: launchctl print of megavibe's own label allowed"
+gt 0 "open -a Terminal $U/x/dev/x/scripts/test" "gate: a new Terminal window on a path ending scripts/test allowed"
+gt 2 "ls ~/.m*/" "gate: a trailing slash after a ~/.m* glob is refused (documented)"
+gt 2 "~/.m*/scripts/t*-e*sh" "gate: the globbed dot directory that goes on below it still refused"
 # First net only: these reach the script (they name nothing the hook can see). Each is covered in section 10, where the
 # script refuses them because Claude Code's shell was not asked for exactly the asked command.
 gt 0 "cd -P ~/.megavibe/scripts && ./tr*h-e* --all" "net only: cd -P then a glob (the script refuses it: section 10)"
@@ -745,6 +754,95 @@ mkdir -p "$T/projg/.agent"; echo h > "$TW/h1"; tr_ "$TW/h1"
 out=$(cd "$T/projg" && echo '{"session_id":"s-greenlight"}' | env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" MEGAVIBE_TRASH_REVIEW_COUNT=1 bash "$HOOKS/trash-watch.sh")
 check "the review procedure ends with the greenlight step" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | test(\"6\\\\. If .*trash-empty\\\\.sh.*Never add .*--all\")" >/dev/null'
 check "the review procedure no longer says only the user empties the Trash" '! printf "%s" "$out" | jq -r ".hookSpecificOutput.additionalContext" | grep -q "only the user empties it"'
+
+# Interrupted runs: TERM and KILL at the moment the entry is claimed, and what the next run does about it.
+HOOKRUN() {  # HOOKRUN <home> <outfile>: start the script in the background with the after_claim hook sleeping; sets RUNPID and PYPID
+  local h=$1 out=$2
+  printf '%s\n' 'import time' "open(\"$T/py.pid\", \"w\").write(str(os.getpid()))" 'time.sleep(120)' > "$HOOKDIR/after_claim.py"
+  /bin/rm -f "$T/py.pid"
+  env -u CLAUDE_CONFIG_DIR HOME="$h" "$h/.megavibe/scripts/trash-empty.sh" > "$out" 2>&1 &
+  RUNPID=$!
+  local i=0; while [ ! -s "$T/py.pid" ] && [ $i -lt 200 ]; do sleep 0.1; i=$((i + 1)); done
+  PYPID=$(cat "$T/py.pid" 2>/dev/null)
+}
+HT="$T/th-term"; mk_home "$HT" "$RULES_JSON" nogate 1; echo orig > "$HT/.Trash/item"
+forge "$HT" idT "$HT/.Trash/item" "$(oid "$HT/.Trash/item")" "/orig/item" droppable
+HOOKRUN "$HT" "$T/term.out"
+kill -TERM "$PYPID"; wait "$RUNPID"; rc=$?
+/bin/rm -f "$HOOKDIR/after_claim.py"
+check "TERM at the claim: the program exits 143, the entry is back under its name, no quarantine is left" '[ -n "$PYPID" ] && [ $rc = 143 ] && [ "$(cat "$HT/.Trash/item")" = orig ] && ! ls -A "$HT/.Trash" | grep -q "^.megavibe-empty-"'
+run_in "$HT" >/dev/null 2>&1; rc=$?
+check "...and the next run finishes it normally" '[ $rc = 0 ] && [ ! -e "$HT/.Trash/item" ]'
+HS="$T/th-stub"; mk_home "$HS" "$RULES_JSON" nogate 1; echo orig > "$HS/.Trash/item"
+forge "$HS" idS "$HS/.Trash/item" "$(oid "$HS/.Trash/item")" "/orig/item" droppable
+HOOKRUN "$HS" "$T/stub.out"
+kill -TERM "$RUNPID"; wait "$RUNPID"; rc=$?
+/bin/rm -f "$HOOKDIR/after_claim.py"
+check "TERM sent only to the shell stub is passed on to the python child: it puts the entry back and the stub exits 143" '[ -n "$PYPID" ] && [ $rc = 143 ] && [ "$(cat "$HS/.Trash/item")" = orig ] && ! kill -0 "$PYPID" 2>/dev/null'
+HK="$T/th-kill"; mk_home "$HK" "$RULES_JSON" nogate 1; echo orig > "$HK/.Trash/item"
+forge "$HK" idK "$HK/.Trash/item" "$(oid "$HK/.Trash/item")" "/orig/item" droppable
+HOOKRUN "$HK" "$T/kill.out"
+kill -KILL "$PYPID"; wait "$RUNPID"; rc=$?
+/bin/rm -f "$HOOKDIR/after_claim.py"
+check "KILL at the claim: the entry is left in a hidden quarantine directory, not in the Trash under its name" '[ -n "$PYPID" ] && [ ! -e "$HK/.Trash/item" ] && [ -n "$(ls -A "$HK"/.Trash/.megavibe-empty-*/ 2>/dev/null)" ]'
+out=$(run_in "$HK" 2>&1); rc=$?
+check "the next run finishes it (the ledger still says droppable), says so, and leaves no leftover" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "finished after an interrupted run" && ! ls -A "$HK/.Trash" | grep -q "^.megavibe-empty-"'
+check "...with an emptied row, and it never says already gone" 'jq -e "select(.id==\"idK\" and .action==\"emptied\" and .ok==true and .detail==\"finished after an interrupted run\")" "$HK/.megavibe/trash/reviewed.jsonl" >/dev/null && ! printf "%s" "$out" | grep -q "^gone:"'
+HK2="$T/th-kill2"; mk_home "$HK2" "$RULES_JSON" nogate 1; echo orig > "$HK2/.Trash/item"
+forge "$HK2" idK2 "$HK2/.Trash/item" "$(oid "$HK2/.Trash/item")" "/orig/item" droppable
+HOOKRUN "$HK2" "$T/kill2.out"
+kill -KILL "$PYPID"; wait "$RUNPID"; /bin/rm -f "$HOOKDIR/after_claim.py"
+forge "$HK2" idK2 "$HK2/.Trash/item" "$(oid "$HK2"/.Trash/.megavibe-empty-*/000001)" "/orig/item" keep
+out=$(run_in "$HK2" 2>&1); rc=$?
+check "KILL, then the user keeps the item: the next run puts it back under its Trash name instead of deleting it" '[ "$(cat "$HK2/.Trash/item")" = orig ] && printf "%s" "$out" | grep -q "^recovered:" && ! ls -A "$HK2/.Trash" | grep -q "^.megavibe-empty-"'
+HK3="$T/th-kill3"; mk_home "$HK3"; echo stranger > "$HK3/.Trash/place"; mkdir -p "$HK3/.Trash/.megavibe-empty-abcdef123456"; echo mine > "$HK3/.Trash/.megavibe-empty-abcdef123456/000001"
+echo other > "$HK3/.Trash/.megavibe-empty-abcdef123456/000002"
+out=$(run_in "$HK3" 2>&1); rc=$?
+check "an object in a leftover slot that no ledger record matches comes back as recovered-<hex>-<slot>" '[ "$(cat "$HK3/.Trash/recovered-abcdef123456-000001")" = mine ] && [ "$(cat "$HK3/.Trash/recovered-abcdef123456-000002")" = other ] && [ "$(cat "$HK3/.Trash/place")" = stranger ] && ! ls -A "$HK3/.Trash" | grep -q "^.megavibe-empty-" && [ $rc = 0 ]'
+HK4="$T/th-kill4"; mk_home "$HK4"; echo taken > "$HK4/.Trash/item"; echo wanted > "$T/wanted.txt"
+mkdir -p "$HK4/.Trash/.megavibe-empty-0123456789ab"; mv "$T/wanted.txt" "$HK4/.Trash/.megavibe-empty-0123456789ab/000001"
+forge "$HK4" idN4 "$HK4/.Trash/item" "$(oid "$HK4/.Trash/.megavibe-empty-0123456789ab/000001")" "/orig/item" keep
+run_in "$HK4" >/dev/null 2>&1
+check "its Trash name is taken: it comes back as recovered-<hex>-<slot> and the other file is untouched" '[ "$(cat "$HK4/.Trash/item")" = taken ] && [ "$(cat "$HK4/.Trash/recovered-0123456789ab-000001")" = wanted ]'
+HK5="$T/th-kill5"; mk_home "$HK5"; echo a > "$HK5/.Trash/kept"; mkdir -p "$HK5/.Trash/.megavibe-empty-fedcba987654"; echo leftover > "$HK5/.Trash/.megavibe-empty-fedcba987654/000001"
+run_in "$HK5" --all >/dev/null 2>&1; rc=$?
+check "--all sweeps a leftover quarantine like any other entry" '[ $rc = 0 ] && [ -z "$(ls -A "$HK5/.Trash")" ]'
+# a ledger that is damaged does not stop the run
+HU="$T/th-utf"; mk_home "$HU"; echo a > "$HU/.Trash/a1"; echo b > "$HU/.Trash/b1"
+printf '\377\376 not utf-8\n' >> "$HU/.megavibe/trash/ledger.jsonl"
+forge "$HU" idU1 "$HU/.Trash/a1" "$(oid "$HU/.Trash/a1")" "/orig/a1" droppable
+printf '{"id":"idU9","path":"/x","trash_path":"%s/.Trash/\\ud800x","dev":1,"ino":2,"kb":1}\n' "$HU" >> "$HU/.megavibe/trash/ledger.jsonl"
+printf '{"id":"idU9","ts":"t","action":"droppable","ok":true}\n' >> "$HU/.megavibe/trash/reviewed.jsonl"
+forge "$HU" idU2 "$HU/.Trash/b1" "$(oid "$HU/.Trash/b1")" "/orig/b1" droppable
+out=$(run_in "$HU" 2>&1); rc=$?
+check "an invalid UTF-8 ledger line and a record with a lone surrogate in its path: both skipped with a message, every valid item is emptied" '[ ! -e "$HU/.Trash/a1" ] && [ ! -e "$HU/.Trash/b1" ] && printf "%s" "$out" | grep -q "unusable ledger record" && printf "%s" "$out" | grep -q "emptied=2" && [ $rc = 1 ]'
+# a record the ledger cannot identify is closed once, not retried forever
+HI="$T/th-incomplete"; mk_home "$HI"
+jq -nc --arg tp "$HI/.Trash/x" '{ts:"t", id:"idI", path:"/orig/x", kind:"file", trash_path:$tp, kb:1, cwd:"/", session:""}' >> "$HI/.megavibe/trash/ledger.jsonl"
+printf '{"id":"idI","ts":"t","action":"droppable","ok":true}\n' >> "$HI/.megavibe/trash/reviewed.jsonl"
+out=$(run_in "$HI" 2>&1); rc=$?
+check "a droppable record with no device and inode: reported once, exit 1" '[ $rc = 1 ] && printf "%s" "$out" | grep -q "no device and inode"'
+out=$(run_in "$HI" 2>&1); rc=$?
+check "...closed with an unemptiable row, so the next run is clean" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "nothing marked droppable" && jq -e "select(.id==\"idI\" and .action==\"unemptiable\")" "$HI/.megavibe/trash/reviewed.jsonl" >/dev/null'
+# the entry vanishes between the check and the claim (Finder emptied it): gone, not a failure
+HV="$T/th-vanish"; mk_home "$HV" "$RULES_JSON" nogate 1; echo v > "$HV/.Trash/item"
+forge "$HV" idV "$HV/.Trash/item" "$(oid "$HV/.Trash/item")" "/orig/item" droppable
+printf '%s\n' 'os.unlink(home + "/.Trash/" + name)' > "$HOOKDIR/after_check.py"
+out=$(run_in "$HV" 2>&1); rc=$?
+/bin/rm -f "$HOOKDIR/after_check.py"
+check "vanished between the check and the claim: gone, a row, exit 0" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "^gone:" && jq -e "select(.id==\"idV\" and .detail==\"already gone from the Trash\")" "$HV/.megavibe/trash/reviewed.jsonl" >/dev/null'
+# a deep tree needs a descriptor per level; the default soft limit is 256
+HD="$T/th-deep"; mk_home "$HD"; DP=deep; _i=0; while [ $_i -lt 400 ]; do DP="$DP/d"; _i=$((_i + 1)); done
+mkdir -p "$HD/.Trash/$DP"
+forge "$HD" idD "$HD/.Trash/deep" "$(oid "$HD/.Trash/deep")" "/orig/deep" droppable
+( ulimit -S -n 256; run_in "$HD" >/dev/null 2>&1 ); rc=$?
+check "a 400-level tree under ulimit -n 256: emptied (the program raises its own limit)" '[ $rc = 0 ] && [ ! -e "$HD/.Trash/deep" ]'
+# the audit trail: one empty.log line per removed item
+check "empty.log has a line for each removed item with its name and size, then the totals" 'grep -q " mode=droppable removed name=\"dropdir mv-" "$H/.megavibe/trash/empty.log" && grep -q " mode=all removed name=\"-n\" kb=-1" "$H/.megavibe/trash/empty.log"'
+# macOS refusing the Trash (TCC) shows the system error and the Full Disk Access hint
+HP2="$T/th-eperm"; mk_home "$HP2"; chmod 000 "$HP2/.Trash"
+out=$(run_in "$HP2" 2>&1); rc=$?; chmod 700 "$HP2/.Trash"
+check "an unreadable ~/.Trash: exit 3, the system error and a Full Disk Access hint" '[ $rc = 3 ] && printf "%s" "$out" | grep -q "Permission denied" && printf "%s" "$out" | grep -q "Full Disk Access"'
 
 # Codex's inputs, and the interleavings. Each uses its own fake home and a hand-written ledger.
 H7="$T/th7"; mk_home "$H7"; echo victim > "$H7/.Trash/kept.txt"; echo mine > "$H7/.Trash/target.txt"
@@ -972,6 +1070,27 @@ check "managed: where the directory is not writable it goes through msudo (stubb
 check "managed: --trash-greenlight-managed is dispatched before any install step in setup.sh" '[ "$(grep -n "^if \[ \"\${1:-}\" = \"--trash-greenlight-managed\" \]" "$REPO/setup.sh" | cut -d: -f1)" -lt "$(grep -n "^NEEDS_LOGIN=()" "$REPO/setup.sh" | cut -d: -f1)" ]'
 check "setup.sh and the launcher both install trash-empty.sh" 'grep -q "scripts/trash-empty.sh\" \"\$MEGAVIBE_HOME\|SCRIPT_DIR/scripts/trash-empty.sh" "$REPO/setup.sh" && grep -q "REPO_DIR/scripts/trash-empty.sh" "$REPO/megavibe"'
 check "the launcher has the trash-greenlight subcommand" 'grep -q "\"\${1:-}\" = \"trash-greenlight\"" "$REPO/megavibe"'
+# return codes: 0 only when the rules are there afterwards, 1 after a warning
+HOME="$S1" mt merge_trash_ask "$S4/obj.json" "scratch" >/dev/null 2>&1; rcm=$?
+check "ask-rule merge: a warning path (ask stored as an object) returns 1" '[ $rcm = 1 ]'
+HOME="$S1" mt merge_trash_ask "$S1/settings.json" "scratch" >/dev/null 2>&1; rcm=$?
+check "ask-rule merge: the already-present path returns 0" '[ $rcm = 0 ]'
+mkdir -p "$T/s8"; printf '%s\n' '{"env":{}}' > "$T/s8/settings.json"; chmod 555 "$T/s8"
+HOME="$S1" mt merge_trash_ask "$T/s8/settings.json" "scratch" >/dev/null 2>&1; rcm=$?; chmod 755 "$T/s8"
+check "ask-rule merge: a location it cannot write beside returns 1 and leaves the file" '[ $rcm = 1 ] && [ "$(cat "$T/s8/settings.json")" = "{\"env\":{}}" ]'
+# step 5a prints "Claude now asks you" only when the merge worked
+STEP5A="$T/step5a.sh"
+{ cat "$SETUP_FN"; echo 'USER_SETTINGS="$HOME/.claude/settings.json"'; sed -n '/^# ─── 5a\./,/^# ─── 5b\./p' "$REPO/setup.sh" | sed '$d'; } > "$STEP5A"
+check "the extracted step 5a block parses" 'bash -n "$STEP5A" && grep -q "Claude now asks you" "$STEP5A"'
+S9="$T/s9"; mkdir -p "$S9/.claude"; printf '%s\n' '{"env":{"A":"1"}}' > "$S9/.claude/settings.json"
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$S9" bash "$STEP5A" 2>&1)
+check "step 5a with a good settings file: the rules are added and the line is printed" 'printf "%s" "$out" | grep -q "Claude now asks you" && jq -e ".permissions.ask | length == 3" "$S9/.claude/settings.json" >/dev/null'
+S10="$T/s10"; mkdir -p "$S10/.claude"; printf 'not json' > "$S10/.claude/settings.json"
+out=$(env -u CLAUDE_CONFIG_DIR HOME="$S10" bash "$STEP5A" 2>&1)
+check "step 5a with an invalid settings file: the warning is printed and the 'Claude now asks you' line is not" 'printf "%s" "$out" | grep -q "^warn: could not add" && ! printf "%s" "$out" | grep -q "Claude now asks you"'
+S11="$T/s11"; mkdir -p "$S11/.claude" "$S11/cfg"; printf '%s\n' '{}' > "$S11/.claude/settings.json"; printf 'not json' > "$S11/cfg/settings.json"
+out=$(env HOME="$S11" CLAUDE_CONFIG_DIR="$S11/cfg" bash "$STEP5A" 2>&1)
+check "step 5a with a good ~/.claude and an invalid CLAUDE_CONFIG_DIR settings file: no success line either" '! printf "%s" "$out" | grep -q "Claude now asks you" && printf "%s" "$out" | grep -q "^warn: could not add"'
 # The whole settings sequence, not only the new helpers: step 5 (statusLine + attribution) runs first and used to
 # replace the file with a 0644 copy and break a symlinked settings.json.
 STEP5="$T/step5.sh"
@@ -1125,7 +1244,8 @@ case("a PermissionRequest hook is seen", None if te.permission_hook_in(put(T + "
 case("an empty PermissionRequest list is not a hook", None if not te.permission_hook_in(put(T + "/b.json", '{"hooks":{"PermissionRequest":[]}}')) else "flagged", True)
 case("other hooks are not it", None if not te.permission_hook_in(put(T + "/c.json", '{"hooks":{"PreToolUse":[{"matcher":"Bash"}]}}')) else "flagged", True)
 case("a file that does not parse is judged by its text", None if te.permission_hook_in(put(T + "/d.json", '{ // comment\n "hooks": {"PermissionRequest": [ {"x":1}, ]}}')) else "missed", True)
-case("an unparsable file without the word is fine", None if not te.permission_hook_in(put(T + "/e.json", '{ // comment\n "hooks": {} ,}')) else "flagged", True)
+case("an unparsable file that has a hooks block fails closed", None if te.permission_hook_in(put(T + "/e.json", '{ // comment\n "hooks": {} ,}')) else "missed", True)
+case("an unparsable file with no hooks at all is fine", None if not te.permission_hook_in(put(T + "/e2.json", '{ // comment\n "env": {} ,}')) else "flagged", True)
 case("a missing file is fine", None if not te.permission_hook_in(T + "/nope.json") else "flagged", True)
 case("hooks that is not an object is fine", None if not te.permission_hook_in(put(T + "/f.json", '{"hooks":["PermissionRequest"]}')) else "flagged", True)
 home, managed = T + "/home", T + "/managed.json"
@@ -1136,6 +1256,12 @@ case("a project hook is found from a directory below the project", None if te.pe
 case("another project with no hook is clean", None if te.permission_hook_source(home, managed, [other]) is None else "flagged", True)
 case("no working directory means only the user-level files count", None if te.permission_hook_source(home, managed, []) is None else "flagged", True)
 case("an empty cwd string is skipped", None if te.permission_hook_source(home, managed, [""]) is None else "flagged", True)
+# the combined gate: unreadable working directories refuse, a project hook refuses, a clean one passes
+case("settings_gate: neither working directory readable -> exit 5", None if te.settings_gate(home, managed, 1, 2, lambda p: "")[0] == 5 else "wrong", True)
+g = te.settings_gate(home, managed, 1, 2, lambda p: deep_cwd)
+case("settings_gate: a project hook -> exit 6 naming the file, telling the agent to ask the user", None if g and g[0] == 6 and "settings.local.json" in g[1] and "Ask the user" in g[1] else g, True)
+case("settings_gate: a clean project -> None", None if te.settings_gate(home, managed, 1, 2, lambda p: other) is None else "flagged", True)
+case("settings_gate: one readable directory is enough", None if te.settings_gate(home, managed, 1, 2, lambda p: other if p == 2 else "") is None else "flagged", True)
 put(home + "/.claude/settings.local.json", HOOK)
 case("the user's settings.local.json counts", None if te.permission_hook_source(home, managed, []) == home + "/.claude/settings.local.json" else "missed", True)
 os.remove(home + "/.claude/settings.local.json"); put(managed, HOOK)
@@ -1191,6 +1317,19 @@ check "guard: an Edit elsewhere in a file that already configures one refused" '
 check "guard: an Edit that removes the hook text allowed" '[ "$(pg "$(wj Edit "$T/with-hook-settings.json" "" "PermissionRequest" "Nothing")")" = 0 ]'
 check "guard: a Write that replaces such a file with clean settings allowed" '[ "$(pg "$(wj Write "$T/with-hook-settings.json" "{}")")" = 0 ]'
 check "guard: an Edit of a settings file that does not exist yet and does not mention it allowed" '[ "$(pg "$(wj Edit "$T/missing/settings.json" "" "a" "b")")" = 0 ]'
+# the guard's escape, split-edit and count rules
+check "guard: a JSON \\u escape in a settings write refused" '[ "$(pg "$(wj Write /h/.claude/settings.json "{\"hooks\":{\"\\u0050ermissionRequest\":[{}]}}")")" = 2 ]'
+check "guard: any ASCII \\u escape in a settings write refused" '[ "$(pg "$(wj Write /h/.claude/settings.json "{\"env\":{\"A\":\"\\u0041\"}}")")" = 2 ]'
+check "guard: a \\u escape in a markdown frontmatter file is not a JSON escape (allowed when it names nothing)" '[ "$(pg "$(wj Write /p/.claude/agents/x.md "a \\u0041 b")")" = 0 ]'
+printf '%s\n' '{"hooks":{"Permis__X":[]}}' > "$T/split-settings.json"
+check "guard: an Edit that completes the word (Permis + sionRequest) refused although its own text never contains it" '[ "$(pg "$(wj Edit "$T/split-settings.json" "" "__X" "sionRequest")")" = 2 ]'
+printf '%s\n' '{"hooks":{"__A__B":[]}}' > "$T/multi-settings.json"
+MEDITS='[{"old_string":"__A","new_string":"Permis"},{"old_string":"__B","new_string":"sionRequest"}]'
+wm() { jq -nc --arg p "$1" --argjson e "$2" '{tool_name:"MultiEdit", tool_input:{file_path:$p, edits:$e}}'; }
+check "guard: a MultiEdit whose two edits assemble the word refused" '[ "$(pg "$(wm "$T/multi-settings.json" "$MEDITS")")" = 2 ]'
+printf '%s\n' '{"hooks":{"PermissionRequest":[1],"x":{"PermissionRequest":[2]}}}' > "$T/two-settings.json"
+check "guard: an Edit that deletes one of two hooks (the count goes down) allowed" '[ "$(pg "$(wj Edit "$T/two-settings.json" "" "\"PermissionRequest\":[1]," "")")" = 0 ]'
+check "guard: an Edit that rewrites a hook in place (the count stays) refused" '[ "$(pg "$(wj Edit "$T/two-settings.json" "" "[1]" "[3]")")" = 2 ]'
 check "guard is registered under Write|Edit|MultiEdit in the template settings" 'jq -e ".hooks.PreToolUse[] | select(.matcher==\"Write|Edit|MultiEdit\") | .hooks | map(.command) | index(\".claude/hooks/block-permission-hooks.sh\") != null" "$REPO/template/.claude/settings.json" >/dev/null'
 check "guard is in init.sh's canonical hook list and is executable in the template" 'grep -q "block-permission-hooks.sh" "$REPO/init.sh" && [ -x "$HOOKS/block-permission-hooks.sh" ]'
 # the Bash route, as a text rule in block-dangerous-bash.sh
