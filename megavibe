@@ -301,11 +301,14 @@ check_for_update() {
 # Every update leaves ONE immutable file, $MEGAVIBE_HOME/update-notes/<old8>-<new8>,
 # written whole (temp file + mv) and never touched again by the launcher: an update
 # never reads, extends, claims or deletes another update's record, so there is
-# nothing to race on and nothing to recover. announce-update.sh takes each pending
-# file with its own mv at session start and shows them, oldest first, as one
-# SessionStart systemMessage; no turn is started and nothing is typed for the user:
-# the note is read, not conversed with. Layout, which the hook reads by position,
-# never by searching for markers (commit subjects are untrusted text and come last):
+# nothing to race on and nothing to recover; the one thing left, two updaters for
+# the SAME range both publishing it, is closed by a marker directory per range
+# (update-notes/.published/<old8>-<new8>, made with mkdir just before the mv).
+# announce-update.sh takes each pending file with its own mv at session start and
+# shows them, oldest first, as one SessionStart systemMessage; no turn is started
+# and nothing is typed for the user: the note is read, not conversed with. Layout,
+# which the hook reads by position, never by searching for markers (commit subjects
+# are untrusted text and come last):
 #   line 1     ts: <epoch>        when the update STARTED, so two that finish out of
 #                                 order are still shown in the order they happened
 #   line 2     megavibe updated: <old8> -> <new8> (<n> commits)
@@ -318,18 +321,27 @@ check_for_update() {
 # a template hook or rule changing is what alters behaviour for the user,
 # where a commit touching only README.md is noise the summary should drop.
 
+# utf8_ok: stdin to stdout without invalid UTF-8. A byte-wise cut (head -c) can leave
+# the head of a multibyte character at the end; this drops it, where it would later
+# become U+FFFD. Without iconv the text passes as is.
+utf8_ok() {
+  if command -v iconv &>/dev/null; then iconv -c -f UTF-8 -t UTF-8 2>/dev/null; else cat; fi
+}
+
 # strip_controls: stdin to stdout without invalid UTF-8, C0 controls (tab and
 # newline stay), DEL, the C1 range U+0080-U+009F (which includes the one-code-point
 # CSI U+009B that some terminals act on) and the invisible format and bidi controls
-# U+200B-U+200F, U+2028-U+202E, U+2066-U+2069 and U+FEFF. iconv -c goes first: it
+# U+061C, U+180E, U+200B-U+200F, U+2028-U+202E, U+2060-U+2069 (U+2065 is unassigned),
+# U+FEFF and the tag characters U+E0000-U+E007F. iconv -c goes first: it
 # drops every invalid sequence, so removing a control afterwards cannot join stray
 # bytes into a new one (c2 c2 85 9b would turn into c2 9b once c2 85 went). The awk
 # loops until nothing matches, which also covers a machine without iconv. Byte-wise
-# (LC_ALL=C): text that is not valid UTF-8 must not abort a stage.
+# (LC_ALL=C): text that is not valid UTF-8 must not abort a stage. The hook's clean()
+# is the same list.
 strip_controls() {
-  if command -v iconv &>/dev/null; then iconv -c -f UTF-8 -t UTF-8 2>/dev/null; else cat; fi \
+  utf8_ok \
     | LC_ALL=C tr -d '\000-\010\013-\037\177' \
-    | LC_ALL=C awk '{ while (gsub(/\302[\200-\237]|\342\200[\213-\217\250-\256]|\342\201[\246-\251]|\357\273\277/, "")) { } print }'
+    | LC_ALL=C awk '{ while (gsub(/\302[\200-\237]|\330\234|\341\240\216|\342\200[\213-\217\250-\256]|\342\201[\240-\251]|\357\273\277|\363\240[\200-\201][\200-\277]/, "")) { } print }'
 }
 
 # run_bounded SECS INFILE OUTFILE CMD...: run CMD with INFILE on stdin and its
@@ -438,6 +450,9 @@ Rules:
 TXT
     printf '\n----- BEGIN UPDATE LOG (data): %s -> %s, %s commits -----\n%s\n' "$old8" "$new8" "${count:-?}" "$detail"
     if [ -n "$files" ]; then printf '\nDeployed files changed:\n%s\n' "$files"; fi
+    # A commit body can contain this very line and steer the note that follows it.
+    # Accepted: the note is only ever displayed to the user, never fed to a model,
+    # and whoever can land a commit here can already ship hooks.
     printf '%s\n' "----- END UPDATE LOG -----"
   } > "$work/in" 2>/dev/null || { rm -rf "$work"; return 1; }
   echo -e "  ${DIM}Summarising the update (up to ${secs}s)...${RESET}"
@@ -463,7 +478,7 @@ TXT
     # edges trimmed.
     text=$(printf '%s\n' "$raw" | strip_controls 2>/dev/null \
       | LC_ALL=C awk 'NF { on = 1 } on && n < 8 { b[++n] = $0 } END { while (n > 0 && b[n] ~ /^[ \t]*$/) n--; for (i = 1; i <= n; i++) print b[i] }' 2>/dev/null \
-      | head -c 1500 || echo "")
+      | head -c 1500 | utf8_ok || echo "")
     # Belt and braces for an error that arrives as an ordinary result.
     if printf '%s' "$text" | LC_ALL=C grep -qiE 'invalid api key|please run /login|not logged in|credit balance is too low'; then
       text=""
@@ -532,8 +547,8 @@ collect_changelog() {
     UPDATE_SUMMARY_TEXT=""; UPDATE_SUMMARY_LINES=0
   fi
 
-  mkdir -p "$NOTES_DIR" 2>/dev/null || return 0
-  local tmp="$NOTES_DIR/.tmp.$$"
+  mkdir -p "$NOTES_DIR/.published" 2>/dev/null || return 0
+  local tmp="$NOTES_DIR/.tmp.$$" marker="$NOTES_DIR/.published/$old8-$new8"
   {
     printf 'ts: %s\n' "$ts"
     printf 'megavibe updated: %s -> %s (%s commits)\n' "$old8" "$new8" "${count:-?}"
@@ -551,9 +566,17 @@ collect_changelog() {
       fi
     fi
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  # A range is published once, ever. Two updaters racing on the same range (two
+  # terminals) would otherwise both publish: the pending file is gone as soon as a
+  # session has shown it, so a slower updater's mv would put it back and it would be
+  # announced twice. mkdir is the atomic test-and-set; the empty directory stays
+  # (the hook reaps it after 30 days) and a loser just goes quietly. Taken after the
+  # record is written, right before the mv, so the window in which a killed updater
+  # could leave a marker without a record is as short as it can be.
+  mkdir "$marker" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
   # The hook takes files with an atomic mv, so the record has to appear whole or
   # not at all: a session starting mid-write must not take a truncated one.
-  mv -f "$tmp" "$NOTES_DIR/$old8-$new8" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+  mv -f "$tmp" "$NOTES_DIR/$old8-$new8" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; rmdir "$marker" 2>/dev/null; return 0; }
 
   echo -e "  ${DIM}${count:-?} commit(s). A short note on what changed shows when your next session starts.${RESET}"
 }

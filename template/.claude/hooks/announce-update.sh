@@ -22,7 +22,8 @@ set -u
 # single file ~/.megavibe/.update-changelog; that is still read, once.
 #
 # Why this cannot race: the launcher only ever adds a new file under its own
-# name and never reads, extends or deletes another update's; this hook takes
+# name (and, by a marker directory per range, never the same range twice, even
+# after it was shown) and never reads, extends or deletes another update's; this hook takes
 # each pending file with its own mv into a directory only it knows. mv is atomic
 # per file, so a record goes to exactly one session, a file another session took
 # first is skipped, and a record published while this runs is simply found by the
@@ -57,6 +58,10 @@ MAXFILES=50      # records taken in one go
 # never announces anything, and a fortnight-old update is noise.
 if [ -d "$NOTES" ]; then
   find "$NOTES" -maxdepth 1 -type f \( -name '.tmp.*' -mtime +1 -o -name '????????-????????' -mtime +7 \) -delete 2>/dev/null
+  # The launcher keeps an empty marker directory per published range so a second
+  # updater racing on the same range cannot publish it again after it was shown.
+  # An update is long forgotten after a month; the marker goes with it.
+  find "$NOTES/.published" -maxdepth 1 -mindepth 1 -type d -mtime +30 -exec rmdir {} + 2>/dev/null
 fi
 find "$MV_HOME" -maxdepth 1 -type d -name '.update-claim.*' -mtime +1 -exec rm -rf {} + 2>/dev/null
 [ -z "$(find "$LEGACY" -mtime +7 2>/dev/null)" ] || rm -f "$LEGACY" 2>/dev/null
@@ -65,19 +70,38 @@ CLAIMDIR="$MV_HOME/.update-claim.$$"
 mkdir "$CLAIMDIR" 2>/dev/null || exit 0
 trap 'rm -rf "$CLAIMDIR" 2>/dev/null' EXIT
 
-# Take whatever is pending. Only names that are exactly <8 hex>-<8 hex> count.
-NAMES=""
-n=0
+# Take whatever is pending, OLDEST FIRST. The order is settled before the claim
+# limit applies, from each file's own first line ("ts: <epoch>", 0 when absent), so
+# the limit can never leave the oldest record behind while newer ones are shown,
+# and what lies beyond it is counted for the "... and N more" line. Only names that
+# are exactly <8 hex>-<8 hex> count.
+CAND=""
 if [ -d "$NOTES" ]; then
   for p in "$NOTES"/*; do
     name="${p##*/}"
     case "$name" in ????????-????????) ;; *) continue ;; esac
     case "$name" in *[!0-9a-f-]*) continue ;; esac
     [ -f "$p" ] || continue
-    [ "$n" -lt "$MAXFILES" ] || break
-    mv "$p" "$CLAIMDIR/$name" 2>/dev/null || continue   # another session got it
-    NAMES="$NAMES $name"; n=$((n + 1))
+    first=$(head -n 1 "$p" 2>/dev/null)
+    case "$first" in 'ts: '[0-9]*) first="${first#ts: }" ;; *) first=0 ;; esac
+    case "$first" in ''|*[!0-9]*) first=0 ;; esac
+    [ "${#first}" -le 12 ] || first=0
+    CAND="$CAND$first $name
+"
   done
+fi
+NAMES=""
+n=0
+UNCLAIMED=0
+if [ -n "$CAND" ]; then
+  while read -r _ name; do
+    [ -n "$name" ] || continue
+    if [ "$n" -ge "$MAXFILES" ]; then UNCLAIMED=$((UNCLAIMED + 1)); continue; fi
+    mv "$NOTES/$name" "$CLAIMDIR/$name" 2>/dev/null || continue   # another session got it
+    NAMES="$NAMES $name"; n=$((n + 1))
+  done <<EOT
+$(printf '%s' "$CAND" | sort -k1,1n -k2,2)
+EOT
 fi
 if [ -f "$LEGACY" ] && mv "$LEGACY" "$CLAIMDIR/legacy" 2>/dev/null; then
   NAMES="$NAMES legacy"
@@ -87,18 +111,26 @@ fi
 HAVE_ICONV=0
 command -v iconv >/dev/null 2>&1 && HAVE_ICONV=1
 
+# utf8ok: stdin to stdout without invalid UTF-8. A byte-wise cut (cut -c, head -c
+# under LC_ALL=C) can leave the head of a multibyte character at the end; this
+# drops it, where jq would turn it into U+FFFD. Without iconv the text passes as is.
+utf8ok() {
+  if [ "$HAVE_ICONV" = 1 ]; then iconv -c -f UTF-8 -t UTF-8 2>/dev/null; else cat; fi
+}
+
 # Control characters out of anything that reaches the terminal. First iconv -c
 # drops every invalid UTF-8 sequence, so what is removed next cannot join stray
 # bytes into a new character (c2 c2 85 9b would become c2 9b, a CSI, once c2 85
 # went); then C0 and DEL (tab and newline stay), the C1 range U+0080-U+009F, and
-# the invisible format and bidi controls U+200B-U+200F, U+2028-U+202E,
-# U+2066-U+2069 and U+FEFF. The awk loops until nothing more matches, which also
+# the invisible format and bidi controls U+061C, U+180E, U+200B-U+200F,
+# U+2028-U+202E, U+2060-U+2069 (U+2065 is unassigned), U+FEFF and the tag
+# characters U+E0000-U+E007F. The awk loops until nothing more matches, which also
 # covers a machine without iconv. Commit subjects are written by whoever can
-# push, and the note derives from them.
+# push, and the note derives from them. megavibe's strip_controls is the same list.
 clean() {
-  if [ "$HAVE_ICONV" = 1 ]; then iconv -c -f UTF-8 -t UTF-8 2>/dev/null; else cat; fi \
+  utf8ok \
     | tr -d '\000-\010\013-\037\177' \
-    | awk '{ while (gsub(/\302[\200-\237]|\342\200[\213-\217\250-\256]|\342\201[\246-\251]|\357\273\277/, "")) { } print }'
+    | awk '{ while (gsub(/\302[\200-\237]|\330\234|\341\240\216|\342\200[\213-\217\250-\256]|\342\201[\240-\251]|\357\273\277|\363\240[\200-\201][\200-\277]/, "")) { } print }'
 }
 
 # render <file>: sets TS and writes the record's block to <file>.blk. Returns 1
@@ -123,7 +155,7 @@ render() {
   case "$line2" in 'summary: '[0-8]) k="${line2#summary: }" ;; esac
   note=""
   if [ "$k" -gt 0 ]; then
-    note=$(printf '%s\n' "$raw" | sed -n "$((off + 3)),$((off + 2 + k))p" | clean | head -c 1500)
+    note=$(printf '%s\n' "$raw" | sed -n "$((off + 3)),$((off + 2 + k))p" | clean | head -c 1500 | utf8ok)
   fi
   if [ -z "$(printf '%s' "$note" | tr -d '[:space:]')" ]; then
     # No note: the first few commit subjects, which is all a changelog line can
@@ -133,7 +165,7 @@ render() {
     subj=$(printf '%s\n' "$raw" | tail -n +"$((off + 3 + k))" | awk '/^Commits:$/ { f = 1; next } f && /^$/ { exit } f && !/^  \.\.\. / { print }' | clean)
     total=$(printf '%s\n' "$subj" | grep -c . 2>/dev/null)
     total="${total:-0}"
-    note=$(printf '%s\n' "$subj" | grep . | head -n 5 | cut -c1-100 | sed 's/^/- /')
+    note=$(printf '%s\n' "$subj" | grep . | head -n 5 | cut -c1-100 | utf8ok | sed 's/^/- /')
     if [ -n "$note" ] && [ "${cnt:-$total}" -gt 5 ] 2>/dev/null; then
       note="$note
 - ... and $(( ${cnt:-$total} - 5 )) more"
@@ -181,12 +213,14 @@ done <<EOF
 $SORTED
 EOF
 [ "$SHOWN" -gt 0 ] || exit 0
-if [ "$LEFT" -gt 0 ]; then
-  if [ "$LEFT" = 1 ]; then MSG="$MSG
+# Waiting: put back for size, plus never taken because of the claim limit.
+MORE=$((LEFT + UNCLAIMED))
+if [ "$MORE" -gt 0 ]; then
+  if [ "$MORE" = 1 ]; then MSG="$MSG
 
 ... and 1 more update, shown at your next session start"; else MSG="$MSG
 
-... and $LEFT more updates, shown at your next session start"; fi
+... and $MORE more updates, shown at your next session start"; fi
 fi
 
 jq -nc --arg m "$MSG" '{systemMessage: $m}'

@@ -59,7 +59,7 @@ STUB
 cat > "$T/noisy/claude" <<'STUB'
 #!/bin/bash
 cat > /dev/null
-r=$(printf '\n\nFirst line \033[31mred\033[0m \302\233csi \302\205nel \342\200\256rlo \342\200\250ls \342\200\213zw \342\201\246iso \357\273\277bom and more text here.\n'; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "line $i of a long answer"; done)
+r=$(printf '\n\nFirst line \033[31mred\033[0m \302\233csi \302\205nel \342\200\256rlo \342\200\250ls \342\200\213zw \342\201\246iso \357\273\277bom \330\234alm \342\201\240wj \341\240\216mvs \363\240\200\201tag and more text here.\n'; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "line $i of a long answer"; done)
 jq -n --arg r "$r" '{type:"result",subtype:"success",is_error:false,result:$r}'
 STUB
 cat > "$T/leaky/claude" <<'STUB'
@@ -117,6 +117,11 @@ cat > "$T/nested/claude" <<'STUB'
 #!/bin/bash
 cat >> "$STUB_LOG"
 env PATH="$NESTED_OK:/usr/bin:/bin" HOME="$NESTED_HOME" STUB_LOG="$STUB_LOG.inner" MEGAVIBE_NOW="$NESTED_TS" bash "$NESTED_HAR" "$NESTED_SRC" "$NESTED_OLD" "$NESTED_NEW" > /dev/null 2>&1
+# and, if asked, a session starts and shows what the later update published
+if [ -n "${NESTED_ANNOUNCE:-}" ]; then
+  mkdir -p "$SESSION_PROJ/.agent"
+  ( cd "$SESSION_PROJ" && env PATH="/usr/bin:/bin" HOME="$SESSION_HOME" MEGAVIBE_HOME="$SESSION_MVH" bash "$SESSION_HOOK" ) > "$STUB_LOG.session" 2>/dev/null
+fi
 echo '{"type":"result","subtype":"success","is_error":false,"result":"Outer update note, finished last."}'
 STUB
 for s in $STUBS; do chmod +x "$T/$s/claude"; done
@@ -144,7 +149,7 @@ h8() { printf '%s' "$1" | cut -c1-8; }
 rec() { printf '%s/%s-%s' "$NOTES" "$(h8 "$1")" "$(h8 "$2")"; }   # the record for a range
 
 # --- harness: the launcher's own functions, run as the launcher runs them ---------
-FUNCS="is_git_source strip_controls run_bounded condense_commits summarize_update git_commit_detail collect_changelog"
+FUNCS="is_git_source utf8_ok strip_controls run_bounded condense_commits summarize_update git_commit_detail collect_changelog"
 HAR="$T/harness.sh"
 {
   echo 'set -euo pipefail'
@@ -185,7 +190,10 @@ mkrecord() {  # mkrecord <old8> <new8> <ts> <count> <note-or-empty> <subject...>
 }
 # nobad: reads text on stdin, fails if any control survives: ESC, C1 (c2 80-9f), the
 # format and bidi controls U+200B-U+200F, U+2028-U+202E, U+2066-U+2069, U+FEFF.
-nobad() { perl -0777 -ne 'exit(/\xc2[\x80-\x9f]|\xe2\x80[\x8b-\x8f\xa8-\xae]|\xe2\x81[\xa6-\xa9]|\xef\xbb\xbf|\x1b/ ? 1 : 0)'; }
+nobad() { perl -0777 -ne 'exit(/\xc2[\x80-\x9f]|\xe2\x80[\x8b-\x8f\xa8-\xae]|\xe2\x81[\xa0-\xa9]|\xef\xbb\xbf|\xd8\x9c|\xe1\xa0\x8e|\xf3\xa0[\x80-\x81][\x80-\xbf]|\x1b/ ? 1 : 0)'; }
+# utf8valid: stdin is strictly valid UTF-8 (iconv's strict mode is not trusted: macOS reports
+# "Inappropriate ioctl for device" for some perfectly valid files).
+utf8valid() { perl -MEncode -0777 -ne 'exit(eval { decode("UTF-8", $_, Encode::FB_CROAK | Encode::LEAVE_SRC); 1 } ? 0 : 1)'; }
 # a tool directory without the named tools, for "this machine has no X" cases
 toolsbut() {  # toolsbut <dir> <tool-to-leave-out>...
   local d="$1" tool skip x p; shift; mkdir -p "$d"
@@ -200,7 +208,7 @@ toolsbut() {  # toolsbut <dir> <tool-to-leave-out>...
 reset; collect "$T/ok" "$BASE" "$HEAD1" MEGAVIBE_NOW=1700000000; rc=$?
 R=$(rec "$BASE" "$HEAD1"); NEW8=$(h8 "$HEAD1")
 check "collect_changelog exits 0" '[ $rc = 0 ]'
-check "one record named by its range, nothing else in the home" '[ -f "$R" ] && [ "$(ls -A "$NOTES" | wc -l | tr -d " ")" = 1 ] && [ "$(ls -A "$H")" = update-notes ]'
+check "one record named by its range, nothing else in the home" '[ -f "$R" ] && [ "$(ls "$NOTES" | wc -l | tr -d " ")" = 1 ] && [ "$(ls -A "$H")" = update-notes ]'
 check "line 1 is the start time, line 2 names the range, line 3 counts the note" '[ "$(sed -n 1p "$R")" = "ts: 1700000000" ] && sed -n 2p "$R" | grep -q "^megavibe updated: $(h8 "$BASE") -> $NEW8 (3 commits)" && [ "$(sed -n 3p "$R")" = "summary: 2" ]'
 check "the note is the model output" '[ "$(note "$R" | head -n 1)" = "Hooks now sync on every launch." ]'
 check "the commit list follows the note" '[ -z "$(sed -n 6p "$R")" ] && [ "$(sed -n 7p "$R")" = "Commits:" ] && sed -n 8p "$R" | grep -q "Fix quoting in the restart path"'
@@ -294,7 +302,7 @@ reset; collect "$T/noisy" "$BASE" "$HEAD1"; rc=$?
 R=$(rec "$BASE" "$HEAD1")
 check "noisy output: stored" '[ $rc = 0 ] && [ "$(sed -n 3p "$R")" != "summary: 0" ]'
 check "noisy output: no escape, C1, bidi or format control stored" 'nobad < "$R"'
-check "noisy output: the text around them survives" 'note "$R" | grep -q "csi nel rlo ls zw iso bom and more text here"'
+check "noisy output: the text around them survives" 'note "$R" | grep -q "csi nel rlo ls zw iso bom alm wj mvs tag and more text here"'
 check "noisy output: leading blank lines trimmed, at most 8 note lines" '[ "$(note "$R" | head -n 1 | cut -c1-10)" = "First line" ] && [ "$(note "$R" | wc -l | tr -d " ")" -le 8 ] && [ "$(sed -n 3p "$R")" = "summary: 8" ]'
 
 # 7b. The hook sanitises on its own, whatever a record holds: invalid UTF-8 that would JOIN into a
@@ -303,17 +311,17 @@ check "noisy output: leading blank lines trimmed, at most 8 note lines" '[ "$(no
 BAD1=$(printf 'text \302\302\205\233[31m text')
 BAD2=$(printf 'sub \302\302\233\233 end')
 BAD3=$(printf 'deep \302\302\302\205\233\233 end')
-FMT=$(printf 'fmt \342\200\256rlo \342\200\250ls \342\200\213zw \342\201\246iso \357\273\277bom \302\233csi \033[0m end')
+FMT=$(printf 'fmt \342\200\256rlo \342\200\250ls \342\200\213zw \342\201\246iso \357\273\277bom \302\233csi \330\234alm \342\201\240wj \341\240\216mvs \363\240\200\201tag \363\240\201\277tag2 \033[0m end')
 KEEP=$(printf 'keep caf\303\251 \342\200\224 dash')
 mkrecord aaaaaaaa bbbbbbbb 100 5 "" "$BAD1" "$BAD2" "$BAD3" "$FMT" "$KEEP"
 out=$(ANNOUNCE_ENV="LC_ALL=en_US.UTF-8" announce); msg=$(printf "%s" "$out" | msgof)
 check "fallback subjects: valid JSON, nothing joined into a control" 'printf "%s" "$out" | jq -e . >/dev/null && printf "%s" "$msg" | nobad'
-check "fallback subjects: the text around the removed bytes is kept" 'printf "%s" "$msg" | grep -q "^- text .*31m text$" && printf "%s" "$msg" | grep -q "^- sub  end$" && printf "%s" "$msg" | grep -q "^- fmt rlo ls zw iso bom csi \[0m end$"'
+check "fallback subjects: the text around the removed bytes is kept" 'printf "%s" "$msg" | grep -q "^- text .*31m text$" && printf "%s" "$msg" | grep -q "^- sub  end$" && printf "%s" "$msg" | grep -q "^- fmt rlo ls zw iso bom csi alm wj mvs tag tag2 \[0m end$"'
 check "fallback subjects: ordinary non-ASCII text is kept" 'printf "%s" "$msg" | grep -q "^- keep caf$(printf "\303\251") $(printf "\342\200\224") dash$"'
 mkdir -p "$NOTES"
 { printf 'ts: 100\nmegavibe updated: aaaaaaaa -> bbbbbbbb (4 commits)\nsummary: 4\n%s\n%s\n%s\n%s\n\nCommits:\nx\n' "$BAD1" "$BAD2" "$FMT" "$KEEP"; } > "$NOTES/aaaaaaaa-bbbbbbbb"
 out=$(ANNOUNCE_ENV="LC_ALL=en_US.UTF-8" announce); msg=$(printf "%s" "$out" | msgof)
-check "note lines: nothing joined into a control either" 'printf "%s" "$out" | jq -e . >/dev/null && printf "%s" "$msg" | nobad && printf "%s" "$msg" | grep -q "^text .*31m text$" && printf "%s" "$msg" | grep -q "^sub  end$" && printf "%s" "$msg" | grep -q "^fmt rlo ls zw iso bom csi \[0m end$" && printf "%s" "$msg" | grep -q "^keep caf$(printf "\303\251") $(printf "\342\200\224") dash$"'
+check "note lines: nothing joined into a control either" 'printf "%s" "$out" | jq -e . >/dev/null && printf "%s" "$msg" | nobad && printf "%s" "$msg" | grep -q "^text .*31m text$" && printf "%s" "$msg" | grep -q "^sub  end$" && printf "%s" "$msg" | grep -q "^fmt rlo ls zw iso bom csi alm wj mvs tag tag2 \[0m end$" && printf "%s" "$msg" | grep -q "^keep caf$(printf "\303\251") $(printf "\342\200\224") dash$"'
 toolsbut "$T/noiconv" iconv
 mkrecord aaaaaaaa bbbbbbbb 100 5 "" "$BAD1" "$BAD2" "$BAD3" "$FMT" "$KEEP"
 msg=$(ANNOUNCE_PATH="$T/noiconv" announce | msgof)
@@ -338,13 +346,13 @@ reset
 #    updates happened (by start time), once.
 collect "$T/nested" "$BASE" "$HEAD1" MEGAVIBE_NOW=1000 NESTED_OK="$T/ok" NESTED_HOME="$T/home" NESTED_HAR="$HAR" NESTED_SRC="$SRC" NESTED_OLD="$HEAD1" NESTED_NEW="$HEAD2" NESTED_TS=2000; rc=$?
 RA=$(rec "$BASE" "$HEAD1"); RB=$(rec "$HEAD1" "$HEAD2")
-check "out of order: both records exist, each whole" '[ $rc = 0 ] && [ -f "$RA" ] && [ -f "$RB" ] && [ "$(ls -A "$NOTES" | wc -l | tr -d " ")" = 2 ]'
+check "out of order: both records exist, each whole" '[ $rc = 0 ] && [ -f "$RA" ] && [ -f "$RB" ] && [ "$(ls "$NOTES" | wc -l | tr -d " ")" = 2 ]'
 check "out of order: the earlier update kept its own start time and note" '[ "$(sed -n 1p "$RA")" = "ts: 1000" ] && note "$RA" | grep -q "Outer update note" && [ "$(sed -n 1p "$RB")" = "ts: 2000" ]'
 check "out of order: the later update was not extended with, or overwritten by, the earlier one" 'grep -q "Second update lands" "$RB" && ! grep -q "Hooks sync on every launch" "$RB" && head -n 2 "$RB" | tail -n 1 | grep -q "(1 commits)"'
 msg=$(announce | msgof)
 l1=$(printf "%s\n" "$msg" | grep -n "^megavibe updated $(h8 "$BASE")→" | cut -d: -f1); l2=$(printf "%s\n" "$msg" | grep -n "^megavibe updated $(h8 "$HEAD1")→" | cut -d: -f1)
 check "out of order: one message, both shown, in the order the updates happened" '[ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ] && [ "$(printf "%s\n" "$msg" | grep -c "^megavibe updated ")" = 2 ]'
-check "out of order: none repeated, none left" '[ -z "$(announce)" ] && [ "$(ls -A "$NOTES" | wc -l | tr -d " ")" = 0 ]'
+check "out of order: none repeated, none left" '[ -z "$(announce)" ] && [ "$(ls "$NOTES" | wc -l | tr -d " ")" = 0 ]'
 # the same two, finishing in the order they started: same message
 reset; collect "$T/ok" "$HEAD1" "$HEAD2" MEGAVIBE_NOW=2000 >/dev/null; collect "$T/ok" "$BASE" "$HEAD1" MEGAVIBE_NOW=1000 >/dev/null
 msg2=$(announce | msgof)
@@ -411,6 +419,90 @@ mkrecord aaaaaaaa bbbbbbbb 100 1 "" "stale subject"; mkrecord bbbbbbbb cccccccc 
 age "$NOTES/aaaaaaaa-bbbbbbbb" $((8 * 86400))
 msg=$(announce | msgof)
 check "old record dropped unshown, fresh one shown" 'printf "%s" "$msg" | grep -q "^- fresh subject" && ! printf "%s" "$msg" | grep -q "stale subject" && [ ! -e "$NOTES/aaaaaaaa-bbbbbbbb" ]'
+reset
+
+# 11b. A range is published once, ever. Two updaters for the SAME range (two terminals): the first is
+#      still thinking when the second finishes, publishes, and a session shows the record. When the first
+#      is released the pending file is gone, but the marker is not, so it publishes nothing.
+mkdir -p "$T/sess2/.agent"
+collect "$T/nested" "$BASE" "$HEAD1" MEGAVIBE_NOW=1000 NESTED_OK="$T/ok" NESTED_HOME="$T/home" NESTED_HAR="$HAR" NESTED_SRC="$SRC" NESTED_OLD="$BASE" NESTED_NEW="$HEAD1" NESTED_TS=1001 NESTED_ANNOUNCE=1 SESSION_PROJ="$T/sess2" SESSION_HOME="$T/home" SESSION_MVH="$H" SESSION_HOOK="$HOOK"; rc=$?
+during=$(msgof < "$T/log.session")
+check "same range raced: the slow updater exits 0 and says nothing about a note" '[ $rc = 0 ] && ! grep -q "short note on what changed" "$T/collect.out"'
+check "same range raced: the session between them showed the record, once" '[ "$(printf "%s\n" "$during" | grep -c "^megavibe updated ")" = 1 ] && printf "%s" "$during" | grep -q "Hooks now sync on every launch"'
+check "same range raced: the slow updater did not publish it again" '[ ! -e "$(rec "$BASE" "$HEAD1")" ] && [ -z "$(announce)" ] && [ -d "$NOTES/.published/$(h8 "$BASE")-$(h8 "$HEAD1")" ]'
+collect "$T/ok" "$BASE" "$HEAD1"; rc=$?
+check "same range, later again, after it was shown: still nothing published or announced" '[ $rc = 0 ] && [ ! -e "$(rec "$BASE" "$HEAD1")" ] && [ -z "$(announce)" ]'
+collect "$T/ok" "$HEAD1" "$HEAD2"; rc=$?
+check "a different range is unaffected by the marker of another" '[ $rc = 0 ] && [ -f "$(rec "$HEAD1" "$HEAD2")" ]'
+reset
+# the marker never stands in for a record that was not written
+mkdir -p "$T/mvfail"; cat > "$T/mvfail/mv" <<'STUB'
+#!/bin/bash
+case "$*" in *update-notes/.tmp.*) exit 1 ;; esac
+exec "$REAL_MV" "$@"
+STUB
+chmod +x "$T/mvfail/mv"; REAL_MV=$(PATH="$SYS" command -v mv); export REAL_MV
+collect "$T/ok" "$BASE" "$HEAD1" PATH="$T/ok:$T/mvfail:$SYS"; rc=$?
+check "publish failure: exit 0, no record and no marker left behind" '[ $rc = 0 ] && [ ! -e "$(rec "$BASE" "$HEAD1")" ] && [ ! -d "$NOTES/.published/$(h8 "$BASE")-$(h8 "$HEAD1")" ] && [ "$(ls -A "$NOTES" | grep -vc "^.published$")" = 0 ]'
+collect "$T/ok" "$BASE" "$HEAD1"
+check "publish failure: a retry of the same range publishes" '[ -f "$(rec "$BASE" "$HEAD1")" ]'
+# markers are reaped by the hook after 30 days, not before
+mkdir -p "$NOTES/.published/11111111-22222222" "$NOTES/.published/33333333-44444444"
+age "$NOTES/.published/11111111-22222222" $((31 * 86400)); age "$NOTES/.published/33333333-44444444" $((29 * 86400))
+announce >/dev/null
+check "published-range markers: older than 30 days reaped, younger kept, the hook never mistakes one for a record" '[ ! -e "$NOTES/.published/11111111-22222222" ] && [ -d "$NOTES/.published/33333333-44444444" ] && [ -d "$NOTES/.published/$(h8 "$BASE")-$(h8 "$HEAD1")" ]'
+reset
+
+# 11c. The claim limit never leaves the oldest record behind: 50 records with lexically earlier names and
+#      later start times, plus one with the earliest start time and the last name. All 51 are counted.
+mkdir -p "$NOTES"
+for i in $(seq 1 50); do
+  n=$(printf '%08x-%08x' "$i" "$((i + 1))")
+  { printf 'ts: %s\nmegavibe updated: %s -> %s (1 commits)\nsummary: 0\n\nCommits:\nsubject %s\n' "$((199 + i))" "${n%-*}" "${n#*-}" "$i"; } > "$NOTES/$n"
+done
+{ printf 'ts: 100\nmegavibe updated: ffffffff -> eeeeeeee (1 commits)\nsummary: 0\n\nCommits:\nthe oldest subject\n'; } > "$NOTES/ffffffff-eeeeeeee"
+out=$(announce); msg=$(printf "%s" "$out" | msgof)
+shown=$(printf "%s\n" "$msg" | grep -c "^megavibe updated "); more=$(printf "%s\n" "$msg" | sed -n 's/^\.\.\. and \([0-9]*\) more updates.*/\1/p')
+check "claim limit: the oldest record is in the first message, and first" '[ "$(printf "%s\n" "$msg" | grep -n "^megavibe updated " | head -n 1 | grep -c "ffffffff→eeeeeeee")" = 1 ] && printf "%s" "$msg" | grep -q "^- the oldest subject$"'
+check "claim limit: shown + waiting = all 51 (shown $shown, waiting ${more:-0})" '[ -n "$more" ] && [ $((shown + more)) = 51 ]'
+total=$shown; sessions=1
+while [ $sessions -lt 40 ]; do
+  out=$(announce); [ -n "$out" ] || break
+  total=$((total + $(printf "%s" "$out" | msgof | grep -c "^megavibe updated "))); sessions=$((sessions + 1))
+done
+check "claim limit: over the following sessions every one of the 51 is shown exactly once ($total in $sessions)" '[ $total = 51 ] && [ "$(ls -A "$NOTES" | wc -l | tr -d " ")" = 0 ]'
+reset
+
+# 11d. Each invisible control, one at a time, in a note and in a fallback subject: gone, text around it kept.
+for pair in "alm:\330\234" "wj:\342\201\240" "ft:\342\201\244" "inv:\342\201\245" "mvs:\341\240\216" "tag0:\363\240\200\200" "tagmid:\363\240\200\241" "tagend:\363\240\201\277" "rlm:\342\200\217" "ls:\342\200\250" "iso:\342\201\251" "bom:\357\273\277" "csi:\302\233"; do
+  name=${pair%%:*}; ch=$(printf "${pair#*:}")
+  mkrecord aaaaaaaa bbbbbbbb 100 1 "" "a${ch}b"
+  m1=$(announce | msgof)
+  { printf 'ts: 100\nmegavibe updated: aaaaaaaa -> bbbbbbbb (1 commits)\nsummary: 1\na%sb\n\nCommits:\nx\n' "$ch"; } > "$NOTES/aaaaaaaa-bbbbbbbb"
+  m2=$(announce | msgof)
+  check "strip $name: gone from a fallback subject and from a note, the text around it kept" 'printf "%s" "$m1" | nobad && printf "%s\n" "$m1" | grep -q "^- ab$" && printf "%s" "$m2" | nobad && printf "%s\n" "$m2" | grep -q "^ab$"'
+done
+reset
+
+# 11e. A byte-wise cut must not leave half a character for jq to turn into U+FFFD: it is dropped.
+dashes=$(printf '\342\200\224%.0s' $(seq 1 60))            # 60 em dashes: 180 bytes, cut at 100 splits one
+mkrecord aaaaaaaa bbbbbbbb 100 1 "" "${dashes}"
+m1=$(announce | msgof)
+{ printf 'ts: 100\nmegavibe updated: aaaaaaaa -> bbbbbbbb (1 commits)\nsummary: 1\na%s\n\nCommits:\nx\n' "$(printf '\342\200\224%.0s' $(seq 1 600))"; } > "$NOTES/aaaaaaaa-bbbbbbbb"
+m2=$(announce | msgof)
+check "cut subject: no U+FFFD, a whole number of characters kept" '! printf "%s" "$m1" | LC_ALL=C grep -q "$(printf "\357\277\275")" && [ "$(printf "%s\n" "$m1" | grep "^- " | LC_ALL=C grep -o "$(printf "\342\200\224")" | wc -l | tr -d " ")" = 33 ]'
+check "cut note: no U+FFFD, a whole number of characters kept" '! printf "%s" "$m2" | LC_ALL=C grep -q "$(printf "\357\277\275")" && [ "$(printf "%s\n" "$m2" | LC_ALL=C grep -o "$(printf "\342\200\224")" | wc -l | tr -d " ")" = 499 ]'
+reset
+# the same in the launcher: a model note over 1500 bytes is cut and left valid
+mkdir -p "$T/noisy2"; cat > "$T/noisy2/claude" <<'STUB'
+#!/bin/bash
+cat > /dev/null
+r="a$(printf '\342\200\224%.0s' $(seq 1 600))"
+jq -n --arg r "$r" '{type:"result",subtype:"success",is_error:false,result:$r}'
+STUB
+chmod +x "$T/noisy2/claude"
+collect "$T/noisy2" "$BASE" "$HEAD1" >/dev/null
+check "long model note: cut at 1500 bytes without leaving half a character" 'utf8valid < "$(rec "$BASE" "$HEAD1")" && [ "$(note "$(rec "$BASE" "$HEAD1")" | LC_ALL=C grep -o "$(printf "\342\200\224")" | wc -l | tr -d " ")" = 499 ]'
 reset
 
 # 12. The old launcher's single file is still read, once, and sorts before the new records.
@@ -495,7 +587,7 @@ check "the hook no longer asks the model to summarise" '! grep -q "additionalCon
 check "no chaining, claiming or orphan recovery left in the launcher or the hook" '! grep -q "\.updating\|restore_orphan\|restore_changelog_claim\|CHANGELOG_FILE\|prev_old\|update-summary\|UPDATE_SUMMARY_FILE" "$REPO/megavibe" "$HOOK"'
 
 # 16b. Comments and docs say what the code does.
-check "README: timeout, once-only, billing, jq and expiry claims match the behaviour" 'grep -q "clamped to 1-120" "$REPO/README.md" && grep -q "one file per update" "$REPO/README.md" && grep -q "needs .jq." "$REPO/README.md" && grep -q "console API key" "$REPO/README.md" && grep -q "MEGAVIBE_UPDATE_SUMMARY=0" "$REPO/README.md" && grep -q "deleted lazily" "$REPO/README.md" && ! grep -q "25 seconds at most" "$REPO/README.md" && ! grep -q "update-summary\|claimed whole" "$REPO/README.md"'
+check "README: timeout, once-only, billing, jq and expiry claims match the behaviour" 'grep -q "clamped to 1-120" "$REPO/README.md" && grep -q "one file per update" "$REPO/README.md" && grep -q "needs .jq." "$REPO/README.md" && grep -q "console API key" "$REPO/README.md" && grep -q "MEGAVIBE_UPDATE_SUMMARY=0" "$REPO/README.md" && grep -q "deleted lazily" "$REPO/README.md" && grep -q "published at most once" "$REPO/README.md" && grep -q "update-notes/.published" "$REPO/README.md" && ! grep -q "25 seconds at most" "$REPO/README.md" && ! grep -q "update-summary\|claimed whole" "$REPO/README.md"'
 
 # 17. Syntax of everything touched.
 check "bash -n megavibe" 'bash -n "$REPO/megavibe"'
