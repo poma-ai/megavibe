@@ -68,6 +68,15 @@
             "command": ".claude/hooks/watch-background.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/trash-watch.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [

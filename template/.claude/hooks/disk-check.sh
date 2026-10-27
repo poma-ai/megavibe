@@ -26,7 +26,7 @@ ${OUT}
 
 Rules while space is short:
 - Say so to the user before starting anything that writes gigabytes: datasets, model weights, virtualenvs, builds, worktrees, screenshots.
-- Do not empty the Trash and do not delete files you did not create; the sizes above are for the user to decide on. With rmtrash installed, deleting most files moves them to the Trash and frees no space until the user empties it (temp directories and node_modules are removed for real).
+- Do not empty the Trash and do not delete files you did not create; the sizes above are for the user to decide on. With rmtrash installed, deleting files moves them to the Trash and frees no space until the user empties it; a Trash review only marks items droppable (python3 ~/.megavibe/scripts/trash-review.py status).
 - For a long job, arm a heartbeat: Monitor on \`~/.megavibe/scripts/disk-watch.sh watch\` prints only when space moves by 1 GB or a threshold is crossed."
 
 # additionalContext reaches the model; systemMessage is the line the user sees.

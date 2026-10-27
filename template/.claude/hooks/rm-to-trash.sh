@@ -18,12 +18,14 @@ set -u
 #
 # Only when rmtrash is installed (setup.sh installs it where Homebrew exists).
 # Only `rm` in command position — never inside quotes, heredoc bodies, comments,
-# case patterns, `=`/`==` comparisons, or a `rm()` function definition. Targets
-# all under the temp dirs / node_modules / a volume's Trash keep real `rm`, as
-# does any `rm` carrying an option rmtrash can't do (`-P`, `-W`). That skip is a
-# deliberate trade-off: scratch data in /tmp can then actually free disk, and
-# nothing durable should live there (macOS clears it on reboot or after days of
-# disuse). Targets are RESOLVED before matching (`..`, symlinks via realpath, a
+# case patterns, `=`/`==` comparisons, or a `rm()` function definition. Every
+# target goes to the Trash, temp dirs and node_modules included: Claude's
+# scratchpads live under /private/tmp and hold days of work (a glob there destroyed
+# finished work on 2026-10-26). Only an `rm` carrying an option rmtrash can't
+# do (`-P`, `-W`) stays real. MEGAVIBE_RM_SCRATCH_REAL=1 (the hook's environment,
+# so a user setting, not a command prefix) restores the old skip: targets all
+# under the temp dirs / node_modules / a volume's Trash keep real `rm`, which frees
+# disk at once. The rest of this comment describes that skip. Targets are RESOLVED before matching (`..`, symlinks via realpath, a
 # literal leading `cd <dir>`, a well-formed `$TMPDIR`) and the skip roots must be
 # strictly inside. RELATIVE paths, `$TMPDIR` and `cd` are trusted only in a command that
 # is nothing but an optional leading `cd` plus `rm` segments joined by `&&`/`;`. Anything
@@ -37,7 +39,8 @@ set -u
 # There is NO escape hatch: `\rm`, `/bin/rm` and `/usr/bin/rm` are rewritten too.
 # Bypassing the Trash to delete something "for real" is precisely the mistake this
 # hook exists to prevent (it cost a credential file on 2026-09-08). If a file must
-# be unrecoverable, use `shred`/`srm` explicitly. Emptying the Trash is blocked by
+# be unrecoverable, that is the user's call (block-dangerous-bash.sh refuses shred, srm
+# and rm -P unless they allow it). Emptying the Trash is blocked by
 # block-dangerous-bash.sh: it is the only undo, and only the user empties it.
 #
 # Runs in every project, not only megavibe ones — same reasoning as
@@ -50,6 +53,12 @@ command -v jq &>/dev/null || exit 0
 command -v python3 &>/dev/null || exit 0
 RMTRASH=$(command -v rmtrash 2>/dev/null || true)
 [ -n "$RMTRASH" ] || exit 0
+# The recording front end (scripts/trash.sh) when setup.sh installed it: same flags,
+# plus a ledger line per trashed item for the trash-watch.sh review.
+_TRASH_SH="${HOME:-}/.megavibe/scripts/trash.sh"
+if [ -x "$_TRASH_SH" ]; then
+  RMTRASH=$(printf '%q' "$_TRASH_SH")
+fi
 
 INPUT=$(cat 2>/dev/null || echo "")
 TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
@@ -166,7 +175,11 @@ def inside(path):
             return len(c) >= 4 and c[2] == "T"
     return any(path.startswith(q + "/") for q in SKIP_REAL)
 
+SCRATCH_REAL = os.environ.get("MEGAVIBE_RM_SCRATCH_REAL") == "1"
+
 def skip_target(word):
+    if not SCRATCH_REAL:
+        return False                                   # default: scratch goes to the Trash too
     t = resolve_text(word)
     if t is None or "{" in t:
         return False
@@ -322,6 +335,9 @@ WRAPPERS = {
     "timeout": {"-s":1,"-k":1,"--signal":1,"--kill-after":1},
     "stdbuf": {"-i":1,"-o":1,"-e":1}, "setsid": {}, "caffeinate": {"-t":1,"-w":1},
     "exec": {"-a":1}, "builtin": {}, "command": {},
+    # GNU parallel's options that take a value (--halt now,fail=1 must not be read as the command)
+    "parallel": {"-a":1,"-C":1,"-d":1,"-E":1,"-I":1,"-j":1,"-J":1,"-L":1,"-n":1,"-P":1,"-s":1,"-S":1,"--arg-file":1,"--arg-file-sep":1,"--arg-sep":1,"--basefile":1,"--bf":1,"--block":1,"--colsep":1,"--delay":1,"--delimiter":1,"--env":1,"--eof":1,"--halt":1,"--header":1,"--joblog":1,"--jobs":1,"--load":1,"--max-args":1,"--max-chars":1,"--max-lines":1,"--max-procs":1,"--memfree":1,"--memsuspend":1,"--nice":1,"--profile":1,"--results":1,"--res":1,"--retries":1,"--return":1,"--rpl":1,"--sshdelay":1,"--sshlogin":1,"--sshloginfile":1,"--slf":1,"--tagstring":1,"--termseq":1,"--timeout":1,"--tmpdir":1,"--transferfile":1,"--tf":1,"--workdir":1,"--wd":1,"--limit":1,"--ssh":1},
+    "arch": {"-arch":1,"-e":1}, "xcrun": {"--sdk":1,"-sdk":1,"--toolchain":1,"-toolchain":1},
     "xargs": {"-a":1,"-d":1,"-E":1,"-I":1,"-J":1,"-L":1,"-n":1,"-P":1,"-R":1,"-S":1,"-s":1,
               "--arg-file":1,"--delimiter":1,"--max-args":1,"--max-procs":1,"--max-chars":1},
 }
@@ -587,6 +603,7 @@ def parse(text, trash_all=False):
                 for a in args:
                     if opts_done or a == "-" or not a.startswith("-"):
                         targets.append(a)
+                        opts_done = True     # BSD rm: options end at the first operand (`rm x -Wnotes`)
                     elif a == "--":
                         opts_done = True
                     elif not a.startswith("--") and ("P" in a or "W" in a):
@@ -601,9 +618,9 @@ def parse(text, trash_all=False):
                     out.append(rmtrash)
                 i = k; at_cmd = False; scan_all = False; continue
             out.append(word); i = k
-            if at_cmd and word in WRAPPERS:
-                wrap = word; wrap_argn = 0; wrap_dur = (word == "timeout")
-                if word == "xargs":
+            if at_cmd and os.path.basename(word) in WRAPPERS:    # /usr/bin/env, /usr/bin/xargs too
+                wrap = os.path.basename(word); wrap_argn = 0; wrap_dur = (wrap == "timeout")
+                if wrap == "xargs":
                     via_xargs = True
                 continue
             if at_cmd and (word.startswith("-") or word == "{}"):
@@ -638,14 +655,18 @@ if [ -z "$NEW_CMD" ]; then
         } else { push @q, $m; "\x01" . $#q . "\x02" }
     }gex;
     my %o = (sudo=>"ugCDhprtTUR", doas=>"uC", nice=>"n", ionice=>"cnpPu", nohup=>"", time=>"fo", env=>"uCP",
-             timeout=>"sk", stdbuf=>"ioe", setsid=>"", caffeinate=>"tw", exec=>"a", builtin=>"", command=>"",
+             timeout=>"sk", stdbuf=>"ioe", setsid=>"", caffeinate=>"tw", exec=>"a", builtin=>"", command=>"", parallel=>"aCdEIjJLnPsS", arch=>"e", xcrun=>"",
              xargs=>"adEIJLnPRSs");
+    my $plong = "--(?:arg-file-sep|sshloginfile|transferfile|memsuspend|delimiter|max-chars|max-lines|max-procs|tagstring|arg-file|basefile|max-args|sshdelay|sshlogin|arg-sep|memfree|profile|results|retries|termseq|timeout|workdir|colsep|header|joblog|return|tmpdir|block|delay|limit|halt|jobs|load|nice|env|eof|res|rpl|slf|ssh|bf|tf|wd)[ \\t]+\\S+|";
     my $alts = join("|", map { my $l = $o{$_}; my $arg = $l ne "" ? "-[A-Za-z]*[$l][ \\t]+\\S+|" : "";
+                               $arg = $plong . $arg if $_ eq "parallel";
                                "$_(?:[ \\t]+(?>$arg-\\S+|[\\d.]+[smhd]?|[A-Za-z_]\\w*=\\S+))*[ \\t]+" }
                           sort { length($b) <=> length($a) } keys %o);
     my $chain = qr/(?>$alts)/;
     s{((?:\A|[;&|(`\n]|\$\(|[ \t]-exec(?:dir)?(?=[ \t]))[ \t]*(?>(?:[A-Za-z_]\w*=\S*|then|do|else|elif|if|while|until|!|\{|(?:\d+|\{\w+\})?(?:[<>]+&?|&>>?)[ \t]*[^\s;|&()<>`]+)[ \t]+)*(?:$chain)*)(\\rm|/usr/bin/rm|/bin/rm|rm)(?=[\s;|&)]|\z)([^;|&\n\$`)]*)}
-     { my ($pre,$cmd,$rest)=($1,$2,$3); my ($op)=split /(?:^|\s)--(?:\s|$)/, $rest, 2; ($op =~ /(?:^|\s)-[A-Za-z]*[PW]/) ? "$pre$cmd$rest" : "$pre$ENV{RT}$rest" }gex;
+     { my ($pre,$cmd,$rest)=($1,$2,$3); my ($op)=split /(?:^|\s)--(?:\s|$)/, $rest, 2; my $u=0;
+       for my $w (split " ", $op) { last unless $w =~ /^-/; $u=1 if $w =~ /^-[A-Za-z]*[PW]/ }   # options end at the first operand
+       $u ? "$pre$cmd$rest" : "$pre$ENV{RT}$rest" }gex;
     s{\x01(\d+)\x02}{$q[$1]}g;' 2>/dev/null) || exit 0
   [ -n "$NEW_CMD" ] || exit 0
 fi
@@ -653,7 +674,10 @@ fi
 
 # Merge into the existing tool_input — replacing it would drop timeout,
 # run_in_background and description from the call.
+CTX="[megavibe rm-to-trash] rm ran as rmtrash — deleted paths are in the Trash (~/.Trash on the boot disk, the volume's .Trashes elsewhere)"
+# Recorded for review only when trash.sh did it (plain rmtrash keeps no ledger).
+[ -x "$_TRASH_SH" ] && CTX="$CTX and recorded for review (python3 ~/.megavibe/scripts/trash-review.py status)"
 printf '%s' "$INPUT" | jq -c --arg cmd "$NEW_CMD" \
-  --arg ctx "[megavibe rm-to-trash] rm ran as rmtrash — deleted paths are in the Trash (~/.Trash on the boot disk, the volume's .Trashes elsewhere)." \
+  --arg ctx "$CTX." \
   '{hookSpecificOutput: {hookEventName: "PreToolUse", updatedInput: (.tool_input + {command: $cmd}), additionalContext: $ctx}}'
 exit 0
