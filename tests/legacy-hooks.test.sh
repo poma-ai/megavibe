@@ -33,7 +33,7 @@ check "a normal project is still initialised" '[ $rc = 0 ] && [ -x "$T/proj/.cla
 
 # 2. The launcher's refusal, extracted (from its comment to the first `fi`) and run.
 rblk="$T/refuse.sh"
-{ echo 'set -euo pipefail; YELLOW=; DIM=; RESET='
+{ echo 'set -euo pipefail; YELLOW=; DIM=; RESET=; NORMALIZE=${NORMALIZE:-1}; GIT_ROOT=${GIT_ROOT:-}'
   awk '/^# Never in the home directory/ {f=1} f {print} f && /^fi$/ {exit}' "$REPO/megavibe"
   echo 'echo PASSED'; } > "$rblk"
 check "refusal block extracted" 'grep -q -- "-ef \"\$HOME\"" "$rblk"'
@@ -41,6 +41,12 @@ out=$(cd "$T/h" && HOME="$T/h" bash "$rblk" 2>&1); rc=$?
 check "launcher refuses to start in HOME" '[ $rc = 1 ] && ! printf "%s" "$out" | grep -q PASSED'
 out=$(cd "$T/CASE" 2>/dev/null && HOME="$T/Case" bash "$rblk" 2>&1); rc=$?
 [ -d "$T/CASE" ] && check "launcher refuses a case variant of HOME" '[ $rc = 1 ]'
+out=$(cd "$T/proj" && HOME="$T/h" bash "$rblk" 2>&1); rc=$?
+out=$(cd "$T/h" && HOME="$T/h" GIT_ROOT="$T/h" bash "$rblk" 2>&1)
+check "a git repo at ~ gets the --no-normalize hint" 'printf "%s" "$out" | grep -q -- "megavibe --no-normalize"'
+out=$(cd "$T/h" && HOME="$T/h" bash "$rblk" 2>&1)
+check "no hint when ~ is not a repo" '! printf "%s" "$out" | grep -q -- "--no-normalize"'
+check "the restart re-exec keeps --no-normalize" 'grep -q "exec bash \"\$MEGAVIBE_HOME/megavibe\" --no-normalize --continue" "$REPO/megavibe"'
 out=$(cd "$T/proj" && HOME="$T/h" bash "$rblk" 2>&1); rc=$?
 check "launcher starts in a project" '[ $rc = 0 ] && printf "%s" "$out" | grep -q PASSED'
 check "refusal comes before the lock and init" '[ "$(grep -n "^# Never in the home directory" "$REPO/megavibe" | cut -d: -f1)" -lt "$(grep -n "^bash \"\$INIT_SCRIPT\" \.$" "$REPO/megavibe" | cut -d: -f1)" ] && [ "$(grep -n "^# Never in the home directory" "$REPO/megavibe" | cut -d: -f1)" -lt "$(grep -n "^acquire_lock || true" "$REPO/megavibe" | cut -d: -f1)" ]'
@@ -67,7 +73,7 @@ for blk in "$sblk" "$lblk"; do
   check "$n: a historic name is still removed" '! jq -r ".. | .command? // empty" "$H/.claude/settings.json" | grep -q log-tool-event'
   check "$n: a newer name is kept" 'jq -r ".. | .command? // empty" "$H/.claude/settings.json" | grep -q status-sync'
   check "$n: the folder is not archived while referenced" '[ -d "$H/.claude/hooks" ]'
-  check "$n: the warning names the launch from ~ and the fix" 'printf "%s" "$out" | grep -q "launch from ~" && printf "%s" "$out" | grep -q "delete those entries"'
+  check "$n: the warning names the launch from ~ and the fix" 'printf "%s" "$out" | grep -q "launch from ~" && printf "%s" "$out" | grep -q "remove every entry pointing into ~/.claude/hooks/ from the settings file(s) named above"'
   H2="$T/$n-noagent"; homeinstall "$H2"; rmdir "$H2/.agent"; settings "$H2"
   out=$(HOME="$H2" bash "$blk" 2>&1)
   check "$n: no ~/.agent, no launch-from-~ claim" '! printf "%s" "$out" | grep -q "launch from ~"'

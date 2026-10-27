@@ -1972,7 +1972,7 @@ if [ -d "$LEGACY_USER_HOOKS" ]; then
         echo "  Note: left ~/.claude/hooks/ in place — could not check ~/.claude settings for registrations pointing into it."
       else
         echo "  Note: left ~/.claude/hooks/ in place — still referenced by ${STILL_REFERENCED}. If that is not yours, it is firing twice; remove it from ~/.claude/settings.json."
-        [ -d "$HOME/.agent" ] && echo "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, delete those entries from ~/.claude/settings.json; the next launch archives the folder."
+        [ -d "$HOME/.agent" ] && echo "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, remove every entry pointing into ~/.claude/hooks/ from the settings file(s) named above; once none is left, the next launch archives the folder."
       fi
       touch "$HOME/.claude/.megavibe-hookdir-noted" 2>/dev/null || true
     fi
@@ -2114,6 +2114,9 @@ fi
 if [ -n "${HOME:-}" ] && [ . -ef "$HOME" ]; then
   echo -e "  ${YELLOW}megavibe does not run in your home directory${RESET} (its .claude/ is your user-level config)."
   echo -e "  ${DIM}cd into a project first, or run plain claude here.${RESET}"
+  # ~ itself a git repo (dotfiles): normalize moved a launch from a subdirectory here.
+  [ "$NORMALIZE" = "1" ] && [ -n "${GIT_ROOT:-}" ] \
+    && echo -e "  ${DIM}Launched inside a repo rooted at ~? Stay in that folder with: megavibe --no-normalize${RESET}"
   exit 1
 fi
 
@@ -2683,6 +2686,7 @@ while true; do
     # loop. If exec fails for any reason, fall through to the old behaviour
     # rather than dropping the session.
     if [ -x "$MEGAVIBE_HOME/megavibe" ]; then
+      if [ "$NORMALIZE" = "0" ]; then exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize --continue; fi
       exec bash "$MEGAVIBE_HOME/megavibe" --continue
     fi
 

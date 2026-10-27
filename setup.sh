@@ -1259,7 +1259,7 @@ if [ -d "$LEGACY_HOOK_DIR" ]; then
     # project; it refuses that now). Whether one is the user's own cannot be told
     # reliably from the files, so this says what to do instead of guessing.
     if [ -d "$HOME/.agent" ]; then
-      warn "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, delete those entries from ~/.claude/settings.json; the next setup run archives the folder."
+      warn "  ~/.agent exists, so an older megavibe launch from ~ probably installed these. If you did not register them yourself, remove every entry pointing into ~/.claude/hooks/ from the settings file(s) named above; once none is left, the next setup run archives the folder."
     fi
   else
     ARCHIVE_DIR="${LEGACY_HOOK_DIR}.legacy-$(date +%Y%m%d)"
