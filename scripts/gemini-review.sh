@@ -386,7 +386,7 @@ if [ "$KIND" = "digest" ]; then
   fi
 fi
 build_req(){ jq -Rs --arg level "$1" --argjson max "$MAX" \
-  '{contents:[{parts:[{text:.}]}], generationConfig:{maxOutputTokens:$max, temperature:0.2, thinkingConfig:{thinkingLevel:$level}}}' \
+  '{contents:[{parts:[{text:.}]}], generationConfig:{maxOutputTokens:$max, thinkingConfig:{thinkingLevel:$level}}}' \
   < "$REQ.txt" > "$REQ"; }
 build_req "$LEVEL"
 
