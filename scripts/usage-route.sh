@@ -117,7 +117,9 @@ if [ "$MODE" = balance ]; then
     # whose figure is stale, only away from one.
     if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"
     if (pref == "-") { print "-|"; exit }
-    st = (cp == "" ? sprintf("Claude %d%% used", cu) : sprintf("Claude projects ~%d%%", cj)) " of its week, " (xp == "" ? sprintf("Codex %d%% used", xu) : sprintf("Codex ~%d%%", xj))
+    # Both figures in the same unit and said out loud: "N% used" of the weekly window so far, then the projection
+    # for the end of the window where there is one. A bare "~117%" next to "13% used" read as two different units.
+    st = sprintf("Claude %d%% used", cu) (cp == "" ? "" : sprintf(" (projects ~%d%% by week end)", cj)) ", " sprintf("Codex %d%% used", xu) (xp == "" ? "" : sprintf(" (projects ~%d%% by week end)", xj)) " of the weekly window"
     hot = (cb == "over" || xb == "over") ? " (one is running hot)" : ""
     to = (pref == "codex" ? "Codex" : "the Claude subagents")
     printf "%s|usage balance: %s%s. Lean optional work (digests, exploration, second opinions) on %s; the review floor does not move.\n", pref, st, hot, to
