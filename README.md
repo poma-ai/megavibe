@@ -343,6 +343,14 @@ Megavibe prefers the subscriptions you already pay for over anything billed per 
 
 A running session's model cannot be changed from outside, so the launch is the only place the router acts on the main thread. Spare Anthropic capacity at reset is lost, so is spare Codex capacity; the point of the balance is that neither runs dry while the other idles.
 
+### Unattended windows: ticks, login lifetime, quota
+
+A session left running while you are away (a long autonomous job, a phone-driven Remote Control session, an overnight queue) has two ways to go quiet without anyone noticing: nothing wakes it when a colleague asks for a review, and the login can lapse under it. Three pieces cover that; all of them are deterministic scripts the model acts on, not model calls.
+
+- **`/watch [interval] [org/repo ...]`** schedules `~/.megavibe/scripts/tick.sh` as a recurring prompt in the session (default every 30 minutes, clamped to 10–50; the Claude Code cron lives in the session and expires after 7 days; `/watch status`, `/watch off`). One tick reports, since the previous tick, what the watched repos got from other people (PRs pushed, reviews, issue and review comments; review requests addressed to you are listed on every tick while they are open), Linear comments when switched on, the login lifetime and both subscriptions' usage, with a first line of `NEEDS ACTION (n)` or `quiet`. The session answers what needs an answer and says one line. Configuration is personal and never in a repo: `~/.megavibe/personal/tick.conf` with `TICK_REPOS`, `TICK_PEOPLE` (logins whose activity is marked `!`), `TICK_LINEAR=1` plus `LINEAR_API_KEY` or `TICK_LINEAR_KEY_FILE`, `TICK_AUTH_HOURS`; the script header lists the rest. `megavibe tick` runs one from a terminal. The window is exact (`~/.megavibe/tick/<name>.last`), your own and `[bot]` activity is left out, and a failed `gh` or Linear call is reported and not retried. A tick inside the main thread's one-hour prompt-cache lifetime reads the cached context instead of rewriting it; that is a side benefit of work worth doing every half hour, not a reason to tick an idle session (`delegation.md`, "Cache heartbeat", leaves that question open).
+- **`megavibe auth [HOURS]`** (`scripts/claude-auth-check.sh`) says how long the login lasts, without printing a secret: the access token (about 8 hours, renewed on its own) and the refresh token (weeks), read from the macOS keychain entry Claude Code writes, else `~/.claude/.credentials.json`. The refresh token is the one that matters: when it lapses the session dies with "Login expired", running subagents die with it, and `/login` is not available over Remote Control, so nobody can fix it from a phone. Exit 1 inside the horizon (default 12 hours) with the remedy: `/login` at the laptop, or `claude setup-token` for a long-lived headless token, before the unattended window. The session-start table carries the same line, and every tick repeats it. Measured once, 2026-10-31: a login that expired at 20:40 killed a fix agent mid-edit and left twenty scheduled ticks unprocessed until the next morning.
+- **Quota in the tick.** The `usage:` line is `usage-route.sh status` for both subscriptions (used so far, the projection for the end of the weekly window, time to reset, a stale flag) plus the balance preference when there is one, so an unattended session sees the same numbers the launch router and the advisory hook use, every tick.
+
 ---
 
 ## Deliverables and open decisions
@@ -378,7 +386,7 @@ Not in your home directory: there `.claude/` is your user-level config, so hooks
 | Hooks (33 scripts) | `.claude/hooks/` |
 | Rules (6 files) | `.claude/rules/`. Claude Code also loads the rules of every parent directory, so a megavibe project nested in another (`~/dev/proj` under `~/dev`) keeps no copy of the rules the parent carries: `rules-dedupe.sh` (run by `init.sh` and on session start and resume) removes the project's untracked copies (identical ones at session start, any under `init.sh`, which always overwrote them) and reinstalls one, from the next session, if no copy exists anywhere up the tree. Copies tracked by git, linked, or edited (outside `init.sh`) are kept |
 | Plan storage | `.agent/PLANS/` (native `plansDirectory`) |
-| Skills (8 commands) | `.claude/skills/` |
+| Skills (9 commands) | `.claude/skills/` |
 | Agents (1 fallback) | `.claude/agents/` |
 | Hook config | `.claude/settings.json` |
 | Context structure | `.agent/` |

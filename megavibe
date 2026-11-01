@@ -1008,6 +1008,18 @@ if [ "${1:-}" = "route" ]; then
   exit 0
 fi
 
+# megavibe tick [--name N] [org/repo ...]: one unattended watch tick (scripts/tick.sh);
+# megavibe auth [HOURS]: how long the Claude login lasts (scripts/claude-auth-check.sh).
+if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ]; then
+  _sub="$1"; shift
+  case "$_sub" in
+    tick) _s="$MEGAVIBE_HOME/scripts/tick.sh" ;;
+    auth) _s="$MEGAVIBE_HOME/scripts/claude-auth-check.sh" ;;
+  esac
+  [ -f "$_s" ] || { echo "megavibe $_sub: $_s not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
+  exec bash "$_s" "$@"
+fi
+
 # megavibe trash-greenlight: put the Trash greenlight's permission rules in the MANAGED settings file
 # (root-owned, so an agent running as the user cannot remove them). Opt-in; asks for the sudo password.
 if [ "${1:-}" = "trash-greenlight" ]; then
@@ -1684,6 +1696,9 @@ if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" 
   echo "                        Telegram bot drives)"
   echo "  remote                Manage the Telegram bot (--stop|--status|--fg)"
   echo "  reviewers             Show or change which reviewers run (list|set)"
+  echo "  tick                  One unattended watch tick: review requests, comments,"
+  echo "                        login lifetime, usage (scheduled in a session by /watch)"
+  echo "  auth                  How long the Claude login lasts (the refresh token)"
   echo "  update                Update megavibe (--check to peek only)"
   echo ""
   echo "  Flags and multi-word prompts are passed to claude unchanged."
