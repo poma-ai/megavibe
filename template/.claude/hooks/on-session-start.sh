@@ -267,6 +267,27 @@ Heads up, once: the default reviewer set is now the \`reviewer\` subagent + Code
   mkdir -p "$(dirname "$_RV_STAMP")" 2>/dev/null && : > "$_RV_STAMP" 2>/dev/null || true
 fi
 
+# Claude login lifetime. The access token renews itself; the REFRESH token is what
+# keeps an unattended session alive, and when it lapses the session dies with "Login
+# expired" with no way to /login over Remote Control (measured 2026-10-31: a fix agent
+# killed mid-edit, twenty scheduled ticks lost). One keychain read, no secrets printed.
+AUTH_ROW=""; AUTH_LINE=""
+_AC="$HOME/.megavibe/scripts/claude-auth-check.sh"
+if [ -f "$_AC" ]; then
+  # `|| _arc=$?`: this hook runs under an ERR trap, and exit 1 (a warning) is an ORDINARY
+  # answer here; a bare command substitution tripped the trap and emptied the whole block.
+  _arc=0; _auth=$(bash "$_AC" 24 2>/dev/null </dev/null) || _arc=$?
+  _auth="${_auth#claude-auth: }"
+  case "$_arc" in
+    0) AUTH_ROW="
+| Claude login | ${_auth} |" ;;
+    1) AUTH_ROW="
+| Claude login | ${_auth} |"; AUTH_LINE="
+
+Claude login: ${_auth}. Say this to the user before any unattended window." ;;
+  esac
+fi
+
 # Playwright
 PLAYWRIGHT_STATUS=$(mcp_status "playwright")
 [ -z "$PLAYWRIGHT_STATUS" ] && PLAYWRIGHT_STATUS="not installed"
@@ -288,7 +309,7 @@ SUBAGENT_STATUS="
 | Codex | ${CODEX_STATUS} |
 | Gemini | ${GEMINI_STATUS} |
 | Playwright | ${PLAYWRIGHT_STATUS} |
-| poma-memory | ${POMA_STATUS} |${REVIEWER_ROW}${REVIEWER_LINE}${REVIEWER_DEFAULT_NOTE}"
+| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${REVIEWER_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
 
 # The model reads hookSpecificOutput.additionalContext; systemMessage is shown
 # to the user only, so this block used to reach nobody it was written for. And

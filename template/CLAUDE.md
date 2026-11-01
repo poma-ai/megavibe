@@ -128,6 +128,7 @@ Megavibe provides slash commands for common workflows. Type `/` to see them:
 - `/finish-feature [base]` — measure what the finished feature actually cost (turns, tool calls, tokens, diff size), score it against that estimate, comment it on the PR and offer to merge
 - `/prune-context` — **superseded.** Compaction is now `.claude/hooks/agent-log.sh fold`, which moves old entries into `.agent/snapshot.md` instead of asking an AI which lines to delete from a log nobody can reconstruct. **Not the same as `/compact`** — see the decision table below.
 - `/megavibe-restart` — update megavibe and restart this session with new hooks/rules/skills applied
+- `/watch [interval] [org/repo ...]` — unattended ticks: every 30 min (default) a deterministic `tick.sh` report of review requests, comments and pushes from others on the watched repos, Linear comments, the login lifetime and both subscriptions' usage; act on it, one line when quiet. Before any unattended window run `~/.megavibe/scripts/claude-auth-check.sh` (`megavibe auth`): a refresh token that lapses kills the session and `/login` does not work over Remote Control. `/watch off` stops it.
 
 ### Which compaction do I need?
 
