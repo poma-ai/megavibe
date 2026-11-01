@@ -53,7 +53,8 @@ cat > "$T/bin/gh" <<EOF
 FIX="$T/fix"
 case "\$*" in
   "api user --jq .login") [ "\${GH_SHIM_FAIL:-0}" = 1 ] && exit 1; echo me ;;
-  "search prs "*) case "\$*" in *"--repo org/a "*) cat "\$FIX/search.json" ;; *) echo "gh shim: search not scoped to the watched repo" >&2; exit 1 ;; esac ;;
+  "search prs "*) n=\$(printf '%s\\n' "\$@" | grep -c -x -- --repo); [ "\$n" -le 5 ] || { echo "gh shim: \$n repos in one search" >&2; exit 1; }
+    case "\$*" in *"--repo org/a "*) if [ "\${GH_SHIM_RRNUM:-0}" = 1 ]; then echo '[{"repository":{"nameWithOwner":"org/a"},"number":7,"title":12345,"updatedAt":"x"}]'; else cat "\$FIX/search.json"; fi ;; *) echo '[]' ;; esac ;;
   "api repos/org/a/pulls?"*"&page=1")
     if [ "\${GH_SHIM_PAGES:-0}" = 1 ]; then jq -c '[range(100) | {number: (1000 + .), title: "bulk \\(.)", updated_at: "2026-11-01T14:35:00Z", user: {login: "carol"}, state: "open", draft: false}]' -n
     else cat "\$FIX/pulls.json"; fi ;;
@@ -61,8 +62,10 @@ case "\$*" in
   "api repos/org/a/pulls/7/reviews?"*) cat "\$FIX/reviews7.json" ;;
   "api repos/org/a/pulls/11/reviews?"*) cat "\$FIX/reviews11.json" ;;
   "api repos/org/a/pulls/"*"/reviews?"*) echo '[]' ;;
-  "api repos/org/a/issues/comments?"*"&page=1") [ "\${GH_SHIM_FAIL:-0}" = comments ] && { echo '{"message":"Bad credentials"}'; exit 1; }; cat "\$FIX/issues.json" ;;
+  "api repos/org/a/issues/comments?"*"&page=1") [ "\${GH_SHIM_FAIL:-0}" = comments ] && { echo '{"message":"Bad credentials"}'; exit 1; }
+    if [ "\${GH_SHIM_MANY:-0}" = 1 ]; then jq -c -n '[range(70) | {user: {login: "bob"}, created_at: "2026-11-01T14:2\\(. % 10):00Z", html_url: "https://example.test/i/\\(.)", body: "bulk comment \\(.)"}]'; else cat "\$FIX/issues.json"; fi ;;
   "api repos/org/a/pulls/comments?"*"&page=1") cat "\$FIX/pullcomments.json" ;;
+  "api repos/"*"/pulls?"*|"api repos/"*"/comments?"*|"api repos/"*"/reviews?"*) echo '[]' ;;
   *) echo "gh shim: unexpected call: \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -87,7 +90,7 @@ printf 'TICK_REPOS="org/a"\nTICK_PEOPLE="alice"\n' > "$T/mv/personal/tick.conf"
 tick() {   # tick [args...]: a tick with the fake gh and pinned clock; TICK_NOW, TICK_CREDS, TICK_LINEAR, TICK_BOTS, GH_SHIM_FAIL pass through
   env -i PATH="$PATH" HOME="$T" TMPDIR="${TICK_TMPDIR:-$T}" MEGAVIBE_HOME="$T/mv" MEGAVIBE_NOW="${TICK_NOW:-$NOW}" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CURL="$T/bin/curl" LINEAR_API_KEY="${TICK_LKEY:-}" \
     MEGAVIBE_CLAUDE_CREDENTIALS="${TICK_CREDS:-$T/creds-ok.json}" MEGAVIBE_USAGE_FILE="$T/none.jsonl" MEGAVIBE_CODEX_HOME="$T/nocodex" \
-    MEGAVIBE_TICK_CONF="${TICK_CONF:-$T/mv/personal/tick.conf}" TICK_LINEAR="${TICK_LINEAR:-}" TICK_BOTS="${TICK_BOTS:-}" GH_SHIM_FAIL="${GH_SHIM_FAIL:-0}" GH_SHIM_PAGES="${GH_SHIM_PAGES:-0}" CURL_SHIM="${CURL_SHIM:-ok}" \
+    MEGAVIBE_TICK_CONF="${TICK_CONF:-$T/mv/personal/tick.conf}" TICK_LINEAR="${TICK_LINEAR:-}" TICK_BOTS="${TICK_BOTS:-}" GH_SHIM_FAIL="${GH_SHIM_FAIL:-0}" GH_SHIM_PAGES="${GH_SHIM_PAGES:-0}" GH_SHIM_RRNUM="${GH_SHIM_RRNUM:-0}" GH_SHIM_MANY="${GH_SHIM_MANY:-0}" CURL_SHIM="${CURL_SHIM:-ok}" \
     bash "$REPO/scripts/tick.sh" "$@" 2>&1
 }
 
@@ -153,7 +156,7 @@ check "the next successful tick starts where the failed one started ($(printf '%
 o=$(TICK_TMPDIR="$T/nowhere" tick)
 check "no scratch file possible: nothing checked, INCOMPLETE, no mark ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick default: NEEDS ACTION (1), INCOMPLETE"* ]] && [[ "$o" == *"no scratch file for failure tracking"* ]] && [[ "$o" != *"PR #7"* ]] && [ ! -s "$T/mv/tick/default.last" ]'
 o=$(GH_SHIM_PAGES=1 tick --no-mark --since $((NOW - 2400)))
-check "a full first page fetches the second; 101 updated PRs trip the 30-PR review cap ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick default: NEEDS ACTION (106), INCOMPLETE | window"* ]] && [[ "$o" == *"PR #1000"* ]] && [[ "$o" == *"more lines in this repo"* ]] && [[ "$o" != *"PR #1099"* ]] && [[ "$o" == *"incomplete: reviews checked on 30 PRs only; window kept"* ]] && [[ "$o" != *"truncated"* ]]'
+check "a full first page fetches the second; past 30 PRs the reviews are listed as unchecked, no INCOMPLETE ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick default: NEEDS ACTION (107) | window"* ]] && [[ "$o" == *"PR #1000"* ]] && [[ "$o" == *"more lines in this repo: see"* ]] && [[ "$o" != *"PR #1099"* ]] && [[ "$o" == *"reviews not checked on 74 more updated PRs: #1030"* ]] && [[ "$o" != *"truncated"* ]]'
 o=$(TICK_LINEAR=1 tick --no-mark)
 check "linear on without a key: a misconfiguration, INCOMPLETE" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! linear: switched on but no key"* ]]'
 o=$(TICK_LINEAR=1 TICK_LKEY='EXAMPLE-k"e\y' tick --no-mark --since $((NOW - 2400)))
@@ -168,6 +171,32 @@ o=$(TICK_BOTS=1 tick --no-mark --since $((NOW - 2400)))
 check "TICK_BOTS=1 lists bot activity" '[[ "$o" == *"linkbot[bot]"* ]]'
 o=$(tick --no-mark --since $((NOW - 2400)) org/a nodash)
 check "a malformed repo name is a reported misconfiguration, the good repo still checked" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! github nodash: not of the form org/repo"* ]] && [[ "$o" == *"PR #7"* ]]'
+
+# --- round-4 cases: cut lines keep nothing, state failures, pending vs last, reset, names, search groups --
+rm -f "$T/mv/tick/default.last" "$T/mv/tick/default.pending"
+o=$(GH_SHIM_MANY=1 tick)
+check "70 comments: all counted, 60 lines shown, the rest in the report file, window advanced ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick default: NEEDS ACTION (75) | window"* ]] && [[ "$o" == *"more lines in this repo: see $T/mv/tick/default.report"* ]] && [ "$(grep -c "bulk comment" "$T/mv/tick/default.report")" = 70 ] && [ "$(cat "$T/mv/tick/default.last")" = "$NOW" ] && [ ! -e "$T/mv/tick/default.pending" ]'
+mkdir -p "$T/mv3/personal" "$T/mv3/tick"; cp "$T/mv/personal/tick.conf" "$T/mv3/personal/"; chmod 555 "$T/mv3/tick"
+o=$(env -i PATH="$PATH" HOME="$T" TMPDIR="$T" MEGAVIBE_HOME="$T/mv3" MEGAVIBE_NOW=$NOW MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/creds-ok.json" MEGAVIBE_USAGE_FILE="$T/none.jsonl" MEGAVIBE_CODEX_HOME="$T/nocodex" bash "$REPO/scripts/tick.sh" 2>&1)
+chmod 755 "$T/mv3/tick"
+check "unwritable state dir: reported, INCOMPLETE, no mark ($(printf '%s' "$o" | head -1))" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! state: cannot record the window start"* ]] && [ ! -e "$T/mv3/tick/default.last" ]'
+printf '%s\n' "$((NOW - 600))" > "$T/mv/tick/default.last"; printf '%s\n' "$((NOW - 2400))" > "$T/mv/tick/default.pending"
+o=$(tick)
+check "an older pending start beats a newer mark ($(printf '%s' "$o" | head -1); state: $(ls "$T/mv/tick" | tr '\n' ' '))" '[[ "$o" == *"| window 2026-11-01T14:00:00Z..2026-11-01T14:40:00Z"* ]] && [ ! -e "$T/mv/tick/default.pending" ] && [ "$(cat "$T/mv/tick/default.last")" = "$NOW" ]'
+o=$(GH_SHIM_FAIL=comments TICK_NOW=$((NOW + 1800)) tick)
+check "a failed tick writes the pending start before polling (the mark stays) ($(printf '%s' "$o" | head -1))" '[ "$(cat "$T/mv/tick/default.pending")" = "$NOW" ] && [ "$(cat "$T/mv/tick/default.last")" = "$NOW" ]'
+o=$(TICK_NOW=$((NOW + 3600)) tick --since $((NOW - 2400)))
+check "--since never moves the marks" '[ "$(cat "$T/mv/tick/default.pending")" = "$NOW" ] && [ "$(cat "$T/mv/tick/default.last")" = "$NOW" ]'
+o=$(TICK_NOW=$((NOW + 100)) tick --reset)
+check "--reset abandons the unfinished span ($o)" '[[ "$o" == "tick default: window reset; the next tick starts at 2026-11-01T14:41:40Z" ]] && [ ! -e "$T/mv/tick/default.pending" ] && [ "$(cat "$T/mv/tick/default.last")" = "$((NOW + 100))" ]'
+o=$(tick --name "my proj" --no-mark --since $((NOW - 2400)))
+check "a name with a space is sanitised, not replaced by default" '[[ "$o" == "tick my_proj: "* ]]'
+o=$(GH_SHIM_RRNUM=1 tick --no-mark --since $((NOW - 2400)))
+check "a review-request row with a numeric title is still listed" '[[ "$o" != *"INCOMPLETE"* ]] && [[ "$o" == *"RR #7 12345  (review requested from you)"* ]]'
+o=$(tick --no-mark --since $((NOW - 2400)) org/a org/b org/c org/d org/e org/f org/g org/h org/i org/j org/k org/l)
+check "twelve repos: the review-request search runs in groups of five, nothing incomplete ($(printf '%s' "$o" | head -1))" '[[ "$o" != *"INCOMPLETE"* ]] && [[ "$o" == *"RR #7"* ]] && [[ "$o" == *"github org/l: nothing new"* ]]'
+o=$(tick --no-mark --since $((NOW - 2400)) 2>&1 >/dev/null)
+check "no shell errors on stderr" '[ -z "$o" ]'
 
 printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

@@ -57,6 +57,11 @@ else
   fi
 fi
 if [ -z "$json" ]; then
+  # A long-lived token from `claude setup-token` lives in the environment and leaves no record
+  # to read an expiry from: not an alarm, and not "unknown" either.
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    [ "$QUIET" = 1 ] || echo "claude-auth: long-lived token from the environment (CLAUDE_CODE_OAUTH_TOKEN); its expiry is not recorded here"; exit 0
+  fi
   echo "claude-auth: no Claude Code credentials found (keychain entry or ~/.claude/.credentials.json); not logged in?"
   exit 2
 fi
