@@ -274,7 +274,9 @@ fi
 AUTH_ROW=""; AUTH_LINE=""
 _AC="$HOME/.megavibe/scripts/claude-auth-check.sh"
 if [ -f "$_AC" ]; then
-  _auth=$(bash "$_AC" 24 2>/dev/null </dev/null); _arc=$?
+  # `|| _arc=$?`: this hook runs under an ERR trap, and exit 1 (a warning) is an ORDINARY
+  # answer here; a bare command substitution tripped the trap and emptied the whole block.
+  _arc=0; _auth=$(bash "$_AC" 24 2>/dev/null </dev/null) || _arc=$?
   _auth="${_auth#claude-auth: }"
   case "$_arc" in
     0) AUTH_ROW="

@@ -10,7 +10,7 @@ trap 'rm -rf "$T"' EXIT
 PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 NOW=1793541600
-SECRET="sk-ant-oat01-THISMUSTNEVERBEPRINTED0000000000000000000000"
+SECRET="EXAMPLE-token-value-that-must-never-be-printed-0000"   # EXAMPLE: the leak scanner's placeholder convention
 
 # creds FILE ACCESS_OFFSET_H REFRESH_OFFSET_H [unit]: a Claude Code credentials record
 creds() {

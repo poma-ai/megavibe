@@ -30,5 +30,5 @@ One tick is `bash ~/.megavibe/scripts/tick.sh` (`megavibe tick` from a terminal)
 ## Rules
 
 - The tick marks its own window (`~/.megavibe/tick/<name>.last`): never pass `--since` on a scheduled run, or items repeat.
-- A failed `gh` or Linear call is reported inside the tick and is not retried by the tick; do not retry it in a loop either. Report it to the user when it persists for two ticks.
+- A failed or truncated `gh` or Linear call is reported inside the tick (`incomplete: …`, and `INCOMPLETE` on the first line) and the window is kept, so the next tick covers it again; do not retry it in a loop. Report it to the user when it persists for two ticks (a kept window grows until the cause is fixed).
 - Several projects watching the same repos get different `--name` values (`--name <project>`), or they share one window and each sees only part of the activity.

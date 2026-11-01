@@ -42,7 +42,15 @@ if [ -n "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ]; then
   [ -f "$MEGAVIBE_CLAUDE_CREDENTIALS" ] && json=$(cat "$MEGAVIBE_CLAUDE_CREDENTIALS" 2>/dev/null); src="file"
 else
   if [ "$(uname -s 2>/dev/null)" = Darwin ] && command -v security >/dev/null 2>&1; then
-    json=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) && src="keychain"
+    # Bounded: a hung keychain must not stall the SessionStart hook that calls this. perl's
+    # alarm kills the child (exit 142); without perl the call runs unbounded.
+    if command -v perl >/dev/null 2>&1; then
+      json=$(perl -e 'alarm 5; exec @ARGV' security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null); rc=$?
+      if [ "$rc" = 142 ]; then echo "claude-auth: the keychain did not answer within 5 s; login lifetime unknown"; exit 2; fi
+      [ "$rc" = 0 ] && [ -n "$json" ] && src="keychain" || json=""
+    else
+      json=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null) && src="keychain"
+    fi
   fi
   if [ -z "$json" ] && [ -f "$HOME/.claude/.credentials.json" ]; then
     json=$(cat "$HOME/.claude/.credentials.json" 2>/dev/null); src="file"
