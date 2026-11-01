@@ -52,7 +52,12 @@ check "epoch seconds read the same as milliseconds" '[ "$RC" = 0 ] && [[ "$o" ==
 
 printf '{"claudeAiOauth":{"accessToken":"%s","expiresAt":%s}}\n' "$SECRET" "$(( (NOW + 3600) * 1000 ))" > "$T/norefresh.json"
 run "$T/norefresh.json"
-check "no refresh field: exit 1, n/a ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"refresh token n/a"* ]] && [[ "$o" == *"no refresh token"* ]]'
+check "no refresh field, access token 1 h: exit 1, n/a ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"refresh token n/a"* ]] && [[ "$o" == *"no refresh token recorded and the access token does not outlast 12 h"* ]]'
+printf '{"claudeAiOauth":{"accessToken":"%s","expiresAt":%s}}\n' "$SECRET" "$(( (NOW + 400 * 3600) * 1000 ))" > "$T/longlived.json"
+run "$T/longlived.json"
+check "no refresh field, long-lived access token: fine ($o)" '[ "$RC" = 0 ] && [[ "$o" == *"long-lived token"* ]]'
+run "$T/ok.json" 1.2.3
+check "HOURS must be a number: exit 2" '[ "$RC" = 2 ]'
 
 run "$T/missing.json"
 check "missing file: exit 2" '[ "$RC" = 2 ] && [[ "$o" == *"no Claude Code credentials"* ]]'

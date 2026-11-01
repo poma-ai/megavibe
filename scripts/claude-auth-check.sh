@@ -29,7 +29,7 @@ for a in "$@"; do
   case "$a" in
     --quiet|-q) QUIET=1 ;;
     -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    ''|*[!0-9.]*) echo "claude-auth: unknown argument: $a" >&2; exit 2 ;;
+    ''|*[!0-9.]*|*.*.*|.) echo "claude-auth: unknown argument: $a (HOURS is a number)" >&2; exit 2 ;;
     *) HOURS="$a" ;;
   esac
 done
@@ -79,7 +79,12 @@ msg="claude-auth: access token $(fmt "$ACC"), refresh token $(fmt "$REF")"
 [ "$src" = file ] && [ -z "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ] && msg="$msg (from ~/.claude/.credentials.json)"
 ADVICE="run /login at the laptop (not possible over Remote Control), or \`claude setup-token\` for a long-lived headless token, BEFORE an unattended window"
 if [ "$REF" = n/a ]; then
-  echo "$msg -> no refresh token recorded: $ADVICE"; exit 1
+  # No refresh token: a long-lived token (`claude setup-token`) or an older record. Then the
+  # access token's own expiry is the lifetime: fine while it outlasts the horizon.
+  if [ "$ACC" != n/a ] && awk -v a="$ACC" -v h="$HOURS" 'BEGIN { exit !(a >= h) }'; then
+    [ "$QUIET" = 1 ] || echo "$msg (no refresh token recorded: a long-lived token? its own expiry is the lifetime; ok for the next $HOURS h)"; exit 0
+  fi
+  echo "$msg -> no refresh token recorded and the access token does not outlast $HOURS h: $ADVICE"; exit 1
 fi
 if awk -v r="$REF" 'BEGIN { exit !(r <= 0) }'; then
   echo "$msg -> REFRESH TOKEN EXPIRED: this session fails on its next request; $ADVICE"; exit 1
