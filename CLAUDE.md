@@ -25,11 +25,11 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (35 hooks; canonical list in init.sh) | Medium |
 | `template/.claude/hooks/rules-dedupe.sh`, `tests/rules-dedupe.test.sh` | One copy of the megavibe rules per directory tree: Claude Code loads parent directories' `.claude/rules/` too, so a project nested in a megavibe parent keeps no copy of the rules the parent carries (run by `init.sh` and on SessionStart startup/resume). Deletes only untracked, regular copies identical to the template (any content under `init.sh`, which always overwrote them) | Medium — deletes files |
-| `template/.claude/agents/summarizer.md` | Summarization fallback (sonnet) — second in the chain, behind Codex and ahead of Gemini | Low — rarely changes |
-| `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called on the ship round (critical work included), and whenever it is the only reader | Medium — affects every review |
+| `template/.claude/agents/summarizer.md` | Summarization agent (sonnet) — called by allocation or fallback per `delegation.md` | Low — rarely changes |
+| `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called when allocated or required by the floor in `template/.claude/rules/delegation.md` | Medium — affects every review |
 | `scripts/reviewers.sh` | The `MEGAVIBE_REVIEWERS` allow-list — which of non-negotiable 4's reviewers are switched on. Consulted by the review scripts **only under `--as-reviewer`** (they are also the general Codex/Gemini transport), and by `on-session-start.sh`. Front end: `megavibe reviewers` | Medium — gates every review |
 | `scripts/gemini-review.sh` | Gemini via direct API with `thinkingLevel: low` — the only Gemini path that returns complete reviews on 3.x; installed to `~/.megavibe/scripts/`. `--fallback` is what lets it review at all in the default set. Outside a review it is the rationed no-Codex alternative: refuses while Codex is usable (exit 4), flash-lite only, reserved-before-sent daily call/$/input caps with a ledger (exit 5), `--budget` | Medium — spends money |
-| `scripts/codex-review.sh` | The primary backend for reviews, re-hydration and large context, over `codex exec`. `--model`/`--effort` override the user's `~/.codex/config.toml` per call — used for summarising, left off for reviews | Medium |
+| `scripts/codex-review.sh` | The primary backend for reviews, re-hydration and large context, over `codex exec`. `--model`/`--effort` override the user's `~/.codex/config.toml` per call — used for summarising; reviews leave `--effort` off and `--model` off except to select different Codex models for a ship pair | Medium |
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
 | `.claude/rules/*.md` | Live rules for THIS repo (copied from template; empty when a megavibe parent such as `~/dev` carries them, see `rules-dedupe.sh`) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
@@ -168,7 +168,7 @@ bash init.sh /path/to/project # always syncs hooks from template
 
 Changes to `template/CLAUDE.md` affect every downstream project. Before modifying:
 
-1. **Ask Codex to review** the proposed change (`codex-review.sh --as-reviewer`; intermediate rounds Codex alone, and on the ship round alongside the `reviewer` subagent):
+1. **Independently review** the proposed change using the allocation and review tiers in `template/.claude/rules/delegation.md`:
    - What could break for existing users?
    - Does it conflict with Claude Code built-in behavior?
    - Is the instruction clear enough that Claude will follow it?
@@ -181,9 +181,9 @@ For hook changes, ask Codex — it runs the script in a scratch-write sandbox (t
 
 | Scenario | Route | Why |
 |----------|-------|-----|
-| Reviewing protocol text changes | Intermediate rounds: Codex `--as-reviewer` alone. Ship round: `reviewer` subagent + Codex | The protocol IS critical per non-negotiable 4, which means a full-set ship round; since 2026-10-09 (the owner's decision, measured) it no longer means a full set on every round |
-| Reviewing hook shell scripts | Intermediate rounds: Codex `--as-reviewer` alone, and it must run the scripts. Ship round: `reviewer` subagent + Codex | Hooks ARE templates, and several are security or destructive-path guards. Both readers run the scripts on the ship round; a reviewer that only reads them missed a P1 in every measured case |
-| Intermediate round on ordinary code in a consuming project | Codex `--as-reviewer` alone, and only when that call actually succeeds — otherwise the `reviewer` subagent takes the round | The subagent costs ~180-200K tokens of the user's Claude subscription. In THIS repo the same applies to protocol, templates, hooks and scripts: they are critical, so their ship round is full-set, and their intermediate rounds are not |
+| Reviewing protocol text changes | Allocate readers per `template/.claude/rules/delegation.md`, "Two review tiers" | The protocol is critical; the same ship gate and availability/failure floor apply |
+| Reviewing hook shell scripts | Allocate readers per `template/.claude/rules/delegation.md`, "Two review tiers"; reviewers must run the scripts | Hooks are templates and may guard security or destructive paths; reading alone missed a P1 in every measured case |
+| Intermediate round on ordinary code in a consuming project | One reader allocated per `template/.claude/rules/delegation.md` | The same intermediate tier applies to critical work in this repo |
 | Researching CLAUDE.md best practices, Claude Code features | Web search / Codex | Needs current community info |
 | Comparing megavibe to alternatives | Codex, or Gemini for a very large input | Second opinion on architecture |
 | README edits, prose polish, small script fixes | Handle directly | Not worth delegation overhead |
@@ -194,7 +194,7 @@ For hook changes, ask Codex — it runs the script in a scratch-write sandbox (t
 |----------|-----------|
 | `.agent/` files, not Mem0 | Megavibe's `.agent/` + Claude Code's built-in auto-memory (`~/.claude/projects/.../memory/`) cover project + cross-session context. Mem0 would be a third layer with SaaS dependency, free-tier limits, and known bugs. |
 | No swarms/antfarm | ~10 files of shell + markdown. Single-agent Claude is sufficient. Swarms add git worktree coordination for zero benefit at this scale. |
-| Codex for re-hydration (Claude subagent behind it; on a machine WITHOUT Codex, capped Gemini ahead of the subagent — `reviewers.sh digest-chain`, rails in `gemini-review.sh`) | Measured 2026-09-18 on the same 196 KB input: Codex `gpt-5.6-terra` at low effort, 23 s; Claude `summarizer`, 87 s and the richest output but 125K tokens of the calling session's own quota; Gemini flash-lite, 9 s and the thinnest, and the only one billed per token. Reversed the old Gemini-first order once Codex moved to a larger plan. Via `codex-review.sh`, not MCP: codex-cli 0.154.0 removed its MCP server. |
+| Re-hydration by allocation in `delegation.md` (`reviewers.sh digest-chain` supplies availability and failure fallbacks; Gemini rails in `gemini-review.sh`) | Measured 2026-09-18 on the same 196 KB input: Codex `gpt-5.6-terra` at low effort, 23 s; Claude `summarizer`, 87 s and the richest output but 125K tokens of the calling session's own quota; Gemini flash-lite, 9 s and the thinnest, and the only one billed per token. Reversed the old Gemini-first order once Codex moved to a larger plan. Via `codex-review.sh`, not MCP: codex-cli 0.154.0 removed its MCP server. |
 | Gemini demoted from peer reviewer to Codex's fallback | Over 11 paired reviews in one day it produced 4 wrong headline findings and 5 SHIP verdicts on code with confirmed blockers, against Codex reproducing real defects in every unit. Kept in the chain, not deleted: it had 1 unique real catch, and on a machine without Codex it is the only external reviewer, joining the subagent in the default set. |
 | User-level protocol, project-level hooks | Protocol in `~/.claude/CLAUDE.md` = one source of truth everywhere. Hooks in `.claude/settings.json` = project-scoped, interact with local `.agent/`. |
 | No Context7 / Sequential Thinking MCP | No external library deps (pure shell + markdown). The Explore→Plan→Implement→Verify workflow already provides structured reasoning. |

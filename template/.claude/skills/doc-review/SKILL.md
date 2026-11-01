@@ -1,12 +1,12 @@
 ---
 name: doc-review
-description: Independent multi-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the switched-on reviewers (Claude `reviewer` subagent + Codex by default) in parallel; synthesizes findings into a single report.
+description: Independent multi-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the allocated ship readers per delegation.md in parallel; synthesizes findings into a single report.
 allowed-tools: Bash, Read, Write, Agent
 ---
 
 # Doc-review (periodic doc hygiene)
 
-Send the project's full markdown documentation surface to every reviewer that is both switched on and available, in parallel — the Claude `reviewer` subagent always, plus Codex unless the user has left it out of the `MEGAVIBE_REVIEWERS` allow-list or it is unavailable, plus Gemini where the user pinned it as a peer — for an independent challenge. A doc set is user-facing, so this skill is its own ship-style review: it runs the full set once, not the single-reviewer normal round. Synthesize the reviews into a single findings report. The user decides which findings to act on.
+Send the project's full markdown documentation surface to the readers allocated for a ship round under `.claude/rules/delegation.md`, "Two review tiers" (including its availability/failure floor), for an independent challenge. Eligibility is not allocation. Synthesize the completed reviews into a single findings report. The user decides which findings to act on.
 
 ## When to use
 
@@ -21,7 +21,7 @@ After significant docs or code edits that change the documentation surface — `
    ```
    Most projects: just `CLAUDE.md` plus zero or more `README*.md` at the root. Adapt if the project uses a `docs/` folder. If only `CLAUDE.md` exists, the review is still useful — focus on bloat and drift-vs-code.
 
-2. **Send to the reviewers in PARALLEL**, in a single tool-call batch, with the SAME files and the SAME prompt. Call only the reviewers in the `MEGAVIBE_REVIEWERS` allow-list — the session-start table has a Reviewers row naming the active set, and a reviewer left out of it exits 4 under `--as-reviewer` instead of reviewing. The `reviewer` subagent always runs (Agent tool, `subagent_type: reviewer`, or `general-purpose` with `model: sonnet` and the text of `.claude/agents/reviewer.md` if the project has not synced agents yet). Add Codex via Bash — `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --timeout 600 --prompt "<prompt>" <files>` — only if `codex` is on PATH. The `--timeout 600` matters here specifically: this is a multi-file, user-facing review, exactly the shape that times out at the script's 300s default now that `~/.codex/config.toml` runs at `high` reasoning effort (see `.claude/rules/delegation.md`). Gemini: run it in the SAME parallel batch whenever `reviewers.sh list` names it — `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --pro --prompt "<prompt>" <files>`. When the list does NOT name it (the default set, where it is Codex's fallback), leave it out of the batch and call it only if Codex then failed, adding `--fallback`. Either way `--pro`, since a doc set is user-facing; it needs `$GEMINI_API_KEY` and exits 1 without one, which is a skipped reviewer rather than a failed review. The rule in one line: **the resolved set runs in parallel; the fallback is the only sequential call.** There is no Codex MCP: codex-cli 0.154.0 removed it, and `setup.sh` deletes the dead registration, so a gate on "is the Codex MCP listed" is permanently false and would report Codex unavailable when it works. Never use `mcp__gemini-cli__ask-gemini` here: the CLI it wraps truncates or stalls on 3.x thinking. The prompt:
+2. **Allocate each reader, then launch in PARALLEL** with the SAME files and the SAME prompt. Follow `.claude/rules/delegation.md` for continuous weighing, eligibility, ship composition and fallback; the session-start Reviewers row lists eligible backends, not mandatory calls. For an allocated subagent use Agent with `subagent_type: reviewer`, or `general-purpose` with `model: sonnet` and the text of `.claude/agents/reviewer.md` if it is not registered. For each allocated Codex reader use `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --timeout 600 --prompt "<prompt>" <files>`, selecting different models with `--model` for a two-Codex pair. Use Bash, not the removed Codex MCP. Launch long Codex calls with `run_in_background` and separate heartbeats. For permitted Gemini calls use `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --pro --prompt "<prompt>" <files>`, adding `--fallback` only under the fallback rule; never use Gemini MCP or CLI for reviews. The prompt:
 
    > Review the attached project documentation set. For each finding, output `{category, file:line, what's wrong, suggested fix}`. Categories:
    >
@@ -33,7 +33,7 @@ After significant docs or code edits that change the documentation surface — `
    >
    > Be specific and concise. Do not propose stylistic rewrites — only substantive issues.
 
-3. **Missing reviewers.** A backend that is unavailable (no key, not installed) and one that is switched off in `MEGAVIBE_REVIEWERS` are both simply absent from the round — name which, and do not treat a switched-off reviewer as an outage to work around. The `reviewer` subagent is never skipped: `MEGAVIBE_REVIEWERS` governs the external reviewers only and cannot remove it. If Codex is unavailable per `.claude/rules/delegation.md`, run with the rest, bring Gemini in as its `--fallback`, and name in the synthesis which reviewer actually answered. Never substitute `summarizer` for `reviewer`. A single-reviewer round (reviewer only) is still a review — say so plainly.
+3. **Missing reviewers.** Apply the availability/failure floor in `.claude/rules/delegation.md`; report which allocated readers actually answered, replacements and any shortfall. A skipped or failed call is not a completed review. Never substitute `summarizer` for `reviewer`, and never treat a switched-off backend as an outage to work around.
 
 4. **Synthesize.** Merge the reports into a single output, grouped by category. For each finding:
    - Note how many reviewers flagged it — **all** or **two** (high-confidence) vs **one** (check it yourself before acting)
@@ -44,7 +44,7 @@ After significant docs or code edits that change the documentation surface — `
 
 ## Rules
 
-- **Parallel, not sequential.** Issue every call for the switched-on set in one message — half the wall time, and it avoids one reviewer's framing biasing the next. Gemini's `--fallback` call is the one exception: it exists only because Codex already failed, so it is necessarily a second round. When the user has pinned `all`, Gemini is a peer and goes in the parallel batch like everything else.
+- **Parallel, not sequential.** Issue every call for the allocated set in one message — half the wall time, and it avoids one reviewer's framing biasing the next. Failure replacements follow the failed call; every replacement still reviews the same final candidate in full. When the user has pinned `all`, Gemini is a peer and goes in the parallel batch like everything else.
 - The **synthesis** is the value. Don't dump raw outputs from each backend; the merged view is what the user reads.
 - Avoid stylistic noise. The review targets substantive drift/contradiction/bloat, not prose taste.
 - If Codex and its Gemini fallback both fail, the `reviewer` subagent's report is the review — say so. Never let the skill degrade to a self-review by the session that wrote the docs; the whole point is *independent* challenge.
