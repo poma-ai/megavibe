@@ -42,7 +42,7 @@ cat > "$T/fix/pullcomments.json" <<'EOF'
 [{"user":{"login":"alice"},"created_at":"2026-11-01T14:15:00Z","html_url":"https://example.test/pr/7#r1","body":"line 12: off by one"}]
 EOF
 cat > "$T/fix/search.json" <<'EOF'
-[{"repository":{"nameWithOwner":"org/a"},"number":7,"title":"fix: the frame keeps its picture","updatedAt":"2026-11-01T14:30:00Z"},
+[{"repository":{"nameWithOwner":"Org/A"},"number":7,"title":"fix: the frame keeps its picture","updatedAt":"2026-11-01T14:30:00Z"},
  {"repository":{"nameWithOwner":"org/other"},"number":3,"title":"not watched","updatedAt":"2026-11-01T14:30:00Z"}]
 EOF
 # the fake gh: serves a fixture per endpoint shape. GH_SHIM_FAIL=1 fails the identity call,
@@ -53,7 +53,7 @@ cat > "$T/bin/gh" <<EOF
 FIX="$T/fix"
 case "\$*" in
   "api user --jq .login") [ "\${GH_SHIM_FAIL:-0}" = 1 ] && exit 1; echo me ;;
-  "search prs "*) n=\$(printf '%s\\n' "\$@" | grep -c -x -- --repo); [ "\$n" -le 5 ] || { echo "gh shim: \$n repos in one search" >&2; exit 1; }
+  "search prs "*) q=\$(printf '%s\\n' "\$@" | awk 'p{q=q "repo:" \$0 " "; p=0} \$0=="--repo"{p=1} END{print length(q)}'); [ "\$q" -le 256 ] || { echo "gh shim: \$q characters of repo qualifiers" >&2; exit 1; }
     case "\$*" in *"--repo org/a "*) if [ "\${GH_SHIM_RRNUM:-0}" = 1 ]; then echo '[{"repository":{"nameWithOwner":"org/a"},"number":7,"title":12345,"updatedAt":"x"}]'; else cat "\$FIX/search.json"; fi ;; *) echo '[]' ;; esac ;;
   "api repos/org/a/pulls?"*"&page=1")
     if [ "\${GH_SHIM_PAGES:-0}" = 1 ]; then jq -c '[range(100) | {number: (1000 + .), title: "bulk \\(.)", updated_at: "2026-11-01T14:35:00Z", user: {login: "carol"}, state: "open", draft: false}]' -n
@@ -75,7 +75,7 @@ cat > "$T/bin/curl" <<EOF
 # fake curl: config on stdin (never printed), -w suffix honoured; CURL_SHIM picks the answer
 cfg=\$(cat); printf '%s' "\$cfg" > "$T/curl-cfg.last"
 case "\${CURL_SHIM:-ok}" in
-  ok) printf '{"data":{"viewer":{"name":"Me"},"comments":{"nodes":[{"createdAt":"2026-11-01T14:20:00.123Z","url":"https://linear.test/c1","user":{"name":"Alice A"},"issue":{"identifier":"PRJ-1"},"body":"please check"}]}}}'; printf '\n200' ;;
+  ok) printf '{"data":{"viewer":{"id":"u1","name":"Me"},"comments":{"nodes":[{"createdAt":"2026-11-01T14:20:00.123Z","url":"https://linear.test/c1","user":{"id":"u2","name":"Alice A"},"issue":{"identifier":"PRJ-1"},"body":"please check"},{"createdAt":"2026-11-01T14:21:00.000Z","url":"https://linear.test/c2","user":{"id":"u3","name":"Me"},"issue":{"identifier":"PRJ-2"},"body":"same display name, other person"},{"createdAt":"2026-11-01T14:22:00.000Z","url":"https://linear.test/c3","user":{"id":"u1","name":"Me"},"issue":{"identifier":"PRJ-3"},"body":"my own"}]}}}'; printf '\n200' ;;
   errors) printf '{"data":{"comments":{"nodes":[]}},"errors":[{"message":"EXAMPLE-reflected-key-would-be-here"}]}'; printf '\n200' ;;
   http500) printf '{"message":"upstream"}'; printf '\n500' ;;
   exit28) printf '{"data":{"viewer":{"name":"Me"},"comments":{"nodes":[]}}}'; printf '\n200'; exit 28 ;;
@@ -126,7 +126,7 @@ check "second tick: nothing repeated" '[[ "$o" != *"PR #7"* ]] && [[ "$o" != *"#
 check "second tick: marked again" '[ "$(cat "$T/mv/tick/default.last")" = "$((NOW + 1800))" ]'
 
 # --- options ----------------------------------------------------------------
-: > "$T/mv/tick/default.last"   # an empty mark reads as a first run: back to the 40-minute window for the option checks
+rm -f "$T/mv/tick/default.last" "$T/mv/tick/default.pending"   # back to a first-run window for the option checks (an EMPTY mark would now count as corrupt)
 o=$(tick --name dry --no-mark)
 check "--no-mark leaves no state" '[ ! -e "$T/mv/tick/dry.last" ] && [[ "$o" == "tick dry: NEEDS ACTION (8)"* ]]'
 o=$(tick --no-mark --since 2026-11-01T14:29:00Z)
@@ -152,7 +152,7 @@ check "a failed call: reported, first line INCOMPLETE, the rest still listed ($(
 check "a failed call keeps the window (no mark written) and records its start" '[ ! -s "$T/mv/tick/default.last" ] && [ "$(cat "$T/mv/tick/default.pending")" = "$((NOW - 2400))" ]'
 o=$(TICK_NOW=$((NOW + 1800)) tick)
 check "the next successful tick starts where the failed one started ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick default: NEEDS ACTION (10) | window 2026-11-01T14:00:00Z..2026-11-01T15:10:00Z"* ]] && [ "$(cat "$T/mv/tick/default.last")" = "$((NOW + 1800))" ] && [ ! -e "$T/mv/tick/default.pending" ]'
-: > "$T/mv/tick/default.last"
+rm -f "$T/mv/tick/default.last"
 o=$(TICK_TMPDIR="$T/nowhere" tick)
 check "no scratch file possible: nothing checked, INCOMPLETE, no mark ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick default: NEEDS ACTION (1), INCOMPLETE"* ]] && [[ "$o" == *"no scratch file for failure tracking"* ]] && [[ "$o" != *"PR #7"* ]] && [ ! -s "$T/mv/tick/default.last" ]'
 o=$(GH_SHIM_PAGES=1 tick --no-mark --since $((NOW - 2400)))
@@ -160,7 +160,7 @@ check "a full first page fetches the second; past 30 PRs the reviews are listed 
 o=$(TICK_LINEAR=1 tick --no-mark)
 check "linear on without a key: a misconfiguration, INCOMPLETE" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! linear: switched on but no key"* ]]'
 o=$(TICK_LINEAR=1 TICK_LKEY='EXAMPLE-k"e\y' tick --no-mark --since $((NOW - 2400)))
-check "linear comment listed, viewer left out, millisecond stamp read ($(printf '%s' "$o" | grep -c PRJ-1))" '[[ "$o" == *"  PRJ-1 by Alice A 14:20Z https://linear.test/c1: please check"* ]]'
+check "linear comment listed, viewer left out by id, a same-named other person kept, millisecond stamp read" '[[ "$o" == *"  PRJ-1 by Alice A 14:20Z https://linear.test/c1: please check"* ]] && [[ "$o" == *"PRJ-2 by Me 14:21Z"* ]] && [[ "$o" != *"PRJ-3"* ]]'
 check "the key reaches curl escaped on stdin, never in argv" '[ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-k\\\"e\\\\y\"" ]'
 check "the key is nowhere in the report" '[[ "$o" != *"EXAMPLE-k"* ]]'
 for mode in errors http500 exit28; do
@@ -197,6 +197,22 @@ o=$(tick --no-mark --since $((NOW - 2400)) org/a org/b org/c org/d org/e org/f o
 check "twelve repos: the review-request search runs in groups of five, nothing incomplete ($(printf '%s' "$o" | head -1))" '[[ "$o" != *"INCOMPLETE"* ]] && [[ "$o" == *"RR #7"* ]] && [[ "$o" == *"github org/l: nothing new"* ]]'
 o=$(tick --no-mark --since $((NOW - 2400)) 2>&1 >/dev/null)
 check "no shell errors on stderr" '[ -z "$o" ]'
+# round-5 cases: unreadable state, long repo names, dry-run report, missing operands
+printf '%s\n' "$((NOW - 7200))" > "$T/mv/tick/default.last"; chmod 000 "$T/mv/tick/default.last"
+o=$(tick)
+chmod 644 "$T/mv/tick/default.last"
+check "an unreadable mark: reported, INCOMPLETE, nothing marked ($(printf '%s' "$o" | head -1))" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! state: cannot read $T/mv/tick/default.last"* ]] && [ "$(cat "$T/mv/tick/default.last")" = "$((NOW - 7200))" ] && [ ! -e "$T/mv/tick/default.pending" ]'
+printf 'garbage\n' > "$T/mv/tick/default.last"
+o=$(tick)
+check "a corrupt mark: reported, nothing marked" '[[ "$o" == *"! state: cannot read"* ]] && [ "$(cat "$T/mv/tick/default.last")" = garbage ]'
+rm -f "$T/mv/tick/default.last"
+long=""; for i in 1 2 3 4 5 6; do long="$long org/a-very-long-repository-name-number-$i-with-many-characters-in-it"; done
+o=$(tick --no-mark --since $((NOW - 2400)) org/a $long)
+check "long repository names: the search is split by query length, nothing incomplete ($(printf '%s' "$o" | head -1))" '[[ "$o" != *"INCOMPLETE"* ]] && [[ "$o" == *"RR #7"* ]]'
+o=$(GH_SHIM_MANY=1 tick --no-mark --since $((NOW - 2400)))
+check "a dry run with cut lines still writes the report it points at" '[[ "$o" == *"more lines in this repo: see $T/mv/tick/default.report"* ]] && [ "$(grep -c "bulk comment" "$T/mv/tick/default.report")" = 70 ]'
+o=$(tick --name 2>&1); rc=$?
+check "a missing option value is refused" '[[ "$o" == *"--name needs a value"* ]]'
 
 printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

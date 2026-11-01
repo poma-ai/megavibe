@@ -38,6 +38,11 @@ case "$NOW" in ''|*[!0-9]*) echo "claude-auth: cannot read the clock" >&2; exit 
 command -v jq >/dev/null 2>&1 || { echo "claude-auth: jq is required" >&2; exit 2; }
 
 json=""; src=""
+# A long-lived token from `claude setup-token` lives in the environment and Claude Code uses
+# it when set, whatever an older keychain entry or file says: not an alarm, not "unknown".
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  [ "$QUIET" = 1 ] || echo "claude-auth: long-lived token from the environment (CLAUDE_CODE_OAUTH_TOKEN); its expiry is not recorded here"; exit 0
+fi
 if [ -n "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ]; then
   [ -f "$MEGAVIBE_CLAUDE_CREDENTIALS" ] && json=$(cat "$MEGAVIBE_CLAUDE_CREDENTIALS" 2>/dev/null); src="file"
 else
@@ -57,11 +62,6 @@ else
   fi
 fi
 if [ -z "$json" ]; then
-  # A long-lived token from `claude setup-token` lives in the environment and leaves no record
-  # to read an expiry from: not an alarm, and not "unknown" either.
-  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    [ "$QUIET" = 1 ] || echo "claude-auth: long-lived token from the environment (CLAUDE_CODE_OAUTH_TOKEN); its expiry is not recorded here"; exit 0
-  fi
   echo "claude-auth: no Claude Code credentials found (keychain entry or ~/.claude/.credentials.json); not logged in?"
   exit 2
 fi

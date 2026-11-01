@@ -39,7 +39,7 @@
 # section, NOT retried (a polling loop that hammers an API on an auth failure is the failure
 # mode this avoids), the first line says INCOMPLETE and the window is NOT advanced, so
 # nothing is silently skipped; the review cap (30 PRs) instead lists the unchecked PRs and
-# advances. A misconfiguration (gh missing, a malformed repo, Linear on without a key) and a
+# advances. A state file that exists but cannot be read is reported and nothing is marked. A misconfiguration (gh missing, a malformed repo, Linear on without a key) and a
 # state file that cannot be written are reported the same way, never as "quiet". Exit 0
 # after a tick; 2 only for a bad option, a bad --since or an unreadable clock (nothing was
 # checked). A mark in the future (clock moved) falls back to a 60-second window.
@@ -55,8 +55,8 @@ CONF="${MEGAVIBE_TICK_CONF:-$MV/personal/tick.conf}"
 NAME="default"; SINCE_ARG=""; MARK=1; RESET=0; REPOS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name) NAME="${2:-}"; shift ;;
-    --since) SINCE_ARG="${2:-}"; MARK=0; shift ;;   # a diagnostic window: it never moves the marks
+    --name) [ $# -ge 2 ] || { echo "tick: --name needs a value" >&2; exit 2; }; NAME="$2"; shift ;;
+    --since) [ $# -ge 2 ] || { echo "tick: --since needs a value" >&2; exit 2; }; SINCE_ARG="$2"; MARK=0; shift ;;   # a diagnostic window: it never moves the marks
     --no-mark) MARK=0 ;;
     --reset) RESET=1 ;;
     -h|--help) sed -n '2,/^set -/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -97,10 +97,16 @@ else
   # NAME.last is the end of the last COMPLETE window; NAME.pending is the start of a window a
   # tick could not finish (written before polling, so a tick killed mid-way keeps it too). The
   # older of the two is the start: unfinished coverage is never skipped by a later mark.
-  l=""; pnd=""
-  [ -f "$LAST_FILE" ] && [ ! -L "$LAST_FILE" ] && l=$(head -c 20 "$LAST_FILE" 2>/dev/null | tr -dc '0-9')
-  [ -f "$PENDING_FILE" ] && [ ! -L "$PENDING_FILE" ] && pnd=$(head -c 20 "$PENDING_FILE" 2>/dev/null | tr -dc '0-9')
-  case "$l" in ''|*[!0-9]*) l="" ;; esac; case "$pnd" in ''|*[!0-9]*) pnd="" ;; esac
+  # A mark that exists but cannot be read, or holds no number, is NOT an absent mark: the
+  # tick must not guess a window and then replace the state it could not read.
+  read_mark() {   # read_mark FILE -> the epoch, "" when absent, "ERR" when present but unreadable or corrupt
+    local v; [ -e "$1" ] || [ -L "$1" ] || { printf ''; return; }
+    { [ -f "$1" ] && [ ! -L "$1" ] && v=$(head -c 20 "$1" 2>/dev/null) && [ -n "$v" ]; } || { printf 'ERR'; return; }
+    v=$(printf '%s' "$v" | tr -dc '0-9'); [ -n "$v" ] && printf '%s' "$v" || printf 'ERR'
+  }
+  l=$(read_mark "$LAST_FILE"); pnd=$(read_mark "$PENDING_FILE"); STATE_UNREADABLE=""
+  [ "$l" = ERR ] && { STATE_UNREADABLE="${STATE_UNREADABLE} $LAST_FILE"; l=""; }
+  [ "$pnd" = ERR ] && { STATE_UNREADABLE="${STATE_UNREADABLE} $PENDING_FILE"; pnd=""; }
   if [ -n "$l" ] && [ -n "$pnd" ]; then SINCE=$(( l < pnd ? l : pnd )); else SINCE="${l:-$pnd}"; fi
 fi
 case "$SINCE" in ''|*[!0-9]*) SINCE=$((NOW - ${TICK_DEFAULT_WINDOW:-2400})) ;; esac
@@ -108,6 +114,10 @@ case "$SINCE" in ''|*[!0-9]*) SINCE=$((NOW - ${TICK_DEFAULT_WINDOW:-2400})) ;; e
 SINCE_ISO=$(iso "$SINCE"); NOW_ISO=$(iso "$NOW")
 NEED=0; OUT=""; FULL=""; INCOMPLETE=0; STATE_LINES=""
 say() { OUT="${OUT}${1}"$'\n'; FULL="${FULL}${1}"$'\n'; }   # FULL: the same report without the per-repo cut
+if [ -n "${STATE_UNREADABLE:-}" ]; then
+  INCOMPLETE=1; NEED=$((NEED + 1)); MARK=0
+  STATE_LINES="! state: cannot read${STATE_UNREADABLE} (unreadable or not a number); fix or remove it (or --reset); nothing is marked, the window below is a guess"$'\n'
+fi
 # Record the start before polling: an unfinished tick (failed, truncated, killed) leaves it
 # behind and the next tick starts there. A state directory that cannot be written is reported
 # and makes the tick incomplete: a window that cannot be remembered is not a covered window.
@@ -186,7 +196,7 @@ gh_pages() {   # gh_pages LABEL PATH MAXPAGES [STOPKEY]: concatenated pages of 1
     fi
     page=$((page + 1))
     if [ "$page" -gt "$max" ]; then
-      note "incomplete: ${label} truncated after $((max * 100)) items; window kept"; break
+      note "incomplete: ${label} truncated after $((max * 100)) items; window kept"; rc=1; break
     fi
   done
   jq -sc 'add // []' "$PAGES" 2>/dev/null || { note "incomplete: ${label}: pages unreadable; window kept"; printf '[]'; rc=1; }
@@ -228,23 +238,28 @@ else
     # needs an answer until it has one. The search is scoped to the watched repos; at the
     # limit the tick is incomplete (a request past it would stay unseen).
     lines=""; CUT=0
-    # Searched in groups of five repos (GitHub caps a search query at 256 characters).
+    # Searched in groups whose `repo:` qualifiers stay under about 200 characters (GitHub
+    # caps a search query at 256), so long repository names get smaller groups.
     VALID=(); for repo in "${REPOS[@]}"; do case "$repo" in */*) VALID+=("$repo") ;; esac; done
     : > "$PAGES" 2>/dev/null || INCOMPLETE=1
     i=0; while [ "$i" -lt "${#VALID[@]}" ]; do
-      RR_REPO_ARGS=(); j=0; while [ "$j" -lt 5 ] && [ "$((i + j))" -lt "${#VALID[@]}" ]; do RR_REPO_ARGS+=(--repo "${VALID[$((i + j))]}"); j=$((j + 1)); done
+      RR_REPO_ARGS=(); j=0; qlen=0
+      while [ "$((i + j))" -lt "${#VALID[@]}" ]; do
+        r="${VALID[$((i + j))]}"; [ "$j" -gt 0 ] && [ "$((qlen + ${#r} + 6))" -gt 200 ] && break
+        RR_REPO_ARGS+=(--repo "$r"); qlen=$((qlen + ${#r} + 6)); j=$((j + 1))
+      done
       if chunk=$(gh_json "review-request search" search prs --review-requested=@me --state=open --limit 100 "${RR_REPO_ARGS[@]}" --json repository,number,title,updatedAt); then
         printf '%s\n' "$chunk" >> "$PAGES" 2>/dev/null || INCOMPLETE=1
         [ "$(printf '%s' "$chunk" | jq 'length' 2>/dev/null)" = 100 ] && note "incomplete: 100 or more open review requests in one group of repos; window kept"
       else INCOMPLETE=1; fi
-      i=$((i + 5))
+      i=$((i + j))
     done
     RR=$(jq -sc 'add // []' "$PAGES" 2>/dev/null) || { RR='[]'; INCOMPLETE=1; note "incomplete: review-request search unreadable; window kept"; }
     flush_notes; PRELUDE="$lines"
     for repo in "${REPOS[@]}"; do
       case "$repo" in */*) ;; *) INCOMPLETE=1; NEED=$((NEED + 1)); say "! github $repo: not of the form org/repo, not checked; window kept"; continue ;; esac
       lines=""
-      RR_ROWS=$(printf '%s' "$RR" | jq -r --arg r "$repo" '.[] | select((.repository.nameWithOwner // "") == $r) | [(.number // ""), ((.title // "") | tostring | .[0:80])] | @tsv' 2>/dev/null) || { RR_ROWS=""; note "incomplete: review requests for $repo unreadable; window kept"; }
+      RR_ROWS=$(printf '%s' "$RR" | jq -r --arg r "$repo" '.[] | select(((.repository.nameWithOwner // "") | tostring | ascii_downcase) == ($r | ascii_downcase)) | [(.number // ""), ((.title // "") | tostring | .[0:80])] | @tsv' 2>/dev/null) || { RR_ROWS=""; note "incomplete: review requests for $repo unreadable; window kept"; }
       while IFS=$'\t' read -r rnum rtitle; do
         [ -n "$rnum" ] || continue
         lines="${lines}  RR #${rnum} ${rtitle}  (review requested from you)"$'\n'; NEED=$((NEED + 1))
@@ -278,7 +293,7 @@ else
           lines="${lines}$(mark "$ruser")review #${num} ${rstate} by ${ruser} $(hm "$rat"): ${rbody}"$'\n'; NEED=$((NEED + 1))
         done <<<"$RV_ROWS"
       done
-      UNCHECKED_LINE=""; [ -n "$UNCHECKED" ] && { UNCHECKED_LINE="  reviews not checked on $((k - 30)) more updated PRs:${UNCHECKED} (30 per tick; run the tick with --since to check them)"$'\n'; NEED=$((NEED + 1)); }
+      UNCHECKED_LINE=""; [ -n "$UNCHECKED" ] && { UNCHECKED_LINE="  reviews not checked on $((k - 30)) more updated PRs:${UNCHECKED} (30 per tick; check them by hand: gh pr view N --repo $repo --comments)"$'\n'; NEED=$((NEED + 1)); }
       # Issue and review comments. `since` is on updated_at (an edited old comment comes back and
       # is dropped by created_at here, on purpose: an edit is not new activity).
       for kind in issues pulls; do
@@ -318,7 +333,7 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
   elif ! command -v "$CURL" >/dev/null 2>&1; then
     INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but curl is not installed; not checked, window kept"
   else
-    q=$(jq -n --arg s "$SINCE_ISO" --arg n "$NOW_ISO" '{query: "{ viewer { name } comments(first: 100, orderBy: createdAt, filter: {createdAt: {gt: \"\($s)\", lte: \"\($n)\"}}) { nodes { createdAt url user { name } issue { identifier } body } } }"}')
+    q=$(jq -n --arg s "$SINCE_ISO" --arg n "$NOW_ISO" '{query: "{ viewer { id name } comments(first: 100, orderBy: createdAt, filter: {createdAt: {gt: \"\($s)\", lte: \"\($n)\"}}) { nodes { createdAt url user { id name } issue { identifier } body } } }"}')
     # The key goes to curl as a config line on stdin (`-K -`), never in argv: argv is readable
     # by every process on the machine through `ps`. Quotes and backslashes in the value are
     # escaped the way curl's config parser reads them. The answer is accepted only when curl
@@ -334,7 +349,8 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
     else
       LP=" ${TICK_LINEAR_PEOPLE:-} "
       lines=""
-      LN_ROWS=$(printf '%s' "$resp" | jq -r '(.data.viewer.name // "") as $me | .data.comments.nodes[] | select((.user.name // "") != $me) | [(.createdAt // ""), ((.user.name // "?") | tostring | gsub("[\\r\\n\\t]+"; " ")), ((.issue.identifier // "?") | tostring), ((.url // "") | tostring), ((.body // "") | tostring | gsub("[\\r\\n\\t]+"; " ") | .[0:160])] | @tsv' 2>/dev/null) || { LN_ROWS=""; INCOMPLETE=1; note "incomplete: Linear answer unreadable; window kept"; }
+      # Your own comments are left out by the viewer's ID (a display name can be shared).
+      LN_ROWS=$(printf '%s' "$resp" | jq -r '(.data.viewer.id // "") as $meid | .data.comments.nodes[] | select($meid == "" or (.user.id // "") != $meid) | [(.createdAt // ""), ((.user.name // "?") | tostring | gsub("[\\r\\n\\t]+"; " ")), ((.issue.identifier // "?") | tostring), ((.url // "") | tostring), ((.body // "") | tostring | gsub("[\\r\\n\\t]+"; " ") | .[0:160])] | @tsv' 2>/dev/null) || { LN_ROWS=""; INCOMPLETE=1; note "incomplete: Linear answer unreadable; window kept"; }
       [ "$(printf '%s' "$resp" | jq '.data.comments.nodes | length' 2>/dev/null)" = 100 ] && note "incomplete: 100 or more comments in the window; window kept"
       while IFS=$'\t' read -r lat lname lid lurl lbody; do
         [ -n "$lat" ] || continue
@@ -350,9 +366,10 @@ fi
 # --- mark, then report ------------------------------------------------------
 # Lines cut from the report live in NAME.report; if it cannot be written the cut items would
 # be lost, so the window is kept in that case.
-if [ "${CUT:-0}" = 1 ] && [ "$MARK" = 1 ]; then
+if [ "${CUT:-0}" = 1 ]; then
   if ! { mkdir -p "$STATE_DIR" 2>/dev/null && { [ ! -e "$REPORT_FILE" ] || [ -f "$REPORT_FILE" ]; } && printf '%s' "$FULL" > "$REPORT_FILE" 2>/dev/null; }; then
-    INCOMPLETE=1; NEED=$((NEED + 1)); STATE_LINES="${STATE_LINES}! state: cannot write $REPORT_FILE for the lines cut above; window kept"$'\n'
+    if [ "$MARK" = 1 ]; then INCOMPLETE=1; NEED=$((NEED + 1)); STATE_LINES="${STATE_LINES}! state: cannot write $REPORT_FILE for the lines cut above; window kept"$'\n'
+    else STATE_LINES="${STATE_LINES}  state: cannot write $REPORT_FILE; the cut lines are in this dry run only"$'\n'; fi
   fi
 fi
 # A complete tick moves NAME.last to now and clears NAME.pending, in that order: the pending

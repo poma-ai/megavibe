@@ -63,6 +63,8 @@ run "$T/missing.json"
 check "missing file: exit 2" '[ "$RC" = 2 ] && [[ "$o" == *"no Claude Code credentials"* ]]'
 o=$(CLAUDE_CODE_OAUTH_TOKEN="$SECRET" MEGAVIBE_NOW=$NOW MEGAVIBE_CLAUDE_CREDENTIALS="$T/missing.json" bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
 check "no record but a token in the environment (setup-token): fine, nothing printed from it ($o)" '[ "$RC" = 0 ] && [[ "$o" == *"long-lived token from the environment"* ]] && [[ "$o" != *"$SECRET"* ]]'
+o=$(CLAUDE_CODE_OAUTH_TOKEN="$SECRET" MEGAVIBE_NOW=$NOW MEGAVIBE_CLAUDE_CREDENTIALS="$T/expired.json" bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
+check "an environment token wins over an expired record" '[ "$RC" = 0 ] && [[ "$o" == *"long-lived token"* ]]'
 printf 'not json\n' > "$T/garbage.json"
 run "$T/garbage.json"
 check "unreadable record: exit 2" '[ "$RC" = 2 ]'
