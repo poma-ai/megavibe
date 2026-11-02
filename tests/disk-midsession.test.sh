@@ -139,6 +139,20 @@ echo OK > "$LEVEL"; due; P=$(probes)
 OUT=$(printf '{"session_id":"sid1","tool_name":"Read","tool_input":{"file_path":"x"},"transcript_path":"/x/sid1/subagents/agent-child.jsonl"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/log-tool-event.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
 check "a subagent call identified by its transcript path never checks" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]] && [ ! -f "$STAMP" ]'
 
+# A probe that times out inside the helper must not leave descendants behind:
+# a disk-watch stub whose `level` starts a long child and waits on it.
+cat > "$T/home/.megavibe/scripts/disk-watch-orphan.sh" <<EOF
+#!/bin/bash
+case "\$1" in level) sleep 32 & MARK=\$!; echo "\$MARK" > "$T/orphan.pid"; wait \$MARK ;; esac
+EOF
+chmod +x "$T/home/.megavibe/scripts/disk-watch-orphan.sh"
+cp "$T/home/.megavibe/scripts/disk-watch.sh" "$T/disk-watch.keep"; cp "$T/home/.megavibe/scripts/disk-watch-orphan.sh" "$T/home/.megavibe/scripts/disk-watch.sh"
+echo OK > "$LEVEL"; due; S0=$(now_ms); OUT=$(run OK); S1=$(now_ms); sleep 0.5
+ORPHAN=$(cat "$T/orphan.pid" 2>/dev/null); ALIVE=0; [ -n "$ORPHAN" ] && kill -0 "$ORPHAN" 2>/dev/null && ALIVE=1
+check "a probe that times out leaves no descendant alive after the hook returns (and the hook returned within the deadline)" '[ "$ALIVE" -eq 0 ] && [ $((S1 - S0)) -lt 25000 ]'
+[ -n "$ORPHAN" ] && kill "$ORPHAN" 2>/dev/null
+cp "$T/disk-watch.keep" "$T/home/.megavibe/scripts/disk-watch.sh"
+
 # GNU stat semantics (`stat -f` prints filesystem info and fails on %m): a
 # fresh stamp must still count as fresh.
 mkdir -p "$T/gnubin"

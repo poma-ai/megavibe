@@ -564,8 +564,12 @@ if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 0 ]; then
       # deadline can end the helper and anything it started.
       my $pid = fork; defined $pid or exit 75;
       if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 75 }
-      $SIG{ALRM} = sub { kill "TERM", -$pid; select(undef, undef, undef, 0.5); kill "KILL", -$pid; exit 75 };
-      alarm 25; waitpid($pid, 0); exit($? >> 8)' \
+      # Whether the helper finished or the deadline hit, nothing of its process
+      # group survives: a probe that timed out inside the helper may have left
+      # a stalled df behind.
+      my $reap = sub { kill "TERM", -$pid; select(undef, undef, undef, 0.3); kill "KILL", -$pid };
+      $SIG{ALRM} = sub { $reap->(); exit 75 };
+      alarm 25; waitpid($pid, 0); my $rc = $? >> 8; $reap->(); exit $rc' \
       "$DISK_LOCK_FILE" bash "$DISK_HELPER" > "$DISK_OUT_FILE" 2>/dev/null || true
   DISK_MSG=$(cat "$DISK_OUT_FILE" 2>/dev/null); rm -f "$DISK_OUT_FILE" 2>/dev/null || true
 fi
