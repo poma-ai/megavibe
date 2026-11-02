@@ -5,8 +5,8 @@ set -u
 
 # Megavibe — tell the session when the disk is nearly full
 # Triggered by: SessionStart (matchers: "startup|resume" and "compact"). The
-# same check runs mid-session from log-tool-event.sh every
-# MEGAVIBE_DISK_CHECK_CALLS tool calls (default 25): a long session fills the
+# same check runs mid-session from log-tool-event.sh once per
+# MEGAVIBE_DISK_CHECK_MINS minutes of tool activity (default 5): a long session fills the
 # disk between starts (14.8 GB of reviewer copies and venvs in one scratchpad,
 # 8 GB left, 2026-11-03, noticed by the user, not the session).
 #
@@ -35,6 +35,7 @@ case "$LEVEL" in OK|LOW|CRITICAL) ;; *) exit 0 ;; esac   # df could not answer: 
 record() {  # no session id: nothing to record, and the warning still goes out
   [ -n "$SID" ] || return 0
   mkdir -p .agent/LOGS 2>/dev/null; printf '%s' "$1" > ".agent/LOGS/.disk-level.${SID}" 2>/dev/null || true
+  touch ".agent/LOGS/.disk-stamp.${SID}" 2>/dev/null || true   # the mid-session check waits its interval from here
 }
 if [ "$LEVEL" = OK ]; then record OK; exit 0; fi
 OUT=$(bash "$SCRIPT" check 2>/dev/null) || OUT=""

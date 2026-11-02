@@ -165,70 +165,39 @@ if [ -f "$COUNTER_FILE" ]; then
   fi
 fi
 
-# --- Mid-session disk check, part 1: count every main-thread call -----------
-# The check itself is further down (part 2). Counting happens here, before the
-# .agent-write branch below returns early, so a context write is a call like any
-# other. The counter is this block's own (.disk-calls.<sid>): the staleness
-# counter only counts implementation tools and resets on every .agent write, so
-# it cannot pace a periodic check. Increment under flock; parallel tool calls in
-# one session complete together and an unlocked read-add-write lost most of them.
-DISK_EVERY="${MEGAVIBE_DISK_CHECK_CALLS:-25}"
-case "$DISK_EVERY" in
-  ''|*[!0-9]*) DISK_EVERY=25 ;;
-  *) DISK_EVERY="${DISK_EVERY#"${DISK_EVERY%%[!0]*}"}"; DISK_EVERY="${DISK_EVERY:-0}"
-     [ "${#DISK_EVERY}" -gt 6 ] && DISK_EVERY=25 ;;
+# --- Mid-session disk check, part 1: is a check due? ------------------------
+# disk-check.sh runs at SessionStart only; a long session fills the disk in
+# between (2026-11-03: 14.8 GB of reviewer copies, venvs and model downloads in
+# one session's scratchpad, 8 GB left, noticed by the user). A check is due
+# when this session's stamp (.disk-stamp.<sid>) is missing or older than
+# MEGAVIBE_DISK_CHECK_MINS minutes (default 5, 0 off): a time stamp needs no
+# counter and no lock on the hot path (a per-call counter went through four
+# review rounds of lost increments and lock races). The check itself is part 2,
+# further down; a call that returns before it (a context write) simply leaves
+# the stamp alone, so the next call checks. Subagent calls never check.
+DISK_MINS="${MEGAVIBE_DISK_CHECK_MINS:-5}"
+case "$DISK_MINS" in
+  ''|*[!0-9]*) DISK_MINS=5 ;;
+  *) DISK_MINS="${DISK_MINS#"${DISK_MINS%%[!0]*}"}"; DISK_MINS="${DISK_MINS:-0}"
+     [ "${#DISK_MINS}" -gt 4 ] && DISK_MINS=5 ;;
 esac
 DISK_SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
 DISK_LEVEL_FILE="${LOGDIR}/.disk-level.${SID}"
-DISK_CALLS_FILE="${LOGDIR}/.disk-calls.${SID}"
-DISK_DUE_FILE="${LOGDIR}/.disk-due.${SID}"
-DISK_ON=0; DISK_CHECK_NOW=0
-if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] && [ -x "$DISK_SCRIPT" ]; then
-  DISK_ON=1
-  # One critical section: bump the count and, when it reaches the due mark, move
-  # the mark and claim this call as the one that checks. Under parallel calls
-  # exactly one claims; a lost increment (no flock) only delays the next mark.
-  _disk_claim() {
-    local calls due
-    calls=$(cat "$DISK_CALLS_FILE" 2>/dev/null | tr -d ' \n'); case "$calls" in ''|*[!0-9]*) calls=0 ;; esac
-    [ "${#calls}" -gt 9 ] && calls=0
-    calls=$((10#$calls + 1)); printf '%s' "$calls" > "$DISK_CALLS_FILE" 2>/dev/null || true
-    due=$(cat "$DISK_DUE_FILE" 2>/dev/null | tr -d ' \n'); case "$due" in ''|*[!0-9]*) due=$DISK_EVERY ;; esac
-    [ "${#due}" -gt 9 ] && due=$DISK_EVERY
-    due=$((10#$due))
-    if [ "$calls" -ge "$due" ]; then printf '%s' "$((calls + DISK_EVERY))" > "$DISK_DUE_FILE" 2>/dev/null || true; return 0; fi
-    return 1
-  }
-  _disk_giveback() { cat "$DISK_CALLS_FILE" > "$DISK_DUE_FILE" 2>/dev/null || true; }
-  # Serialise on flock where it exists (Linux), with a bounded wait: a hook
-  # must never sit on a lock. macOS ships no flock, and the unlocked fallback
-  # lost 29 of 30 parallel increments, so there the lock is a directory (mkdir
-  # is atomic on POSIX): up to 100 tries 10 ms apart. A lock is reclaimed only
-  # when it is provably abandoned (older than 10 s; the section takes
-  # milliseconds), never because the wait ran out: a live owner keeps it. If
-  # the lock cannot be taken, this call's bookkeeping is skipped (the next mark
-  # moves by at most one call) and the hook goes on.
-  _disk_lock_age() {  # seconds since the lock directory was made; empty when unknown
-    local m; m=$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null) || return 1
-    case "$m" in ''|*[!0-9]*) return 1 ;; esac
-    echo $(( $(date +%s) - m ))
-  }
-  _disk_locked() {
-    local fn=$1 lockdir="${DISK_CALLS_FILE}.lockdir" i=0 rc age
-    if command -v flock >/dev/null 2>&1; then
-      ( flock -w 2 -x 201 2>/dev/null || exit 75; "$fn" ) 201>"${DISK_CALLS_FILE}.lock" 2>/dev/null; return $?
-    fi
-    while ! mkdir "$lockdir" 2>/dev/null; do
-      i=$((i + 1))
-      if [ "$i" -ge 100 ]; then return 75; fi
-      age=$(_disk_lock_age "$lockdir") && [ "$age" -gt 10 ] && rmdir "$lockdir" 2>/dev/null
-      sleep 0.01
-    done
-    "$fn"; rc=$?
-    rmdir "$lockdir" 2>/dev/null
-    return $rc
-  }
-  _disk_locked _disk_claim && DISK_CHECK_NOW=1
+DISK_STAMP_FILE="${LOGDIR}/.disk-stamp.${SID}"
+DISK_LOCK_DIR="${LOGDIR}/.disk-lock.${SID}"
+_disk_age() {  # seconds since the file's mtime; empty (and status 1) when unknown
+  local m; m=$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null) || return 1
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  echo $(( $(date +%s) - m ))
+}
+_disk_due() {  # status 0 when the stamp is missing or old enough
+  local age; age=$(_disk_age "$DISK_STAMP_FILE") || return 0
+  [ "$age" -ge $((DISK_MINS * 60)) ]
+}
+DISK_CHECK_NOW=0
+if [ "$DISK_MINS" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] \
+   && [ -x "$DISK_SCRIPT" ] && _disk_due; then
+  DISK_CHECK_NOW=1
 fi
 
 # --- Context freshness nudge (the CRITICAL path) ---
@@ -285,9 +254,6 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
         >> "$EVENTS_FILE" 2>/dev/null || true
     fi
   fi
-  # This call returns before the disk check (part 2): if it claimed the check,
-  # give the claim back so the next call checks instead of a whole period later.
-  if [ "${DISK_CHECK_NOW:-0}" -eq 1 ]; then _disk_locked _disk_giveback; fi
   exit 0
 fi
 
@@ -564,62 +530,69 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDG
   fi
 fi
 
-# --- Mid-session disk check, part 2: the check this call claimed above -------
-# disk-check.sh runs at SessionStart only; a long session fills the disk in
-# between (2026-11-03: 14.8 GB of reviewer copies, venvs and model downloads in
-# one session's scratchpad, 8 GB left, noticed by the user). Every
-# MEGAVIBE_DISK_CHECK_CALLS calls (default 25, 0 off) one call asks
-# disk-watch.sh for one word: OK, LOW, CRITICAL or UNKNOWN (one bounded df, no
-# scan). The directory scan (`check`) runs only on a transition INTO LOW or
-# CRITICAL, so an unchanged level costs one df. UNKNOWN, a failed call and a
-# garbage level file keep the previous level and say nothing: a measurement
-# that failed is not a recovery. Inside the post-compact grace window the claim
-# is given back (the mark moves back) and nothing runs: disk-check.sh just ran
-# on the compact matcher and wrote the level file.
+# --- Mid-session disk check, part 2: the check -------------------------------
+# One critical section per check (a directory lock: mkdir is atomic on POSIX
+# and macOS ships no flock): re-test the stamp inside it (another call may have
+# just checked), touch the stamp, probe one word from disk-watch.sh (OK, LOW,
+# CRITICAL or UNKNOWN; one bounded df, no scan), compare with the recorded
+# level and update it. Both compare and update sit inside the section, so one
+# transition is reported once and an older reading cannot overwrite a newer
+# one. The sizes scan (`check`) runs only on a transition INTO LOW or
+# CRITICAL, so an unchanged level costs one df every DISK_MINS minutes.
+# UNKNOWN keeps the previous level and says nothing: a failed measurement is
+# not a recovery. A call that cannot take the lock within 0.3 s skips (the
+# owner is checking). A lock older than 60 s was left by a crashed hook (a
+# check takes at most ~20 s): it is reclaimed by rename, so only one reclaimer
+# wins, and nobody removes a directory that another call just made. Inside
+# the post-compact grace window nothing runs: disk-check.sh just ran on the
+# compact matcher and wrote the level file.
 DISK_MSG=""
-if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 1 ]; then
-  # Give the claim back: the mark returns to the current count, so the first
-  # call after the grace window checks.
-  _disk_locked _disk_giveback
-  DISK_CHECK_NOW=0
-fi
-if [ "$DISK_ON" -eq 1 ] && [ "$DISK_CHECK_NOW" -eq 1 ]; then
-  {
-    # One bounded df; perl's alarm is the deadline where perl exists (disk-watch
-    # bounds its own df too, this covers the shell around it). The probe writes
-    # to a file, not a pipe: a command substitution waits for every holder of
-    # the pipe, so a stalled grandchild (a df on a dead mount) would outlive the
-    # alarm; a file lets the deadline end the wait.
-    DISK_TMP="${LOGDIR}/.disk-probe.${SID}.$$"
-    if command -v perl >/dev/null 2>&1; then
-      perl -e 'alarm shift; exec @ARGV' 10 bash "$DISK_SCRIPT" level > "$DISK_TMP" 2>/dev/null || true
-    else
-      bash "$DISK_SCRIPT" level > "$DISK_TMP" 2>/dev/null || true
-    fi
-    DISK_NOW=$(tr -d ' \n' < "$DISK_TMP" 2>/dev/null); rm -f "$DISK_TMP" 2>/dev/null || true
-    case "$DISK_NOW" in OK|LOW|CRITICAL) ;; *) DISK_NOW=UNKNOWN ;; esac
-    DISK_PREV=$(cat "$DISK_LEVEL_FILE" 2>/dev/null | tr -d ' \n')
-    case "$DISK_PREV" in OK|LOW|CRITICAL) ;; *) DISK_PREV=UNKNOWN ;; esac
-    if [ "$DISK_NOW" != UNKNOWN ] && [ "$DISK_NOW" != "$DISK_PREV" ]; then
-      printf '%s' "$DISK_NOW" > "$DISK_LEVEL_FILE" 2>/dev/null || true
-      if [ "$DISK_NOW" = OK ]; then
-        # Only a real recovery is announced; the first reading of a session is not.
-        [ "$DISK_PREV" != UNKNOWN ] && DISK_MSG="disk: free space is back above the warn threshold."
+if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 0 ]; then
+  _disk_have_lock=0; _i=0
+  while ! mkdir "$DISK_LOCK_DIR" 2>/dev/null; do
+    _i=$((_i + 1)); [ "$_i" -ge 30 ] && break
+    _age=$(_disk_age "$DISK_LOCK_DIR") && [ "$_age" -gt 60 ] \
+      && mv "$DISK_LOCK_DIR" "${DISK_LOCK_DIR}.stale.$$" 2>/dev/null && rmdir "${DISK_LOCK_DIR}.stale.$$" 2>/dev/null
+    sleep 0.01
+  done
+  [ -d "$DISK_LOCK_DIR" ] && [ "$_i" -lt 30 ] && _disk_have_lock=1
+  if [ "$_disk_have_lock" -eq 1 ]; then
+    if _disk_due; then
+      touch "$DISK_STAMP_FILE" 2>/dev/null || true
+      DISK_TMP="${LOGDIR}/.disk-probe.${SID}.$$"
+      # The probe writes to a file, not a pipe: a command substitution waits for
+      # every holder of the pipe, so a stalled grandchild (a df on a dead mount)
+      # would outlive perl's alarm; a file lets the deadline end the wait.
+      if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift; exec @ARGV' 10 bash "$DISK_SCRIPT" level > "$DISK_TMP" 2>/dev/null || true
       else
-        # The sizes scan runs here only: on the way INTO a low level.
-        if command -v perl >/dev/null 2>&1; then
-          perl -e 'alarm shift; exec @ARGV' 8 bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
+        bash "$DISK_SCRIPT" level > "$DISK_TMP" 2>/dev/null || true
+      fi
+      DISK_NOW=$(tr -d ' \n' < "$DISK_TMP" 2>/dev/null); rm -f "$DISK_TMP" 2>/dev/null || true
+      case "$DISK_NOW" in OK|LOW|CRITICAL) ;; *) DISK_NOW=UNKNOWN ;; esac
+      DISK_PREV=$(cat "$DISK_LEVEL_FILE" 2>/dev/null | tr -d ' \n')
+      case "$DISK_PREV" in OK|LOW|CRITICAL) ;; *) DISK_PREV=UNKNOWN ;; esac
+      if [ "$DISK_NOW" != UNKNOWN ] && [ "$DISK_NOW" != "$DISK_PREV" ]; then
+        printf '%s' "$DISK_NOW" > "$DISK_LEVEL_FILE" 2>/dev/null || true
+        if [ "$DISK_NOW" = OK ]; then
+          # Only a real recovery is announced; the first reading of a session is not.
+          [ "$DISK_PREV" != UNKNOWN ] && DISK_MSG="disk: free space is back above the warn threshold."
         else
-          bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
-        fi
-        DISK_OUT=$(cat "$DISK_TMP" 2>/dev/null); rm -f "$DISK_TMP" 2>/dev/null || true
-        [ -n "$DISK_OUT" ] || DISK_OUT="disk: free space is $DISK_NOW (the sizes scan did not finish in time)."
-        DISK_MSG="## Low disk space (mid-session check: $DISK_NOW)
+          if command -v perl >/dev/null 2>&1; then
+            perl -e 'alarm shift; exec @ARGV' 8 bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
+          else
+            bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
+          fi
+          DISK_OUT=$(cat "$DISK_TMP" 2>/dev/null); rm -f "$DISK_TMP" 2>/dev/null || true
+          [ -n "$DISK_OUT" ] || DISK_OUT="disk: free space is $DISK_NOW (the sizes scan did not finish in time)."
+          DISK_MSG="## Low disk space (mid-session check: $DISK_NOW)
 ${DISK_OUT}
 Your own scratchpad counts: reviewer repo copies, venvs and model downloads from finished rounds are yours to trash now (a delete moves them to the Trash; tell the user the Trash needs emptying to free the space). Do not delete anything you did not create; at CRITICAL, say so before any job that writes gigabytes."
+        fi
       fi
     fi
-  }
+    rmdir "$DISK_LOCK_DIR" 2>/dev/null || true
+  fi
 fi
 
 # --- Build nudge message if needed ---
