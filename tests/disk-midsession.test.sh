@@ -1,24 +1,24 @@
 #!/bin/bash
 # /bin/bash tests/disk-midsession.test.sh
-# The mid-session disk check in log-tool-event.sh: a check is due when the
-# session's stamp is missing or older than MEGAVIBE_DISK_CHECK_MINS minutes; the
-# check runs inside one directory lock (stamp, one-word probe, level compare and
-# update), scans sizes only on the way into a low level, speaks once per level
-# change, treats a failed reading as no reading, and stays quiet for a subagent,
-# in the post-compact grace window and when off. disk-check.sh records the level
-# and the stamp at SessionStart after its warning went out.
+# The mid-session disk check: log-tool-event.sh decides a check is due when the
+# session's stamp is missing or older than MEGAVIBE_DISK_CHECK_MINS minutes
+# (one stat, no lock on the hot path) and runs disk-midsession.sh under a perl
+# flock + alarm. The helper stamps, probes one level word, compares with the
+# recorded level and updates it, scans sizes only on the way into a low level,
+# speaks once per level change, treats a failed reading as no reading. Nothing
+# runs for a subagent, in the post-compact grace window, when off, or without
+# perl. disk-check.sh records level + stamp at SessionStart after warning.
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/disk-mid.XXXXXX") || exit 2
-trap 'rm -rf "$T"' EXIT
+trap 'rm -rf "$T"; [ -n "${HOLD_PID:-}" ] && kill "$HOLD_PID" 2>/dev/null' EXIT
 PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo $((SECONDS * 1000)); }
-old_stamp() { touch -t "$(date -v-10M +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M.%S)" "$1"; }
+old_file() { touch -t "$(date -v-10M +%Y%m%d%H%M.%S 2>/dev/null || date -d '10 minutes ago' +%Y%m%d%H%M.%S)" "$1"; }
 
-mkdir -p "$T/proj/.agent/LOGS" "$T/home/.megavibe/scripts"
-cp "$REPO/template/.claude/hooks/log-tool-event.sh" "$T/hook.sh"
-cp "$REPO/template/.claude/hooks/disk-check.sh" "$T/disk-check.sh"
+mkdir -p "$T/proj/.agent/LOGS" "$T/home/.megavibe/scripts" "$T/hooks"
+cp "$REPO/template/.claude/hooks/log-tool-event.sh" "$REPO/template/.claude/hooks/disk-midsession.sh" "$REPO/template/.claude/hooks/disk-check.sh" "$T/hooks/"
 # Stub: the level comes from MV_FAKE; every `level` probe appends a line to
 # probes.log; `check` prints a report whose path text names a worse level than
 # the reading (the trap a text search fell into); CRITNOSCAN is a CRITICAL
@@ -35,7 +35,7 @@ case "$1" in
          esac ;;
 esac
 EOF
-chmod +x "$T/home/.megavibe/scripts/disk-watch.sh" "$T/hook.sh" "$T/disk-check.sh"
+chmod +x "$T/home/.megavibe/scripts/disk-watch.sh" "$T"/hooks/*.sh
 cd "$T/proj" || exit 2
 STAMP=.agent/LOGS/.disk-stamp.sid1
 LEVEL=.agent/LOGS/.disk-level.sid1
@@ -49,16 +49,14 @@ run() {
   payload="{\"session_id\":\"sid1\",\"tool_name\":\"$tool\",\"tool_input\":{\"command\":\"true\",\"file_path\":\"$fp\"}"
   [ -n "$agent" ] && payload="$payload,\"agent_id\":\"$agent\""
   payload="$payload}"
-  printf '%s' "$payload" | HOME="$T/home" MV_FAKE="$1" bash "$T/hook.sh" 2>/dev/null \
+  printf '%s' "$payload" | HOME="$T/home" MV_FAKE="$1" bash "$T/hooks/log-tool-event.sh" 2>/dev/null \
     | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null
 }
 due() { rm -f "$STAMP"; }          # no stamp: a check is due
-fresh() { touch "$STAMP"; }        # just checked: nothing due
 
 due; OUT=$(run CRIT)
 check "due + CRITICAL: nudge fires with the sizes report" '[[ "$OUT" == *"Low disk space"* && "$OUT" == *"7.0 GB free"* ]]'
 check "the level file records CRITICAL, the stamp is set" '[ "$(cat "$LEVEL")" = CRITICAL ] && [ -f "$STAMP" ]'
-check "the lock was released" '[ ! -d "$LOCK" ]'
 
 P=$(probes); OUT=$(run CRIT Read)
 check "a fresh stamp: no probe, no message" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]]'
@@ -66,11 +64,11 @@ check "a fresh stamp: no probe, no message" '[ "$(probes)" = "$P" ] && [[ "$OUT"
 due; OUT=$(run CRIT)
 check "due, still CRITICAL: no repeat" '[[ "$OUT" != *"Low disk space"* ]]'
 
-old_stamp "$STAMP"; P=$(probes); OUT=$(run OK)
+old_file "$STAMP"; P=$(probes); OUT=$(run OK)
 check "a 10-minute-old stamp is due (default 5): one probe" '[ "$(probes)" = $((P + 1)) ]'
 check "back to OK: one all-clear, level OK" '[[ "$OUT" == *"back above the warn threshold"* ]] && [ "$(cat "$LEVEL")" = OK ]'
 
-old_stamp "$STAMP"; P=$(probes); OUT=$(MEGAVIBE_DISK_CHECK_MINS=15 run OK)
+old_file "$STAMP"; P=$(probes); OUT=$(MEGAVIBE_DISK_CHECK_MINS=15 run OK)
 check "MEGAVIBE_DISK_CHECK_MINS=15: a 10-minute-old stamp is not due" '[ "$(probes)" = "$P" ]'
 P=$(probes); OUT=$(MEGAVIBE_DISK_CHECK_MINS=08 run OK)
 check "cadence 08 reads as 8 minutes (no octal error): due" '[ "$(probes)" = $((P + 1)) ]'
@@ -85,10 +83,8 @@ check "LOW -> CRITICAL escalates" '[[ "$OUT" == *"mid-session check: CRITICAL"* 
 due; OUT=$(run FAIL)
 check "a failed reading says nothing about the disk, keeps CRITICAL, still stamps" '[[ "$OUT" != *"disk"* ]] && [ "$(cat "$LEVEL")" = CRITICAL ] && [ -f "$STAMP" ]'
 
-if command -v perl >/dev/null 2>&1; then
-  due; S0=$(now_ms); OUT=$(run HANG); S1=$(now_ms)
-  check "a hung disk-watch is cut off (deadline), level kept, lock released" '[ $((S1 - S0)) -lt 25000 ] && [[ "$OUT" != *"disk"* ]] && [ "$(cat "$LEVEL")" = CRITICAL ] && [ ! -d "$LOCK" ]'
-fi
+due; S0=$(now_ms); OUT=$(run HANG); S1=$(now_ms)
+check "a hung disk-watch is cut off (deadline), level kept" '[ $((S1 - S0)) -lt 25000 ] && [[ "$OUT" != *"disk"* ]] && [ "$(cat "$LEVEL")" = CRITICAL ]'
 
 echo garbage > "$LEVEL"; due; OUT=$(run OK)
 check "garbage level file + OK reading: no false recovery, file repaired" '[[ "$OUT" != *"back above"* ]] && [ "$(cat "$LEVEL")" = OK ]'
@@ -109,43 +105,69 @@ rm -f .agent/LOGS/.compact-ts.sid1
 OUT=$(run CRIT)
 check "the first call after the grace window checks" '[[ "$OUT" == *"Low disk space"* ]]'
 
-# Parallel calls, all due: one probe, one message, nothing stolen, all exit 0.
+# Parallel calls, all due: one probe, one message, all exit 0.
 echo OK > "$LEVEL"; due; P=$(probes); N=0; rm -f "$T"/par.*
 for _ in $(seq 1 60); do
-  ( printf '{"session_id":"sid1","tool_name":"Bash","tool_input":{"command":"true"}}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hook.sh" 2>/dev/null \
+  ( printf '{"session_id":"sid1","tool_name":"Bash","tool_input":{"command":"true"}}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/log-tool-event.sh" 2>/dev/null \
       | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null | grep -c 'Low disk space' > "$(mktemp "$T/par.XXXXXX")" ) &
 done; wait
 for f in "$T"/par.*; do N=$((N + $(cat "$f"))); done
-check "60 parallel due calls: exactly one probe, exactly one message" '[ "$(probes)" = $((P + 1)) ] && [ "$N" -eq 1 ] && [ ! -d "$LOCK" ]'
+check "60 parallel due calls: exactly one probe, exactly one message" '[ "$(probes)" = $((P + 1)) ] && [ "$N" -eq 1 ]'
 
-# A lock held by a live owner: the call waits at most ~0.3 s, then skips.
-echo OK > "$LEVEL"; due; mkdir "$LOCK"; P=$(probes); S0=$(now_ms); OUT=$(run CRIT); RC=$?; S1=$(now_ms)
-check "live lock: no probe, no message, exit 0, under 2 s, lock kept" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]] && [ "$RC" -eq 0 ] && [ $((S1 - S0)) -lt 2000 ] && [ -d "$LOCK" ]'
-# An abandoned lock (older than 60 s) is reclaimed and the check runs.
-old_stamp "$LOCK"; OUT=$(run CRIT)
-check "abandoned lock (10 min old): reclaimed, check runs, lock released" '[[ "$OUT" == *"Low disk space"* ]] && [ ! -d "$LOCK" ]'
+# A kernel lock held by a live owner: the call skips at once (non-blocking).
+echo OK > "$LEVEL"; due; P=$(probes)
+perl -e 'use Fcntl qw(:flock); open(my $l, ">>", shift) or exit 1; flock($l, LOCK_EX) or exit 1; sleep 20' "$LOCK" &
+HOLD_PID=$!; sleep 0.3
+S0=$(now_ms); OUT=$(run CRIT); RC=$?; S1=$(now_ms)
+check "live kernel lock: no probe, no message, exit 0, under 1 s" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]] && [ "$RC" -eq 0 ] && [ $((S1 - S0)) -lt 1000 ]'
+kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+OUT=$(run CRIT)
+check "the lock released by its owner's death: the check runs" '[[ "$OUT" == *"Low disk space"* ]]'
+
+# GNU stat semantics (`stat -f` prints filesystem info and fails on %m): a
+# fresh stamp must still count as fresh.
+mkdir -p "$T/gnubin"
+cat > "$T/gnubin/stat" <<'EOF'
+#!/bin/bash
+if [ "$1" = "-f" ]; then echo "  File: \"$3\"  ID: 1 Namelen: 255 Type: apfs"; exit 1; fi
+if [ "$1" = "-c" ]; then exec /usr/bin/stat -f %m "$3"; fi
+exec /usr/bin/stat "$@"
+EOF
+chmod +x "$T/gnubin/stat"
+echo OK > "$LEVEL"; touch "$STAMP"; P=$(probes); OUT=$(PATH="$T/gnubin:$PATH" run CRIT)
+check "GNU-style stat: a fresh stamp is not due (no probe)" '[ "$(probes)" = "$P" ]'
+due; P=$(probes); OUT=$(PATH="$T/gnubin:$PATH" run CRIT)
+check "GNU-style stat: a missing stamp is due (one probe, message)" '[ "$(probes)" = $((P + 1)) ] && [[ "$OUT" == *"Low disk space"* ]]'
 
 echo OK > "$LEVEL"; due; P=$(probes); OUT=$(MEGAVIBE_DISK_CHECK_MINS=0 run CRIT)
 check "MEGAVIBE_DISK_CHECK_MINS=0 switches it off" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]]'
 P=$(probes); OUT=$(MEGAVIBE_DISK_WATCH=0 run CRIT)
 check "MEGAVIBE_DISK_WATCH=0 switches it off" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]]'
 
+# Without perl there is no lock and no deadline: the check is skipped, the hook
+# still exits 0.
+mkdir -p "$T/noperl"; for b in bash jq cat tr grep awk sed date touch mkdir printf head tail wc sort cut tee find stat python3 flock; do p=$(command -v "$b" 2>/dev/null) && ln -s "$p" "$T/noperl/$b" 2>/dev/null; done
+due; P=$(probes); OUT=$(PATH="$T/noperl" run CRIT); RC=$?
+check "no perl: no check, hook exits 0" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]] && [ "$RC" -eq 0 ]'
+
 # disk-check.sh at SessionStart records level + stamp after warning, so the next
 # mid-session call neither probes nor repeats; a failed sizes scan still warns.
 rm -f "$LEVEL" "$STAMP"
-OUT=$(printf '{"session_id":"sid1","hook_event_name":"SessionStart","source":"compact"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
+OUT=$(printf '{"session_id":"sid1","hook_event_name":"SessionStart","source":"compact"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
 check "disk-check.sh warned, wrote level and stamp" '[[ "$OUT" == *"Low disk space"* ]] && [ "$(cat "$LEVEL")" = CRITICAL ] && [ -f "$STAMP" ]'
 P=$(probes); OUT=$(run CRIT)
 check "the mid-session call after it: not due, no repeat" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]]'
 echo OK > "$LEVEL"
-OUT=$(printf '{"session_id":"sid1"}' | HOME="$T/home" MV_FAKE=CRITNOSCAN bash "$T/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
+OUT=$(printf '{"session_id":"sid1"}' | HOME="$T/home" MV_FAKE=CRITNOSCAN bash "$T/hooks/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
 check "disk-check.sh with a failed sizes scan still warns and records" '[[ "$OUT" == *"Low disk space"* && "$OUT" == *"did not finish"* ]] && [ "$(cat "$LEVEL")" = CRITICAL ]'
 echo OK > "$LEVEL"
-printf '{"session_id":"sid1"}' | HOME="$T/home" MV_FAKE=FAIL bash "$T/disk-check.sh" >/dev/null 2>&1
+printf '{"session_id":"sid1"}' | HOME="$T/home" MV_FAKE=FAIL bash "$T/hooks/disk-check.sh" >/dev/null 2>&1
 check "disk-check.sh with a failed reading leaves the level alone" '[ "$(cat "$LEVEL")" = OK ]'
-OUT=$(printf '{"session_id":"sid1","agent_id":"child"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/disk-check.sh" 2>/dev/null)
-check "disk-check.sh for a subagent's SessionStart: silent, parent state untouched" '[ -z "$OUT" ] && [ "$(cat "$LEVEL")" = OK ]'
-OUT=$(printf '{}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
+OUT=$(printf '{"session_id":"sid1","agent_id":"child"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/disk-check.sh" 2>/dev/null)
+check "disk-check.sh for a subagent's SessionStart (agent_id): silent, parent state untouched" '[ -z "$OUT" ] && [ "$(cat "$LEVEL")" = OK ]'
+OUT=$(printf '{"session_id":"sid1","source":"compact","transcript_path":"/x/sid1/subagents/agent-child.jsonl"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/disk-check.sh" 2>/dev/null)
+check "disk-check.sh for a subagent's compaction (transcript path): silent, parent state untouched" '[ -z "$OUT" ] && [ "$(cat "$LEVEL")" = OK ]'
+OUT=$(printf '{}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
 check "disk-check.sh with no session id still warns" '[[ "$OUT" == *"Low disk space"* ]]'
 
 rm -f "$T/home/.megavibe/scripts/disk-watch.sh"

@@ -25,7 +25,11 @@ SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
 # session state; on-compact.sh makes the same distinction.
 INPUT=$(cat 2>/dev/null)
 [ -n "$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null)" ] && exit 0
-SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | cut -c1-12)
+SID_FULL=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null)
+# A subagent's payload may carry the parent's session_id and no agent_id; its
+# transcript path tells (same guard as on-compact.sh).
+[ -n "$SID_FULL" ] && case "$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)" in */"$SID_FULL"/subagents/agent-*.jsonl) exit 0 ;; esac
+SID=$(printf '%s' "$SID_FULL" | cut -c1-12)
 LEVEL=$(bash "$SCRIPT" level 2>/dev/null || echo UNKNOWN)
 case "$LEVEL" in OK|LOW|CRITICAL) ;; *) exit 0 ;; esac   # df could not answer: say nothing, record nothing
 # Record this session's level so the mid-session check in log-tool-event.sh
