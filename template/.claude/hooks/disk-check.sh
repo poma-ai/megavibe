@@ -32,7 +32,10 @@ case "$LEVEL" in OK|LOW|CRITICAL) ;; *) exit 0 ;; esac   # df could not answer: 
 # reports a change, not the same reading again. SessionStart payloads carry the
 # session id; without one nothing is recorded. A LOW/CRITICAL level is recorded
 # only below, after its warning is actually emitted.
-record() { [ -n "$SID" ] && { mkdir -p .agent/LOGS 2>/dev/null; printf '%s' "$1" > ".agent/LOGS/.disk-level.${SID}" 2>/dev/null || true; }; }
+record() {  # no session id: nothing to record, and the warning still goes out
+  [ -n "$SID" ] || return 0
+  mkdir -p .agent/LOGS 2>/dev/null; printf '%s' "$1" > ".agent/LOGS/.disk-level.${SID}" 2>/dev/null || true
+}
 if [ "$LEVEL" = OK ]; then record OK; exit 0; fi
 OUT=$(bash "$SCRIPT" check 2>/dev/null) || OUT=""
 [ -n "$OUT" ] || OUT="disk: free space is $LEVEL (the sizes scan did not finish; run ~/.megavibe/scripts/disk-watch.sh top for the biggest places)."

@@ -149,6 +149,29 @@ check "disk-check.sh with a failed reading leaves the level alone" '[ "$(cat "$L
 OUT=$(printf '{"session_id":"sid1","agent_id":"child"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/disk-check.sh" 2>/dev/null)
 check "disk-check.sh for a subagent's SessionStart: silent, parent state untouched" '[ -z "$OUT" ] && [ "$(cat "$LEVEL")" = OK ]'
 
+# A lock held by a live owner is never stolen: with the lock directory present
+# the call skips its bookkeeping (count unchanged) and the hook returns fast.
+echo OK > "$LEVEL"; at 24; mkdir "$CALLS.lockdir"; START=$SECONDS; OUT=$(run CRIT); RC=$?
+check "live lock: no steal, no count, no check, exit 0, under 3 s" '[ "$(cat "$CALLS")" = 24 ] && [[ "$OUT" != *"Low disk space"* ]] && [ "$RC" -eq 0 ] && [ $((SECONDS - START)) -lt 3 ]'
+# An abandoned lock (older than 10 s) is reclaimed.
+touch -t "$(date -v-1M +%Y%m%d%H%M.%S 2>/dev/null || date -d '1 minute ago' +%Y%m%d%H%M.%S)" "$CALLS.lockdir"
+OUT=$(run CRIT)
+check "abandoned lock (1 min old): reclaimed, call 25 checks" '[ "$(cat "$CALLS")" = 25 ] && [[ "$OUT" == *"Low disk space"* ]] && [ ! -d "$CALLS.lockdir" ]'
+
+# disk-check.sh without a session id still warns (nothing to record).
+OUT=$(printf '{}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/disk-check.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
+check "disk-check.sh with no session id still warns" '[[ "$OUT" == *"Low disk space"* ]]'
+
+# 100 parallel calls: the count must not lose more than a handful under the
+# bounded wait, and the check must happen.
+echo OK > "$LEVEL"; at 0 25; N=0; rm -f "$T"/par.*
+for _ in $(seq 1 100); do
+  ( printf '{"session_id":"sid1","tool_name":"Bash","tool_input":{"command":"true"}}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hook.sh" 2>/dev/null \
+      | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null | grep -c 'Low disk space' > "$(mktemp "$T/par.XXXXXX")" ) &
+done; wait
+for f in "$T"/par.*; do N=$((N + $(cat "$f"))); done
+check "100 parallel calls: at least 95 counted, exactly one check" '[ "$(cat "$CALLS")" -ge 95 ] && [ "$N" -eq 1 ]'
+
 rm -f "$T/home/.megavibe/scripts/disk-watch.sh"
 at 249; OUT=$(run CRIT); RC=$?
 check "no disk-watch.sh installed: silent, hook exits 0" '[[ "$OUT" != *"Low disk space"* ]] && [ "$RC" -eq 0 ]'

@@ -200,18 +200,28 @@ if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_
     return 1
   }
   _disk_giveback() { cat "$DISK_CALLS_FILE" > "$DISK_DUE_FILE" 2>/dev/null || true; }
-  # Serialise on flock where it exists (Linux). macOS ships no flock, and the
-  # unlocked fallback lost 29 of 30 parallel increments, so there the lock is a
-  # directory (mkdir is atomic on POSIX): up to 50 tries 10 ms apart, then a
-  # lock left behind by a crashed hook is reclaimed and the call proceeds.
+  # Serialise on flock where it exists (Linux), with a bounded wait: a hook
+  # must never sit on a lock. macOS ships no flock, and the unlocked fallback
+  # lost 29 of 30 parallel increments, so there the lock is a directory (mkdir
+  # is atomic on POSIX): up to 100 tries 10 ms apart. A lock is reclaimed only
+  # when it is provably abandoned (older than 10 s; the section takes
+  # milliseconds), never because the wait ran out: a live owner keeps it. If
+  # the lock cannot be taken, this call's bookkeeping is skipped (the next mark
+  # moves by at most one call) and the hook goes on.
+  _disk_lock_age() {  # seconds since the lock directory was made; empty when unknown
+    local m; m=$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null) || return 1
+    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    echo $(( $(date +%s) - m ))
+  }
   _disk_locked() {
-    local fn=$1 lockdir="${DISK_CALLS_FILE}.lockdir" i=0 rc
+    local fn=$1 lockdir="${DISK_CALLS_FILE}.lockdir" i=0 rc age
     if command -v flock >/dev/null 2>&1; then
-      ( flock -x 201 2>/dev/null; "$fn" ) 201>"${DISK_CALLS_FILE}.lock" 2>/dev/null; return $?
+      ( flock -w 2 -x 201 2>/dev/null || exit 75; "$fn" ) 201>"${DISK_CALLS_FILE}.lock" 2>/dev/null; return $?
     fi
     while ! mkdir "$lockdir" 2>/dev/null; do
       i=$((i + 1))
-      if [ "$i" -ge 50 ]; then rmdir "$lockdir" 2>/dev/null; mkdir "$lockdir" 2>/dev/null; break; fi
+      if [ "$i" -ge 100 ]; then return 75; fi
+      age=$(_disk_lock_age "$lockdir") && [ "$age" -gt 10 ] && rmdir "$lockdir" 2>/dev/null
       sleep 0.01
     done
     "$fn"; rc=$?
