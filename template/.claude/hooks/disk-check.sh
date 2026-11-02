@@ -4,7 +4,11 @@ trap 'exit 0' ERR
 set -u
 
 # Megavibe — tell the session when the disk is nearly full
-# Triggered by: SessionStart (matcher: "startup|resume")
+# Triggered by: SessionStart (matchers: "startup|resume" and "compact"). The
+# same check runs mid-session from log-tool-event.sh every
+# MEGAVIBE_DISK_CHECK_CALLS tool calls (default 25): a long session fills the
+# disk between starts (14.8 GB of reviewer copies and venvs in one scratchpad,
+# 8 GB left, 2026-11-03, noticed by the user, not the session).
 #
 # Silent unless free space is below the warn threshold (default 15 GB; see
 # scripts/disk-watch.sh). One bounded `df` when the disk is fine, so it costs nothing.

@@ -495,6 +495,36 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDG
   fi
 fi
 
+# --- Mid-session disk check -------------------------------------------------
+# disk-check.sh runs only at SessionStart; a long session fills the disk in
+# between (2026-11-03: 14.8 GB of reviewer copies, venvs and model downloads in
+# one session's scratchpad, 8 GB left, noticed by the user). Every
+# MEGAVIBE_DISK_CHECK_CALLS main-thread tool calls (default 25; 0 switches it
+# off), one bounded df via disk-watch.sh; the nudge fires once per level change
+# (OK -> LOW -> CRITICAL and back), never on every call. Subagent calls skip it.
+DISK_MSG=""
+DISK_EVERY="${MEGAVIBE_DISK_CHECK_CALLS:-25}"
+case "$DISK_EVERY" in ''|*[!0-9]*) DISK_EVERY=25 ;; esac
+DISK_SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
+DISK_LEVEL_FILE="${LOGDIR}/.disk-level.${SID}"
+if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] \
+   && [ -x "$DISK_SCRIPT" ] && [ "$COUNT" -gt 0 ] && [ $((COUNT % DISK_EVERY)) -eq 0 ] 2>/dev/null; then
+  DISK_OUT=$(bash "$DISK_SCRIPT" check 2>/dev/null || true)
+  DISK_NOW=OK
+  case "$DISK_OUT" in *CRITICAL*) DISK_NOW=CRITICAL ;; *LOW*) DISK_NOW=LOW ;; esac
+  DISK_PREV=$(cat "$DISK_LEVEL_FILE" 2>/dev/null || echo OK)
+  if [ "$DISK_NOW" != "$DISK_PREV" ]; then
+    printf '%s' "$DISK_NOW" > "$DISK_LEVEL_FILE" 2>/dev/null || true
+    if [ "$DISK_NOW" = OK ]; then
+      DISK_MSG="disk: free space is back above the warn threshold."
+    else
+      DISK_MSG="## Low disk space (mid-session check)
+${DISK_OUT}
+Your own scratchpad counts: reviewer repo copies, venvs and model downloads from finished rounds are yours to trash now (a delete moves them to the Trash; tell the user the Trash needs emptying to free the space). Do not delete anything you did not create; below the critical threshold, say so before any job that writes gigabytes."
+    fi
+  fi
+fi
+
 # --- Build nudge message if needed ---
 NUDGE_MSG=""
 
@@ -573,6 +603,16 @@ if [ -n "$COMPACT_NUDGE" ]; then
 ${COMPACT_NUDGE}"
   else
     NUDGE_MSG="$COMPACT_NUDGE"
+  fi
+fi
+
+# Append the mid-session disk message (built above) if the level changed
+if [ -n "$DISK_MSG" ]; then
+  if [ -n "$NUDGE_MSG" ]; then
+    NUDGE_MSG="${NUDGE_MSG}
+${DISK_MSG}"
+  else
+    NUDGE_MSG="$DISK_MSG"
   fi
 fi
 
