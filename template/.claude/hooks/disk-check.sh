@@ -21,17 +21,21 @@ command -v jq &>/dev/null || exit 0
 SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
 [ -x "$SCRIPT" ] || exit 0
 
+# A subagent's SessionStart (agent_id set) must not probe or touch the parent's
+# session state; on-compact.sh makes the same distinction.
+INPUT=$(cat 2>/dev/null)
+[ -n "$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null)" ] && exit 0
+SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | cut -c1-12)
+LEVEL=$(bash "$SCRIPT" level 2>/dev/null || echo UNKNOWN)
+case "$LEVEL" in OK|LOW|CRITICAL) ;; *) exit 0 ;; esac   # df could not answer: say nothing, record nothing
 # Record this session's level so the mid-session check in log-tool-event.sh
 # reports a change, not the same reading again. SessionStart payloads carry the
-# session id; without one nothing is recorded. UNKNOWN (df failed) records nothing.
-SID=$(jq -r '.session_id // ""' 2>/dev/null | cut -c1-12)
-LEVEL=$(bash "$SCRIPT" level 2>/dev/null || echo UNKNOWN)
-case "$LEVEL" in
-  OK|LOW|CRITICAL) [ -n "$SID" ] && { mkdir -p .agent/LOGS 2>/dev/null; printf '%s' "$LEVEL" > ".agent/LOGS/.disk-level.${SID}" 2>/dev/null || true; } ;;
-esac
-[ "$LEVEL" = OK ] && exit 0
-OUT=$(bash "$SCRIPT" check 2>/dev/null) || exit 0
-[ -n "$OUT" ] || exit 0
+# session id; without one nothing is recorded. A LOW/CRITICAL level is recorded
+# only below, after its warning is actually emitted.
+record() { [ -n "$SID" ] && { mkdir -p .agent/LOGS 2>/dev/null; printf '%s' "$1" > ".agent/LOGS/.disk-level.${SID}" 2>/dev/null || true; }; }
+if [ "$LEVEL" = OK ]; then record OK; exit 0; fi
+OUT=$(bash "$SCRIPT" check 2>/dev/null) || OUT=""
+[ -n "$OUT" ] || OUT="disk: free space is $LEVEL (the sizes scan did not finish; run ~/.megavibe/scripts/disk-watch.sh top for the biggest places)."
 
 MSG="## Low disk space
 
@@ -43,5 +47,6 @@ Rules while space is short:
 - For a long job, arm a heartbeat: Monitor on \`~/.megavibe/scripts/disk-watch.sh watch\` prints only when space moves by 1 GB or a threshold is crossed."
 
 # additionalContext reaches the model; systemMessage is the line the user sees.
+record "$LEVEL"
 jq -n --arg msg "$MSG" --arg line "$(printf '%s' "$OUT" | head -1)" \
   '{systemMessage: $line, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $msg}}'

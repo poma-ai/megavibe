@@ -165,6 +165,62 @@ if [ -f "$COUNTER_FILE" ]; then
   fi
 fi
 
+# --- Mid-session disk check, part 1: count every main-thread call -----------
+# The check itself is further down (part 2). Counting happens here, before the
+# .agent-write branch below returns early, so a context write is a call like any
+# other. The counter is this block's own (.disk-calls.<sid>): the staleness
+# counter only counts implementation tools and resets on every .agent write, so
+# it cannot pace a periodic check. Increment under flock; parallel tool calls in
+# one session complete together and an unlocked read-add-write lost most of them.
+DISK_EVERY="${MEGAVIBE_DISK_CHECK_CALLS:-25}"
+case "$DISK_EVERY" in
+  ''|*[!0-9]*) DISK_EVERY=25 ;;
+  *) DISK_EVERY="${DISK_EVERY#"${DISK_EVERY%%[!0]*}"}"; DISK_EVERY="${DISK_EVERY:-0}"
+     [ "${#DISK_EVERY}" -gt 6 ] && DISK_EVERY=25 ;;
+esac
+DISK_SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
+DISK_LEVEL_FILE="${LOGDIR}/.disk-level.${SID}"
+DISK_CALLS_FILE="${LOGDIR}/.disk-calls.${SID}"
+DISK_DUE_FILE="${LOGDIR}/.disk-due.${SID}"
+DISK_ON=0; DISK_CHECK_NOW=0
+if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] && [ -x "$DISK_SCRIPT" ]; then
+  DISK_ON=1
+  # One critical section: bump the count and, when it reaches the due mark, move
+  # the mark and claim this call as the one that checks. Under parallel calls
+  # exactly one claims; a lost increment (no flock) only delays the next mark.
+  _disk_claim() {
+    local calls due
+    calls=$(cat "$DISK_CALLS_FILE" 2>/dev/null | tr -d ' \n'); case "$calls" in ''|*[!0-9]*) calls=0 ;; esac
+    [ "${#calls}" -gt 9 ] && calls=0
+    calls=$((10#$calls + 1)); printf '%s' "$calls" > "$DISK_CALLS_FILE" 2>/dev/null || true
+    due=$(cat "$DISK_DUE_FILE" 2>/dev/null | tr -d ' \n'); case "$due" in ''|*[!0-9]*) due=$DISK_EVERY ;; esac
+    [ "${#due}" -gt 9 ] && due=$DISK_EVERY
+    due=$((10#$due))
+    if [ "$calls" -ge "$due" ]; then printf '%s' "$((calls + DISK_EVERY))" > "$DISK_DUE_FILE" 2>/dev/null || true; return 0; fi
+    return 1
+  }
+  _disk_giveback() { cat "$DISK_CALLS_FILE" > "$DISK_DUE_FILE" 2>/dev/null || true; }
+  # Serialise on flock where it exists (Linux). macOS ships no flock, and the
+  # unlocked fallback lost 29 of 30 parallel increments, so there the lock is a
+  # directory (mkdir is atomic on POSIX): up to 50 tries 10 ms apart, then a
+  # lock left behind by a crashed hook is reclaimed and the call proceeds.
+  _disk_locked() {
+    local fn=$1 lockdir="${DISK_CALLS_FILE}.lockdir" i=0 rc
+    if command -v flock >/dev/null 2>&1; then
+      ( flock -x 201 2>/dev/null; "$fn" ) 201>"${DISK_CALLS_FILE}.lock" 2>/dev/null; return $?
+    fi
+    while ! mkdir "$lockdir" 2>/dev/null; do
+      i=$((i + 1))
+      if [ "$i" -ge 50 ]; then rmdir "$lockdir" 2>/dev/null; mkdir "$lockdir" 2>/dev/null; break; fi
+      sleep 0.01
+    done
+    "$fn"; rc=$?
+    rmdir "$lockdir" 2>/dev/null
+    return $rc
+  }
+  _disk_locked _disk_claim && DISK_CHECK_NOW=1
+fi
+
 # --- Context freshness nudge (the CRITICAL path) ---
 # Check if this tool call was itself a write to .agent/*.md (reset counter if so)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""' 2>/dev/null || echo "")
@@ -219,6 +275,9 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
         >> "$EVENTS_FILE" 2>/dev/null || true
     fi
   fi
+  # This call returns before the disk check (part 2): if it claimed the check,
+  # give the claim back so the next call checks instead of a whole period later.
+  if [ "${DISK_CHECK_NOW:-0}" -eq 1 ]; then _disk_locked _disk_giveback; fi
   exit 0
 fi
 
@@ -495,39 +554,27 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDG
   fi
 fi
 
-# --- Mid-session disk check -------------------------------------------------
+# --- Mid-session disk check, part 2: the check this call claimed above -------
 # disk-check.sh runs at SessionStart only; a long session fills the disk in
 # between (2026-11-03: 14.8 GB of reviewer copies, venvs and model downloads in
-# one session's scratchpad, 8 GB left, noticed by the user). This block keeps
-# its OWN per-session call counter (.disk-calls.<sid>: every main-thread tool
-# call, any tool, never reset; the staleness counter above only counts
-# implementation tools and resets on each .agent write, so it cannot pace a
-# periodic check) and every MEGAVIBE_DISK_CHECK_CALLS calls (default 25, 0 off)
-# asks disk-watch.sh for one word: OK, LOW, CRITICAL or UNKNOWN (one bounded df,
-# no scan). The directory scan (`check`) runs only on a transition INTO LOW or
+# one session's scratchpad, 8 GB left, noticed by the user). Every
+# MEGAVIBE_DISK_CHECK_CALLS calls (default 25, 0 off) one call asks
+# disk-watch.sh for one word: OK, LOW, CRITICAL or UNKNOWN (one bounded df, no
+# scan). The directory scan (`check`) runs only on a transition INTO LOW or
 # CRITICAL, so an unchanged level costs one df. UNKNOWN, a failed call and a
 # garbage level file keep the previous level and say nothing: a measurement
-# that failed is not a recovery. Skipped for a subagent's call and inside the
-# post-compact grace window (disk-check.sh just ran on the compact matcher and
-# wrote the level file, so the next check here finds the level unchanged).
+# that failed is not a recovery. Inside the post-compact grace window the claim
+# is given back (the mark moves back) and nothing runs: disk-check.sh just ran
+# on the compact matcher and wrote the level file.
 DISK_MSG=""
-DISK_EVERY="${MEGAVIBE_DISK_CHECK_CALLS:-25}"
-case "$DISK_EVERY" in
-  ''|*[!0-9]*) DISK_EVERY=25 ;;
-  *) DISK_EVERY="${DISK_EVERY#"${DISK_EVERY%%[!0]*}"}"; DISK_EVERY="${DISK_EVERY:-0}"
-     [ "${#DISK_EVERY}" -gt 6 ] && DISK_EVERY=25 ;;
-esac
-DISK_SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
-DISK_LEVEL_FILE="${LOGDIR}/.disk-level.${SID}"
-DISK_CALLS_FILE="${LOGDIR}/.disk-calls.${SID}"
-if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] \
-   && [ "$IN_COOLDOWN" -eq 0 ] && [ -x "$DISK_SCRIPT" ]; then
-  DISK_CALLS=$(cat "$DISK_CALLS_FILE" 2>/dev/null | tr -d ' \n')
-  case "$DISK_CALLS" in ''|*[!0-9]*) DISK_CALLS=0 ;; esac
-  [ "${#DISK_CALLS}" -gt 9 ] && DISK_CALLS=0
-  DISK_CALLS=$((10#$DISK_CALLS + 1))
-  printf '%s' "$DISK_CALLS" > "$DISK_CALLS_FILE" 2>/dev/null || true
-  if [ $((DISK_CALLS % DISK_EVERY)) -eq 0 ]; then
+if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 1 ]; then
+  # Give the claim back: the mark returns to the current count, so the first
+  # call after the grace window checks.
+  _disk_locked _disk_giveback
+  DISK_CHECK_NOW=0
+fi
+if [ "$DISK_ON" -eq 1 ] && [ "$DISK_CHECK_NOW" -eq 1 ]; then
+  {
     # One bounded df; perl's alarm is the deadline where perl exists (disk-watch
     # bounds its own df too, this covers the shell around it). The probe writes
     # to a file, not a pipe: a command substitution waits for every holder of
@@ -551,7 +598,7 @@ if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_
       else
         # The sizes scan runs here only: on the way INTO a low level.
         if command -v perl >/dev/null 2>&1; then
-          perl -e 'alarm shift; exec @ARGV' 20 bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
+          perl -e 'alarm shift; exec @ARGV' 8 bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
         else
           bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
         fi
@@ -562,7 +609,7 @@ ${DISK_OUT}
 Your own scratchpad counts: reviewer repo copies, venvs and model downloads from finished rounds are yours to trash now (a delete moves them to the Trash; tell the user the Trash needs emptying to free the space). Do not delete anything you did not create; at CRITICAL, say so before any job that writes gigabytes."
       fi
     fi
-  fi
+  }
 fi
 
 # --- Build nudge message if needed ---

@@ -63,8 +63,11 @@ top() {
            "$PWD/.agent/ASSETS" "$PWD/.agent/LOGS" "$PWD/.worktrees" "$PWD/.venv" "$PWD/node_modules" \
            "$HOME/.megavibe/logs" "$HOME/.cache"; do
     [ -d "$c" ] || continue
-    if [ "$SECONDS" -ge 5 ]; then skipped=$((skipped + 1)); continue; fi
-    sz=$(bounded 3 du -sk "$c" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ { print $1 }')
+    # Each du gets at most the budget that is left (3 s each, 5 s in all), so the
+    # whole scan ends by the budget instead of starting a full du at 4.9 s.
+    left=$((5 - SECONDS)); [ "$left" -gt 3 ] && left=3
+    if [ "$left" -le 0 ]; then skipped=$((skipped + 1)); continue; fi
+    sz=$(bounded "$left" du -sk "$c" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ { print $1 }')
     if [ -z "$sz" ]; then skipped=$((skipped + 1)); continue; fi
     out="$out$sz$TAB$c
 "
