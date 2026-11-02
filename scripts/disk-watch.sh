@@ -6,6 +6,9 @@
 #   disk-watch.sh watch [secs]  loop for Monitor (default 60 s, minimum 30): prints only
 #                               when free space moves by STEP GB or the level changes
 #   disk-watch.sh top           the biggest places to look, sizes only
+#   disk-watch.sh level         one word for a caller that keeps its own state: OK, LOW,
+#                               CRITICAL, or UNKNOWN when df could not answer (one bounded df,
+#                               no directory scan)
 #
 # Env: MEGAVIBE_DISK_WARN_GB (15), MEGAVIBE_DISK_CRIT_GB (8), MEGAVIBE_DISK_STEP_GB (1),
 #      MEGAVIBE_DISK_PATH (default $HOME — the volume whose free space is measured).
@@ -60,8 +63,11 @@ top() {
            "$PWD/.agent/ASSETS" "$PWD/.agent/LOGS" "$PWD/.worktrees" "$PWD/.venv" "$PWD/node_modules" \
            "$HOME/.megavibe/logs" "$HOME/.cache"; do
     [ -d "$c" ] || continue
-    if [ "$SECONDS" -ge 5 ]; then skipped=$((skipped + 1)); continue; fi
-    sz=$(bounded 3 du -sk "$c" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ { print $1 }')
+    # Each du gets at most the budget that is left (3 s each, 5 s in all), so the
+    # whole scan ends by the budget instead of starting a full du at 4.9 s.
+    left=$((5 - SECONDS)); [ "$left" -gt 3 ] && left=3
+    if [ "$left" -le 0 ]; then skipped=$((skipped + 1)); continue; fi
+    sz=$(bounded "$left" du -sk "$c" 2>/dev/null | awk 'NR==1 && $1 ~ /^[0-9]+$/ { print $1 }')
     if [ -z "$sz" ]; then skipped=$((skipped + 1)); continue; fi
     out="$out$sz$TAB$c
 "
@@ -87,6 +93,10 @@ case "${1:-check}" in
     status_line "$kb" "$mnt" "$lvl"; top
     ;;
   top) top ;;
+  level)
+    row=$(df_row); [ -n "$row" ] || { echo UNKNOWN; exit 0; }
+    kb=${row%%"$TAB"*}; level "$kb"
+    ;;
   watch)
     iv=$(_int "${2:-}" 60); [ "$iv" -ge 30 ] || iv=30
     last_kb=""; last_lvl=""; fails=0

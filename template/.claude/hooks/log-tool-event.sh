@@ -76,6 +76,9 @@ esac
 # one-shot nudge (tier, 8-call threshold) or count toward the rehydrate
 # reminders, and must not receive them either.
 _TE_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+# A subagent's payload can carry the parent's session_id and no agent_id; its
+# transcript path tells (the guard on-compact.sh and disk-check.sh use).
+[ -n "$SID_FULL" ] && case "$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)" in */"$SID_FULL"/subagents/agent-*.jsonl) _TE_AGENT="${_TE_AGENT:-subagent-path}" ;; esac
 
 # Session-scoped paths (prevent concurrent session races)
 LOGFILE="${LOGDIR}/tool-events.${SID}.jsonl"
@@ -163,6 +166,50 @@ if [ -f "$COUNTER_FILE" ]; then
       echo "0" > "$COUNTER_FILE"
     ) 200>"${COUNTER_FILE}.lock" 2>/dev/null || echo "0" > "$COUNTER_FILE" 2>/dev/null || true
   fi
+fi
+
+# --- Mid-session disk check, part 1: is a check due? ------------------------
+# disk-check.sh runs at SessionStart only; a long session fills the disk in
+# between (2026-11-03: 14.8 GB of reviewer copies, venvs and model downloads in
+# one session's scratchpad, 8 GB left, noticed by the user). A check is due
+# when this session's stamp (.disk-stamp.<sid>) is missing or older than
+# MEGAVIBE_DISK_CHECK_MINS minutes (default 5, 0 off): a time stamp needs no
+# counter and no lock on the hot path (a per-call counter went through four
+# review rounds of lost increments and lock races). The check itself holds a
+# kernel lock (perl flock), so a crashed owner releases it and nothing is ever
+# reclaimed by hand. The check itself is part 2,
+# further down; a call that returns before it (a context write) simply leaves
+# the stamp alone, so the next call checks. Subagent calls never check.
+DISK_MINS="${MEGAVIBE_DISK_CHECK_MINS:-5}"
+case "$DISK_MINS" in
+  ''|*[!0-9]*) DISK_MINS=5 ;;
+  *) DISK_MINS="${DISK_MINS#"${DISK_MINS%%[!0]*}"}"; DISK_MINS="${DISK_MINS:-0}"
+     [ "${#DISK_MINS}" -gt 4 ] && DISK_MINS=5 ;;
+esac
+DISK_SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
+DISK_LEVEL_FILE="${LOGDIR}/.disk-level.${SID}"
+DISK_STAMP_FILE="${LOGDIR}/.disk-stamp.${SID}"
+DISK_LOCK_FILE="${LOGDIR}/.disk-lock.${SID}"
+DISK_HELPER="$(dirname "$0")/disk-midsession.sh"
+_disk_age() {  # seconds since the file's mtime; empty (and status 1) when unknown
+  # Two separate attempts: on GNU, `stat -f %m` prints filesystem info and
+  # fails on %m, so an `a || b` chain would glue both outputs together.
+  local m
+  m=$(stat -f %m "$1" 2>/dev/null) || m=$(stat -c %Y "$1" 2>/dev/null) || return 1
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  echo $(( $(date +%s) - m ))
+}
+_disk_due() {  # status 0 when the stamp is missing or old enough
+  local age; age=$(_disk_age "$DISK_STAMP_FILE") || return 0
+  [ "$age" -ge $((DISK_MINS * 60)) ]
+}
+DISK_CHECK_NOW=0
+# perl supplies both the kernel lock (flock) and the deadline (alarm); without
+# it there is no bounded way to run the check, so it is skipped (macOS and
+# every common Linux ship perl).
+if [ "$DISK_MINS" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] \
+   && [ -x "$DISK_SCRIPT" ] && [ -f "$DISK_HELPER" ] && command -v perl >/dev/null 2>&1 && _disk_due; then
+  DISK_CHECK_NOW=1
 fi
 
 # --- Context freshness nudge (the CRITICAL path) ---
@@ -495,6 +542,38 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDG
   fi
 fi
 
+# --- Mid-session disk check, part 2: the check -------------------------------
+# disk-midsession.sh does the work (stamp, probe, level compare and update,
+# scan on a transition; see its header). It runs under a kernel lock on
+# .disk-lock.<sid> (perl flock held by a perl supervisor for the helper's
+# whole run, non-blocking: a second caller skips at once; a crashed owner's
+# lock is released by the kernel, so there is no reclaim code) and a 25 s
+# deadline (the supervisor kills the helper's process group; the helper bounds
+# its probe at 10 s and its scan at 8 s). Its stdout is the message; it is written to a file,
+# not a pipe, so a stalled grandchild cannot hold the wait open. Inside the
+# post-compact grace window nothing runs: disk-check.sh just ran on the compact
+# matcher and wrote the level file and the stamp.
+DISK_MSG=""
+if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 0 ]; then
+  DISK_OUT_FILE="${LOGDIR}/.disk-msg.${SID}.$$"
+  DISK_SCRIPT="$DISK_SCRIPT" DISK_LEVEL_FILE="$DISK_LEVEL_FILE" DISK_STAMP_FILE="$DISK_STAMP_FILE" DISK_MINS="$DISK_MINS" \
+    perl -e 'use Fcntl qw(:flock);
+      open(my $l, ">>", shift) or exit 75; flock($l, LOCK_EX|LOCK_NB) or exit 75;
+      # The fd is close-on-exec, so an exec would drop the lock: stay as the
+      # supervisor, hold it, and run the helper in its own process group so the
+      # deadline can end the helper and anything it started.
+      my $pid = fork; defined $pid or exit 75;
+      if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 75 }
+      # Whether the helper finished or the deadline hit, nothing of its process
+      # group survives: a probe that timed out inside the helper may have left
+      # a stalled df behind.
+      my $reap = sub { kill "TERM", -$pid; select(undef, undef, undef, 0.3); kill "KILL", -$pid };
+      $SIG{ALRM} = sub { $reap->(); exit 75 };
+      alarm 25; waitpid($pid, 0); my $rc = $? >> 8; $reap->(); exit $rc' \
+      "$DISK_LOCK_FILE" bash "$DISK_HELPER" > "$DISK_OUT_FILE" 2>/dev/null || true
+  DISK_MSG=$(cat "$DISK_OUT_FILE" 2>/dev/null); rm -f "$DISK_OUT_FILE" 2>/dev/null || true
+fi
+
 # --- Build nudge message if needed ---
 NUDGE_MSG=""
 
@@ -573,6 +652,16 @@ if [ -n "$COMPACT_NUDGE" ]; then
 ${COMPACT_NUDGE}"
   else
     NUDGE_MSG="$COMPACT_NUDGE"
+  fi
+fi
+
+# Append the mid-session disk message (built above) if the level changed
+if [ -n "$DISK_MSG" ]; then
+  if [ -n "$NUDGE_MSG" ]; then
+    NUDGE_MSG="${NUDGE_MSG}
+${DISK_MSG}"
+  else
+    NUDGE_MSG="$DISK_MSG"
   fi
 fi
 
