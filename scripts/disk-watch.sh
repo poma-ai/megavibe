@@ -6,6 +6,9 @@
 #   disk-watch.sh watch [secs]  loop for Monitor (default 60 s, minimum 30): prints only
 #                               when free space moves by STEP GB or the level changes
 #   disk-watch.sh top           the biggest places to look, sizes only
+#   disk-watch.sh level         one word for a caller that keeps its own state: OK, LOW,
+#                               CRITICAL, or UNKNOWN when df could not answer (one bounded df,
+#                               no directory scan)
 #
 # Env: MEGAVIBE_DISK_WARN_GB (15), MEGAVIBE_DISK_CRIT_GB (8), MEGAVIBE_DISK_STEP_GB (1),
 #      MEGAVIBE_DISK_PATH (default $HOME — the volume whose free space is measured).
@@ -87,6 +90,10 @@ case "${1:-check}" in
     status_line "$kb" "$mnt" "$lvl"; top
     ;;
   top) top ;;
+  level)
+    row=$(df_row); [ -n "$row" ] || { echo UNKNOWN; exit 0; }
+    kb=${row%%"$TAB"*}; level "$kb"
+    ;;
   watch)
     iv=$(_int "${2:-}" 60); [ "$iv" -ge 30 ] || iv=30
     last_kb=""; last_lvl=""; fails=0

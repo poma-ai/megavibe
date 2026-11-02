@@ -496,31 +496,71 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDG
 fi
 
 # --- Mid-session disk check -------------------------------------------------
-# disk-check.sh runs only at SessionStart; a long session fills the disk in
+# disk-check.sh runs at SessionStart only; a long session fills the disk in
 # between (2026-11-03: 14.8 GB of reviewer copies, venvs and model downloads in
-# one session's scratchpad, 8 GB left, noticed by the user). Every
-# MEGAVIBE_DISK_CHECK_CALLS main-thread tool calls (default 25; 0 switches it
-# off), one bounded df via disk-watch.sh; the nudge fires once per level change
-# (OK -> LOW -> CRITICAL and back), never on every call. Subagent calls skip it.
+# one session's scratchpad, 8 GB left, noticed by the user). This block keeps
+# its OWN per-session call counter (.disk-calls.<sid>: every main-thread tool
+# call, any tool, never reset; the staleness counter above only counts
+# implementation tools and resets on each .agent write, so it cannot pace a
+# periodic check) and every MEGAVIBE_DISK_CHECK_CALLS calls (default 25, 0 off)
+# asks disk-watch.sh for one word: OK, LOW, CRITICAL or UNKNOWN (one bounded df,
+# no scan). The directory scan (`check`) runs only on a transition INTO LOW or
+# CRITICAL, so an unchanged level costs one df. UNKNOWN, a failed call and a
+# garbage level file keep the previous level and say nothing: a measurement
+# that failed is not a recovery. Skipped for a subagent's call and inside the
+# post-compact grace window (disk-check.sh just ran on the compact matcher and
+# wrote the level file, so the next check here finds the level unchanged).
 DISK_MSG=""
 DISK_EVERY="${MEGAVIBE_DISK_CHECK_CALLS:-25}"
-case "$DISK_EVERY" in ''|*[!0-9]*) DISK_EVERY=25 ;; esac
+case "$DISK_EVERY" in
+  ''|*[!0-9]*) DISK_EVERY=25 ;;
+  *) DISK_EVERY="${DISK_EVERY#"${DISK_EVERY%%[!0]*}"}"; DISK_EVERY="${DISK_EVERY:-0}"
+     [ "${#DISK_EVERY}" -gt 6 ] && DISK_EVERY=25 ;;
+esac
 DISK_SCRIPT="${HOME:-}/.megavibe/scripts/disk-watch.sh"
 DISK_LEVEL_FILE="${LOGDIR}/.disk-level.${SID}"
+DISK_CALLS_FILE="${LOGDIR}/.disk-calls.${SID}"
 if [ "$DISK_EVERY" -gt 0 ] && [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -z "$_TE_AGENT" ] \
-   && [ -x "$DISK_SCRIPT" ] && [ "$COUNT" -gt 0 ] && [ $((COUNT % DISK_EVERY)) -eq 0 ] 2>/dev/null; then
-  DISK_OUT=$(bash "$DISK_SCRIPT" check 2>/dev/null || true)
-  DISK_NOW=OK
-  case "$DISK_OUT" in *CRITICAL*) DISK_NOW=CRITICAL ;; *LOW*) DISK_NOW=LOW ;; esac
-  DISK_PREV=$(cat "$DISK_LEVEL_FILE" 2>/dev/null || echo OK)
-  if [ "$DISK_NOW" != "$DISK_PREV" ]; then
-    printf '%s' "$DISK_NOW" > "$DISK_LEVEL_FILE" 2>/dev/null || true
-    if [ "$DISK_NOW" = OK ]; then
-      DISK_MSG="disk: free space is back above the warn threshold."
+   && [ "$IN_COOLDOWN" -eq 0 ] && [ -x "$DISK_SCRIPT" ]; then
+  DISK_CALLS=$(cat "$DISK_CALLS_FILE" 2>/dev/null | tr -d ' \n')
+  case "$DISK_CALLS" in ''|*[!0-9]*) DISK_CALLS=0 ;; esac
+  [ "${#DISK_CALLS}" -gt 9 ] && DISK_CALLS=0
+  DISK_CALLS=$((10#$DISK_CALLS + 1))
+  printf '%s' "$DISK_CALLS" > "$DISK_CALLS_FILE" 2>/dev/null || true
+  if [ $((DISK_CALLS % DISK_EVERY)) -eq 0 ]; then
+    # One bounded df; perl's alarm is the deadline where perl exists (disk-watch
+    # bounds its own df too, this covers the shell around it). The probe writes
+    # to a file, not a pipe: a command substitution waits for every holder of
+    # the pipe, so a stalled grandchild (a df on a dead mount) would outlive the
+    # alarm; a file lets the deadline end the wait.
+    DISK_TMP="${LOGDIR}/.disk-probe.${SID}.$$"
+    if command -v perl >/dev/null 2>&1; then
+      perl -e 'alarm shift; exec @ARGV' 10 bash "$DISK_SCRIPT" level > "$DISK_TMP" 2>/dev/null || true
     else
-      DISK_MSG="## Low disk space (mid-session check)
+      bash "$DISK_SCRIPT" level > "$DISK_TMP" 2>/dev/null || true
+    fi
+    DISK_NOW=$(tr -d ' \n' < "$DISK_TMP" 2>/dev/null); rm -f "$DISK_TMP" 2>/dev/null || true
+    case "$DISK_NOW" in OK|LOW|CRITICAL) ;; *) DISK_NOW=UNKNOWN ;; esac
+    DISK_PREV=$(cat "$DISK_LEVEL_FILE" 2>/dev/null | tr -d ' \n')
+    case "$DISK_PREV" in OK|LOW|CRITICAL) ;; *) DISK_PREV=UNKNOWN ;; esac
+    if [ "$DISK_NOW" != UNKNOWN ] && [ "$DISK_NOW" != "$DISK_PREV" ]; then
+      printf '%s' "$DISK_NOW" > "$DISK_LEVEL_FILE" 2>/dev/null || true
+      if [ "$DISK_NOW" = OK ]; then
+        # Only a real recovery is announced; the first reading of a session is not.
+        [ "$DISK_PREV" != UNKNOWN ] && DISK_MSG="disk: free space is back above the warn threshold."
+      else
+        # The sizes scan runs here only: on the way INTO a low level.
+        if command -v perl >/dev/null 2>&1; then
+          perl -e 'alarm shift; exec @ARGV' 20 bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
+        else
+          bash "$DISK_SCRIPT" check > "$DISK_TMP" 2>/dev/null || true
+        fi
+        DISK_OUT=$(cat "$DISK_TMP" 2>/dev/null); rm -f "$DISK_TMP" 2>/dev/null || true
+        [ -n "$DISK_OUT" ] || DISK_OUT="disk: free space is $DISK_NOW (the sizes scan did not finish in time)."
+        DISK_MSG="## Low disk space (mid-session check: $DISK_NOW)
 ${DISK_OUT}
-Your own scratchpad counts: reviewer repo copies, venvs and model downloads from finished rounds are yours to trash now (a delete moves them to the Trash; tell the user the Trash needs emptying to free the space). Do not delete anything you did not create; below the critical threshold, say so before any job that writes gigabytes."
+Your own scratchpad counts: reviewer repo copies, venvs and model downloads from finished rounds are yours to trash now (a delete moves them to the Trash; tell the user the Trash needs emptying to free the space). Do not delete anything you did not create; at CRITICAL, say so before any job that writes gigabytes."
+      fi
     fi
   fi
 fi
