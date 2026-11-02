@@ -76,6 +76,9 @@ esac
 # one-shot nudge (tier, 8-call threshold) or count toward the rehydrate
 # reminders, and must not receive them either.
 _TE_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
+# A subagent's payload can carry the parent's session_id and no agent_id; its
+# transcript path tells (the guard on-compact.sh and disk-check.sh use).
+[ -n "$SID_FULL" ] && case "$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)" in */"$SID_FULL"/subagents/agent-*.jsonl) _TE_AGENT="${_TE_AGENT:-subagent-path}" ;; esac
 
 # Session-scoped paths (prevent concurrent session races)
 LOGFILE="${LOGDIR}/tool-events.${SID}.jsonl"
@@ -542,10 +545,11 @@ fi
 # --- Mid-session disk check, part 2: the check -------------------------------
 # disk-midsession.sh does the work (stamp, probe, level compare and update,
 # scan on a transition; see its header). It runs under a kernel lock on
-# .disk-lock.<sid> (perl flock, non-blocking: a second caller skips at once;
-# a crashed owner's lock is released by the kernel, so there is no reclaim
-# code) and a 25 s deadline (perl alarm; the helper bounds its probe at 10 s
-# and its scan at 8 s). Its stdout is the message; it is written to a file,
+# .disk-lock.<sid> (perl flock held by a perl supervisor for the helper's
+# whole run, non-blocking: a second caller skips at once; a crashed owner's
+# lock is released by the kernel, so there is no reclaim code) and a 25 s
+# deadline (the supervisor kills the helper's process group; the helper bounds
+# its probe at 10 s and its scan at 8 s). Its stdout is the message; it is written to a file,
 # not a pipe, so a stalled grandchild cannot hold the wait open. Inside the
 # post-compact grace window nothing runs: disk-check.sh just ran on the compact
 # matcher and wrote the level file and the stamp.
@@ -553,7 +557,15 @@ DISK_MSG=""
 if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 0 ]; then
   DISK_OUT_FILE="${LOGDIR}/.disk-msg.${SID}.$$"
   DISK_SCRIPT="$DISK_SCRIPT" DISK_LEVEL_FILE="$DISK_LEVEL_FILE" DISK_STAMP_FILE="$DISK_STAMP_FILE" DISK_MINS="$DISK_MINS" \
-    perl -e 'use Fcntl qw(:flock); open(my $l, ">>", shift) or exit 75; flock($l, LOCK_EX|LOCK_NB) or exit 75; alarm 25; exec @ARGV; exit 75' \
+    perl -e 'use Fcntl qw(:flock);
+      open(my $l, ">>", shift) or exit 75; flock($l, LOCK_EX|LOCK_NB) or exit 75;
+      # The fd is close-on-exec, so an exec would drop the lock: stay as the
+      # supervisor, hold it, and run the helper in its own process group so the
+      # deadline can end the helper and anything it started.
+      my $pid = fork; defined $pid or exit 75;
+      if ($pid == 0) { setpgrp(0, 0); exec @ARGV; exit 75 }
+      $SIG{ALRM} = sub { kill "TERM", -$pid; select(undef, undef, undef, 0.5); kill "KILL", -$pid; exit 75 };
+      alarm 25; waitpid($pid, 0); exit($? >> 8)' \
       "$DISK_LOCK_FILE" bash "$DISK_HELPER" > "$DISK_OUT_FILE" 2>/dev/null || true
   DISK_MSG=$(cat "$DISK_OUT_FILE" 2>/dev/null); rm -f "$DISK_OUT_FILE" 2>/dev/null || true
 fi

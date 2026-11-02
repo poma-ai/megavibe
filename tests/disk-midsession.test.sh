@@ -124,6 +124,21 @@ kill "$HOLD_PID" 2>/dev/null; wait "$HOLD_PID" 2>/dev/null; HOLD_PID=""
 OUT=$(run CRIT)
 check "the lock released by its owner's death: the check runs" '[[ "$OUT" == *"Low disk space"* ]]'
 
+# The lock must be held for the helper's whole run: start a call whose probe
+# hangs, then try to take the lock from outside while it runs.
+echo OK > "$LEVEL"; due; P=$(probes)
+( run HANG > /dev/null ) &
+BG=$!; sleep 1.5
+perl -e 'use Fcntl qw(:flock); open(my $l, ">>", shift) or exit 2; exit(flock($l, LOCK_EX|LOCK_NB) ? 0 : 1)' "$LOCK"; HELD=$?
+wait "$BG" 2>/dev/null
+check "the kernel lock is held while the helper runs (an outside taker fails)" '[ "$HELD" -eq 1 ]'
+check "...and is free again afterwards" 'perl -e '"'"'use Fcntl qw(:flock); open(my $l, ">>", shift) or exit 2; exit(flock($l, LOCK_EX|LOCK_NB) ? 0 : 1)'"'"' "$LOCK"'
+
+# A subagent payload without agent_id but with a subagent transcript path.
+echo OK > "$LEVEL"; due; P=$(probes)
+OUT=$(printf '{"session_id":"sid1","tool_name":"Read","tool_input":{"file_path":"x"},"transcript_path":"/x/sid1/subagents/agent-child.jsonl"}' | HOME="$T/home" MV_FAKE=CRIT bash "$T/hooks/log-tool-event.sh" 2>/dev/null | jq -r '.hookSpecificOutput.additionalContext // ""')
+check "a subagent call identified by its transcript path never checks" '[ "$(probes)" = "$P" ] && [[ "$OUT" != *"Low disk space"* ]] && [ ! -f "$STAMP" ]'
+
 # GNU stat semantics (`stat -f` prints filesystem info and fails on %m): a
 # fresh stamp must still count as fresh.
 mkdir -p "$T/gnubin"
