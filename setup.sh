@@ -20,20 +20,53 @@ skip()  { echo -e "  ${YELLOW}skip${RESET} $1 (already installed)"; }
 warn()  { echo -e "  ${YELLOW}!${RESET} $1"; }
 fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 
+# --update: `megavibe update` (and /megavibe-restart) re-running setup over an
+# EXISTING install. Never asks anything: not the mode question, not the
+# per-component "Install X?" questions, not the login pause, not the Gemini
+# key, not a sudo password, not npx's "Ok to proceed?". Refreshes what is
+# installed and leaves what was never chosen alone (see should_install_*);
+# --auto-install would install every optional component a Custom user had
+# declined, and with a terminal attached the prompts blocked a restart until
+# someone typed 1 (2026-11-03). Parsed here, before the pip/jq bootstrap below
+# can reach msudo; the other flags are read in section 0.
+UPDATE_MODE=0
+[ "${1:-}" = "--update" ] && UPDATE_MODE=1
+if [ "$UPDATE_MODE" -eq 1 ]; then
+  # The tools setup drives can ask on their own, past every shell prompt this
+  # file guards: Homebrew confirms an install that touches dependants, pip asks
+  # for index credentials on a 401, git for a password, apt via debconf, npx
+  # before fetching a package. Each honours an environment switch; set them
+  # here, before any bootstrap call, for this process and everything it runs.
+  export HOMEBREW_NO_ASK=1 PIP_NO_INPUT=1 GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive npm_config_yes=true
+fi
+
 # sudo asks for its password on /dev/tty even when stdin is a pipe. With nobody
 # there to type it (an agent's or a script's shell) setup would wait forever, so
 # unless a human can see the prompt (the test the Gemini key prompt uses) sudo
-# runs only if it needs no password. Root runs the command directly.
+# runs only if it needs no password. Root runs the command directly. Under
+# --update nobody is asked even with a terminal: an update must not stop.
 msudo() {
   if [ "$(id -u)" = "0" ]; then "$@"; return; fi
-  if [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; then
+  if [ "$UPDATE_MODE" -eq 0 ] && { [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; }; then
     sudo "$@"; return
   fi
   # Always try the real command: NOPASSWD may cover it even when `sudo -n true` fails.
-  sudo -n "$@" && return 0
+  # Under --update the non-interactive switch for apt's configuration hooks must
+  # cross the privilege boundary: sudo's env_reset drops exported variables, and
+  # a VAR=value argument needs SETENV, so it rides on `env`, which default
+  # sudoers lets any permitted user run.
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    sudo -n env DEBIAN_FRONTEND=noninteractive "$@" && return 0
+  else
+    sudo -n "$@" && return 0
+  fi
   local rc=$?
   if command -v sudo &>/dev/null && ! sudo -n true 2>/dev/null; then
-    warn "no terminal is attached to type a sudo password: if that is why 'sudo $*' failed, run setup.sh from a terminal or run it yourself"
+    if [ "$UPDATE_MODE" -eq 1 ]; then
+      warn "an update never asks for a sudo password: if that is why 'sudo $*' failed, run 'bash ~/.megavibe/setup.sh' from a terminal or run it yourself"
+    else
+      warn "no terminal is attached to type a sudo password: if that is why 'sudo $*' failed, run setup.sh from a terminal or run it yourself"
+    fi
   fi
   return "$rc"
 }
@@ -196,10 +229,12 @@ if [ -z "$PYTHON" ]; then
 fi
 
 # If no 3.10+ found, try to install via brew (macOS) or accept older Python with limited functionality
-if [ -z "$PYTHON" ]; then
+if [ -z "$PYTHON" ] && [ "$UPDATE_MODE" -eq 1 ]; then
+  warn "Python 3.10+ not found; an update does not install OS packages. For it run: bash ~/.megavibe/setup.sh"
+elif [ -z "$PYTHON" ]; then
   if command -v brew &>/dev/null; then
     echo "  Python 3.10+ not found — installing via Homebrew..."
-    brew install python@3.12
+    brew install python@3.12 || warn "brew could not install python@3.12"
     for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
       if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
         PYTHON="$cmd"
@@ -262,20 +297,26 @@ if [ -n "$PYTHON" ]; then
   fi
 
   # 4. Last resort: try the OS package manager
-  if [ -z "$PIP" ]; then
+  if [ -z "$PIP" ] && [ "$UPDATE_MODE" -eq 1 ]; then
+    # An update never installs OS packages: past sudo and debconf, dpkg's
+    # conffile question has no environment switch, and pip is optional.
+    warn "pip not found; an update does not install OS packages. For pip run: bash ~/.megavibe/setup.sh"
+  elif [ -z "$PIP" ]; then
+    # pip is optional (the warning below says what is lost), so a package
+    # manager that fails here must not abort setup under set -e.
     if command -v apt-get &>/dev/null; then
       echo "  Installing python3-pip via apt..."
-      msudo apt-get update -qq && msudo apt-get install -y -qq python3-pip
+      { msudo apt-get update -qq && msudo apt-get install -y -qq python3-pip; } || warn "apt could not install python3-pip"
     elif command -v dnf &>/dev/null; then
       echo "  Installing python3-pip via dnf..."
-      msudo dnf install -y -q python3-pip
+      msudo dnf install -y -q python3-pip || warn "dnf could not install python3-pip"
     elif command -v pacman &>/dev/null; then
       echo "  Installing python-pip via pacman..."
-      msudo pacman -S --noconfirm python-pip
+      msudo pacman -S --noconfirm python-pip || warn "pacman could not install python-pip"
     elif command -v brew &>/dev/null; then
       # macOS: pip comes with Homebrew python, but just in case
       echo "  Reinstalling python3 via brew (to get pip)..."
-      brew reinstall python3
+      brew reinstall python3 || warn "brew could not reinstall python3"
     fi
     # Check again after OS install
     if $PYTHON -m pip --version &>/dev/null; then
@@ -313,7 +354,11 @@ if [ "$#" -gt 0 ]; then
   esac
 fi
 
-if [ "$NONINTERACTIVE_AUTO" -eq 0 ] && [ ! -t 0 ]; then
+# --update was parsed at the top of the file (UPDATE_MODE), ahead of msudo.
+
+if [ "$UPDATE_MODE" -eq 1 ]; then
+  : # keep the installed selection; see the should_install_* functions
+elif [ "$NONINTERACTIVE_AUTO" -eq 0 ] && [ ! -t 0 ]; then
   # No terminal to answer on: take the default, as the per-tool prompts below do.
   # An open non-tty stdin (a pipe, an agent's shell) would otherwise block here forever.
   NONINTERACTIVE_AUTO=1
@@ -411,8 +456,14 @@ jq_install() {
   fi
 }
 
-# Ask before installing CLIs when missing (unless non-interactive --auto-install or no TTY)
+# Ask before installing CLIs when missing (unless non-interactive --auto-install or no TTY).
+# Under --update a component is refreshed only when it is already there: these
+# functions answer "is it installed?" and never read.
 should_install_codex() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    command -v codex &>/dev/null
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -427,6 +478,10 @@ should_install_codex() {
 }
 
 should_install_gemini() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    command -v gemini &>/dev/null
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -494,7 +549,7 @@ if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   echo "  You can do this now or later — megavibe works with just Claude."
   echo ""
-  [ ! -t 0 ] || read -p "  Press Enter to continue... " || true
+  [ "$UPDATE_MODE" -eq 1 ] || [ ! -t 0 ] || read -p "  Press Enter to continue... " || true
 else
   echo ""
   info "2) Logins — all tools already installed, skipping"
@@ -505,7 +560,9 @@ fi
 # accounts are pointed at the Antigravity CLI instead). API key auth still
 # works and is now the ONLY supported auth for megavibe's Gemini backend.
 
-if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+# Not under --update: an update never asks for a key, and the hint below is
+# first-install text.
+if [ "$UPDATE_MODE" -eq 0 ] && [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo ""
   info "2b) Gemini API key"
   echo ""
@@ -574,7 +631,16 @@ MEGAVIBE_HOME="$HOME/.megavibe"
 
 # Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
 stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  # BSD and GNU stat are probed SEPARATELY and each answer validated. Chained
+  # with ||, GNU stat reads `-f` as --file-system and takes both arguments as
+  # operands: it prints filesystem info for the file, fails on the format
+  # string, and the fallback then appends its number to that text, which
+  # chmod rejects (the launcher's lock code hit the same trap).
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=""
+  case "$m" in ''|*[!0-7]*) m=$(stat -c '%a' "$1" 2>/dev/null) || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s\n' "$m"
 }
 
 # Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
@@ -859,6 +925,10 @@ telegram_bot_install() {
 }
 
 should_install_telegram() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    [ -f "$MEGAVIBE_HOME/telegram-bot.py" ]
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -993,8 +1063,13 @@ if [ -d "$HOME/.claude/rules" ]; then
     [ -f "$_rule" ] || continue
     _tmpl="$SCRIPT_DIR/template/.claude/rules/$(basename "$_rule")"
     if [ -f "$_tmpl" ] && cmp -s "$_rule" "$_tmpl"; then
-      rm "$_rule"
-      ok "Removed duplicate user-level rule $(basename "$_rule") (project-level is canonical)"
+      # -f: a bare rm asks "override r--r--r-- ...?" on a terminal for a
+      # read-only copy, and reported it removed after a "n".
+      if rm -f "$_rule" 2>/dev/null; then
+        ok "Removed duplicate user-level rule $(basename "$_rule") (project-level is canonical)"
+      else
+        warn "Could not remove duplicate user-level rule $(basename "$_rule") (project-level is canonical): $_rule"
+      fi
     elif [ -f "$_tmpl" ]; then
       warn "~/.claude/rules/$(basename "$_rule") differs from template — left in place (double-loads; merge into the project copy manually)"
     fi
@@ -1016,7 +1091,17 @@ if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
     else
       echo "" >> "${CLAUDE_MD}.tmp"
       cat "$SCRIPT_DIR/template/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
-      mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+      # Not a bare mv: onto a read-only CLAUDE.md, mv asks "override r--r--r--
+      # ...? (y/n)" on a terminal, and an update must not stop; atomic_install
+      # stages and renames without asking and keeps the destination's mode.
+      # A refused install is a failed setup, not a warning: `fail` only
+      # prints, and "v3 refreshed" after it would be false.
+      if ! atomic_install "${CLAUDE_MD}.tmp" "$CLAUDE_MD"; then
+        rm -f "${CLAUDE_MD}.tmp"
+        fail "could not update ~/.claude/CLAUDE.md (immutable, or its directory refuses writes)"
+        exit 1
+      fi
+      rm -f "${CLAUDE_MD}.tmp"
     fi
     ok "~/.claude/CLAUDE.md updated (v3 refreshed)"
   else
@@ -1534,8 +1619,14 @@ register_gemini_mcp() {
         CURRENT_AUTH=$(jq -r '.security.auth.selectedType // "unset"' "$GEMINI_SETTINGS")
         if [ "$CURRENT_AUTH" != "gemini-api-key" ]; then
           jq '.security.auth.selectedType = "gemini-api-key"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
-          mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-          ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
+          # atomic_install, not a bare mv: onto a read-only settings.json mv
+          # asks "override ...?" on a terminal and "n" kept the old file.
+          if atomic_install "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"; then
+            ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
+          else
+            warn "Could not write $GEMINI_SETTINGS (read-only?) — Gemini CLI auth left as: $CURRENT_AUTH"
+          fi
+          rm -f "${GEMINI_SETTINGS}.tmp"
         fi
       elif [ -f "$GEMINI_SETTINGS" ]; then
         warn "~/.gemini/settings.json is not valid JSON — fix it and set security.auth.selectedType=\"gemini-api-key\""
@@ -1564,8 +1655,12 @@ register_gemini_mcp() {
       _model=$(bash "$SCRIPT_DIR/scripts/pick-gemini-model.sh" "$GEMINI_API_KEY" 2>/dev/null || echo "")
       if [ -n "$_model" ]; then
         jq --arg m "$_model" '.model.name = $m' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
-        mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-        ok "Gemini CLI default model pinned to $_model (flash-class; never override to a Pro model — 3-16x the price)"
+        if atomic_install "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"; then
+          ok "Gemini CLI default model pinned to $_model (flash-class; never override to a Pro model — 3-16x the price)"
+        else
+          warn "Could not write $GEMINI_SETTINGS (read-only?) — Gemini CLI default model left unset (risk: Pro billing on postpay keys)"
+        fi
+        rm -f "${GEMINI_SETTINGS}.tmp"
       else
         warn "Could not probe a working flash model — leaving Gemini CLI default unset (risk: Pro billing on postpay keys)"
       fi
@@ -1615,7 +1710,10 @@ register_playwright_mcp() {
     skip "Playwright chromium browser"
   else
     echo "  Downloading Playwright Chromium (~170MB, may take several minutes)..."
-    if npx playwright install chromium 2>&1 | tail -5; then
+    # --yes: npx asks "Ok to proceed?" before fetching a package it has not
+    # cached, and with a terminal on stdin that question would sit behind the
+    # tail and stop an update.
+    if npx --yes playwright install chromium 2>&1 | tail -5; then
       ok "Playwright chromium browser"
     else
       warn "Could not install Playwright browsers — run: npx playwright install chromium"
@@ -1624,6 +1722,10 @@ register_playwright_mcp() {
 }
 
 should_install_playwright() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    command -v claude &>/dev/null && claude mcp get playwright &>/dev/null
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi

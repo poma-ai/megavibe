@@ -76,7 +76,16 @@ mkdir -p "$PROJECT/.claude/rules"
 
 # Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
 stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  # BSD and GNU stat are probed SEPARATELY and each answer validated. Chained
+  # with ||, GNU stat reads `-f` as --file-system and takes both arguments as
+  # operands: it prints filesystem info for the file, fails on the format
+  # string, and the fallback then appends its number to that text, which
+  # chmod rejects (the launcher's lock code hit the same trap).
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=""
+  case "$m" in ''|*[!0-7]*) m=$(stat -c '%a' "$1" 2>/dev/null) || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s\n' "$m"
 }
 
 # Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
@@ -575,8 +584,15 @@ if [ -d "$HOME/.gemini" ] && command -v jq &>/dev/null; then
   else
     tmp="$(mktemp)"
     jq --arg p "$ABS_TARGET" '. + {($p): "TRUST_FOLDER"}' "$GEMINI_TRUST" > "$tmp"
-    mv "$tmp" "$GEMINI_TRUST"
-    echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+    # atomic_install, not a bare mv: onto a read-only trustedFolders.json mv
+    # asks "override ...?" on a terminal, and "n" kept the file while this
+    # said "trusted".
+    if atomic_install "$tmp" "$GEMINI_TRUST"; then
+      echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+    else
+      echo "  warn: could not write $GEMINI_TRUST (read-only?) — Gemini CLI does not trust $ABS_TARGET yet"
+    fi
+    rm -f "$tmp"
   fi
 fi
 

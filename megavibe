@@ -54,7 +54,16 @@ NOTES_DIR="$MEGAVIBE_HOME/update-notes"
 
 # Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
 stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  # BSD and GNU stat are probed SEPARATELY and each answer validated. Chained
+  # with ||, GNU stat reads `-f` as --file-system and takes both arguments as
+  # operands: it prints filesystem info for the file, fails on the format
+  # string, and the fallback then appends its number to that text, which
+  # chmod rejects (the launcher's lock code hit the same trap).
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=""
+  case "$m" in ''|*[!0-7]*) m=$(stat -c '%a' "$1" 2>/dev/null) || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s\n' "$m"
 }
 
 # Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
@@ -646,7 +655,7 @@ do_update() {
           echo -e "  ${RED}Download failed.${RESET} Check your internet connection."
           return 1
         fi
-        mv "$tmpdir/megavibe-main" "$tmpdir/megavibe"
+        mv -f "$tmpdir/megavibe-main" "$tmpdir/megavibe"
       fi
       # $new_hash came from the API BEFORE the download, so a commit landing in
       # between recorded a version that was never installed — and the next
@@ -660,7 +669,20 @@ do_update() {
       cloned_hash=$(git --git-dir="$tmpdir/megavibe/.git" rev-parse HEAD 2>/dev/null || echo "")
       if [ -n "$cloned_hash" ]; then new_hash="$cloned_hash"; fi
       echo "  Running setup..."
-      bash "$tmpdir/megavibe/setup.sh"
+      # --update: this is an update of an existing install, not a first install,
+      # so setup must never stop on a question. It did: with a terminal attached
+      # (a restart via /megavibe-restart, a remote-control session) its
+      # "Automatic or Custom?" question blocked the restart until someone typed
+      # 1, and --auto-install would have installed every optional component a
+      # Custom user had declined. The downloaded copy is always current main, so
+      # it knows the flag.
+      # A setup that failed (it says so and exits non-zero, e.g. a protocol file
+      # it could not replace) is not an installed version: record nothing, so
+      # the next `megavibe update` tries again instead of saying "up to date".
+      if ! bash "$tmpdir/megavibe/setup.sh" --update; then
+        echo -e "  ${RED}Setup failed.${RESET} The update is not recorded; fix what it reported and run: megavibe update"
+        return 1
+      fi
       # Store the new version hash
       if [ -n "$new_hash" ]; then
         echo "$new_hash" > "$VERSION_FILE"
@@ -1833,34 +1855,48 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
   # Check if any template file has changed — not just CLAUDE.md.
   # Earlier versions compared only CLAUDE.md and silently skipped syncs
   # when only hooks or settings.json changed. diff -rq walks the whole tree.
+  # Track whether CLAUDE.md specifically changed before we clobber it —
+  # only the protocol block in ~/.claude/CLAUDE.md needs surgical replace.
+  CLAUDE_MD_CHANGED=0
   if ! diff -rq "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template" &>/dev/null; then
-    # Track whether CLAUDE.md specifically changed before we clobber it —
-    # only the protocol block in ~/.claude/CLAUDE.md needs surgical replace.
-    CLAUDE_MD_CHANGED=0
     if ! diff -q "$SOURCE_TEMPLATE/CLAUDE.md" "$MEGAVIBE_HOME/template/CLAUDE.md" &>/dev/null; then
       CLAUDE_MD_CHANGED=1
     fi
     # Sync template to ~/.megavibe/. Guard before rm -rf.
     [ -n "${MEGAVIBE_HOME:-}" ] || { echo "ERROR: MEGAVIBE_HOME is empty — refusing to rm -rf" >&2; exit 1; }
     atomic_install_dir "$SOURCE_TEMPLATE" "$MEGAVIBE_HOME/template"
+  fi
 
-    # Surgical-replace the protocol block in ~/.claude/CLAUDE.md only when
-    # CLAUDE.md itself changed (preserves user edits outside the markers).
-    if [ "$CLAUDE_MD_CHANGED" = "1" ]; then
-      CLAUDE_MD="$HOME/.claude/CLAUDE.md"
-      MARKER="<!-- megavibe-v3 -->"
-      END_MARKER="<!-- /megavibe-v3 -->"
-      if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD" && grep -q "$END_MARKER" "$CLAUDE_MD"; then
-        sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
-        if [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
-          atomic_install "$SOURCE_TEMPLATE/CLAUDE.md" "$CLAUDE_MD"
-        else
-          echo "" >> "${CLAUDE_MD}.tmp"
-          cat "$SOURCE_TEMPLATE/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
-          mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
-        fi
-        rm -f "${CLAUDE_MD}.tmp"
+  # Surgical-replace the protocol block in ~/.claude/CLAUDE.md when CLAUDE.md
+  # itself changed (preserves user edits outside the markers), or when an
+  # earlier launch could not replace it: the template is synced by then, so
+  # the marker is what makes the next launch try again. Every step is guarded:
+  # under set -e a failed staging redirect (a 0555 ~/.claude) used to abort
+  # the launch before any retry state was kept.
+  PROTOCOL_RETRY="$MEGAVIBE_HOME/.protocol-refresh-pending"
+  if [ "$CLAUDE_MD_CHANGED" = "1" ] || [ -f "$PROTOCOL_RETRY" ]; then
+    CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+    MARKER="<!-- megavibe-v3 -->"
+    END_MARKER="<!-- /megavibe-v3 -->"
+    if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD" && grep -q "$END_MARKER" "$CLAUDE_MD"; then
+      # atomic_install, not a bare mv: onto a read-only CLAUDE.md mv asks
+      # "override ...?" on a terminal, and "n" kept the old protocol while
+      # this said "updated".
+      protocol_ok=1
+      if ! sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp" 2>/dev/null; then
+        protocol_ok=0
+      elif [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
+        atomic_install "$SOURCE_TEMPLATE/CLAUDE.md" "$CLAUDE_MD" || protocol_ok=0
+      else
+        { echo "" >> "${CLAUDE_MD}.tmp" && cat "$SOURCE_TEMPLATE/CLAUDE.md" >> "${CLAUDE_MD}.tmp" && atomic_install "${CLAUDE_MD}.tmp" "$CLAUDE_MD"; } || protocol_ok=0
+      fi
+      rm -f "${CLAUDE_MD}.tmp" 2>/dev/null || true
+      if [ "$protocol_ok" = 1 ]; then
+        rm -f "$PROTOCOL_RETRY" 2>/dev/null || true
         echo "  Protocol updated."
+      else
+        : > "$PROTOCOL_RETRY" 2>/dev/null || true
+        echo -e "  ${YELLOW}Protocol NOT updated:${RESET} could not replace $CLAUDE_MD (immutable, or ~/.claude refuses writes). Fix that; the next launch retries, or run: bash ~/.megavibe/setup.sh"
       fi
     fi
   fi
