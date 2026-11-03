@@ -65,7 +65,7 @@ cat > "$T/bin/git" <<'EOF'
 for a in "$@"; do
   if [ "$a" = clone ]; then
     dest="${@: -1}"; mkdir -p "$dest/template"
-    printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "$SETUP_ARGS"\n[ -t 0 ] && echo tty >> "$SETUP_ARGS"\nexit 0\n' > "$dest/setup.sh"
+    printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "$SETUP_ARGS"\n[ -t 0 ] && echo tty >> "$SETUP_ARGS"\nexit "${SETUP_RC:-0}"\n' > "$dest/setup.sh"
     exit 0
   fi
 done
@@ -109,6 +109,14 @@ rm -f "$SETUP_ARGS" "$T/version"
 check "without a terminal: the updater exited 0" '[ "$rc" = 0 ] || { cat "$T/out2"; false; }'
 check "without a terminal: setup got --update too" 'grep -qx -- --update "$SETUP_ARGS"'
 check "the version file records the downloaded hash" '[ "$(cat "$T/version" 2>/dev/null)" = deadbeefcafe ]'
+# A setup that fails (exit non-zero) is not an installed version: nothing is
+# recorded, so the next update tries again instead of "Already up to date".
+rm -f "$SETUP_ARGS" "$T/version"
+( cd "$T" && env PATH="$T/bin:$SYS" HOME="$T" TMPDIR="$T" SETUP_ARGS="$SETUP_ARGS" SETUP_RC=1 bash "$HAR" ) >"$T/out3" 2>&1 </dev/null; rc=$?
+check "setup exits 1: the updater fails and records no version" '[ "$rc" != 0 ] && [ ! -e "$T/version" ] && grep -q "Setup failed" "$T/out3"'
+# No bare mv/rm onto an existing file is left in setup.sh: both ask on a
+# terminal when the target is read-only (mv: "override ...?", rm likewise).
+check "setup.sh has no bare mv or rm (every one is -f, or atomic_install)" '[ "$(grep -c "^[[:space:]]*mv \"" "$REPO/setup.sh")" = 0 ] && [ "$(grep -c "^[[:space:]]*rm \"" "$REPO/setup.sh")" = 0 ]'
 
 # ---- part 2: setup.sh under --update asks nothing and keeps the selection ---
 # Lift section 0 (the mode question) and the four should_install_* functions.

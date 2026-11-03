@@ -54,7 +54,16 @@ NOTES_DIR="$MEGAVIBE_HOME/update-notes"
 
 # Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
 stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  # BSD and GNU stat are probed SEPARATELY and each answer validated. Chained
+  # with ||, GNU stat reads `-f` as --file-system and takes both arguments as
+  # operands: it prints filesystem info for the file, fails on the format
+  # string, and the fallback then appends its number to that text, which
+  # chmod rejects (the launcher's lock code hit the same trap).
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=""
+  case "$m" in ''|*[!0-7]*) m=$(stat -c '%a' "$1" 2>/dev/null) || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s\n' "$m"
 }
 
 # Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
@@ -667,7 +676,13 @@ do_update() {
       # 1, and --auto-install would have installed every optional component a
       # Custom user had declined. The downloaded copy is always current main, so
       # it knows the flag.
-      bash "$tmpdir/megavibe/setup.sh" --update
+      # A setup that failed (it says so and exits non-zero, e.g. a protocol file
+      # it could not replace) is not an installed version: record nothing, so
+      # the next `megavibe update` tries again instead of saying "up to date".
+      if ! bash "$tmpdir/megavibe/setup.sh" --update; then
+        echo -e "  ${RED}Setup failed.${RESET} The update is not recorded; fix what it reported and run: megavibe update"
+        return 1
+      fi
       # Store the new version hash
       if [ -n "$new_hash" ]; then
         echo "$new_hash" > "$VERSION_FILE"

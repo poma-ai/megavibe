@@ -631,7 +631,16 @@ MEGAVIBE_HOME="$HOME/.megavibe"
 
 # Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
 stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  # BSD and GNU stat are probed SEPARATELY and each answer validated. Chained
+  # with ||, GNU stat reads `-f` as --file-system and takes both arguments as
+  # operands: it prints filesystem info for the file, fails on the format
+  # string, and the fallback then appends its number to that text, which
+  # chmod rejects (the launcher's lock code hit the same trap).
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=""
+  case "$m" in ''|*[!0-7]*) m=$(stat -c '%a' "$1" 2>/dev/null) || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s\n' "$m"
 }
 
 # Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
@@ -1054,8 +1063,13 @@ if [ -d "$HOME/.claude/rules" ]; then
     [ -f "$_rule" ] || continue
     _tmpl="$SCRIPT_DIR/template/.claude/rules/$(basename "$_rule")"
     if [ -f "$_tmpl" ] && cmp -s "$_rule" "$_tmpl"; then
-      rm "$_rule"
-      ok "Removed duplicate user-level rule $(basename "$_rule") (project-level is canonical)"
+      # -f: a bare rm asks "override r--r--r-- ...?" on a terminal for a
+      # read-only copy, and reported it removed after a "n".
+      if rm -f "$_rule" 2>/dev/null; then
+        ok "Removed duplicate user-level rule $(basename "$_rule") (project-level is canonical)"
+      else
+        warn "Could not remove duplicate user-level rule $(basename "$_rule") (project-level is canonical): $_rule"
+      fi
     elif [ -f "$_tmpl" ]; then
       warn "~/.claude/rules/$(basename "$_rule") differs from template — left in place (double-loads; merge into the project copy manually)"
     fi
@@ -1080,7 +1094,13 @@ if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
       # Not a bare mv: onto a read-only CLAUDE.md, mv asks "override r--r--r--
       # ...? (y/n)" on a terminal, and an update must not stop; atomic_install
       # stages and renames without asking and keeps the destination's mode.
-      atomic_install "${CLAUDE_MD}.tmp" "$CLAUDE_MD" || fail "could not update ~/.claude/CLAUDE.md"
+      # A refused install is a failed setup, not a warning: `fail` only
+      # prints, and "v3 refreshed" after it would be false.
+      if ! atomic_install "${CLAUDE_MD}.tmp" "$CLAUDE_MD"; then
+        rm -f "${CLAUDE_MD}.tmp"
+        fail "could not update ~/.claude/CLAUDE.md (immutable, or its directory refuses writes)"
+        exit 1
+      fi
       rm -f "${CLAUDE_MD}.tmp"
     fi
     ok "~/.claude/CLAUDE.md updated (v3 refreshed)"
@@ -1599,8 +1619,14 @@ register_gemini_mcp() {
         CURRENT_AUTH=$(jq -r '.security.auth.selectedType // "unset"' "$GEMINI_SETTINGS")
         if [ "$CURRENT_AUTH" != "gemini-api-key" ]; then
           jq '.security.auth.selectedType = "gemini-api-key"' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
-          mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-          ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
+          # atomic_install, not a bare mv: onto a read-only settings.json mv
+          # asks "override ...?" on a terminal and "n" kept the old file.
+          if atomic_install "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"; then
+            ok "Gemini CLI switched to API key auth (was: $CURRENT_AUTH)"
+          else
+            warn "Could not write $GEMINI_SETTINGS (read-only?) — Gemini CLI auth left as: $CURRENT_AUTH"
+          fi
+          rm -f "${GEMINI_SETTINGS}.tmp"
         fi
       elif [ -f "$GEMINI_SETTINGS" ]; then
         warn "~/.gemini/settings.json is not valid JSON — fix it and set security.auth.selectedType=\"gemini-api-key\""
@@ -1629,8 +1655,12 @@ register_gemini_mcp() {
       _model=$(bash "$SCRIPT_DIR/scripts/pick-gemini-model.sh" "$GEMINI_API_KEY" 2>/dev/null || echo "")
       if [ -n "$_model" ]; then
         jq --arg m "$_model" '.model.name = $m' "$GEMINI_SETTINGS" > "${GEMINI_SETTINGS}.tmp"
-        mv "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"
-        ok "Gemini CLI default model pinned to $_model (flash-class; never override to a Pro model — 3-16x the price)"
+        if atomic_install "${GEMINI_SETTINGS}.tmp" "$GEMINI_SETTINGS"; then
+          ok "Gemini CLI default model pinned to $_model (flash-class; never override to a Pro model — 3-16x the price)"
+        else
+          warn "Could not write $GEMINI_SETTINGS (read-only?) — Gemini CLI default model left unset (risk: Pro billing on postpay keys)"
+        fi
+        rm -f "${GEMINI_SETTINGS}.tmp"
       else
         warn "Could not probe a working flash model — leaving Gemini CLI default unset (risk: Pro billing on postpay keys)"
       fi
