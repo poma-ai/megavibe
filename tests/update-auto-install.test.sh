@@ -219,13 +219,15 @@ chmod u+w "$T/cm/home/.claude/CLAUDE.md" 2>/dev/null
 # read-only file with a bare mv. Lift each block with its own file's helpers.
 LM="$T/launcher-lifted.sh"
 {
-  echo 'set -u'; echo "YELLOW=''; RESET=''"
+  # The launcher's own set flags: a failure that aborted under set -e is what
+  # the retry cases below are about.
+  echo 'set -euo pipefail'; echo "YELLOW=''; RESET=''"
   for f in stat_mode resolve_link atomic_install; do sed -n "/^$f() {/,/^}/p" "$REPO/megavibe"; done
-  echo 'SOURCE_TEMPLATE="$LM_SRC"; MEGAVIBE_HOME="$LM_MVH"'
-  awk '/^      CLAUDE_MD="\$HOME\/\.claude\/CLAUDE\.md"$/{p=1} p{print} p && seen && /^      fi$/{exit} p && /Protocol NOT updated/{seen=1}' "$REPO/megavibe"
+  echo 'SOURCE_TEMPLATE="$LM_SRC"; MEGAVIBE_HOME="$LM_MVH"; CLAUDE_MD_CHANGED="${LM_CHANGED:-1}"'
+  awk '/^  PROTOCOL_RETRY=/{p=1} p{print} p && /^  fi$/{exit}' "$REPO/megavibe"
   echo 'echo "LAUNCHER-DONE"'
 } > "$LM"
-check "the launcher refresh block was lifted with its helpers" 'bash -n "$LM" 2>/dev/null && grep -q "^atomic_install() {" "$LM" && grep -q "Protocol updated" "$LM" && grep -q "^      fi$" "$LM"'
+check "the launcher refresh block was lifted with its helpers" 'bash -n "$LM" 2>/dev/null && grep -q "^atomic_install() {" "$LM" && grep -q "Protocol updated" "$LM" && grep -q "Protocol NOT updated" "$LM" && grep -q "^  fi$" "$LM"'
 mkdir -p "$T/lm/home/.claude" "$T/lm/src" "$T/lm/mvh/template"
 printf '<!-- megavibe-v3 -->\nLAUNCHER NEW TEXT\n<!-- /megavibe-v3 -->\n' > "$T/lm/src/CLAUDE.md"
 cp "$T/lm/src/CLAUDE.md" "$T/lm/mvh/template/CLAUDE.md"
@@ -237,6 +239,21 @@ if [ "$HAVE_TTY" -eq 1 ]; then
   check "launcher refresh: custom text kept, block replaced, mode kept, no .tmp" 'grep -q "MY CUSTOM RULES" "$T/lm/home/.claude/CLAUDE.md" && grep -q "LAUNCHER NEW TEXT" "$T/lm/home/.claude/CLAUDE.md" && ! grep -q "old protocol" "$T/lm/home/.claude/CLAUDE.md" && [ ! -w "$T/lm/home/.claude/CLAUDE.md" ] && [ ! -e "$T/lm/home/.claude/CLAUDE.md.tmp" ]'
 fi
 chmod u+w "$T/lm/home/.claude/CLAUDE.md" 2>/dev/null
+# Failure, repair, retry: a 0555 ~/.claude refuses the staging file. Under the
+# launcher's set -e this used to abort the launch before any retry state; now
+# the launch goes on, warns, keeps the mirror's template (the advertised repair
+# reads it) and leaves a marker; the next launch retries on the marker alone.
+mkdir -p "$T/lm2/home/.claude" "$T/lm2/src" "$T/lm2/mvh/template"
+printf '<!-- megavibe-v3 -->\nRETRY NEW TEXT\n<!-- /megavibe-v3 -->\n' > "$T/lm2/src/CLAUDE.md"
+cp "$T/lm2/src/CLAUDE.md" "$T/lm2/mvh/template/CLAUDE.md"
+printf 'MY CUSTOM RULES\n\n<!-- megavibe-v3 -->\nold protocol\n<!-- /megavibe-v3 -->\n' > "$T/lm2/home/.claude/CLAUDE.md"
+chmod 0555 "$T/lm2/home/.claude"
+( cd "$T" && env HOME="$T/lm2/home" LM_SRC="$T/lm2/src" LM_MVH="$T/lm2/mvh" LM_CHANGED=1 PATH="$SYS" bash "$LM" ) >"$T/lm2.out" 2>&1 </dev/null; rc=$?
+check "refused refresh (0555 ~/.claude): the launch goes on and says NOT updated" '[ "$rc" = 0 ] && grep -q LAUNCHER-DONE "$T/lm2.out" && grep -q "Protocol NOT updated" "$T/lm2.out" || { cat "$T/lm2.out"; false; }'
+check "refused refresh: marker left, mirror template kept, protocol unchanged" '[ -f "$T/lm2/mvh/.protocol-refresh-pending" ] && [ -f "$T/lm2/mvh/template/CLAUDE.md" ] && grep -q "old protocol" "$T/lm2/home/.claude/CLAUDE.md"'
+chmod 0755 "$T/lm2/home/.claude"
+( cd "$T" && env HOME="$T/lm2/home" LM_SRC="$T/lm2/src" LM_MVH="$T/lm2/mvh" LM_CHANGED=0 PATH="$SYS" bash "$LM" ) >"$T/lm2b.out" 2>&1 </dev/null; rc=$?
+check "after the repair, a launch with an unchanged template retries on the marker and succeeds" '[ "$rc" = 0 ] && grep -q "Protocol updated" "$T/lm2b.out" && grep -q "RETRY NEW TEXT" "$T/lm2/home/.claude/CLAUDE.md" && grep -q "MY CUSTOM RULES" "$T/lm2/home/.claude/CLAUDE.md" && [ ! -e "$T/lm2/mvh/.protocol-refresh-pending" ] || { cat "$T/lm2b.out"; false; }'
 if PATH="$SYS" command -v jq >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
   IM="$T/init-lifted.sh"
   {
