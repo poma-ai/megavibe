@@ -56,9 +56,10 @@ EOF
 # rm-to-trash.sh makes the Trash the ONLY undo for every delete an agent performs;
 # emptying it destroys that undo for everything at once, including files nobody
 # looked at (an agent "freeing space" did exactly this on 2026-09-30). No escape
-# hatch on purpose: a human empties it in Finder. Reads (ls, du), restoring one
-# file with mv, and text that merely mentions these words (commit messages, grep
-# patterns, PR bodies) are untouched.
+# hatch for an agent: a human empties it in Finder, or answers the permission prompt
+# in front of ~/.megavibe/scripts/trash-empty.sh (the gate just below). Reads (ls, du),
+# restoring one file with mv, and text that merely mentions these words (commit
+# messages, grep patterns, PR bodies) are untouched.
 #
 # Parsed with shlex like the kubectl guard below, for the same reason: regexes over
 # shell text were defeated by (rm ...), { rm; }, then/do, env VAR=x rm, sudo -u root
@@ -83,6 +84,73 @@ EOF
 # Every review round on this block found a new bypass or over-block, so do not read
 # a clean regression corpus as proof. Upgrade path: a filesystem-level guard.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The Trash greenlight script: ~/.megavibe/scripts/trash-empty.sh.
+#
+# It is the one deleting path. What gates it is Claude Code's permission prompt (setup.sh
+# installs `permissions.ask` rules; an ask rule is honoured under bypassPermissions and is
+# forwarded to the phone). What keeps that gate from being walked around is the script
+# itself: it runs only when the Claude Code shell above it was asked for exactly
+# `~/.megavibe/scripts/trash-empty.sh [--all]` (README, "Trash greenlight"). A spelling that
+# reaches the file without the ask rules matching (a glob, a symlinked directory, a variable,
+# `cd` first) is therefore harmless: the script exits 5 before it touches anything.
+#
+# This block is only the first net, so the agent gets a clear message here instead of a
+# refusal later, and only the reviewed spelling reaches the prompt:
+#   - the exact command, alone in the call: exit 0 here (no permission decision is made; the
+#     ask rule prompts next). It also keeps the crude no-python fallback below from refusing it;
+#   - any other command whose text names the script (trash-empty, trash-em*, trash-e*; quotes,
+#     backslashes, brackets, braces and newlines ignored, case ignored): blocked;
+#   - a home-anchored path whose first part is a glob that could complete to .megavibe and
+#     that goes on below it (~/.m*/scripts/x, ~/.meg?vibe/x): blocked; a plain `ls -d ~/.m*` passes;
+#   - osascript, launchctl, crontab or a new Terminal window that mentions ~/.megavibe or the
+#     script: blocked (they start a process outside Claude Code's process tree; the script
+#     refuses those anyway). `launchctl list | grep com.megavibe` is not a mention.
+# HACK: a net, not a wall. Known holes: a name assembled from pieces the text never shows
+# together, a script FILE that calls it; the script itself is the lock for both.
+# Known over-blocks: any Bash text that names the script is refused, including `git add
+# scripts/trash-empty.sh`, `bash -n`, `grep`, `cat` and a commit message that mentions it; use
+# the Read and Grep tools, `git add scripts/` (the directory), a loop over the directory for
+# lint, `git commit -F file`.
+# ---------------------------------------------------------------------------
+_TE=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]{},\n" | tr '[:upper:]' '[:lower:]')
+_TE_RAW=$(printf '%s' "$COMMAND" | tr '[:upper:]' '[:lower:]')
+case "$_TE|$_TE_RAW" in
+  *trash-e*|*/.m*|*launchctl*|*osascript*|*osacompile*|*crontab*|*terminal*|*iterm*)
+    _TE_EXACT='^[[:space:]]*~/\.megavibe/scripts/trash-empty\.sh( --all)?[[:space:]]*$'
+    if [[ $COMMAND =~ $_TE_EXACT ]]; then
+      exit 0
+    fi
+    _TE_WHY=""
+    if printf '%s' "$_TE" | grep -Eq 'trash-e(m|[*?]|[^a-z0-9]|$)'; then
+      _TE_WHY="names trash-empty.sh"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?][^[:space:]]*/'; then
+      _TE_WHY="has a path whose first part is a glob that could expand to ~/.megavibe"
+    elif printf '%s' "$_TE_RAW" | grep -Eq '(osascript|osacompile|launchctl|crontab|(^|[[:space:];&|(])open[[:space:]].*(terminal|iterm))' \
+         && printf '%s' "$_TE_RAW" | grep -Eq '[/~]\.megavibe|trash-e'; then
+      _TE_WHY="starts a process outside Claude Code that mentions ~/.megavibe or trash-empty.sh"
+    fi
+    if [ -n "$_TE_WHY" ]; then
+      echo "Blocked: this command $_TE_WHY. ~/.megavibe/scripts/trash-empty.sh may only be run exactly as typed, alone in the call, so Claude Code asks the user first. To read it use the Read tool; to name it in a commit message use git commit -F." >&2
+      exit 2
+    fi
+    ;;
+esac
+
+# A PermissionRequest hook is run by Claude Code instead of asking the user, and can answer Yes: it
+# would answer the prompt in front of trash-empty.sh without the human. block-permission-hooks.sh
+# refuses the Write/Edit route; this is the Bash route (jq, a redirect, sed -i) as a text rule.
+# Over-block: any Bash text that mentions PermissionRequest next to a settings or hooks file, even
+# to read it (use the Read and Grep tools). Not covered: an interpreter that assembles the name.
+case "$_TE_RAW" in
+  *permissionrequest*)
+    case "$_TE_RAW" in
+      *settings*|*hooks.json*|*/.claude/*)
+        echo "Blocked: this command mentions PermissionRequest next to a Claude Code settings or hooks file. A PermissionRequest hook answers permission prompts for the user (including the one in front of ~/.megavibe/scripts/trash-empty.sh), so it is not something to write on the user's behalf; to read one use the Read or Grep tool." >&2
+        exit 2 ;;
+    esac ;;
+esac
+
 _TRASH_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
 _TRASH_CMD=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]" | tr '[:upper:]' '[:lower:]')
 case "$_TRASH_CMD $(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" in
@@ -629,6 +697,482 @@ else:
     echo "This is a WRITE, not a read: it runs a process inside a live container and can OOM-kill the server in a zero-headroom pod." >&2
     echo "Get the fact from the manifest instead: kubectl get/describe, the image tag, the env block, the sealed secret, or the repo." >&2
     echo "If a human has decided to go in: re-run with MEGAVIBE_ALLOW_PROD_EXEC=1, or widen MEGAVIBE_NONPROD_PATTERN." >&2
+    exit 2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Process-kill and session-kill commands by PATTERN or by SERVER.
+#
+# 2026-10-15 18:35: a review subagent cleaning up after a timeout test ran
+# `pkill -f 'perl -e' -P 1`. The pattern also matched the tmux server (its argv
+# carries the whole start command), and every tmux-hosted session died with it:
+# the remote-control sessions, the Telegram bot, the Personal Assistant, the
+# context watchers. A prose prohibition in the brief is not a sandbox
+# (same class as the `git rm -f` incident of 2026-10-08).
+#
+# Blocked when they are the command: pkill, killall, `tmux kill-server|kill-session|
+# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|bootstrap|disable`
+# and `launchctl kickstart -k`. NOT blocked: `kill <pid>` (a PID you started),
+# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`.
+# Parsed with shlex like the exec guard above, so the words inside quotes, an
+# echo, a commit message or a heredoc body are not commands; `bash -c "pkill x"`,
+# `sudo pkill x` and `env X=1 pkill x` are. Escape hatch for a human decision:
+# MEGAVIBE_ALLOW_KILL=1 (environment or an inline prefix). Needs python3; without
+# it the guard is skipped (same posture as the other guards here).
+# ---------------------------------------------------------------------------
+case "$COMMAND" in
+  *pkill*|*killall*|*tmux*|*launchctl*) _MAYBE_KILL=1 ;;
+  *) _MAYBE_KILL=0 ;;
+esac
+if [ "$_MAYBE_KILL" = "1" ] && [ "${MEGAVIBE_ALLOW_KILL:-0}" != "1" ] && command -v python3 &>/dev/null; then
+  _KV=$(printf '%s' "$COMMAND" | python3 -c '
+import os, re, shlex, sys
+
+CMD = sys.stdin.read()
+# Heredoc bodies are text, not commands: drop the body of EVERY heredoc started on a line
+# (cat <<A <<B has two), up to its delimiter line.
+out, pending = [], []
+for line in CMD.split("\n"):
+    if pending:
+        if line.strip() == pending[0]: pending.pop(0)
+        continue
+    out.append(line)
+    pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
+CMD = "\n".join(out).replace("\\\n", "")
+CMD = CMD.replace("\n", " ; ")
+
+KILLERS = {"pkill", "killall"}
+TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
+LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
+WRAPPER_OPTS = {"sudo": {"-u","-g","-h","-p","-C","-T","-r","-t","-U","-D","-R"}, "doas": {"-u","-C"},
+                "env": {"-u","-C","-S","-P"}, "nice": {"-n"}, "stdbuf": {"-i","-o","-e"},
+                "timeout": {"-s","-k"}, "nohup": set(), "command": set(),
+                "time": set(), "builtin": set(),
+                "xargs": {"-I","-n","-P","-L","-s","-E","-d","-a","-J","-R","-S"}}
+WRAPPER_OPTS["ex" + "ec"] = {"-a"}
+KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done"}
+SHELLS = {"sh", "bash", "zsh", "ksh", "dash"}
+OPS = {";", "&&", "||", "|", "&", "\n", "(", ")", "|&", ";;"}
+
+def split_tokens(s):
+    # Non-POSIX mode keeps the quotes on a word, so a QUOTED ";" or "&&" is a word
+    # (echo ";" pkill x prints text) and only a bare one is an operator.
+    lx = shlex.shlex(s, posix=False, punctuation_chars=True)
+    lx.whitespace_split = True
+    lx.commenters = ""
+    try:
+        return list(lx)
+    except ValueError:
+        return None
+
+def unq(tok):
+    try:
+        w = shlex.split(tok)
+        return "".join(w) if w else ""
+    except ValueError:
+        return tok
+
+def commands(tokens):
+    cur = []
+    for t in tokens:
+        if t in OPS:
+            if cur: yield [unq(x) for x in cur]
+            cur = []
+        else:
+            cur.append(t)
+    if cur: yield [unq(x) for x in cur]
+
+def verb(argv, valued):
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("-"):
+            i += 2 if a in valued else 1
+            continue
+        return a
+    return None
+
+def scan(argv, depth=0):
+    if depth > 3 or not argv: return False
+    i = 0
+    while i < len(argv):
+        a = argv[i]; b = os.path.basename(a)
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", a):
+            if a == "MEGAVIBE_ALLOW_KILL=1": return False
+            i += 1; continue
+        if a in KEYWORDS:
+            i += 1; continue
+        if b in WRAPPER_OPTS:
+            i += 1
+            while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
+                opt = argv[i]; i += 1
+                if opt == "--": break
+                if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
+            while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+                if argv[i] == "MEGAVIBE_ALLOW_KILL=1": return False
+                i += 1
+            if b == "timeout" and i < len(argv) and re.match(r"^[0-9.]+[smhd]?$", argv[i]): i += 1
+            continue
+        break
+    if i >= len(argv): return False
+    argv = argv[i:]
+    base = os.path.basename(argv[0])
+    if base in SHELLS:
+        for j, a in enumerate(argv[1:], 1):
+            if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
+                t = split_tokens(argv[j + 1])
+                if t is None: return False
+                return any(scan(c, depth + 1) for c in commands(t))
+        return False
+    if base in KILLERS:
+        return not ("--help" in argv or "-h" in argv)
+    if base == "tmux":
+        return verb(argv, {"-L", "-S", "-f", "-c", "-T"}) in TMUX_VERBS
+    if base == "launchctl":
+        v = verb(argv, set())
+        if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
+        return v in LAUNCHCTL_VERBS
+    return False
+
+t = split_tokens(CMD)
+if t is None:
+    print("ok")
+else:
+    print("block" if any(scan(c) for c in commands(t)) else "ok")
+' 2>/dev/null || echo ok)
+  if [ "$_KV" = "block" ]; then
+    echo "Blocked: pkill/killall or a tmux/launchctl kill command." >&2
+    echo "A pattern kill can hit the tmux server and every remote-control session with it (2026-10-15 18:35). Kill only a PID you started yourself (kill \$!, then ps -p), never a pattern, a server or a service." >&2
+    echo "If a human has decided to: re-run with MEGAVIBE_ALLOW_KILL=1." >&2
+    exit 2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Real deletes that skip the Trash.
+#
+# rm-to-trash.sh only rewrites `rm` on the command line. On 2026-10-26 an agent freed
+# disk with an inline python3 heredoc (globs + shutil.rmtree) over its scratchpad; one
+# glob matched a directory of finished work, and nothing was left in the Trash.
+# Blocked: an interpreter (python, node, perl, ruby, ...) anywhere in a command whose
+# text calls a deletion API; `rm` inside a quoted sh -c / eval body (not rewritten);
+# find -delete, unlink, shred, srm, rm -P, rimraf and git clean -f in command position,
+# heredoc bodies included. It reads TEXT, coarsely, after four review rounds in which a
+# shell parser here kept missing new spellings: it over-blocks text that merely names
+# these calls next to an interpreter word, and still misses a script FILE an
+# interpreter runs, rsync --delete, mv/cp over a file, truncation, and code assembled
+# at runtime. A net, not a wall.
+# Escape hatch for a human decision: MEGAVIBE_ALLOW_REAL_DELETE=1 in the environment
+# Claude Code runs with. Deliberately not an inline prefix: the agent that would reach
+# for it is the one this guard exists to stop.
+# ---------------------------------------------------------------------------
+# Relevance gate (hooks fire on every call): python starts for a deleting word or any
+# interpreter name. A superset of what the parser below detects, never a filter of
+# its own: a narrower gate let `fs.rm(` and `'/bin/rm'` through in review.
+_rd_gate() {
+  local bsnl=$'\\\n'    # bash 3.2 does not expand $'..' inside a ${//} pattern: via a variable
+  local c="${COMMAND//"$bsnl"/}"
+  # a continuation inside a word (r\<newline>m) joins into an rm rm-to-trash.sh never sees
+  [ "$c" != "$COMMAND" ] && printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$)' && return 0
+  printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
+  printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_])(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|awk|gawk|mawk|sh|bash|zsh|dash|ksh|tcsh|csh|fish|eval|trap|env|xargs|parallel|source)([^[:alnum:]_]|$)' \
+    && printf '%s' "$c" | grep -Eiq 'rm|remove|unlink|delete|empty'     # every pattern below contains one of these
+}
+# Only where deletes go to the Trash at all: without rmtrash, rm-to-trash.sh is inert, `rm`
+# deletes for real, and blocking the other forms would only push agents to that rm.
+_rd_trash_ready() { command -v rmtrash &>/dev/null; }      # the same condition rm-to-trash.sh uses
+if [ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && command -v python3 &>/dev/null && _rd_trash_ready && _rd_gate; then
+  read -r -d '' _RD_PY <<'PY' || true
+import re, signal, sys
+
+# Coarse on purpose. Six review rounds of finer checks here each found new spellings, so
+# this reads the command TEXT and blocks on co-occurrence. Heredoc bodies count only when a
+# shell or interpreter consumes them (a commit message written through `cat <<EOF` is
+# prose); quoted text counts only when a shell, eval, trap, env -S, parallel or awk runs it.
+# A pathological input that makes the patterns slow is blocked, never let through.
+signal.signal(signal.SIGALRM, lambda *a: (print("a command too complex to check (guard timed out)"), sys.exit(0)))
+signal.alarm(2)
+
+ORIG = sys.stdin.read()
+
+INTERP_W = r"(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|awk|gawk|mawk)"
+SHELL_W = r"(?:sh|bash|zsh|dash|ksh|tcsh|csh|fish|eval|trap|parallel|source|awk|gawk|mawk)"   # not xargs: it runs no shell
+INTERP = re.compile(r"(^|[^\w.-])" + INTERP_W + r"(?![\w/-])")          # python/ is a directory
+SHELLISH = re.compile(r"(^|[^\w.-])" + SHELL_W + r"(?![\w/-])|\benv\s+(?:-\S+\s+)*(?:-S|--split-string)")
+DEL_API = re.compile(
+    r"shutil\.rmtree|\brmtree\b|remove_tree|\brimraf\b|\bremoveSync\b|\bemptyDirSync\b"
+    r"|\bos\.(remove|unlink|rmdir|removedirs)\b|\.unlink\(|\.rmdir\("
+    r"|\b(unlinkSync|rmSync|rmdirSync)\b|\bfs(\.promises)?\.(rm|unlink|rmdir)\s*\(|Deno\.remove"
+    r"|FileUtils\.(rm|remove)|File\.(delete|unlink)|\bunlink\s*[\s(]|\brmdir\s*[\s(]"
+    r"|[\x27\"](/usr/bin/|/bin/)?rm[\x27\"]\s*[,\]]|[\x27\"`]\s*(/usr/bin/|/bin/)?rm(\s|[\x27\"`]|$)"
+    r"|\bsystem\s*\([^)]*\brm\b|array_map\s*\(\s*[\x27\"]unlink"
+    r"|\bfrom\s+(os|shutil|pathlib)\s+import\b[^\n;]*(\b(remove|unlink|rmdir|removedirs|rmtree)\b|\*)"
+    r"|__import__\(\s*[\x27\"](os|shutil)[\x27\"]\s*\)\s*\.\s*(remove|unlink|rmdir|removedirs|rmtree)"
+    r"|getattr\(\s*(os|shutil)\s*,\s*[\x27\"](remove|unlink|rmdir|removedirs|rmtree)"
+    r"|(fs|fs/promises|fs-extra)[\x27\"].*?\b(rm|unlink|rmdir|remove|emptyDir)\s*\("
+    r"|\)\s*\.\s*(rm|rmSync|unlink|unlinkSync|rmdir|rmdirSync)\s*\(", re.S)
+RM_WORD = r"(?<![\w.-])\\?rm(?![\w.-])"
+
+
+def scan_line(line, st):
+    """(the line without a comment, the quote state at its end, outside[i] per kept char).
+    The state (open quote, stack of enclosing quotes) is carried from the previous command
+    line, so a `#` inside a multi-line string is not a comment; `#` inside ${...} is not one
+    either. A $( ) inside double quotes starts afresh: `"$(cat <<'EOF'` opens a real heredoc."""
+    q, stack = st
+    stack = list(stack)
+    outside, i, brace = [], 0, 0
+    while i < len(line):
+        c = line[i]
+        if q == "\x27":
+            outside.append(False); q = None if c == "\x27" else q; i += 1; continue
+        if q == "\"":
+            if c == "\\" and i + 1 < len(line):
+                outside += [False, False]; i += 2; continue
+            if c == "$" and line[i + 1:i + 2] == "(":
+                stack.append(["\"", 0]); q = None
+                outside += [True, True]; i += 2; continue
+            outside.append(False); q = None if c == "\"" else q; i += 1; continue
+        if stack and c == "(":
+            stack[-1][1] += 1
+        elif stack and c == ")":
+            if stack[-1][1] == 0:
+                q = stack.pop()[0]; outside.append(True); i += 1; continue
+            stack[-1][1] -= 1
+        if c == "\\":
+            outside += [True] * min(2, len(line) - i); i += 2; continue
+        if c in "\x27\"":
+            q = c; outside.append(False); i += 1; continue
+        if c == "$" and line[i + 1:i + 2] == "{":
+            brace += 1
+        elif c == "}" and brace:
+            brace -= 1
+        elif c == "#" and not brace and (i == 0 or line[i - 1] in " \t;&|()"):
+            return line[:i], (q, stack), outside      # a comment ends the line, a trailing \ included
+        outside.append(True); i += 1
+    return line, (q, stack), outside
+
+
+def split_heredocs(text):
+    """(command lines, executed heredoc bodies, substitutions in prose heredoc bodies)."""
+    out, exe, subs, pending, q = [], [], [], [], (None, [])
+    rows = text.split("\n")
+    for n, line in enumerate(rows):
+        if pending:
+            marker, runs, expands = pending[0]
+            if line.strip() == marker:
+                pending.pop(0)
+            elif runs:
+                exe.append(line)
+            elif expands:
+                subs.extend(substitutions(line, heredoc=True))
+            continue
+        line, q, outside = scan_line(line, q)
+        out.append(line)
+        for m in re.finditer(r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?", line):
+            if not outside[m.start()]:          # "a << Q" inside quotes is not a heredoc
+                continue
+            # Only a real heredoc if a LATER line is exactly the marker (as rm-to-trash.sh
+            # checks): `$((1 << SHIFT))` or "a << b" in a message must not swallow what follows.
+            if not any(r.strip() == m.group(2) for r in rows[n + 1:]):
+                continue
+            # The consumer may come before `<<` or after it (`cat <<EOF | bash`, `<<EOF bash`),
+            # or on the line after the terminator when this line ends in a pipe: then assume it runs.
+            u = unquoted(line)
+            runs = bool(re.search(r"(^|[^\w.-])(" + SHELL_W + r"|" + INTERP_W + r")(?![\w-])", u)) or u.rstrip().endswith("|")
+            pending.append((m.group(2), runs, not m.group(1)))
+    return "\n".join(out), "\n".join(exe), subs
+
+
+def quoted_mask(text, single_only=False):
+    """inside[i]: whether text[i] sits inside a quoted string. A backslash-escaped quote
+    (don\'t) opens nothing. single_only: only single quotes, the ones that stop $( )."""
+    inside = [False] * len(text)
+    for m in re.finditer(r"\\.|\x27[^\x27]*\x27|\"(?:[^\"\\]|\\.)*\"", text):
+        if m.group(0)[0] == "\\" or (single_only and m.group(0)[0] == "\""):
+            continue
+        for k in range(m.start() + 1, m.end() - 1):
+            inside[k] = True
+    return inside
+
+
+def unquoted(text):
+    """The text with quoted strings blanked: what the shell itself parses as words. A quoted
+    option word ('-delete', "-fd") is still that option, so it is kept, unquoted."""
+    t = re.sub(r"([\x27\"])(-[\w-]+)\1", r"\2", text)
+    t = re.sub(r"\x27[^\x27]*\x27", "\x27\x27", t)
+    return re.sub(r"\"(?:[^\"\\]|\\.)*\"", "\"\"", t)
+
+
+def substitutions(text, heredoc=False):
+    """$( ) and backtick bodies outside single quotes: they run even inside double quotes.
+    In an unquoted heredoc body quotes are plain characters, so nothing is masked there."""
+    # single-quoted text blanked at the SAME length, so positions still index the original
+    nosq = text if heredoc else re.sub(r"\x27[^\x27]*\x27", lambda m: "\x27" + " " * (len(m.group(0)) - 2) + "\x27", text)
+    found, i = [], 0
+    while True:
+        i = nosq.find("$(", i)
+        if i < 0: break
+        d, j = 1, i + 2
+        while j < len(nosq) and d:
+            d += {"(": 1, ")": -1}.get(nosq[j], 0); j += 1
+        found.append(text[i + 2:j - 1]); i += 2      # the ORIGINAL text: quoted programs inside stay readable
+    found += [text[m.start(1):m.end(1)] for m in re.finditer(r"(?<!\\)`([^`]*)`", nosq)]   # \` is a literal backtick
+    return found
+
+
+CMDPOS = (r"(?:^|[;&|(`\n{!\x27\"]|\$\(|\b(?:if|elif|while|until|then|do|else|xargs|exec|env|sudo|doas|nohup|time|command|builtin|nice|ionice|timeout|stdbuf|caffeinate|arch|xcrun)\s+(?!\s)(?:-\S+\s+(?!\s)(?:[^-\s]\S*\s+(?!\s))?)*|\s-(?:exec|execdir|ok|okdir)\s+(?!\s))"
+          r"[ \t]*(?:\w+=\S*\s+(?!\s)|\d*[<>]+&?\d*[^\s;|&()<>]*\s+(?!\s))*(?:\S*/)?")
+
+
+def git_clean_forced(args):
+    """True unless a dry run: `git -c clean.requireForce=false clean -d` deletes without -f."""
+    w, force, dry, i = args.split(), False, False, 0
+    while i < len(w):
+        x = w[i]
+        if x == "--": break
+        if x in ("-e", "--exclude"): i += 2; continue
+        if x.startswith("--"):
+            force |= x == "--force"; dry |= x == "--dry-run"; i += 1; continue
+        if x.startswith("-"):
+            step = 1
+            for k, ch in enumerate(x[1:]):          # a short cluster, left to right
+                if ch == "e":                        # -e takes the rest of the word, or the next word
+                    step = 2 if k == len(x) - 2 else 1
+                    break
+                force |= ch == "f"; dry |= ch == "n"
+            i += step; continue
+        i += 1
+    return not dry
+
+
+# xargs and the options before the command it runs (some take a value: -n 1, -I {}, -d ';').
+XARGS_CMD = (r"\bxargs\b(?:\s+(?:-[0-9A-Za-z]*[nPLIdEsaJRS]\s*(?:\x27[^\x27]*\x27|\"[^\"]*\"|[^\s\x27\"]\S*)"
+             r"|--[\w-]+(?:=\S*)?|-\S+))*\s+"
+             # wrappers it may run first: xargs sudo unlink, xargs -0 nice unlink, xargs env X=1 unlink
+             r"(?:(?:\S*/)?(?:sudo|doas|nice|ionice|env|command|time|nohup|timeout|stdbuf|caffeinate|arch|xcrun)\s+"
+             r"(?:-\S+\s+|\w+=\S*\s+|\d+[smhd]?\s+)*)*")
+
+
+def shell_text_reasons(t):
+    if re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", t):
+        return "find -delete"
+    m = re.search(CMDPOS + r"(unlink|shred|srm)\s+\S", t)
+    if m:
+        return m.group(1)
+    m = re.search(XARGS_CMD + r"[\\\x27\"]*(?:\S*/)?(unlink|shred|srm)[\x27\"]*(?![\w.-])", t)
+    if m:
+        return "xargs " + m.group(1) + " (its operands arrive on stdin)"
+    m = re.search(r"\bparallel\b[^;|&\n]*?(?<![\w./-])(?:\S*/)?(unlink|shred|srm)(?![\w.-])", t)
+    if m:
+        return "parallel " + m.group(1) + " (its operands arrive on stdin)"
+    m = re.search(r"\bfd(?:find)?\b[^;|&\n]*\s(?:-[A-Za-z]*[xX]|--exec|--exec-batch)\s+[\\\x27\"]*(?:\S*/)?(rm|unlink|shred|srm)[\x27\"]*(?![\w.-])", t)
+    if m:
+        return "fd -x " + m.group(1) + " (fd runs it directly, so it is not rewritten to the Trash)"
+    if re.search(CMDPOS + r"\\?rm\s+(?:-\w+\s+)*-[A-Za-z]*P", t):
+        return "rm -P (overwrite)"
+    if re.search(CMDPOS + r"(?:(?:npx|bunx|yarn|pnpm\s+(?:dlx|exec)|npm\s+exec)\s+(?:-\S+\s+)*)?rimraf\b", t):
+        return "rimraf"
+    for m in re.finditer(r"\bgit\s+(?:-\S+\s+(?:\S+\s+)?)*rm\b([^;&|\n]*)", t):
+        a = m.group(1).split()
+        if "--cached" not in a and any(x == "--force" or re.match(r"^-[A-Za-z]*f", x) for x in a if x.startswith("-")):
+            return "git rm -f (drops uncommitted changes; plain git rm or git rm --cached is fine)"
+    for m in re.finditer(r"\bgit\s+(?:-[Cc]\s+\S+\s+|--?\S+\s+)*clean\b([^;&|\n]*)", t):
+        if git_clean_forced(m.group(1)):
+            return "git clean (anything but a dry run -n deletes)"
+    return None
+
+
+def interp_runs_deleter(raw):
+    """An interpreter's subprocess strings that run a protected deleter."""
+    norm = re.sub(r"[\x27\"\[\],()]", " ", raw)
+    if re.search(r"\bg?find\b", norm) and re.search(r"(?<![\w-])-delete\b", norm):
+        return "find -delete"
+    m = re.search(r"\b(unlink|shred|srm)\s+[-\w./~$]", norm)
+    if m:
+        return m.group(1)
+    m = re.search(r"\bgit\s+clean\b([^\n;]*)", norm)
+    if m and git_clean_forced(m.group(1)):
+        return "git clean -f"
+    return None
+
+
+def reasons(raw, depth=0):
+    if depth > 3:
+        return None
+    lines, exe, prose_subs = split_heredocs(raw)
+    # Comments are already gone (a comment ending in \ does not continue), so joining line
+    # continuations now cannot pull the next line into a comment.
+    split = lines
+    raw, lines, exe = (x.replace("\\\n", "") for x in (raw, lines, exe))
+    if len(re.findall(RM_WORD, lines)) > len(re.findall(RM_WORD, split)):
+        return "rm split by a line continuation, which is not rewritten to the Trash"
+    outer = unquoted(lines)
+    shell = bool(SHELLISH.search(outer) or SHELLISH.search(exe) or re.search(r"\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh)\b", outer))
+    interp = INTERP.search(outer) or INTERP.search(exe) or (shell and INTERP.search(lines))
+    if interp:
+        who = interp.group(0).strip(" \t;&|(`\n{!\x27\"")
+        m = DEL_API.search(raw)
+        if m:
+            return who + " in a command whose text calls a deletion (" + " ".join(m.group(0).split())[:60] + ")"
+        for a in re.finditer(r"\bimport\s+(?:os|shutil)\s+as\s+(\w+)", raw):
+            if re.search(r"\b" + re.escape(a.group(1)) + r"\.(remove|unlink|rmdir|removedirs|rmtree)\b", raw):
+                return "an interpreter that deletes files directly (" + a.group(1) + ".remove)"
+        r = interp_runs_deleter(raw)
+        if r:
+            return "an interpreter that runs " + r
+    if shell:
+        # rm the shell runs from text rm-to-trash.sh cannot rewrite: quoted text, an executed
+        # heredoc, an eval/trap argument, or text piped into a shell.
+        if len(re.findall(RM_WORD, lines)) + len(re.findall(RM_WORD, exe)) > len(re.findall(RM_WORD, outer)):
+            sm = SHELLISH.search(outer) or SHELLISH.search(exe)
+            who = sm.group(0).strip(" \t;&|(`\n{!") if sm else "a shell"
+            return "rm inside quoted text or a heredoc, with " + who + " in the command to run it, where it is not rewritten to the Trash"
+        if re.search(r"\b(?:eval|trap)\s+(?:\S+\s+)*?" + RM_WORD, outer):
+            return "rm run through eval or trap, where it is not rewritten to the Trash"
+        if re.search(RM_WORD + r"[^|\n]*\|\s*(?:sudo\s+)?(?:\S*/)?(?:sh|bash|zsh|dash|ksh)\b", outer):
+            return "rm text piped into a shell, where it is not rewritten to the Trash"
+    # rm spelled so that rm-to-trash.sh does not recognise it: quoted, escaped, held in a
+    # variable or looked up. Checked on the text with its quotes, since the quotes are the trick.
+    qrm = quoted_mask(lines)
+    if any(not qrm[m.start()] for m in re.finditer(
+                 r"(?:^|[;&|(`\n{!]|\$\(|\s-(?:exec|execdir|ok|okdir)(?=\s))\s*(?:\w+=\S*\s+)*"
+                 r"(?:(?:command(?!\s+-[vV])|builtin|exec|sudo|doas|nice|env|nohup|time)\s+(?:-\S+\s+)*)*"
+                 r"(?!\\rm\s)(?=\S*[\\\x27\"])[\\\x27\"]*(?:[\w.-]*/)*[\\\x27\"]*r[\\\x27\"]*m[\x27\"]*(?:\s|$)", lines)) \
+            or re.search(XARGS_CMD + r"(?=\S*[\\\x27\"])[\\\x27\"]*(?:\S*/)?r[\\\x27\"]*m[\x27\"]*(?:\s|$)", lines):
+        return "a quoted or escaped rm, which is not rewritten to the Trash"
+    inq, insq = quoted_mask(lines), quoted_mask(lines, single_only=True)
+    # $(which rm) runs wherever $( ) runs: outside single quotes and not escaped as \$(
+    for m in re.finditer(r"(?<!\\)(?:\$\(|`)\s*(?:which|command\s+-[vV]|type\s+-[pP])\s+rm\s*[)`]", lines):
+        if not insq[m.start()]:
+            return "rm through a lookup ($(which rm)), which is not rewritten to the Trash"
+    for m in re.finditer(r"(?:^|[;&|\s])(\w+=)[\x27\"]?(?:\S*/)?rm(?:[\x27\"\s;)]|$)", lines):
+        if not inq[m.start(1)]:
+            return "rm through a variable, which is not rewritten to the Trash"
+    m = re.search(XARGS_CMD + r"[\\\x27\"]+(?:\S*/)?(unlink|shred|srm)[\x27\"]*(?![\w.-])", lines)
+    if m:                              # a quoted deleter as the command xargs runs
+        return "xargs " + m.group(1) + " (its operands arrive on stdin)"
+    for t in [outer, exe] + ([lines] if shell else []):
+        r = shell_text_reasons(t)
+        if r:
+            return r
+    for sub in substitutions(lines) + prose_subs:
+        r = reasons(sub, depth + 1)
+        if r:
+            return r
+    return None
+
+
+r = reasons(ORIG)
+if r:
+    print(r)
+PY
+  _RD=$(printf '%s' "$COMMAND" | python3 -c "$_RD_PY" 2>/dev/null || true)
+  if [ -n "$_RD" ]; then
+    echo "Blocked: a real delete that skips the Trash: $_RD." >&2
+    echo "Use rm on the command line itself (with rmtrash installed it goes to the Trash and is recorded for review), or call ~/.megavibe/scripts/trash.sh from the code. A glob or rmtree over a scratch directory has destroyed finished work for good before." >&2
+    echo "If this is only text (a commit message, a note), run it as its own Bash call, or write it to a file with the Write tool and pass the file (git commit -F, gh pr create --body-file). If a human has decided the delete must be unrecoverable, they set MEGAVIBE_ALLOW_REAL_DELETE=1 in Claude Code's environment." >&2
     exit 2
   fi
 fi

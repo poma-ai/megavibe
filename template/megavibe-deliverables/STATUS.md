@@ -18,6 +18,15 @@ My default if unanswered: the option taken and why
 Answer:
 -->
 
+## Asked for
+
+| Ask | Date | File | Mirror | State |
+|---|---|---|---|---|
+
+<!-- One row per report, memo, analysis or retrospective you ask for, added when asked. State: open | done | dropped | moved (moved = the file graduated out of this folder; put its new location in File); done only when the file is in this folder. Keep the header line as the first row and insert new rows directly under the separator line. Mirror: URL of a hosted copy, if one was made at your request. Example:
+| Example memo | 2026-10-15 | 2026-10-15-example-memo.md | | open |
+-->
+
 ## Decided
 
 (answered decisions move here with the answer)

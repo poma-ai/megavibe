@@ -39,6 +39,8 @@ python3 ~/.megavibe/scripts/review-decisions.py --yes-all  # accept everything (
 
 Accepted decisions get appended to `.agent/DECISIONS.md` continuing the existing sequence number; rejected ones stay in the staging JSONL with `status: rejected` for audit.
 
+A staged row that nobody reviews stays pending forever and never reaches `DECISIONS.md` — nothing in the session reads this file. `.claude/hooks/compact-readiness.sh` reports the current session's pending-row count and queue path as advisory text (measured 2026-10-18: 31 pending in one session, 45 across four, the oldest six weeks old), so the count reaches the user in the pre-compact alert (stderr and the saved `.agent/LOGS/pre-compact-alert.*.md`; Claude Code discards a PreCompact hook's message to the model) and reaches the model in the tier-2/3 nudge only while the watcher is OFF (the watcher suppresses tier nudges). With the watcher on, run `.claude/hooks/compact-readiness.sh` by hand before compacting.
+
 ## Enabling / disabling
 
 The watcher is **on by default** — `claude` (or `megavibe`) launches and the spawn hook will start it automatically, provided tmux is on PATH and `~/.megavibe/scripts/context-watcher.py` exists.
@@ -120,7 +122,7 @@ This is acceptable noise; the cost of a false-positive rejection (silent data lo
 - **Cursor is line-indexed, atomic** (tmp + rename). Advanced only after successful application — a crash mid-cycle re-processes the same slice next time, no data loss.
 - **flock on shared file appends.** Two concurrent watchers (same project, two sessions) serialize on `<file>.lock` next to each shared file.
 - **Multi-session safety.** Pending-decisions queue is session-scoped; auto-applied files are project-scoped under lock.
-- **Side-effect**: writes to `.agent/*.md` bump file mtimes, which `log-tool-event.sh` notices and uses to reset the in-session stale-context counter. Free benefit — Claude stops getting nagged when the watcher is doing the work.
+- **Side-effect**: writes to `.agent/*.md` bump file mtimes, which `log-tool-event.sh` notices and uses to reset the in-session stale-context counter. Free benefit — Claude stops getting nagged when the watcher is doing the work. The cost: the counter then says nothing about `DECISIONS.md` and `TASKS.md`, which the watcher does not synthesise (it stages decisions and appends task notes). `compact-readiness.sh` compares those two files with the event log instead.
 
 ## Phase-out plan for tier nudges
 

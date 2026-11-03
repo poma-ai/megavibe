@@ -1,6 +1,6 @@
 ---
 name: prune-context
-description: "SUPERSEDED - do not use on a project that has .agent/snapshot.md or event files; run .claude/hooks/agent-log.sh fold instead (moves old events into the snapshot, loses nothing). Legacy only: selectively prune redundant lines from a hand-maintained .agent/FULL_CONTEXT.md via AI, in the reviewers.sh digest-chain order. Distinct from /compact (Claude Code built-in, which summarizes the live conversation)."
+description: "SUPERSEDED - do not use on a project that has .agent/snapshot.md or event files; run .claude/hooks/agent-log.sh fold instead (moves old events into the snapshot, loses nothing). Legacy only: selectively prune redundant lines from a hand-maintained .agent/FULL_CONTEXT.md via an allocated AI backend. Distinct from /compact (Claude Code built-in, which summarizes the live conversation)."
 disable-model-invocation: true
 allowed-tools: Read, Write, Edit, Glob
 ---
@@ -11,11 +11,11 @@ allowed-tools: Read, Write, Edit, Glob
 
 > **Not to be confused with `/compact`.** `/compact` is Claude Code's built-in conversation summarizer. `/prune-context` removes redundant lines from the durable `.agent/FULL_CONTEXT.md` log. See the "Which compaction do I need?" table in `CLAUDE.md`.
 
-Use Codex (or the standard fallback chain) to surgically remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
+Choose the first backend among those available by the allocation rule in `.claude/rules/delegation.md` to remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
 
 ## Prerequisites
 
-- At least one backend must be available. Try in the order `bash ~/.megavibe/scripts/reviewers.sh digest-chain` prints: Codex (`codex-review.sh --effort low`) → Claude subagent, or without Codex capped Gemini (`gemini-review.sh`) → Claude subagent
+- At least one backend must be available. `bash ~/.megavibe/scripts/reviewers.sh digest-chain` supplies availability and failure fallbacks after the allocated first attempt: Codex (`codex-review.sh --effort low`) → Claude subagent, or without Codex capped Gemini (`gemini-review.sh`) → Claude subagent
 - FULL_CONTEXT.md is a legacy hand-appended file (no snapshot, no event files) and large enough to warrant compaction (500+ lines)
 - The Claude subagent has a 200K token window — for very large logs, it may need to process in chunks
 
@@ -28,7 +28,7 @@ Use Codex (or the standard fallback chain) to surgically remove redundant lines 
    cp .agent/FULL_CONTEXT.md .agent/LOGS/FULL_CONTEXT.pre-compact.md
    ```
 
-3. **Send to the backend** (using the standard fallback chain) with this prompt:
+3. **Send to the allocated backend** (retaining the standard failure fallbacks) with this prompt:
 
    > Read this entire context log. Identify lines that are redundant, superseded by later entries, or no longer relevant.
    >

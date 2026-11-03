@@ -19,24 +19,29 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `telegram-bot.py` | Megavibe Remote v4: personal assistant + project session launcher via TG | Medium — remote access |
 | `template/CLAUDE.md` | Core protocol — installed to `~/.claude/CLAUDE.md` | Critical — review required |
 | `template/.claude/rules/*.md` | 7 protocol rules (spinouts, delegation, claude-md-authoring, process-discipline, prod-access-discipline, deliverables, shared-memory) | Medium — review recommended |
-| `template/.claude/skills/*/SKILL.md` | 8 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy, init-feature, finish-feature) | Low — workflow shortcuts |
+| `template/.claude/skills/*/SKILL.md` | 9 slash-command skills (rehydrate, catchup, prune-context, doc-review, megavibe-restart, copy, init-feature, finish-feature, watch) | Low — workflow shortcuts |
 | `template/sr-style.md` | Communication-style prompt, layered via `--append-system-prompt` on every launch | Medium — affects every session |
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
-| `template/.claude/hooks/*.sh` | Hook scripts template (31 hooks; canonical list in init.sh) | Medium |
-| `template/.claude/agents/summarizer.md` | Summarization fallback (sonnet) — second in the chain, behind Codex and ahead of Gemini | Low — rarely changes |
-| `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called on the ship round (critical work included), and whenever it is the only reader | Medium — affects every review |
+| `template/.claude/hooks/*.sh` | Hook scripts template (35 hooks; canonical list in init.sh) | Medium |
+| `template/.claude/hooks/rules-dedupe.sh`, `tests/rules-dedupe.test.sh` | One copy of the megavibe rules per directory tree: Claude Code loads parent directories' `.claude/rules/` too, so a project nested in a megavibe parent keeps no copy of the rules the parent carries (run by `init.sh` and on SessionStart startup/resume). Deletes only untracked, regular copies identical to the template (any content under `init.sh`, which always overwrote them) | Medium — deletes files |
+| `template/.claude/agents/summarizer.md` | Summarization agent (sonnet) — called by allocation or fallback per `delegation.md` | Low — rarely changes |
+| `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called when allocated or required by the floor in `template/.claude/rules/delegation.md` | Medium — affects every review |
 | `scripts/reviewers.sh` | The `MEGAVIBE_REVIEWERS` allow-list — which of non-negotiable 4's reviewers are switched on. Consulted by the review scripts **only under `--as-reviewer`** (they are also the general Codex/Gemini transport), and by `on-session-start.sh`. Front end: `megavibe reviewers` | Medium — gates every review |
 | `scripts/gemini-review.sh` | Gemini via direct API with `thinkingLevel: low` — the only Gemini path that returns complete reviews on 3.x; installed to `~/.megavibe/scripts/`. `--fallback` is what lets it review at all in the default set. Outside a review it is the rationed no-Codex alternative: refuses while Codex is usable (exit 4), flash-lite only, reserved-before-sent daily call/$/input caps with a ledger (exit 5), `--budget` | Medium — spends money |
-| `scripts/codex-review.sh` | The primary backend for reviews, re-hydration and large context, over `codex exec`. `--model`/`--effort` override the user's `~/.codex/config.toml` per call — used for summarising, left off for reviews | Medium |
+| `scripts/codex-review.sh` | The primary backend for reviews, re-hydration and large context, over `codex exec`. `--model`/`--effort` override the user's `~/.codex/config.toml` per call — used for summarising; reviews leave `--effort` off and `--model` off except to select different Codex models for a ship pair | Medium |
 | `.claude/hooks/*.sh` | Live hooks for THIS repo (copied from template) | Should mirror template |
-| `.claude/rules/*.md` | Live rules for THIS repo (copied from template) | Should mirror template |
+| `.claude/rules/*.md` | Live rules for THIS repo (copied from template; empty when a megavibe parent such as `~/dev` carries them, see `rules-dedupe.sh`) | Should mirror template |
 | `.claude/agents/*.md` | Live agents for THIS repo (copied from template) | Should mirror template |
 | `scripts/google-oauth-mint.sh` | Per-user Google OAuth refresh token for scopes a gcloud login does not carry (Ads, Workspace Admin, GA4 Admin). Loopback consent, token 0600 in ~/.config. `groupwrite` is a WRITE scope — see the header | Medium — touches credentials |
 | `scripts/mint-gemini-key.sh`, `pick-gemini-model.sh` | Admin-side Gemini key minting on the billed project (now the default; `--free-tier` opts into the dropped mode), and flash-model probing. Free-tier keys are 20 req/day and train on prompts — not a backend | Medium — touches credentials |
 | `scripts/usage-route.sh`, `template/.claude/hooks/usage-advisory.sh`, `template/statusline.sh` | Subscription-first routing. The statusline logs account-wide Claude usage to `~/.megavibe/usage/claude.jsonl`; `usage-route.sh` turns it into a band (over / normal / under, with hysteresis) that `megavibe` applies as `--model`/`--effort` on a fresh launch only and the hook relays to subagent choices. Any user choice, missing data or a reset window means no effect (a stale reading inside a live window can still raise `over`, never `under`). Also: the launcher bars API billing unless `MEGAVIBE_ALLOW_API_BILLING=1`. `usage-route.sh codex|balance` apply the same bands to the Codex weekly record and compare the two, as advice only. Detail: README "Subscription-first routing" | High — changes the model a session starts on |
-| `scripts/disk-watch.sh`, `template/.claude/hooks/disk-check.sh` | Free-disk-space watch: the hook tells a session at start when free space is below 15 GB (silent otherwise, one `df`), `disk-watch.sh watch` is the Monitor loop. Report-only, never deletes; opt out with `MEGAVIBE_DISK_WATCH=0` | Low — read-only |
+| `scripts/disk-watch.sh`, `template/.claude/hooks/disk-check.sh`, `disk-midsession.sh` and its block in `log-tool-event.sh`, `tests/disk-midsession.test.sh` | Free-disk-space watch: the hook tells a session at start and after a compaction when free space is below 15 GB (silent otherwise, one `df`); `log-tool-event.sh` runs `disk-midsession.sh` once per 5 minutes of tool activity (a time stamp on the hot path; the check itself under a perl flock + alarm) and speaks once per level change (a session filled its own scratchpad with 14.8 GB of reviewer copies between starts, 2026-11-03); `disk-watch.sh watch` is the Monitor loop. Report-only, never deletes; opt out with `MEGAVIBE_DISK_WATCH=0`, mid-session cadence `MEGAVIBE_DISK_CHECK_MINS` | Low — read-only |
+| `scripts/trash.sh`, `scripts/trash-review.py`, `template/.claude/hooks/trash-watch.sh`, `tests/trash.test.sh` | Trash ledger and review: `rm` runs as `trash.sh` (rmtrash plus a ledger line per item), the hook asks for a review past a threshold, `trash-review.py apply` restores, keeps, backs up or marks droppable; it never deletes. The real-delete guard in `block-dangerous-bash.sh` is its other half | High — moves user files |
+| `scripts/trash-empty.sh`, `template/.claude/hooks/block-permission-hooks.sh`, its gate in `block-dangerous-bash.sh`, the ask-rule merge and `--trash-greenlight-managed` in `setup.sh` | The only deleting path: empties what the review marked droppable (or `--all`), and runs only behind a `permissions.ask` prompt (honoured under bypass, forwarded to the phone). The lock is the script, not the hook: it exits 5 unless its ancestors are Anthropic's signed `claude` (codesign on the live pid) and the harness shell below it, with the measured command-line shape, was given exactly `~/.megavibe/scripts/trash-empty.sh [--all]` (it reads that shell's command line with `ps`; spellings no regex list can finish, like `cd -P … && ./tr*h-e*`, cannot pass). That proves Claude Code's shell was given the approved command, not that a human answered: a `PermissionRequest` hook can answer for the user, so the script exits 6 while one is visible in a settings file and `block-permission-hooks.sh` (plus a text rule in `block-dangerous-bash.sh`) refuses writing one; plugins, frontmatter hooks, a second `claude` with other settings and the agent's own deleting code stay a documented boundary. The script runs under `#!/bin/bash -p` with a fixed PATH and a wiped environment, and deletes through one embedded python program that works relative to a pinned `~/.Trash` descriptor. The hook is the first net: it lets exactly that spelling through and refuses other Bash text that names the script (`trash-e…`; so `git add` that file by name, `bash -n`, `grep` and commit messages naming it are over-blocked: use `git add scripts/`, a directory loop, the Read tool, `git commit -F`). Never give the script an env knob, a `--yes`, or a `trash-review.py` subcommand (`python3` is allowed and typable), never add a "human at a terminal" path (an agent can open a Terminal window), and keep tests on the marked one-line test points (`# TE_*`). README "Trash greenlight" | Critical — destructive path |
 | `template/.claude/hooks/cloud-token.sh` | Keeps `kubectl` and `gcloud` carrying a freshly minted token so a non-interactive session never asks for an interactive login. Inert until `~/.megavibe/personal/cloud-token.conf` exists | Medium — touches credentials |
+| `scripts/tick.sh`, `scripts/claude-auth-check.sh`, `template/.claude/skills/watch/SKILL.md` | Unattended windows. `tick.sh` is one deterministic watch tick (PRs updated and reviews and comments from others on the watched repos since the last tick, review requests addressed to you, Linear comments, the login lifetime, both subscriptions' usage; first line `NEEDS ACTION (n)` or `quiet`, plus `INCOMPLETE` when a call failed or was truncated, in which case the window is kept; config in `~/.megavibe/personal/tick.conf`, window state in `~/.megavibe/tick/`), scheduled in a session by `/watch` through Claude Code's cron; `megavibe tick` runs one. `claude-auth-check.sh` reads the keychain entry (else `~/.claude/.credentials.json`) and warns when the refresh token will not outlast the horizon; `on-session-start.sh` carries its line, `megavibe auth` runs it. Never prints a secret; a failed `gh`/Linear call is reported, not retried. README "Unattended windows" | Medium — reads credentials metadata; network calls |
+| `scripts/second-opinion.sh`, `scripts/deliverables-index.sh` | Second opinion on a hard problem (Codex gpt-6-astra, high effort, scratch dir); the phone-copy ledger and `INDEX.md` for `megavibe-deliverables/` (SendUserFile bookkeeping). Installed to `~/.megavibe/scripts/` by `setup.sh` | Low — advice and bookkeeping |
 | `template/.claude/shared-memory-full.md` | Long shared-knowledge routing text, loaded on demand by the `rules/shared-memory.md` stub (about 500 tokens; with the one-line protocol bullet, the eager cost when no `MEGAVIBE_MEMORY_*` server is set). Installed by `init.sh` to `.claude/` (not `rules/`, which loads eagerly) | Critical — review required |
 | `scripts/memory-config.sh` | Prints the `MEGAVIBE_MEMORY_*` values a session may trust, read only from the user-level `~/.claude/settings.json` (located via the passwd database; process env, cwd and git state are deliberately ignored because a cloned repo can steer them) and only when plain tokens. `rules/shared-memory.md` runs it instead of reading the env | High — trust boundary for shared memory |
 | `scripts/repo-id.sh` | Prints the normalized `org/name` repo id from the `upstream`/`origin` remote; the label for shared-memory entries (`rules/shared-memory.md`). Exit 1 = no usable remote, an id equal to a shared label, or `memory-config.sh` missing beside it | Low — read-only |
@@ -64,11 +69,16 @@ Three gotchas:
   is user-level. `init.sh` does not deploy it into projects.
 - Two upstreams now, so "re-sync from upstream" is ambiguous — check which section
   before touching one. Section 5 adapts selected ponytail guidance as prompt text
-  (the ladder, the root-cause/caller rule, the `SHORTCUT:` marker); its rule files
+  (the ladder with its one-line rung, the scope step, the root-cause/caller rule,
+  the test rule, the closing skipped/unchecked line, the never-trade list, the
+  `SHORTCUT:` marker; re-checked against v5.2.0 on 2026-10-15); its rule files
   and skills for 20+ agents are a distribution problem megavibe does not have, and
-  are deliberately not imported. Deviations: ponytail's "shortest working diff
+  are deliberately not imported. Deviations: the test rule applies only where the
+  project has a test practice, the closing skipped/unchecked line is for code
+  changes and omittable, and hardware calibration is dropped from the never-trade
+  list; ponytail's "shortest working diff
   wins" and "deletion over addition" are dropped — as absolutes they invite the
-  under-delivery this harness forbids — and its `ponytail:` marker is renamed
+  under-delivery this harness forbids — and its `shortcut:` marker is upper-cased to
   `SHORTCUT:` so the convention does not depend on knowing that project.
 
 
@@ -82,8 +92,8 @@ Three gotchas:
    - `[ -d ".agent" ] || exit 0` — no-op outside megavibe projects
    - `command -v jq &>/dev/null || exit 0` — graceful without jq
    - Never block Claude over infra issues (exit 0, not exit 2)
-   - Exception: `block-dangerous-bash.sh`, `enforce-pr-format.sh` and `block-stray-working-context.sh` exit 2 intentionally
-   - Exception: `block-dangerous-bash.sh` and `rm-to-trash.sh` intentionally run in every project (safety is universal), and `cloud-token.sh` does too (a reauth wall is not project-specific; it is inert until its config exists), so they skip the `.agent` guard
+   - Exception: `block-dangerous-bash.sh`, `enforce-pr-format.sh`, `block-stray-working-context.sh` and `block-permission-hooks.sh` exit 2 intentionally
+   - Exception: `block-dangerous-bash.sh`, `rm-to-trash.sh` and `block-permission-hooks.sh` intentionally run in every project (safety is universal), and `cloud-token.sh` does too (a reauth wall is not project-specific; it is inert until its config exists), so they skip the `.agent` guard
 
 4. **Template/live parity.** `template/.claude/` and the repo's own `.claude/` should stay in sync. After editing a template hook, run `bash init.sh .` to sync the live copy.
 
@@ -161,22 +171,22 @@ bash init.sh /path/to/project # always syncs hooks from template
 
 Changes to `template/CLAUDE.md` affect every downstream project. Before modifying:
 
-1. **Ask Codex to review** the proposed change (`codex-review.sh --as-reviewer`; intermediate rounds Codex alone, and on the ship round alongside the `reviewer` subagent):
+1. **Independently review** the proposed change using the allocation and review tiers in `template/.claude/rules/delegation.md`:
    - What could break for existing users?
    - Does it conflict with Claude Code built-in behavior?
    - Is the instruction clear enough that Claude will follow it?
 2. **Test with a real project.** Apply the updated protocol, run a non-trivial task, confirm Claude follows the new rules.
 3. **Update README.md** to reflect protocol changes.
 
-For hook changes, ask Codex — it runs the script under `--sandbox read-only` — for edge cases (missing files, race conditions, unexpected input, shell quoting). A reviewer that only reads the diff is the measured failure mode here.
+For hook changes, ask Codex — it runs the script in a scratch-write sandbox (the project read-only, a throwaway directory writable, no network) — for edge cases (missing files, race conditions, unexpected input, shell quoting). A reviewer that only reads the diff is the measured failure mode here.
 
 ## Subcontractor model routing
 
 | Scenario | Route | Why |
 |----------|-------|-----|
-| Reviewing protocol text changes | Intermediate rounds: Codex `--as-reviewer` alone. Ship round: `reviewer` subagent + Codex | The protocol IS critical per non-negotiable 4, which means a full-set ship round; since 2026-10-09 (the owner's decision, measured) it no longer means a full set on every round |
-| Reviewing hook shell scripts | Intermediate rounds: Codex `--as-reviewer` alone, and it must run the scripts. Ship round: `reviewer` subagent + Codex | Hooks ARE templates, and several are security or destructive-path guards. Both readers run the scripts on the ship round; a reviewer that only reads them missed a P1 in every measured case |
-| Intermediate round on ordinary code in a consuming project | Codex `--as-reviewer` alone, and only when that call actually succeeds — otherwise the `reviewer` subagent takes the round | The subagent costs ~180-200K tokens of the user's Claude subscription. In THIS repo the same applies to protocol, templates, hooks and scripts: they are critical, so their ship round is full-set, and their intermediate rounds are not |
+| Reviewing protocol text changes | Allocate readers per `template/.claude/rules/delegation.md`, "Two review tiers" | The protocol is critical; the same ship gate and availability/failure floor apply |
+| Reviewing hook shell scripts | Allocate readers per `template/.claude/rules/delegation.md`, "Two review tiers"; reviewers must run the scripts | Hooks are templates and may guard security or destructive paths; reading alone missed a P1 in every measured case |
+| Intermediate round on ordinary code in a consuming project | One reader allocated per `template/.claude/rules/delegation.md` | The same intermediate tier applies to critical work in this repo |
 | Researching CLAUDE.md best practices, Claude Code features | Web search / Codex | Needs current community info |
 | Comparing megavibe to alternatives | Codex, or Gemini for a very large input | Second opinion on architecture |
 | README edits, prose polish, small script fixes | Handle directly | Not worth delegation overhead |
@@ -187,7 +197,7 @@ For hook changes, ask Codex — it runs the script under `--sandbox read-only` �
 |----------|-----------|
 | `.agent/` files, not Mem0 | Megavibe's `.agent/` + Claude Code's built-in auto-memory (`~/.claude/projects/.../memory/`) cover project + cross-session context. Mem0 would be a third layer with SaaS dependency, free-tier limits, and known bugs. |
 | No swarms/antfarm | ~10 files of shell + markdown. Single-agent Claude is sufficient. Swarms add git worktree coordination for zero benefit at this scale. |
-| Codex for re-hydration (Claude subagent behind it; on a machine WITHOUT Codex, capped Gemini ahead of the subagent — `reviewers.sh digest-chain`, rails in `gemini-review.sh`) | Measured 2026-09-18 on the same 196 KB input: Codex `gpt-5.6-terra` at low effort, 23 s; Claude `summarizer`, 87 s and the richest output but 125K tokens of the calling session's own quota; Gemini flash-lite, 9 s and the thinnest, and the only one billed per token. Reversed the old Gemini-first order once Codex moved to a larger plan. Via `codex-review.sh`, not MCP: codex-cli 0.154.0 removed its MCP server. |
+| Re-hydration by allocation in `delegation.md` (`reviewers.sh digest-chain` supplies availability and failure fallbacks; Gemini rails in `gemini-review.sh`) | Measured 2026-09-18 on the same 196 KB input: Codex `gpt-5.6-terra` at low effort, 23 s; Claude `summarizer`, 87 s and the richest output but 125K tokens of the calling session's own quota; Gemini flash-lite, 9 s and the thinnest, and the only one billed per token. Reversed the old Gemini-first order once Codex moved to a larger plan. Via `codex-review.sh`, not MCP: codex-cli 0.154.0 removed its MCP server. |
 | Gemini demoted from peer reviewer to Codex's fallback | Over 11 paired reviews in one day it produced 4 wrong headline findings and 5 SHIP verdicts on code with confirmed blockers, against Codex reproducing real defects in every unit. Kept in the chain, not deleted: it had 1 unique real catch, and on a machine without Codex it is the only external reviewer, joining the subagent in the default set. |
 | User-level protocol, project-level hooks | Protocol in `~/.claude/CLAUDE.md` = one source of truth everywhere. Hooks in `.claude/settings.json` = project-scoped, interact with local `.agent/`. |
 | No Context7 / Sequential Thinking MCP | No external library deps (pure shell + markdown). The Explore→Plan→Implement→Verify workflow already provides structured reasoning. |
@@ -213,4 +223,4 @@ These are NOT currently implemented but are worth considering as megavibe evolve
 
 - `init.sh` settings merge uses `jq -s` with reduce — fragile if template `settings.json` structure changes. Always test the merge path.
 - `on-compact.sh` builds JSON via `jq -Rs` — escaping is delicate. Test with content containing quotes, newlines, special chars.
-- `log-tool-event.sh` counter resets on ANY write to `.agent/*.md`. By design (prefers low false-negatives over precision).
+- `log-tool-event.sh` counter resets on ANY write to `.agent/*.md`. By design (prefers low false-negatives over precision) — which also means it reads 0 whenever an event or the watcher wrote, and says nothing about whether `DECISIONS.md` and `TASKS.md` are current (2026-10-18: both a day stale under a zero counter). `compact-readiness.sh` reports uncovered event identities as an advisory check; `on-pre-compact.sh` and the close-out nudges carry its report.

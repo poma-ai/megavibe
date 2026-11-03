@@ -54,7 +54,24 @@ PREVSIG=""; [ -f "$SEEN" ] && PREVSIG=$(head -c 256 "$SEEN" 2>/dev/null | head -
 if [ "$EVENT" != "SessionStart" ] && [ -n "$SIG" ] && [ "$SIG" = "$PREVSIG" ]; then exit 0; fi
 
 # A file a clone shipped is not something this user typed: a tracked STATUS.md is ignored.
-if git ls-files --error-unmatch -- "$F" >/dev/null 2>&1; then exit 0; fi
+# Git is asked case-insensitively (:(icase)) and the answer is then checked against the real file, because APFS and
+# NTFS resolve `status.md` to `STATUS.md` but a case-sensitive filesystem does not: a name counts only when it is
+# the same file as $F (-ef). A folder that is itself a tracked symlink is a clone's too (git lists the link, not
+# the files behind it, so the file test alone would call STATUS.md untracked): only the folder's own index entry
+# with the symlink mode counts, not tracked files below it. A worktree's untracked link to the main checkout's
+# folder stays allowed. The pathspec environment variables are cleared so a user's GIT_*_PATHSPECS cannot turn
+# the gate off.
+_git() { env -u GIT_LITERAL_PATHSPECS -u GIT_GLOB_PATHSPECS -u GIT_NOGLOB_PATHSPECS -u GIT_ICASE_PATHSPECS git "$@"; }
+_n=""
+while IFS= read -r -d "" _n; do
+  [ "$_n" = "$F" ] || [ "$_n" -ef "$F" ] && exit 0
+done < <(_git ls-files -z -- ":(icase,literal)$F" 2>/dev/null)
+if [ -L "megavibe-deliverables" ]; then
+  while IFS= read -r -d "" _e; do
+    _m="${_e%% *}"; _n="${_e#*$'\t'}"
+    [ "$_m" = "120000" ] && { [ "$_n" = "megavibe-deliverables" ] || [ "$_n" -ef "megavibe-deliverables" ]; } && exit 0
+  done < <(_git ls-files -s -z -- ":(icase,literal)megavibe-deliverables" 2>/dev/null)
+fi
 
 # "D<n> <TAB> answer" for each decision under "## Decisions needed" whose FIRST Answer: line has text, and
 # "OPEN <TAB> D<n>" for each without. Placeholders (only * _ - … or nothing) count as empty. Only a

@@ -23,6 +23,20 @@ if [ ! -d "$PROJECT" ]; then
   exit 1
 fi
 
+# The home directory is never a project. Its .claude/ IS the user scope, so hooks
+# installed here would be registered in ~/.claude/settings.json and fire in every
+# project on the machine, twice where that project has its own; setup.sh then
+# archived ~/.claude/hooks and the next launch from ~ put it back (nine archives
+# on one machine by 2026-10-27). Exit 0, not 1, so a caller running this under
+# set -e carries on; the launcher itself refuses $HOME before it gets here.
+# -ef compares the inode, so a symlink or a differently-cased spelling on a
+# case-insensitive volume is caught too (bash 3.2's pwd -P keeps the typed case).
+if [ -n "${HOME:-}" ] && [ "$PROJECT" -ef "$HOME" ]; then
+  echo "Note: $PROJECT is your home directory; megavibe does not install project hooks here"
+  echo "  (its .claude/ is your user-level config). Launch inside a project for the full setup."
+  exit 0
+fi
+
 # --- Check prerequisites ---
 if ! command -v jq &>/dev/null; then
   echo "Warning: jq is not installed. Hooks require jq to function."
@@ -235,7 +249,7 @@ copy_if_missing() {
 # not exist yet, safety hooks included, and every tool call in the next
 # session failed on them until init.sh ran again.
 HOOKS_MISSING=0
-for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh agent-log.sh cloud-token.sh disk-check.sh usage-advisory.sh status-sync.sh; do
+for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray-working-context.sh block-permission-hooks.sh nudge-native-tools.sh nudge-quiet-bash.sh enforce-pr-format.sh after-edit.sh reindex-agent.sh on-compact.sh on-pre-compact.sh on-session-start.sh on-session-end.sh start-context-watcher.sh start-poma-serve.sh revive-watcher.sh augment-search.sh resize-image.sh read-delta.sh read-coverage.sh truncate-verbose-bash.sh nudge-restart.sh announce-update.sh watch-background.sh redact-secrets.sh compaction-autopilot.sh compact-readiness.sh agent-log.sh cloud-token.sh disk-check.sh disk-midsession.sh usage-advisory.sh status-sync.sh rules-dedupe.sh trash-watch.sh; do
   if [ -f "$TEMPLATE_DIR/.claude/hooks/$hook" ]; then
     atomic_install "$TEMPLATE_DIR/.claude/hooks/$hook" "$PROJECT/.claude/hooks/$hook" 755
     echo "  synced: .claude/hooks/$hook"
@@ -361,11 +375,39 @@ if [ "$HOOKS_MISSING" -gt 0 ]; then
 fi
 
 # --- Rule files (infrastructure — always overwrite) ---
-for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
-  [ -f "$rule" ] || continue
-  atomic_install "$rule" "$PROJECT/.claude/rules/$(basename "$rule")"
-  echo "  synced: .claude/rules/$(basename "$rule")"
-done
+# Claude Code also loads .claude/rules/ from every parent directory, so a
+# megavibe project inside another (~/dev/proj under ~/dev) would load each
+# rule twice. rules-dedupe.sh keeps one copy, at the top: it installs or
+# refreshes this project's rules except those a megavibe parent carries, and
+# removes the project's identical copies of those. Nested megavibe projects
+# below this one get the same treatment, since this run's copies now cover them.
+_dedupe="$TEMPLATE_DIR/.claude/hooks/rules-dedupe.sh"
+if [ -f "$_dedupe" ]; then
+  bash "$_dedupe" --init "$PROJECT" "$TEMPLATE_DIR/.claude/rules" | sed 's/^/  /'
+  while IFS= read -r -d '' _rules_dir; do
+    _nested="${_rules_dir%/.claude/rules}"
+    [ "$_nested" = "$PROJECT" ] && continue
+    # .agent/events is made by every init.sh run; a template's .agent has none.
+    [ -d "$_nested/.agent/events" ] || continue
+    # A project whose own hooks predate this has nothing to restore a removed
+    # copy if this parent later loses it: its own next init.sh run handles it.
+    [ -f "$_nested/.claude/hooks/rules-dedupe.sh" ] || continue
+    # Both startup and resume must run the helper there, or a missing rule
+    # could stay missing across resumed sessions.
+    jq -e 'def reg($m): [.hooks.SessionStart[]? | select((.matcher // "") | split("|") | index($m))
+                         | .hooks[]? | (.command // "")] | any(test("rules-dedupe\\.sh"));
+           reg("startup") and reg("resume")' "$_nested/.claude/settings.json" >/dev/null 2>&1 || continue
+    _out="$(bash "$_dedupe" "$_nested" "$TEMPLATE_DIR/.claude/rules")"
+    [ -n "$_out" ] && echo "  ${_nested#"$PROJECT"/}: $_out"
+  done < <(find "$PROJECT" -maxdepth 5 \( -name node_modules -o -name .git -o -name Library -o -name .venv -o -name venv -o -name .cache -o -name __pycache__ -o -name site-packages -o -name target -o -name dist -o -name build -o -name .next \) -prune \
+             -o -type d -path '*/.claude/rules' -print0 2>/dev/null)
+else
+  for rule in "$TEMPLATE_DIR/.claude/rules/"*.md; do
+    [ -f "$rule" ] || continue
+    atomic_install "$rule" "$PROJECT/.claude/rules/$(basename "$rule")"
+    echo "  synced: .claude/rules/$(basename "$rule")"
+  done
+fi
 
 # --- Shared-knowledge detail (loaded on demand by rules/shared-memory.md) ---
 if [ -f "$TEMPLATE_DIR/.claude/shared-memory-full.md" ]; then

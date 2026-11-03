@@ -259,7 +259,7 @@ esac
 # Portable case-insensitive extension check (bash 3.2 compatible for macOS)
 EXT=$(echo "$FILE" | awk -F. '{print tolower($NF)}')
 case "$EXT" in
-  png|jpg|jpeg|gif|webp|pdf|svg|ico|heic|bmp|tiff|tif|zip|tar|gz|bz2|xz|7z|mp3|mp4|mov|avi|wav|flac|ogg)
+  png|jpg|jpeg|gif|webp|pdf|svg|ico|heic|heif|bmp|tiff|tif|zip|tar|gz|bz2|xz|7z|mp3|mp4|mov|avi|wav|flac|ogg)
     exit 0
     ;;
 esac

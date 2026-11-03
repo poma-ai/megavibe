@@ -23,7 +23,8 @@
 # Hysteresis keeps it from flapping: `over` enters at once; it leaves 30 minutes after its
 # leave thresholds first hold (a remembered reading of 85% or more holds until the window
 # resets or the projection falls with elapsed time, and a fresh window still waits out the
-# 30 minutes); `under` needs two qualifying evaluations 30 minutes apart and lasts only while its
+# 30 minutes; an `over` entered on pace in the week's first quarter is held until the projection
+# takes over at 25% elapsed); `under` needs two qualifying evaluations 30 minutes apart and lasts only while its
 # qualifying reading holds (the 5h window that justified it resetting ends it). Escape hatches:
 # MEGAVIBE_ROUTER=0, or delete route-state.json.
 # Missing, malformed or reset-window data is the normal band, so the router can only ever
@@ -163,8 +164,16 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
   | (if ($prev.band | type) == "string" then $prev.band else "normal" end) as $cur
   | (($prev.since | numbers) // 0) as $since | (($prev.calm | numbers) // 0) as $calm   # a damaged state file is read as "no state"
   | ((($prev.pend | numbers) // 0) | if ($now - .) > 7200 then 0 else . end) as $pend    # a pending `under` evaluation lapses after 2h
-  | (($sd != null and ($sd.used >= 90 or ($sd.proj != null and $sd.proj > 100))) or ($fh != null and $fh.used >= 85)) as $over_in
-  | (($sd == null or ($sd.used < 85 and ($sd.proj == null or $sd.proj < 90))) and ($fh == null or $fh.used < 70)) as $over_out
+  # Early week (no projection before 25% elapsed): a straight-line pace is the yardstick. 64% used
+  # at day 1.2 (a pace of ~380%) read as normal until 2026-10-27; now 30 points ahead of the line
+  # enters `over`, and an early `over` at 22.5% or more is not released before 25%: the projection
+  # decides then (a release line rising with time would hand over to a stricter projection and
+  # flap). Below 22.5% the projection at 25% would be under 90 anyway, so a 5-hour `over`, a new
+  # week or an inherited `over` still leaves after the usual 30 minutes.
+  | (($sd != null and ($sd.used >= 90 or ($sd.proj != null and $sd.proj > 100) or ($sd.el < 0.25 and $sd.used > 100 * $sd.el + 30)))
+     or ($fh != null and $fh.used >= 85)) as $over_in
+  | (($sd == null or ($sd.used < 85 and ($sd.proj == null or $sd.proj < 90) and ($sd.el >= 0.25 or $sd.used < 22.5)))
+     and ($fh == null or $fh.used < 70)) as $over_out
   | ($sd != null and ($sd.used >= 75 or ($sd.proj != null and $sd.proj > 85)
                       or ($sd.el < 0.25 and $sd.used > 100 * $sd.el + 15))) as $under_out   # early week: no projection yet, so compare with a straight-line pace
   | (($sd != null and ($sd.stale | not) and (($sd.proj != null and $sd.proj < 70) or ($sd.rem <= 129600 and $sd.used < 60)))

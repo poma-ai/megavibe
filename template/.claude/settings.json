@@ -68,6 +68,15 @@
             "command": ".claude/hooks/watch-background.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/trash-watch.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -97,6 +106,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/on-compact.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/disk-check.sh",
+            "timeout": 15
           }
         ]
       },
@@ -128,6 +142,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/status-sync.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/rules-dedupe.sh",
             "timeout": 10
           }
         ]
@@ -214,6 +233,10 @@
           {
             "type": "command",
             "command": ".claude/hooks/block-stray-working-context.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/block-permission-hooks.sh"
           },
           {
             "type": "command",
