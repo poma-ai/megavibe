@@ -35,13 +35,20 @@ done
 HAVE_TTY=0
 # bounded <secs> <cmd...>: run cmd in its own process group; on the deadline
 # TERM then KILL the group; exit with the command's status (142 on the deadline).
-bounded() { perl -e '$t=shift; $p=fork; if(!$p){setpgrp(0,0); exec @ARGV or exit 127} $SIG{ALRM}=sub{kill "TERM",-$p; select(undef,undef,undef,0.5); kill "KILL",-$p; waitpid $p,0; exit 142}; alarm $t; waitpid $p,0; exit(($?>>8)||($?&127 ? 128+($?&127) : 0))' "$@"; }
+# script(1) puts its child in a NEW session on the pty, outside that group, so
+# the group kill alone left a HUP/TERM-ignoring child alive. BOUND_PIDFILE, when
+# set, names a file the inner command writes its pid to (under_tty arranges
+# that); the deadline kills that pid's group too, and so does a normal exit.
+bounded() { perl -e '$t=shift; $f=$ENV{BOUND_PIDFILE}; sub inner{ if($f && open(my $h,"<",$f)){ my $i=<$h>; close $h; if($i && $i=~/^(\d+)/){ kill "TERM",-$1; kill "TERM",$1; select(undef,undef,undef,0.3); kill "KILL",-$1; kill "KILL",$1 } } } $p=fork; if(!$p){setpgrp(0,0); exec @ARGV or exit 127} $SIG{ALRM}=sub{kill "TERM",-$p; select(undef,undef,undef,0.5); kill "KILL",-$p; inner(); waitpid $p,0; exit 142}; alarm $t; waitpid $p,0; $r=$?; alarm 0; inner(); exit(($r>>8)||($r&127 ? 128+($r&127) : 0))' "$@"; }
 if PATH="$SYS" command -v script >/dev/null 2>&1; then
   HAVE_TTY=1
+  # The inner command runs behind a shell that records its own pid for `bounded`
+  # (that shell is the pty session leader; its group is what the kill reaches).
+  # BOUND_SECS overrides the 60 s deadline (the survivor check uses 1).
   if PATH="$SYS" script --version >/dev/null 2>&1; then
-    under_tty() { local log="$1"; shift; local q; q=$(printf '%q ' "$@"); bounded 60 script -q -e -c "$q" /dev/null >"$log" 2>&1 </dev/null; }
+    under_tty() { local log="$1"; shift; local q; q=$(printf '%q ' bash -c 'echo $$ > "$0"; exec "$@"' "$T/inner.pid" "$@"); BOUND_PIDFILE="$T/inner.pid" bounded "${BOUND_SECS:-60}" script -q -e -c "$q" /dev/null >"$log" 2>&1 </dev/null; }
   else
-    under_tty() { local log="$1"; shift; bounded 60 script -q /dev/null "$@" >"$log" 2>&1 </dev/null; }
+    under_tty() { local log="$1"; shift; BOUND_PIDFILE="$T/inner.pid" bounded "${BOUND_SECS:-60}" script -q /dev/null bash -c 'echo $$ > "$0"; exec "$@"' "$T/inner.pid" "$@" >"$log" 2>&1 </dev/null; }
   fi
 else
   echo "skip: script(1) missing, tty cases not run" >&2
@@ -144,7 +151,7 @@ check "--update: present codex and telegram are refreshed, absent gemini and pla
 # sudo stub that records its argv. The lift carries the --update parse, which
 # must precede msudo for the pip/jq bootstrap to be covered.
 MS="$T/msudo-lifted.sh"
-{ echo 'set -u'; sed -n '1,/^}/p' "$REPO/setup.sh"; echo 'msudo probe-cmd; echo "MSUDO-DONE"'; } > "$MS"
+{ echo 'set -u'; sed -n '1,/^}/p' "$REPO/setup.sh"; echo 'msudo probe-cmd; echo "MSUDO-DONE"; { env | grep -E "^(HOMEBREW_NO_ASK|PIP_NO_INPUT|GIT_TERMINAL_PROMPT|DEBIAN_FRONTEND|npm_config_yes)=" | sort; } || true'; } > "$MS"
 check "the msudo lift parses and carries the --update parse ahead of msudo" 'bash -n "$MS" 2>/dev/null && [ "$(grep -n "^UPDATE_MODE=0$" "$MS" | cut -d: -f1)" -lt "$(grep -n "^msudo() {" "$MS" | cut -d: -f1)" ]'
 mkdir -p "$T/sudo"; printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "$SUDO_ARGS"\nexit 0\n' > "$T/sudo/sudo"
 printf '#!/bin/bash\necho 1000\n' > "$T/sudo/id"; chmod +x "$T/sudo/sudo" "$T/sudo/id"
@@ -152,11 +159,16 @@ export SUDO_ARGS="$T/sudo.args"
 if [ "$HAVE_TTY" -eq 1 ]; then
   rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms.out" bash "$MS" --update ); rc=$?
   check "--update on a tty: msudo runs sudo -n (no password prompt possible)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "-n" ] && grep -q "probe-cmd" "$SUDO_ARGS" || { cat "$T/ms.out"; false; }'
+  check "--update: the tools' own non-interactive switches are exported (brew, pip, git, apt, npx)" '( tr -d "\r" < "$T/ms.out" > "$T/ms.lf"; for v in HOMEBREW_NO_ASK=1 PIP_NO_INPUT=1 GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive npm_config_yes=true; do grep -q "^$v$" "$T/ms.lf" || exit 1; done )'
   rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms-ctl.out" bash "$MS" ); rc=$?
   check "control, no flag on a tty: msudo runs plain sudo (a human may type the password)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "probe-cmd" ] || { cat "$T/ms-ctl.out"; false; }'
 fi
 check "npx playwright install never asks (--yes)" 'grep -q "npx --yes playwright install chromium 2>&1" "$REPO/setup.sh" && ! grep -q "if npx playwright install" "$REPO/setup.sh"'
-check "the deadline kills the whole pty process group (no survivor)" 'bounded 1 bash -c "trap \"\" HUP TERM; sleep 30 & echo \$! > \"$T/surv.pid\"; wait" >/dev/null 2>&1; rc=$?; [ "$rc" = 142 ] && sleep 1 && ! kill -0 "$(cat "$T/surv.pid")" 2>/dev/null'
+if [ "$HAVE_TTY" -eq 1 ]; then
+  # Through the real pty path: a shell that ignores HUP and TERM, with a sleep.
+  ( export BOUND_SECS=1; under_tty "$T/surv.out" bash -c "trap '' HUP TERM; sleep 30 & echo \$! > '$T/surv.pid'; wait" ); rc=$?
+  check "the deadline kills the pty session too (no survivor behind script)" '[ "$rc" = 142 ] && sleep 1 && [ -s "$T/surv.pid" ] && ! kill -0 "$(cat "$T/surv.pid")" 2>/dev/null'
+fi
 
 # The two first-install waits further down carry the guard (their blocks need
 # a real install to reach, so they are checked by text).

@@ -31,6 +31,14 @@ fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 # can reach msudo; the other flags are read in section 0.
 UPDATE_MODE=0
 [ "${1:-}" = "--update" ] && UPDATE_MODE=1
+if [ "$UPDATE_MODE" -eq 1 ]; then
+  # The tools setup drives can ask on their own, past every shell prompt this
+  # file guards: Homebrew confirms an install that touches dependants, pip asks
+  # for index credentials on a 401, git for a password, apt via debconf, npx
+  # before fetching a package. Each honours an environment switch; set them
+  # here, before any bootstrap call, for this process and everything it runs.
+  export HOMEBREW_NO_ASK=1 PIP_NO_INPUT=1 GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive npm_config_yes=true
+fi
 
 # sudo asks for its password on /dev/tty even when stdin is a pipe. With nobody
 # there to type it (an agent's or a script's shell) setup would wait forever, so
@@ -46,7 +54,11 @@ msudo() {
   sudo -n "$@" && return 0
   local rc=$?
   if command -v sudo &>/dev/null && ! sudo -n true 2>/dev/null; then
-    warn "no terminal is attached to type a sudo password: if that is why 'sudo $*' failed, run setup.sh from a terminal or run it yourself"
+    if [ "$UPDATE_MODE" -eq 1 ]; then
+      warn "an update never asks for a sudo password: if that is why 'sudo $*' failed, run 'bash ~/.megavibe/setup.sh' from a terminal or run it yourself"
+    else
+      warn "no terminal is attached to type a sudo password: if that is why 'sudo $*' failed, run setup.sh from a terminal or run it yourself"
+    fi
   fi
   return "$rc"
 }
@@ -212,7 +224,7 @@ fi
 if [ -z "$PYTHON" ]; then
   if command -v brew &>/dev/null; then
     echo "  Python 3.10+ not found — installing via Homebrew..."
-    brew install python@3.12
+    brew install python@3.12 || warn "brew could not install python@3.12"
     for cmd in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
       if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 10)" &>/dev/null; then
         PYTHON="$cmd"
@@ -276,19 +288,22 @@ if [ -n "$PYTHON" ]; then
 
   # 4. Last resort: try the OS package manager
   if [ -z "$PIP" ]; then
+    # pip is optional (the warning below says what is lost), so a package
+    # manager that fails here, e.g. sudo needing a password under --update,
+    # must not abort setup under set -e.
     if command -v apt-get &>/dev/null; then
       echo "  Installing python3-pip via apt..."
-      msudo apt-get update -qq && msudo apt-get install -y -qq python3-pip
+      { msudo apt-get update -qq && msudo apt-get install -y -qq python3-pip; } || warn "apt could not install python3-pip"
     elif command -v dnf &>/dev/null; then
       echo "  Installing python3-pip via dnf..."
-      msudo dnf install -y -q python3-pip
+      msudo dnf install -y -q python3-pip || warn "dnf could not install python3-pip"
     elif command -v pacman &>/dev/null; then
       echo "  Installing python-pip via pacman..."
-      msudo pacman -S --noconfirm python-pip
+      msudo pacman -S --noconfirm python-pip || warn "pacman could not install python-pip"
     elif command -v brew &>/dev/null; then
       # macOS: pip comes with Homebrew python, but just in case
       echo "  Reinstalling python3 via brew (to get pip)..."
-      brew reinstall python3
+      brew reinstall python3 || warn "brew could not reinstall python3"
     fi
     # Check again after OS install
     if $PYTHON -m pip --version &>/dev/null; then
