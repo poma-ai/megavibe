@@ -116,7 +116,7 @@ rm -f "$SETUP_ARGS" "$T/version"
 check "setup exits 1: the updater fails and records no version" '[ "$rc" != 0 ] && [ ! -e "$T/version" ] && grep -q "Setup failed" "$T/out3"'
 # No bare mv/rm onto an existing file is left in setup.sh: both ask on a
 # terminal when the target is read-only (mv: "override ...?", rm likewise).
-check "setup.sh has no bare mv or rm (every one is -f, or atomic_install)" '[ "$(grep -c "^[[:space:]]*mv \"" "$REPO/setup.sh")" = 0 ] && [ "$(grep -c "^[[:space:]]*rm \"" "$REPO/setup.sh")" = 0 ]'
+check "setup.sh, init.sh and the launcher have no bare mv or rm (every one is -f, or atomic_install)" '( for f in setup.sh init.sh megavibe; do [ "$(grep -c "^[[:space:]]*mv \"" "$REPO/$f")" = 0 ] && [ "$(grep -c "^[[:space:]]*rm \"" "$REPO/$f")" = 0 ] || exit 1; done )'
 
 # ---- part 2: setup.sh under --update asks nothing and keeps the selection ---
 # Lift section 0 (the mode question) and the four should_install_* functions.
@@ -213,6 +213,51 @@ if [ "$HAVE_TTY" -eq 1 ]; then
   check "read-only CLAUDE.md: custom text kept, protocol block replaced, mode kept" 'grep -q "MY CUSTOM RULES" "$T/cm/home/.claude/CLAUDE.md" && grep -q "NEW PROTOCOL TEXT" "$T/cm/home/.claude/CLAUDE.md" && ! grep -q "old protocol" "$T/cm/home/.claude/CLAUDE.md" && [ ! -w "$T/cm/home/.claude/CLAUDE.md" ] && [ ! -e "$T/cm/home/.claude/CLAUDE.md.tmp" ]'
 fi
 chmod u+w "$T/cm/home/.claude/CLAUDE.md" 2>/dev/null
+
+# ---- part 5: the launcher's protocol refresh and init.sh's Gemini trust ----
+# Both ran on every launch (so on a restart) and renamed onto a possibly
+# read-only file with a bare mv. Lift each block with its own file's helpers.
+LM="$T/launcher-lifted.sh"
+{
+  echo 'set -u'; echo "YELLOW=''; RESET=''"
+  for f in stat_mode resolve_link atomic_install; do sed -n "/^$f() {/,/^}/p" "$REPO/megavibe"; done
+  echo 'SOURCE_TEMPLATE="$LM_SRC"; MEGAVIBE_HOME="$LM_MVH"'
+  awk '/^      CLAUDE_MD="\$HOME\/\.claude\/CLAUDE\.md"$/{p=1} p{print} p && seen && /^      fi$/{exit} p && /Protocol NOT updated/{seen=1}' "$REPO/megavibe"
+  echo 'echo "LAUNCHER-DONE"'
+} > "$LM"
+check "the launcher refresh block was lifted with its helpers" 'bash -n "$LM" 2>/dev/null && grep -q "^atomic_install() {" "$LM" && grep -q "Protocol updated" "$LM" && grep -q "^      fi$" "$LM"'
+mkdir -p "$T/lm/home/.claude" "$T/lm/src" "$T/lm/mvh/template"
+printf '<!-- megavibe-v3 -->\nLAUNCHER NEW TEXT\n<!-- /megavibe-v3 -->\n' > "$T/lm/src/CLAUDE.md"
+cp "$T/lm/src/CLAUDE.md" "$T/lm/mvh/template/CLAUDE.md"
+printf 'MY CUSTOM RULES\n\n<!-- megavibe-v3 -->\nold protocol\n<!-- /megavibe-v3 -->\n' > "$T/lm/home/.claude/CLAUDE.md"
+chmod 0444 "$T/lm/home/.claude/CLAUDE.md"
+if [ "$HAVE_TTY" -eq 1 ]; then
+  ( cd "$T" && export HOME="$T/lm/home" LM_SRC="$T/lm/src" LM_MVH="$T/lm/mvh" PATH="$SYS" && under_tty "$T/lm.out" bash "$LM" ); rc=$?
+  check "launcher refresh onto a read-only CLAUDE.md on a tty: finished, no question, reported updated" '[ "$rc" = 0 ] && grep -q LAUNCHER-DONE "$T/lm.out" && ! grep -qi "override" "$T/lm.out" && grep -q "Protocol updated" "$T/lm.out" || { cat "$T/lm.out"; false; }'
+  check "launcher refresh: custom text kept, block replaced, mode kept, no .tmp" 'grep -q "MY CUSTOM RULES" "$T/lm/home/.claude/CLAUDE.md" && grep -q "LAUNCHER NEW TEXT" "$T/lm/home/.claude/CLAUDE.md" && ! grep -q "old protocol" "$T/lm/home/.claude/CLAUDE.md" && [ ! -w "$T/lm/home/.claude/CLAUDE.md" ] && [ ! -e "$T/lm/home/.claude/CLAUDE.md.tmp" ]'
+fi
+chmod u+w "$T/lm/home/.claude/CLAUDE.md" 2>/dev/null
+if PATH="$SYS" command -v jq >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
+  IM="$T/init-lifted.sh"
+  {
+    echo 'set -u'
+    for f in stat_mode resolve_link atomic_install; do sed -n "/^$f() {/,/^}/p" "$REPO/init.sh"; done
+    echo 'PROJECT="$IM_PROJ"'
+    sed -n '/^if \[ -d "\$HOME\/\.gemini" \] && command -v jq &>\/dev\/null; then$/,/^fi$/p' "$REPO/init.sh"
+    echo 'echo "INIT-DONE"'
+  } > "$IM"
+  check "the init.sh trust block was lifted with its helpers" 'bash -n "$IM" 2>/dev/null && grep -q "^atomic_install() {" "$IM" && grep -q "trustedFolders" "$IM"'
+  mkdir -p "$T/im/home/.gemini" "$T/im/proj"; echo '{}' > "$T/im/home/.gemini/trustedFolders.json"; chmod 0444 "$T/im/home/.gemini/trustedFolders.json"
+  JQBIN=$(dirname "$(command -v jq)")
+  if [ "$HAVE_TTY" -eq 1 ]; then
+    ( cd "$T" && export HOME="$T/im/home" IM_PROJ="$T/im/proj" PATH="$JQBIN:$SYS" && under_tty "$T/im.out" bash "$IM" ); rc=$?
+    check "init trust onto a read-only trustedFolders.json on a tty: finished, no question, reported trusted" '[ "$rc" = 0 ] && grep -q INIT-DONE "$T/im.out" && ! grep -qi "override" "$T/im.out" && grep -q "trusted:" "$T/im.out" || { cat "$T/im.out"; false; }'
+    check "init trust: the project is in the file, mode kept" 'grep -q "im/proj" "$T/im/home/.gemini/trustedFolders.json" && [ ! -w "$T/im/home/.gemini/trustedFolders.json" ]'
+  fi
+  chmod u+w "$T/im/home/.gemini/trustedFolders.json" 2>/dev/null
+else
+  echo "skip: jq missing, init trust case not run" >&2
+fi
 
 # The two first-install waits further down carry the guard (their blocks need
 # a real install to reach, so they are checked by text).

@@ -584,8 +584,15 @@ if [ -d "$HOME/.gemini" ] && command -v jq &>/dev/null; then
   else
     tmp="$(mktemp)"
     jq --arg p "$ABS_TARGET" '. + {($p): "TRUST_FOLDER"}' "$GEMINI_TRUST" > "$tmp"
-    mv "$tmp" "$GEMINI_TRUST"
-    echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+    # atomic_install, not a bare mv: onto a read-only trustedFolders.json mv
+    # asks "override ...?" on a terminal, and "n" kept the file while this
+    # said "trusted".
+    if atomic_install "$tmp" "$GEMINI_TRUST"; then
+      echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+    else
+      echo "  warn: could not write $GEMINI_TRUST (read-only?) — Gemini CLI does not trust $ABS_TARGET yet"
+    fi
+    rm -f "$tmp"
   fi
 fi
 

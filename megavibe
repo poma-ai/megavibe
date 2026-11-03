@@ -655,7 +655,7 @@ do_update() {
           echo -e "  ${RED}Download failed.${RESET} Check your internet connection."
           return 1
         fi
-        mv "$tmpdir/megavibe-main" "$tmpdir/megavibe"
+        mv -f "$tmpdir/megavibe-main" "$tmpdir/megavibe"
       fi
       # $new_hash came from the API BEFORE the download, so a commit landing in
       # between recorded a version that was never installed — and the next
@@ -1874,15 +1874,27 @@ if [ -n "$SOURCE_TEMPLATE" ] && [ -f "$SOURCE_TEMPLATE/CLAUDE.md" ]; then
       END_MARKER="<!-- /megavibe-v3 -->"
       if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD" && grep -q "$END_MARKER" "$CLAUDE_MD"; then
         sed '\|'"$MARKER"'|,\|'"$END_MARKER"'|d' "$CLAUDE_MD" > "${CLAUDE_MD}.tmp"
+        # atomic_install, not a bare mv: onto a read-only CLAUDE.md mv asks
+        # "override ...?" on a terminal, and "n" kept the old protocol while
+        # this said "updated".
+        protocol_ok=1
         if [ ! -s "${CLAUDE_MD}.tmp" ] || ! grep -q '[^[:space:]]' "${CLAUDE_MD}.tmp"; then
-          atomic_install "$SOURCE_TEMPLATE/CLAUDE.md" "$CLAUDE_MD"
+          atomic_install "$SOURCE_TEMPLATE/CLAUDE.md" "$CLAUDE_MD" || protocol_ok=0
         else
           echo "" >> "${CLAUDE_MD}.tmp"
           cat "$SOURCE_TEMPLATE/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
-          mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+          atomic_install "${CLAUDE_MD}.tmp" "$CLAUDE_MD" || protocol_ok=0
         fi
         rm -f "${CLAUDE_MD}.tmp"
-        echo "  Protocol updated."
+        if [ "$protocol_ok" = 1 ]; then
+          echo "  Protocol updated."
+        else
+          echo -e "  ${YELLOW}Protocol NOT updated:${RESET} could not replace $CLAUDE_MD (immutable, or its directory refuses writes). Fix that, then run: bash ~/.megavibe/setup.sh"
+          # The template was already synced above, so the next launch would see
+          # nothing to do; drop the mirror's copy of this one file so it is
+          # out of sync again and the refresh is retried.
+          rm -f "$MEGAVIBE_HOME/template/CLAUDE.md"
+        fi
       fi
     fi
   fi
