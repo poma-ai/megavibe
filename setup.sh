@@ -1077,7 +1077,11 @@ if [ -f "$CLAUDE_MD" ] && grep -q "$MARKER" "$CLAUDE_MD"; then
     else
       echo "" >> "${CLAUDE_MD}.tmp"
       cat "$SCRIPT_DIR/template/CLAUDE.md" >> "${CLAUDE_MD}.tmp"
-      mv "${CLAUDE_MD}.tmp" "$CLAUDE_MD"
+      # Not a bare mv: onto a read-only CLAUDE.md, mv asks "override r--r--r--
+      # ...? (y/n)" on a terminal, and an update must not stop; atomic_install
+      # stages and renames without asking and keeps the destination's mode.
+      atomic_install "${CLAUDE_MD}.tmp" "$CLAUDE_MD" || fail "could not update ~/.claude/CLAUDE.md"
+      rm -f "${CLAUDE_MD}.tmp"
     fi
     ok "~/.claude/CLAUDE.md updated (v3 refreshed)"
   else

@@ -178,6 +178,34 @@ if [ "$HAVE_TTY" -eq 1 ]; then
   check "the deadline kills the pty session too (no survivor behind script)" '[ "$rc" = 142 ] && sleep 1 && [ -s "$T/surv.pid" ] && ! kill -0 "$(cat "$T/surv.pid")" 2>/dev/null'
 fi
 
+# ---- part 4: the protocol refresh onto a read-only ~/.claude/CLAUDE.md -----
+# A bare mv onto a 0444 CLAUDE.md asked "override r--r--r-- ...? (y/n)" on a
+# terminal. Lift the file head, resolve_link, atomic_install and the refresh
+# block (CLAUDE_MD=... up to its elif), run it on a pty with a read-only
+# fixture that has custom text outside the markers.
+CM="$T/claudemd-lifted.sh"
+{
+  echo 'set -u'
+  sed -n '1,/^}/p' "$REPO/setup.sh"
+  sed -n '/^stat_mode() {/,/^}/p' "$REPO/setup.sh"
+  sed -n '/^resolve_link() {/,/^}/p' "$REPO/setup.sh"
+  sed -n '/^atomic_install() {/,/^}/p' "$REPO/setup.sh"
+  echo 'SCRIPT_DIR="$CM_SRC"'
+  sed -n '/^CLAUDE_MD="\$HOME\/\.claude\/CLAUDE\.md"$/,/^elif \[ -f "\$CLAUDE_MD" \]; then$/p' "$REPO/setup.sh" | sed '$d'
+  echo 'fi; echo "CLAUDEMD-DONE"'
+} > "$CM"
+check "the CLAUDE.md refresh block was lifted with its helpers" 'bash -n "$CM" 2>/dev/null && grep -q "^atomic_install() {" "$CM" && grep -q "v3 refreshed" "$CM"'
+mkdir -p "$T/cm/home/.claude" "$T/cm/src/template"
+printf '<!-- megavibe-v3 -->\nNEW PROTOCOL TEXT\n<!-- /megavibe-v3 -->\n' > "$T/cm/src/template/CLAUDE.md"
+printf 'MY CUSTOM RULES\n\n<!-- megavibe-v3 -->\nold protocol\n<!-- /megavibe-v3 -->\n' > "$T/cm/home/.claude/CLAUDE.md"
+chmod 0444 "$T/cm/home/.claude/CLAUDE.md"
+if [ "$HAVE_TTY" -eq 1 ]; then
+  ( cd "$T" && export HOME="$T/cm/home" CM_SRC="$T/cm/src" PATH="$SYS" && under_tty "$T/cm.out" bash "$CM" --update ); rc=$?
+  check "read-only CLAUDE.md on a tty: the refresh finished without asking" '[ "$rc" = 0 ] && grep -q CLAUDEMD-DONE "$T/cm.out" && ! grep -qi "override" "$T/cm.out" || { cat "$T/cm.out"; false; }'
+  check "read-only CLAUDE.md: custom text kept, protocol block replaced, mode kept" 'grep -q "MY CUSTOM RULES" "$T/cm/home/.claude/CLAUDE.md" && grep -q "NEW PROTOCOL TEXT" "$T/cm/home/.claude/CLAUDE.md" && ! grep -q "old protocol" "$T/cm/home/.claude/CLAUDE.md" && [ ! -w "$T/cm/home/.claude/CLAUDE.md" ] && [ ! -e "$T/cm/home/.claude/CLAUDE.md.tmp" ]'
+fi
+chmod u+w "$T/cm/home/.claude/CLAUDE.md" 2>/dev/null
+
 # The two first-install waits further down carry the guard (their blocks need
 # a real install to reach, so they are checked by text).
 check "the login pause is skipped under --update" 'grep -q "^  \[ \"\$UPDATE_MODE\" -eq 1 \] || \[ ! -t 0 \] || read -p \"  Press Enter to continue" "$REPO/setup.sh"'
