@@ -43,14 +43,17 @@ LOCK=.agent/LOGS/.disk-lock.sid1
 export MV_PROBES="$T/probes.log"
 probes() { grep -c probe "$MV_PROBES" 2>/dev/null || echo 0; }
 
-# run <level> [tool] [agent_id] [file_path] -> the additionalContext the hook emitted
+# run <level> [tool] [agent_id] [file_path] -> the additionalContext the hook
+# emitted; the function's status is the HOOK's exit status (captured before the
+# jq stage, which would otherwise mask a failing hook).
 run() {
-  local tool="${2:-Bash}" agent="${3:-}" fp="${4:-x}" payload
+  local tool="${2:-Bash}" agent="${3:-}" fp="${4:-x}" payload raw rc
   payload="{\"session_id\":\"sid1\",\"tool_name\":\"$tool\",\"tool_input\":{\"command\":\"true\",\"file_path\":\"$fp\"}"
   [ -n "$agent" ] && payload="$payload,\"agent_id\":\"$agent\""
   payload="$payload}"
-  printf '%s' "$payload" | HOME="$T/home" MV_FAKE="$1" bash "$T/hooks/log-tool-event.sh" 2>/dev/null \
-    | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null
+  raw=$(printf '%s' "$payload" | HOME="$T/home" MV_FAKE="$1" bash "$T/hooks/log-tool-event.sh" 2>/dev/null); rc=$?
+  printf '%s' "$raw" | jq -r '.hookSpecificOutput.additionalContext // ""' 2>/dev/null
+  return "$rc"
 }
 due() { rm -f "$STAMP"; }          # no stamp: a check is due
 
@@ -158,8 +161,10 @@ cp "$T/disk-watch.keep" "$T/home/.megavibe/scripts/disk-watch.sh"
 mkdir -p "$T/gnubin"
 cat > "$T/gnubin/stat" <<'EOF'
 #!/bin/bash
+# GNU semantics on any host: -f prints filesystem info and fails on %m; -c %Y
+# prints the mtime (via python, so the shim does not depend on the native stat).
 if [ "$1" = "-f" ]; then echo "  File: \"$3\"  ID: 1 Namelen: 255 Type: apfs"; exit 1; fi
-if [ "$1" = "-c" ]; then exec /usr/bin/stat -f %m "$3"; fi
+if [ "$1" = "-c" ]; then exec python3 -c 'import os,sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$3"; fi
 exec /usr/bin/stat "$@"
 EOF
 chmod +x "$T/gnubin/stat"
