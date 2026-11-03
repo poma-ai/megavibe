@@ -7,8 +7,8 @@
 # Also exits 1 when memory-config.sh is not beside this file (symlinks are not
 # followed): the reserved shared labels are then unknown.
 # Limits: the host is dropped (the same org/name on two forges is one id), and
-# paths deeper than org/name (GitLab subgroups, Azure DevOps) or organisations
-# containing `_` or `.` exit 1.
+# paths deeper than org/name (GitLab subgroups, Azure DevOps), organisations
+# containing `_` or `.`, and one-letter scp hosts (`x:org/name`) exit 1.
 #
 # Usage: repo-id.sh [dir]
 
@@ -22,8 +22,10 @@ for remote in upstream origin; do
 done
 [ -n "$url" ] || exit 1
 
-# Local paths and drive letters are not an org/name.
-case "$url" in file:*|/*|.*|[A-Za-z]:[/\\]*) exit 1 ;; *:*) ;; *) exit 1 ;; esac
+# Local paths and drive letters (absolute or relative, `C:org/name`) are not an
+# org/name. Git reads `X:` as a drive only on Windows builds; a one-letter scp
+# host is knowingly given up here (exit 1, repo scope skipped).
+case "$url" in file:*|/*|.*|[A-Za-z]:*) exit 1 ;; *:*) ;; *) exit 1 ;; esac
 path="${url%/}"
 case "$path" in *.[gG][iI][tT]) path="${path%.???}" ;; esac
 case "$path" in
