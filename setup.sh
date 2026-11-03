@@ -305,15 +305,28 @@ fi
 # ─── 0. Define installation mode ────────────────────────────────────
 
 NONINTERACTIVE_AUTO=0
+# --update: `megavibe update` (and /megavibe-restart) re-running setup over an
+# EXISTING install. Never asks anything: not the mode question, not the
+# per-component "Install X?" questions, not the login pause, not the Gemini
+# key. Refreshes what is installed and leaves what was never chosen alone —
+# --auto-install would install every optional component a Custom user had
+# declined, and with a terminal attached the prompts blocked a restart until
+# someone typed 1 (2026-11-03).
+UPDATE_MODE=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
     --auto-install)
       NONINTERACTIVE_AUTO=1
       ;;
+    --update)
+      UPDATE_MODE=1
+      ;;
   esac
 fi
 
-if [ "$NONINTERACTIVE_AUTO" -eq 0 ] && [ ! -t 0 ]; then
+if [ "$UPDATE_MODE" -eq 1 ]; then
+  : # keep the installed selection; see the should_install_* functions
+elif [ "$NONINTERACTIVE_AUTO" -eq 0 ] && [ ! -t 0 ]; then
   # No terminal to answer on: take the default, as the per-tool prompts below do.
   # An open non-tty stdin (a pipe, an agent's shell) would otherwise block here forever.
   NONINTERACTIVE_AUTO=1
@@ -411,8 +424,14 @@ jq_install() {
   fi
 }
 
-# Ask before installing CLIs when missing (unless non-interactive --auto-install or no TTY)
+# Ask before installing CLIs when missing (unless non-interactive --auto-install or no TTY).
+# Under --update a component is refreshed only when it is already there: these
+# functions answer "is it installed?" and never read.
 should_install_codex() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    command -v codex &>/dev/null
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -427,6 +446,10 @@ should_install_codex() {
 }
 
 should_install_gemini() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    command -v gemini &>/dev/null
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -494,7 +517,7 @@ if [ ${#NEEDS_LOGIN[@]} -gt 0 ]; then
   echo ""
   echo "  You can do this now or later — megavibe works with just Claude."
   echo ""
-  [ ! -t 0 ] || read -p "  Press Enter to continue... " || true
+  [ "$UPDATE_MODE" -eq 1 ] || [ ! -t 0 ] || read -p "  Press Enter to continue... " || true
 else
   echo ""
   info "2) Logins — all tools already installed, skipping"
@@ -505,7 +528,9 @@ fi
 # accounts are pointed at the Antigravity CLI instead). API key auth still
 # works and is now the ONLY supported auth for megavibe's Gemini backend.
 
-if [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
+# Not under --update: an update never asks for a key, and the hint below is
+# first-install text.
+if [ "$UPDATE_MODE" -eq 0 ] && [ "$GEMINI_INSTALLED" -eq 1 ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo ""
   info "2b) Gemini API key"
   echo ""
@@ -859,6 +884,10 @@ telegram_bot_install() {
 }
 
 should_install_telegram() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    [ -f "$MEGAVIBE_HOME/telegram-bot.py" ]
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi
@@ -1624,6 +1653,10 @@ register_playwright_mcp() {
 }
 
 should_install_playwright() {
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    command -v claude &>/dev/null && claude mcp get playwright &>/dev/null
+    return
+  fi
   if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
     return 0
   fi

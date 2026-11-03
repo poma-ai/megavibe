@@ -660,7 +660,14 @@ do_update() {
       cloned_hash=$(git --git-dir="$tmpdir/megavibe/.git" rev-parse HEAD 2>/dev/null || echo "")
       if [ -n "$cloned_hash" ]; then new_hash="$cloned_hash"; fi
       echo "  Running setup..."
-      bash "$tmpdir/megavibe/setup.sh"
+      # --update: this is an update of an existing install, not a first install,
+      # so setup must never stop on a question. It did: with a terminal attached
+      # (a restart via /megavibe-restart, a remote-control session) its
+      # "Automatic or Custom?" question blocked the restart until someone typed
+      # 1, and --auto-install would have installed every optional component a
+      # Custom user had declined. The downloaded copy is always current main, so
+      # it knows the flag.
+      bash "$tmpdir/megavibe/setup.sh" --update
       # Store the new version hash
       if [ -n "$new_hash" ]; then
         echo "$new_hash" > "$VERSION_FILE"
