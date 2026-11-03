@@ -45,10 +45,12 @@ if PATH="$SYS" command -v script >/dev/null 2>&1; then
   # The inner command runs behind a shell that records its own pid for `bounded`
   # (that shell is the pty session leader; its group is what the kill reaches).
   # BOUND_SECS overrides the 60 s deadline (the survivor check uses 1).
+  # A fresh pid file per call: a run that dies before writing it must not hand
+  # the previous run's pid (possibly reused by now) to the cleanup.
   if PATH="$SYS" script --version >/dev/null 2>&1; then
-    under_tty() { local log="$1"; shift; local q; q=$(printf '%q ' bash -c 'echo $$ > "$0"; exec "$@"' "$T/inner.pid" "$@"); BOUND_PIDFILE="$T/inner.pid" bounded "${BOUND_SECS:-60}" script -q -e -c "$q" /dev/null >"$log" 2>&1 </dev/null; }
+    under_tty() { local log="$1"; shift; local pf="$T/inner.$RANDOM$RANDOM.pid" q; q=$(printf '%q ' bash -c 'echo $$ > "$0"; exec "$@"' "$pf" "$@"); BOUND_PIDFILE="$pf" bounded "${BOUND_SECS:-60}" script -q -e -c "$q" /dev/null >"$log" 2>&1 </dev/null; }
   else
-    under_tty() { local log="$1"; shift; BOUND_PIDFILE="$T/inner.pid" bounded "${BOUND_SECS:-60}" script -q /dev/null bash -c 'echo $$ > "$0"; exec "$@"' "$T/inner.pid" "$@" >"$log" 2>&1 </dev/null; }
+    under_tty() { local log="$1"; shift; local pf="$T/inner.$RANDOM$RANDOM.pid"; BOUND_PIDFILE="$pf" bounded "${BOUND_SECS:-60}" script -q /dev/null bash -c 'echo $$ > "$0"; exec "$@"' "$pf" "$@" >"$log" 2>&1 </dev/null; }
   fi
 else
   echo "skip: script(1) missing, tty cases not run" >&2
@@ -159,6 +161,9 @@ export SUDO_ARGS="$T/sudo.args"
 if [ "$HAVE_TTY" -eq 1 ]; then
   rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms.out" bash "$MS" --update ); rc=$?
   check "--update on a tty: msudo runs sudo -n (no password prompt possible)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "-n" ] && grep -q "probe-cmd" "$SUDO_ARGS" || { cat "$T/ms.out"; false; }'
+  # sudo's env_reset drops exported variables, so the apt switch must be on the
+  # command line, behind env (a VAR=value argument needs SETENV in sudoers).
+  check "--update: DEBIAN_FRONTEND crosses the sudo boundary on the command line (env), not only as an export" '[ "$(tr "\n" " " < "$SUDO_ARGS" 2>/dev/null)" = "-n env DEBIAN_FRONTEND=noninteractive probe-cmd " ]'
   check "--update: the tools' own non-interactive switches are exported (brew, pip, git, apt, npx)" '( tr -d "\r" < "$T/ms.out" > "$T/ms.lf"; for v in HOMEBREW_NO_ASK=1 PIP_NO_INPUT=1 GIT_TERMINAL_PROMPT=0 DEBIAN_FRONTEND=noninteractive npm_config_yes=true; do grep -q "^$v$" "$T/ms.lf" || exit 1; done )'
   rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms-ctl.out" bash "$MS" ); rc=$?
   check "control, no flag on a tty: msudo runs plain sudo (a human may type the password)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "probe-cmd" ] || { cat "$T/ms-ctl.out"; false; }'

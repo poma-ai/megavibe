@@ -51,7 +51,15 @@ msudo() {
     sudo "$@"; return
   fi
   # Always try the real command: NOPASSWD may cover it even when `sudo -n true` fails.
-  sudo -n "$@" && return 0
+  # Under --update the non-interactive switch for apt's configuration hooks must
+  # cross the privilege boundary: sudo's env_reset drops exported variables, and
+  # a VAR=value argument needs SETENV, so it rides on `env`, which default
+  # sudoers lets any permitted user run.
+  if [ "$UPDATE_MODE" -eq 1 ]; then
+    sudo -n env DEBIAN_FRONTEND=noninteractive "$@" && return 0
+  else
+    sudo -n "$@" && return 0
+  fi
   local rc=$?
   if command -v sudo &>/dev/null && ! sudo -n true 2>/dev/null; then
     if [ "$UPDATE_MODE" -eq 1 ]; then
