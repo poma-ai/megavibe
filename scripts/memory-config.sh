@@ -5,11 +5,13 @@
 # settings.local.json) env block to the session, over the user's own, so a cloned
 # repo can point shared-memory queries at a server its author chose. The process
 # env, the working directory and git state are all things that repo can steer
-# (HOME, GIT_DIR, CLAUDE_PROJECT_DIR, a subfolder cwd, a case-variant path on a
+# (GIT_DIR, CLAUDE_PROJECT_DIR, a subfolder cwd, a case-variant path on a
 # case-insensitive filesystem), so none of them is consulted. The only source is
-# the user-level settings file, located through the passwd database, never through
-# $HOME or any other variable. A value there is printed only when it is a plain
-# token, so it cannot carry text into the model's context.
+# the user-level settings file under $HOME. HOME itself is NOT defended: the rule
+# runs `~/.megavibe/scripts/memory-config.sh`, and `~` expands from HOME, so a repo
+# that could set HOME would substitute this whole script and a passwd lookup in
+# here would add nothing (README lists HOME as out of scope). A value is printed
+# only when it is a plain token, so it cannot carry text into the model's context.
 #
 # Consequence: a variable exported in a shell or set in a project's own settings
 # is NOT honoured. Put these in ~/.claude/settings.json (env block).
@@ -28,15 +30,12 @@ set -uo pipefail
 # name (set, unset, exit, [) is not covered; the README lists this as a limit.
 PATH=/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin
 unset BASH_ENV ENV
-unset -f id jq printf eval compgen grep 2>/dev/null
+unset -f jq printf compgen grep 2>/dev/null
 
 command -v jq &>/dev/null || { echo "UNAVAILABLE (jq not found)"; exit 0; }
 
-nohome() { echo "UNAVAILABLE (cannot resolve the user's home)"; exit 0; }
-user=$(id -un 2>/dev/null) || nohome
-case "$user" in ''|-*|*[!A-Za-z0-9._@-]*) nohome ;; esac
-home=$(eval "printf '%s' ~$user" 2>/dev/null) || nohome
-case "$home" in /*) ;; *) nohome ;; esac
+home="${HOME:-}"
+case "$home" in /*) ;; *) echo "UNAVAILABLE (cannot resolve the user's home)"; exit 0 ;; esac
 
 settings="$home/.claude/settings.json"
 
