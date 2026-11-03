@@ -168,6 +168,9 @@ if [ "$HAVE_TTY" -eq 1 ]; then
   rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms-ctl.out" bash "$MS" ); rc=$?
   check "control, no flag on a tty: msudo runs plain sudo (a human may type the password)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "probe-cmd" ] || { cat "$T/ms-ctl.out"; false; }'
 fi
+# dpkg's conffile question has no environment switch, so an update installs no
+# OS package at all for the optional Python/pip bootstrap (jq stays required).
+check "--update installs no OS package for the optional Python and pip bootstraps" '[ "$(grep -c "an update does not install OS packages" "$REPO/setup.sh")" = 2 ] && grep -q "^if \[ -z \"\$PYTHON\" \] && \[ \"\$UPDATE_MODE\" -eq 1 \]; then" "$REPO/setup.sh" && grep -q "^  if \[ -z \"\$PIP\" \] && \[ \"\$UPDATE_MODE\" -eq 1 \]; then" "$REPO/setup.sh"'
 check "npx playwright install never asks (--yes)" 'grep -q "npx --yes playwright install chromium 2>&1" "$REPO/setup.sh" && ! grep -q "if npx playwright install" "$REPO/setup.sh"'
 if [ "$HAVE_TTY" -eq 1 ]; then
   # Through the real pty path: a shell that ignores HUP and TERM, with a sleep.

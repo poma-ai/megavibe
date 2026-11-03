@@ -229,7 +229,9 @@ if [ -z "$PYTHON" ]; then
 fi
 
 # If no 3.10+ found, try to install via brew (macOS) or accept older Python with limited functionality
-if [ -z "$PYTHON" ]; then
+if [ -z "$PYTHON" ] && [ "$UPDATE_MODE" -eq 1 ]; then
+  warn "Python 3.10+ not found; an update does not install OS packages. For it run: bash ~/.megavibe/setup.sh"
+elif [ -z "$PYTHON" ]; then
   if command -v brew &>/dev/null; then
     echo "  Python 3.10+ not found — installing via Homebrew..."
     brew install python@3.12 || warn "brew could not install python@3.12"
@@ -295,10 +297,13 @@ if [ -n "$PYTHON" ]; then
   fi
 
   # 4. Last resort: try the OS package manager
-  if [ -z "$PIP" ]; then
+  if [ -z "$PIP" ] && [ "$UPDATE_MODE" -eq 1 ]; then
+    # An update never installs OS packages: past sudo and debconf, dpkg's
+    # conffile question has no environment switch, and pip is optional.
+    warn "pip not found; an update does not install OS packages. For pip run: bash ~/.megavibe/setup.sh"
+  elif [ -z "$PIP" ]; then
     # pip is optional (the warning below says what is lost), so a package
-    # manager that fails here, e.g. sudo needing a password under --update,
-    # must not abort setup under set -e.
+    # manager that fails here must not abort setup under set -e.
     if command -v apt-get &>/dev/null; then
       echo "  Installing python3-pip via apt..."
       { msudo apt-get update -qq && msudo apt-get install -y -qq python3-pip; } || warn "apt could not install python3-pip"
