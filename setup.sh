@@ -20,13 +20,26 @@ skip()  { echo -e "  ${YELLOW}skip${RESET} $1 (already installed)"; }
 warn()  { echo -e "  ${YELLOW}!${RESET} $1"; }
 fail()  { echo -e "  ${RED}✗${RESET} $1"; }
 
+# --update: `megavibe update` (and /megavibe-restart) re-running setup over an
+# EXISTING install. Never asks anything: not the mode question, not the
+# per-component "Install X?" questions, not the login pause, not the Gemini
+# key, not a sudo password, not npx's "Ok to proceed?". Refreshes what is
+# installed and leaves what was never chosen alone (see should_install_*);
+# --auto-install would install every optional component a Custom user had
+# declined, and with a terminal attached the prompts blocked a restart until
+# someone typed 1 (2026-11-03). Parsed here, before the pip/jq bootstrap below
+# can reach msudo; the other flags are read in section 0.
+UPDATE_MODE=0
+[ "${1:-}" = "--update" ] && UPDATE_MODE=1
+
 # sudo asks for its password on /dev/tty even when stdin is a pipe. With nobody
 # there to type it (an agent's or a script's shell) setup would wait forever, so
 # unless a human can see the prompt (the test the Gemini key prompt uses) sudo
-# runs only if it needs no password. Root runs the command directly.
+# runs only if it needs no password. Root runs the command directly. Under
+# --update nobody is asked even with a terminal: an update must not stop.
 msudo() {
   if [ "$(id -u)" = "0" ]; then "$@"; return; fi
-  if [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; then
+  if [ "$UPDATE_MODE" -eq 0 ] && { [ -t 0 ] || { [ "${MEGAVIBE_TTY_PROMPT:-0}" = "1" ] && { [ -t 1 ] || [ -t 2 ]; }; }; }; then
     sudo "$@"; return
   fi
   # Always try the real command: NOPASSWD may cover it even when `sudo -n true` fails.
@@ -305,24 +318,15 @@ fi
 # ─── 0. Define installation mode ────────────────────────────────────
 
 NONINTERACTIVE_AUTO=0
-# --update: `megavibe update` (and /megavibe-restart) re-running setup over an
-# EXISTING install. Never asks anything: not the mode question, not the
-# per-component "Install X?" questions, not the login pause, not the Gemini
-# key. Refreshes what is installed and leaves what was never chosen alone —
-# --auto-install would install every optional component a Custom user had
-# declined, and with a terminal attached the prompts blocked a restart until
-# someone typed 1 (2026-11-03).
-UPDATE_MODE=0
 if [ "$#" -gt 0 ]; then
   case "$1" in
     --auto-install)
       NONINTERACTIVE_AUTO=1
       ;;
-    --update)
-      UPDATE_MODE=1
-      ;;
   esac
 fi
+
+# --update was parsed at the top of the file (UPDATE_MODE), ahead of msudo.
 
 if [ "$UPDATE_MODE" -eq 1 ]; then
   : # keep the installed selection; see the should_install_* functions
@@ -1644,7 +1648,10 @@ register_playwright_mcp() {
     skip "Playwright chromium browser"
   else
     echo "  Downloading Playwright Chromium (~170MB, may take several minutes)..."
-    if npx playwright install chromium 2>&1 | tail -5; then
+    # --yes: npx asks "Ok to proceed?" before fetching a package it has not
+    # cached, and with a terminal on stdin that question would sit behind the
+    # tail and stop an update.
+    if npx --yes playwright install chromium 2>&1 | tail -5; then
       ok "Playwright chromium browser"
     else
       warn "Could not install Playwright browsers — run: npx playwright install chromium"

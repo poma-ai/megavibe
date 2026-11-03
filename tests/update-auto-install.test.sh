@@ -24,18 +24,24 @@ done
 
 # under_tty <logfile> <cmd...>: run cmd with a real terminal on stdin, bounded.
 # BSD/macOS script takes the command as positional words; util-linux wants -c.
-# Exit status is the command's (util-linux needs -e for that). script's own
+# Exit status is the command's (util-linux needs -e for that). The deadline
+# kills the whole process group (script, the shell on the pty, anything it
+# started): a bare `alarm; exec script` signalled only script, and a child
+# ignoring SIGHUP outlived the test. script's own
 # stdin is /dev/null: macOS script refuses a socket there ("tcgetattr/ioctl:
 # Operation not supported on socket"), and an agent's shell often has one; the
 # child still gets the pty, so `[ -t 0 ]` is true inside and the pty's input
 # ends at once, so an un-guarded read returns instead of hanging the test.
 HAVE_TTY=0
+# bounded <secs> <cmd...>: run cmd in its own process group; on the deadline
+# TERM then KILL the group; exit with the command's status (142 on the deadline).
+bounded() { perl -e '$t=shift; $p=fork; if(!$p){setpgrp(0,0); exec @ARGV or exit 127} $SIG{ALRM}=sub{kill "TERM",-$p; select(undef,undef,undef,0.5); kill "KILL",-$p; waitpid $p,0; exit 142}; alarm $t; waitpid $p,0; exit(($?>>8)||($?&127 ? 128+($?&127) : 0))' "$@"; }
 if PATH="$SYS" command -v script >/dev/null 2>&1; then
   HAVE_TTY=1
   if PATH="$SYS" script --version >/dev/null 2>&1; then
-    under_tty() { local log="$1"; shift; local q; q=$(printf '%q ' "$@"); perl -e 'alarm shift; exec @ARGV' 60 script -q -e -c "$q" /dev/null >"$log" 2>&1 </dev/null; }
+    under_tty() { local log="$1"; shift; local q; q=$(printf '%q ' "$@"); bounded 60 script -q -e -c "$q" /dev/null >"$log" 2>&1 </dev/null; }
   else
-    under_tty() { local log="$1"; shift; perl -e 'alarm shift; exec @ARGV' 60 script -q /dev/null "$@" >"$log" 2>&1 </dev/null; }
+    under_tty() { local log="$1"; shift; bounded 60 script -q /dev/null "$@" >"$log" 2>&1 </dev/null; }
   fi
 else
   echo "skip: script(1) missing, tty cases not run" >&2
@@ -101,6 +107,7 @@ check "the version file records the downloaded hash" '[ "$(cat "$T/version" 2>/d
 SH="$T/setup-lifted.sh"
 {
   echo 'set -u'
+  sed -n '/^UPDATE_MODE=0$/,/UPDATE_MODE=1$/p' "$REPO/setup.sh"
   sed -n '/^# ─── 0\. Define installation mode/,/^# ─── 1\. Install tools/p' "$REPO/setup.sh"
   for f in codex gemini telegram playwright; do sed -n "/^should_install_$f() {/,/^}/p" "$REPO/setup.sh"; done
   cat <<'EOF'
@@ -110,7 +117,7 @@ done
 echo "LIFTED-DONE"
 EOF
 } > "$SH"
-check "section 0 and the four should_install_* were lifted" '[ "$(grep -c "^should_install_" "$SH")" = 4 ] && grep -q "How do you want to install" "$SH"'
+check "the --update parse, section 0 and the four should_install_* were lifted" '[ "$(grep -c "^should_install_" "$SH")" = 4 ] && grep -q "How do you want to install" "$SH" && grep -q "^UPDATE_MODE=0$" "$SH"'
 check "the lifted setup parses" 'bash -n "$SH" 2>/dev/null'
 
 # Nothing installed: an empty PATH dir, a MEGAVIBE_HOME without telegram-bot.py.
@@ -130,6 +137,26 @@ fi
 mkdir -p "$T/have"; printf '#!/bin/bash\nexit 0\n' > "$T/have/codex"; chmod +x "$T/have/codex"; : > "$T/mvh2/telegram-bot.py"
 ( cd "$T" && env PATH="$T/have:$SYS" MEGAVIBE_HOME="$T/mvh2" bash "$SH" --update ) >"$T/lift2.out" 2>&1 </dev/null
 check "--update: present codex and telegram are refreshed, absent gemini and playwright stay out" 'grep -qx "codex: install" "$T/lift2.out" && grep -qx "telegram: install" "$T/lift2.out" && grep -qx "gemini: keep-out" "$T/lift2.out" && grep -qx "playwright: keep-out" "$T/lift2.out"'
+
+# ---- part 3: no sudo password, no npx confirmation under --update ---------
+# msudo is defined before any bootstrap can call it; lift the file head through
+# its closing brace (the first column-zero "}" in setup.sh) and call it with a
+# sudo stub that records its argv. The lift carries the --update parse, which
+# must precede msudo for the pip/jq bootstrap to be covered.
+MS="$T/msudo-lifted.sh"
+{ echo 'set -u'; sed -n '1,/^}/p' "$REPO/setup.sh"; echo 'msudo probe-cmd; echo "MSUDO-DONE"'; } > "$MS"
+check "the msudo lift parses and carries the --update parse ahead of msudo" 'bash -n "$MS" 2>/dev/null && [ "$(grep -n "^UPDATE_MODE=0$" "$MS" | cut -d: -f1)" -lt "$(grep -n "^msudo() {" "$MS" | cut -d: -f1)" ]'
+mkdir -p "$T/sudo"; printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "$SUDO_ARGS"\nexit 0\n' > "$T/sudo/sudo"
+printf '#!/bin/bash\necho 1000\n' > "$T/sudo/id"; chmod +x "$T/sudo/sudo" "$T/sudo/id"
+export SUDO_ARGS="$T/sudo.args"
+if [ "$HAVE_TTY" -eq 1 ]; then
+  rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms.out" bash "$MS" --update ); rc=$?
+  check "--update on a tty: msudo runs sudo -n (no password prompt possible)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "-n" ] && grep -q "probe-cmd" "$SUDO_ARGS" || { cat "$T/ms.out"; false; }'
+  rm -f "$SUDO_ARGS"; ( cd "$T" && export PATH="$T/sudo:$SYS" && under_tty "$T/ms-ctl.out" bash "$MS" ); rc=$?
+  check "control, no flag on a tty: msudo runs plain sudo (a human may type the password)" '[ "$rc" = 0 ] && [ "$(sed -n 1p "$SUDO_ARGS" 2>/dev/null)" = "probe-cmd" ] || { cat "$T/ms-ctl.out"; false; }'
+fi
+check "npx playwright install never asks (--yes)" 'grep -q "npx --yes playwright install chromium 2>&1" "$REPO/setup.sh" && ! grep -q "if npx playwright install" "$REPO/setup.sh"'
+check "the deadline kills the whole pty process group (no survivor)" 'bounded 1 bash -c "trap \"\" HUP TERM; sleep 30 & echo \$! > \"$T/surv.pid\"; wait" >/dev/null 2>&1; rc=$?; [ "$rc" = 142 ] && sleep 1 && ! kill -0 "$(cat "$T/surv.pid")" 2>/dev/null'
 
 # The two first-install waits further down carry the guard (their blocks need
 # a real install to reach, so they are checked by text).
