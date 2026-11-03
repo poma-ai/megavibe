@@ -16,13 +16,16 @@ Env vars:
   MEGAVIBE_TELEGRAM_TOKEN   — Bot token from @BotFather (required)
   MEGAVIBE_TELEGRAM_USER_ID — Your Telegram user ID for auth (required)
   OPENAI_API_KEY            — For voice STT (gpt-4o-transcribe)
+  MEGAVIBE_TG_PLUGIN_DIR    — Button plugins (default ~/.megavibe/tg-plugins; README-remote.md)
 """
 
 import asyncio
 import fcntl
+import html
 import json
 import logging
 import os
+import signal
 import re
 import shlex
 import subprocess
@@ -56,7 +59,7 @@ try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
     from telegram.error import Conflict, NetworkError, TimedOut
     from telegram.ext import (
-        ApplicationBuilder, CommandHandler,
+        ApplicationBuilder, CallbackQueryHandler, CommandHandler,
         ContextTypes, MessageHandler, filters,
     )
 except ImportError:
@@ -465,6 +468,252 @@ def auth(func):
     return wrapper
 
 
+# ─── Button plugins ──────────────────────────────────────────────────
+# Telegram delivers button presses only to the process polling the token, so a
+# tool that sends its own messages with inline buttons (a mail digest, say)
+# cannot receive the presses itself while this bot runs. Instead it names a
+# plugin: callback_data "<name>:<payload>" runs the executable
+# $MEGAVIBE_TG_PLUGIN_DIR/<name> (default ~/.megavibe/tg-plugins/<name>) as
+#     <plugin> callback <payload>          (a button was pressed)
+#     <plugin> reply <text>                (you replied to one of its messages)
+# with a JSON context on stdin, and applies the JSON it prints:
+#     {"toast": str, "edit_text": str, "parse_mode": "HTML", "buttons": [[{"text","data"|"url"}]],
+#      "reply_text": str}
+# No shell is involved, the name is restricted to [a-z0-9_-], and only the
+# allowed user reaches this code (the @auth decorator). No plugin dir, no change.
+
+PLUGIN_DIR = Path(os.environ.get("MEGAVIBE_TG_PLUGIN_DIR", MEGAVIBE_HOME / "tg-plugins")).expanduser()
+PLUGIN_NAME_RE = re.compile(r"^[a-z0-9_-]{1,24}$")
+PLUGIN_TIMEOUT = 180
+
+
+def plugin_for(data: str | None):
+    """(path, payload) for callback data naming an installed plugin, else None."""
+    if not data or ":" not in data:
+        return None
+    name, payload = data.split(":", 1)
+    if not PLUGIN_NAME_RE.fullmatch(name):
+        return None
+    path = PLUGIN_DIR / name
+    if not (path.is_file() and os.access(path, os.X_OK)):
+        return None
+    return path, payload
+
+
+def markup_from(rows):
+    out = []
+    for row in rows or []:
+        btns = []
+        for b in row:
+            if b.get("url"):
+                btns.append(InlineKeyboardButton(str(b["text"])[:64], url=str(b["url"])))
+            elif b.get("data"):
+                data = str(b["data"])
+                if len(data.encode()) > 64:        # Telegram's limit is 64 BYTES
+                    log.warning("button data over 64 bytes dropped: %r", data[:40])
+                    continue
+                btns.append(InlineKeyboardButton(str(b["text"])[:64], callback_data=data))
+        if btns:
+            out.append(btns)
+    return InlineKeyboardMarkup(out) if out else None
+
+
+async def _safe_answer(answer, text="") -> bool:
+    """Acknowledge a button press; a failed acknowledgement must never abort the
+    plugin run or leave its process behind. True if Telegram took it."""
+    if not answer:
+        return False
+    try:
+        await answer(str(text or "")[:200])
+        return True
+    except Exception as e:
+        log.info("callback answer failed: %s", e)
+        return False
+
+
+async def run_plugin(path: Path, mode: str, arg: str, ctx: dict, answer=None) -> dict:
+    """Run a plugin under ONE deadline (PLUGIN_TIMEOUT). If it outlives
+    Telegram's ~15 s callback window, acknowledge the press first so the button
+    stops spinning. The plugin gets its own process group, so a timeout or a
+    cancellation kills its children too. Never raises; failures come back as a
+    toast, and `_answered` says whether the press was already acknowledged."""
+    answered = False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PLUGIN_TIMEOUT
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(path), mode, arg, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            start_new_session=True)
+    except OSError as e:
+        log.warning("plugin %s could not start: %s", path.name, e)
+        return {"toast": f"\u274c {path.name} could not start", "_answered": False}
+
+    def kill_group():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    comm = asyncio.ensure_future(proc.communicate(json.dumps(ctx).encode()))
+    try:
+        try:
+            out, err = await asyncio.wait_for(asyncio.shield(comm), 8)
+        except asyncio.TimeoutError:
+            answered = await _safe_answer(answer, "\u23f3 working\u2026")
+            out, err = await asyncio.wait_for(comm, max(1.0, deadline - loop.time()))
+    except asyncio.TimeoutError:
+        kill_group()
+        return {"toast": f"\u274c {path.name} timed out", "_answered": answered}
+    except BaseException:
+        kill_group()           # cancelled or crashed: leave nothing running
+        raise
+    finally:
+        if proc.returncode is None:
+            kill_group()
+        if not comm.done():
+            comm.cancel()
+        try:                    # reap, so no zombie is left behind
+            await asyncio.wait_for(proc.wait(), 5)
+        except BaseException:
+            pass
+    if proc.returncode != 0:
+        log.warning("plugin %s exited %s: %s", path.name, proc.returncode,
+                    err.decode(errors="replace")[-300:])
+        return {"toast": f"\u274c {path.name} failed", "_answered": answered}
+    try:
+        res = json.loads(out.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        res = None
+    if not isinstance(res, dict):
+        return {"toast": f"\u274c {path.name} returned no JSON object", "_answered": answered}
+    res["_answered"] = answered
+    return res
+
+
+def fit(text, parse_mode):
+    """Telegram's 4096-character limit, without cutting formatting in half: an
+    over-long formatted text is sent as plain text instead (a slice can end
+    inside a tag, and then the whole message is rejected)."""
+    text = str(text)
+    if len(text) <= 4096:
+        return text, parse_mode
+    if parse_mode and parse_mode.upper() == "HTML":
+        text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    elif parse_mode:
+        text = re.sub(r"[*_`\\[\]]", "", text)
+    return (text if len(text) <= 4096 else text[:4095] + "\u2026"), None
+
+
+async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
+    """Apply a plugin's result. Returns True when its outcome reached the user.
+
+    The toast is the outcome ("done", "refused: …"). It travels as the press's
+    toast when it can; otherwise (reply mode, an early "working…"
+    acknowledgement, a rejected answer) it is sent as a chat message, even when
+    an edit also succeeded — the edit may not say what the toast says. A failed
+    edit (other than "not modified") or a failed reply always produces a
+    warning, so a lost card never looks like success."""
+    toast = str(res.get("toast") or "").strip()
+    toast_done = False
+    if query and not res.get("_answered"):
+        ok = await _safe_answer(query.answer, toast)
+        # A press toast holds 200 characters; a longer outcome is ALSO sent whole.
+        toast_done = ok and bool(toast) and len(toast) <= 200
+    failed = False
+    if res.get("edit_text") and message:
+        text, mode = fit(res["edit_text"], res.get("parse_mode"))
+        try:
+            await message.edit_text(text, parse_mode=mode,
+                                    reply_markup=markup_from(res.get("buttons")),
+                                    disable_web_page_preview=True)
+        except Exception as e:
+            failed = failed or "not modified" not in str(e).lower()
+            log.info("plugin edit skipped: %s", e)
+    if res.get("reply_text") and message:
+        text, mode = fit(res["reply_text"], res.get("parse_mode"))
+        try:
+            await bot.send_message(message.chat_id, text, parse_mode=mode,
+                                   reply_markup=markup_from(res.get("reply_buttons")),
+                                   reply_to_message_id=message.message_id,
+                                   disable_web_page_preview=True)
+        except Exception:
+            failed = True
+            log.exception("plugin reply failed")
+    notes = []
+    if toast and not toast_done:
+        notes.append(toast)
+    if failed:
+        notes.append("\u26a0\ufe0f The result could not be shown.")
+    if not notes:
+        return True
+    if not message:
+        return False
+    try:
+        # Not tied to the source message: it may have been deleted meanwhile.
+        await bot.send_message(message.chat_id, "\n".join(notes)[:4096],
+                               reply_to_message_id=message.message_id,
+                               allow_sending_without_reply=True)
+        return not failed
+    except Exception as e:
+        log.info("plugin toast message failed: %s", e)
+        return False
+
+
+def own_private_message(message, bot) -> bool:
+    """Plugins act only on messages THIS bot sent, in a private chat. Otherwise
+    another bot's keyboard in a group could route an ordinary reply into a local
+    plugin (review 2026-11-03)."""
+    chat = getattr(message, "chat", None)
+    sender = getattr(message, "from_user", None)    # absent on InaccessibleMessage
+    return bool(chat and getattr(chat, "type", None) == "private"
+                and sender and sender.id == bot.id)
+
+
+@auth
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Registered non-blocking (block=False): a slow plugin must not hold up the
+    next press or an ordinary message."""
+    q = update.callback_query
+    hit = plugin_for(q.data)
+    msg = q.message
+    if not hit:
+        await _safe_answer(q.answer)
+        return
+    if not own_private_message(msg, context.bot):
+        # Telegram hides messages older than 48 h (InaccessibleMessage, which has
+        # no sender); anything else here is a message this bot does not serve.
+        old = getattr(msg, "from_user", None) is None
+        await _safe_answer(q.answer, "This message is too old to act on." if old
+                           else "These buttons are not handled here.")
+        return
+    path, payload = hit
+    ctx = {"chat_id": msg.chat_id, "message_id": msg.message_id, "text": msg.text, "data": q.data}
+    res = await run_plugin(path, "callback", payload, ctx, answer=q.answer)
+    await apply_plugin_result(res, msg, context.bot, query=q)
+
+
+def plugin_of_message(message):
+    """The plugin whose buttons sit on `message`, if any — how a text reply to a
+    plugin's card finds its way back to that plugin."""
+    kb = getattr(message, "reply_markup", None)
+    for row in (kb.inline_keyboard if kb else []):
+        for b in row:
+            hit = plugin_for(b.callback_data)
+            if hit:
+                return hit[0]
+    return None
+
+
+async def _reply_to_plugin(plugin, replied, update, context, text):
+    ctx = {"chat_id": replied.chat_id, "message_id": replied.message_id,
+           "text": replied.text, "reply_text": text}
+    res = await run_plugin(plugin, "reply", text, ctx)
+    # No press to toast on here: apply_plugin_result sends the toast (or a
+    # warning, when an edit/reply failed) as a message itself.
+    await apply_plugin_result(res, replied, context.bot)
+
+
 # ─── Handlers ────────────────────────────────────────────────────────
 
 
@@ -472,6 +721,13 @@ def auth(func):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Route: project name → remote-control session, else → personal Claude."""
     text = update.message.text.strip()
+    replied = update.message.reply_to_message
+    plugin = plugin_of_message(replied) if own_private_message(replied, context.bot) else None
+    if plugin:
+        # In the background, so the text handler (and the next update) is not
+        # held for up to PLUGIN_TIMEOUT.
+        context.application.create_task(_reply_to_plugin(plugin, replied, update, context, text))
+        return
     proj_name, proj_dir = find_project(text)
 
     if proj_name and proj_dir:
@@ -748,6 +1004,7 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CallbackQueryHandler(handle_callback, block=False))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
