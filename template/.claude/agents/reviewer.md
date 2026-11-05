@@ -34,7 +34,11 @@ find what is wrong with it before a user does.
 ## What to report
 
 Ranked by severity, concrete only. For each finding: file:line, the failing
-input or state, the wrong outcome, a one-line fix. Then what you actually ran
+input or state, the wrong outcome, a one-line fix, and how likely that input
+is in the real workload the brief describes: **common**, **occasional**, or
+**edge** (synthetic or rare). Report material findings first and list edge
+findings separately; an edge finding alone does not make a verdict "do not
+ship" unless it is a security, data-loss or crash defect. Then what you actually ran
 and observed, per check. Then a verdict: **ship** or **do not ship**, one
 paragraph, with the reasons. If a category is clean, say so in one line.
 
