@@ -13,9 +13,9 @@ set -u
 #
 # Why: every `poma-memory search` reloads the embedding model and re-reads every
 # stored embedding — measured 0.52s per call, of which the actual search is under
-# 10ms. augment-search.sh fires on every Grep, Glob and shell content-search, and
-# an umbrella session (MEGAVIBE_EXTRA_AGENT_DIRS) pays it once per root. With a
-# resident daemon the same search is ~30ms.
+# 10ms. augment-search.sh handles Grep/Glob and opt-in Bash content searches,
+# querying the selected root without fan-out to configured extra roots. With
+# a resident daemon the same search is ~30ms.
 #
 # Nothing else has to change: `poma-memory search` talks to the socket when one
 # is there and runs in-process when it is not, so the hooks are identical either
