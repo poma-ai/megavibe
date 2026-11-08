@@ -90,7 +90,7 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 
 **Explore** (read-only)
 - Read tools, grep/glob, targeted reads.
-- When you Grep or Glob, a hook automatically searches `.agent/` context via poma-memory and injects relevant matches into your context. No action needed — just search normally and you'll see project context alongside results.
+- Grep/Glob searches can automatically recall historical `.agent/` notes via poma-memory (Bash requires `MEGAVIBE_POMA_BASH=1`). Recall is filtered by age, path and lexical overlap; it can miss useful notes or return irrelevant ones. Notes may be superseded: verify claims against current code before stating them as fact. The displayed age comes from the filename date, otherwise file mtime; `DECISIONS.md` and `LESSONS.md` are exempt from the default 45-day limit.
 - Large explorations: delegate to Explore subagent or Gemini. **Pass `model: "sonnet"`** — `Explore` has no model of its own and otherwise inherits the parent session's (see `.claude/rules/spinouts.md` for the measurement); file-finding and keyword search don't need Opus/Fable-grade judgment.
 
 **Plan**
