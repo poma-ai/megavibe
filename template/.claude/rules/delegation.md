@@ -70,7 +70,7 @@ Every unit of work (a review reader, a fix round, an implementation, a digest, a
 - **Claude, Agent tool:** the subagent inherits this project's whole instruction stack (about 93K tokens here), so use it only when the task needs the rules, hooks, writes or the conversation.
 - **Codex:** `codex-review.sh`, or `codex exec -s workspace-write -C <worktree>`; its own sandbox, network closed (the lean Claude worker's network is open, because claude itself needs it).
 
-How much weighing a call is worth follows its price class: calls in the Haiku or luna class ($0.10/$0.50 per million) may stay on whichever side is convenient; for Sonnet, Opus and Fable against terra, sol and astra, never default to one side by habit, and state the allocation in one line each time. Every `claude-review.sh`, `amass.sh run` and `dedupe` call appends a line to `~/.megavibe/amass-usage.jsonl`; compare it with the Agent-tool calls in the transcripts to see whether this is followed.
+How much weighing a call is worth follows its price class: calls in the Haiku or luna class ($0.10/$0.50 per million) may stay on whichever side is convenient; for Sonnet, Opus and Fable against terra, sol and astra, never default to one side by habit, and state the allocation in one line each time. Every `claude-review.sh`, `amass.sh run` and `dedupe` call that reaches the model appends a line to `~/.megavibe/amass-usage.jsonl` (best effort); compare it with the Agent-tool calls in the transcripts to see whether this is followed.
 
 ## Two review tiers, and why
 
