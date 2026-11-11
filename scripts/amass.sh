@@ -20,8 +20,8 @@
 #  - Identical prompts share one cache write: the first copy of each prompt is started first,
 #    the rest follow after AMASS_STAGGER seconds. Prompts that differ only in the lens line do
 #    not share the bulk, so spend copies on a lens, not on many different lens texts.
-#  - Subscription login only: API keys and cloud-provider switches are removed from the
-#    environment of every call, and before anything is sent `claude auth status` must report
+#  - Subscription login only: every call runs in an allow-listed minimal environment (no API key, token,
+#    custom header or cloud-provider variable can reach it), and before anything is sent `claude auth status` must report
 #    a claude.ai (subscription) login, because a saved Console key would still bill. If the
 #    check cannot be made the script refuses (it needs a claude that has `auth status`).
 #  - Nothing is dropped silently: every response line that is not a finding line is counted
@@ -32,6 +32,16 @@ set -euo pipefail
 PROG=${0##*/}
 CLAUDE_BIN=${AMASS_CLAUDE:-claude}
 STAGGER=${AMASS_STAGGER:-6}
+
+# The environment of every claude call is an ALLOW-LIST (env -i plus what claude legitimately needs), so no
+# credential, endpoint or header variable (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_CUSTOM_HEADERS,
+# cloud-provider switches and tokens, ...) can reach it, whatever it is called: a deny-list of names would miss
+# the next one. A saved claude.ai login is found through HOME or CLAUDE_CONFIG_DIR.
+CLEAN=(env -i)
+for _v in PATH HOME USER LOGNAME SHELL TERM LANG LC_ALL LC_CTYPE TMPDIR TZ CLAUDE_CONFIG_DIR HTTPS_PROXY HTTP_PROXY NO_PROXY ALL_PROXY https_proxy http_proxy no_proxy all_proxy NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
+  if [ -n "${!_v+x}" ]; then CLEAN+=("$_v=${!_v}"); fi
+done
+
 
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
@@ -67,8 +77,7 @@ isnum() { case $1 in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 
 # one bounded, tool-less, settings-less call: prompt file in, raw json out
 call_claude() { # model timeout prompt_file out_json out_err ; returns the exit status
-  ( cd "$WORK" && env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
-      -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY \
+  ( cd "$WORK" && "${CLEAN[@]}" \
       perl -e 'alarm shift; exec @ARGV' "$2" "$CLAUDE_BIN" -p --model "$1" --output-format json \
       --tools "" --no-session-persistence --disable-slash-commands --strict-mcp-config \
       --setting-sources "" < "$3" > "$4" 2> "$5" )
@@ -90,8 +99,7 @@ extract() { # raw_json text_out
 # refuse anything but a claude.ai subscription login (a saved Console key would bill)
 check_login() {
   local j m
-  j=$(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
-        -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY \
+  j=$("${CLEAN[@]}" \
         perl -e 'alarm shift; exec @ARGV' 30 "$CLAUDE_BIN" auth status 2>/dev/null) \
     || die "cannot verify the login ('$CLAUDE_BIN auth status' failed); refusing to send anything"
   m=$(printf '%s' "$j" | jq -r '.authMethod // empty' 2>/dev/null) || m=''
