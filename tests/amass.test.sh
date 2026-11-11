@@ -54,6 +54,14 @@ if grep -q 'dedupe stage' "$d/prompt"; then
     all) body=$(printf 'C1 | P2 | everything | members: %s\n' "$(echo "$ids" | paste -sd, -)") ;;
     partial) first=$(echo "$ids" | head -1); body=$(printf 'C1 | P2 | only first | members: %s\n' "$first") ;;
     dup) first=$(echo "$ids" | head -1); body=$(printf 'C1 | P2 | all | members: %s\nC2 | P2 | again | members: %s\n' "$(echo "$ids" | paste -sd, -)" "$first") ;;
+    clusters) body=$(cat <<'CLUSTERS'
+C9 | P2 | vague concern | members: , , [no-input]
+C2 | P1 | another vague concern | members: y_1.F2,y_2.F1,y_2.F2 [no-input]
+C8 | P2 | no members supplied [no-input]
+C7 | P2 | call("a|b", n=7) returns "[no-input]" | members: whole_1.F1,whole_1.F2,x_1.F1,x_1.F2
+C10 | P1 | call(0) fails | members: x_2.F1,x_2.F2,y_1.F1
+CLUSTERS
+    ) ;;
   esac
   jq -n --arg r "$body" '[{"type":"system"},{"type":"result","is_error":false,"result":$r,"total_cost_usd":0.01}]'
 else
@@ -132,9 +140,11 @@ out=$("$AM" dedupe --out "$T/o2" 2>&1); rc=$?
 check "dedupe exits 0" '[ $rc -eq 0 ]'
 check "dedupe: all ids covered, none re-added" 'echo "$out" | grep -q "0 findings omitted by the model" && echo "$out" | grep -q "0 duplicated ids"'
 check "dedupe prompt lists 10 findings with run-qualified ids" '[ "$(grep -c "^[a-z]*_[0-9]*\.F[0-9]* |" "$T/o2/dedupe_in.txt")" = 10 ]'
+check "old marker-free dedupe shape gets a member count" 'grep -qx "C1 | P2 | n=10 | everything | members: whole_1.F1,whole_1.F2,x_1.F1,x_1.F2,x_2.F1,x_2.F2,y_1.F1,y_1.F2,y_2.F1,y_2.F2" "$T/o2/clusters.md"'
 rm -rf "$T/o2/dedupe_"* "$T/o2/clusters"* "$T/o2/members_"*
 out=$(fk FAKE_DEDUPE=partial -- "$AM" dedupe --out "$T/o2" 2>&1)
 check "omitted ids are re-added in a CUNK cluster (nothing lost)" 'echo "$out" | grep -q "9 findings omitted" && grep -q "^CUNK" "$T/o2/clusters.md" && [ "$(grep -o "_[0-9]*\.F[0-9]*" "$T/o2/clusters.md" | wc -l | tr -d " ")" = 10 ]'
+check "the fallback cluster is counted and sorted too" 'head -1 "$T/o2/clusters.md" | grep -q "^CUNK | ? | n=9 |"'
 rm -rf "$T/o2/dedupe_"* "$T/o2/clusters"* "$T/o2/members_"*
 out=$(fk FAKE_DEDUPE=dup -- "$AM" dedupe --out "$T/o2" 2>&1)
 check "duplicated ids are reported" 'echo "$out" | grep -q "1 duplicated ids"'
@@ -289,6 +299,90 @@ if locale -a 2>/dev/null | grep -qi '^de_DE'; then
 else
   echo "note: decimal-comma locale test skipped (no de_DE locale here)"
 fi
+
+# 8. support counts, stable model ids, and advisory no-input markers.
+newlog clusters
+out=$(fk FAKE_DEDUPE=clusters -- "$AM" dedupe --out "$T/o2" 2>&1); rc=$?
+cat > "$T/expected-clusters" <<'EOF'
+C7 | P2 | n=4 | call("a|b", n=7) returns "[no-input]" | members: whole_1.F1,whole_1.F2,x_1.F1,x_1.F2
+C10 | P1 | n=3 | call(0) fails | members: x_2.F1,x_2.F2,y_1.F1
+C2 | P1 | n=3 | another vague concern | members: y_1.F2,y_2.F1,y_2.F2 [no-input]
+C8 | P2 | n=0 | no members supplied | members:  [no-input]
+C9 | P2 | n=0 | vague concern | members:  [no-input]
+EOF
+check "clusters sorted by count descending then id in C order, ids unchanged" '[ $rc -eq 0 ] && cmp -s "$T/expected-clusters" "$T/o2/clusters.md"'
+check "pipes, n= and a quoted marker in text are preserved literally" 'head -1 "$T/expected-clusters" > "$T/expected-first"; head -1 "$T/o2/clusters.md" | cmp -s - "$T/expected-first"'
+check "zero and missing member lists are retained with n=0" '[ "$(grep -c "| n=0 |" "$T/o2/clusters.md")" = 2 ]'
+check "flagged and unflagged clusters both survive" 'grep -Fxq "C2 | P1 | n=3 | another vague concern | members: y_1.F2,y_2.F1,y_2.F2 [no-input]" "$T/o2/clusters.md" && grep -Fxq "C10 | P1 | n=3 | call(0) fails | members: x_2.F1,x_2.F2,y_1.F1" "$T/o2/clusters.md"'
+check "markers are never counted as member ids" 'echo "$out" | grep -q "0 findings omitted.*0 duplicated ids, 0 unknown ids" && [ "$(wc -l < "$T/o2/members_seen.txt" | tr -d " ")" = 10 ]'
+check "dedupe prints the exact sorted cluster lines" 'printf "%s\n" "$out" | grep "^C" | cmp -s - "$T/expected-clusters"'
+out2=$("$AM" summary --out "$T/o2" 2>&1)
+check "summary prints the exact sorted cluster lines" 'printf "%s\n" "$out2" | grep "^C" | cmp -s - "$T/expected-clusters"'
+check "dedupe prompt defines concrete failing input and the advisory marker" 'grep -qF "[no-input]" "$T/o2/dedupe_prompt.txt" && grep -q "specific input value, call or state" "$T/o2/dedupe_prompt.txt" && grep -q "never drop" "$T/o2/dedupe_prompt.txt"'
+fk FAKE_DEDUPE=clusters -- "$AM" dedupe --out "$T/o2" >/dev/null 2>&1
+check "repeated dedupe keeps the same order and ids" 'cmp -s "$T/expected-clusters" "$T/o2/clusters.md"'
+
+# 9. Context is separate from reviewed files, but shares validation and size limits.
+newlog context
+mkdir "$T/context"
+printf 'space-content\n' > "$T/context/has space"
+printf 'dash-context\n' > "$T/context/-n"
+newline=$'line\nbreak'
+printf 'newline-content\n' > "$T/context/$newline"
+out=$(cd "$T/context" && "$AM" run --out "$T/context-out" --no-lens --whole 1 "$T/a.txt" --context 'has space' "$newline" --context -n --context "$T/a.txt" 2>&1); rc=$?
+check "repeatable multi-file context works with empty lens arrays on bash 3.2" '[ $rc -eq 0 ] && [ "$(calls)" = 1 ]'
+{
+  printf '\n===== FILE %s =====\nalpha\nbeta\n' "$T/a.txt"
+  printf '\n===== CONTEXT ./has space =====\nspace-content\n'
+  printf '\n===== CONTEXT ./%s =====\nnewline-content\n' "$newline"
+  printf '\n===== CONTEXT ./-n =====\ndash-context\n'
+  printf '\n===== CONTEXT %s =====\nalpha\nbeta\n' "$T/a.txt"
+} > "$T/expected-context"
+check "context filenames with spaces, dashes and newlines have exact blocks after reviewed files" 'tail -c "$(wc -c < "$T/expected-context")" "$T/context-out/base.txt" | cmp -s - "$T/expected-context"'
+check "a reviewed file also passed as context keeps both roles" '[ "$(grep -c "^alpha$" "$T/context-out/base.txt")" = 2 ] && grep -qF "===== FILE $T/a.txt =====" "$T/context-out/base.txt" && grep -qF "===== CONTEXT $T/a.txt =====" "$T/context-out/base.txt"'
+check "task says context is not under review and findings concern reviewed files" 'grep -q "callers, callees, tests of the changed functions" "$T/context-out/base.txt" && grep -q "not under review" "$T/context-out/base.txt" && grep -q "findings must be about the reviewed files" "$T/context-out/base.txt"'
+printf 'Custom task\n' > "$T/context-task"
+"$AM" run --out "$T/context-custom" --task-file "$T/context-task" --no-lens --whole 1 --context "$T/b.txt" -- "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "custom tasks and -- still preserve context guidance and reviewed files" '[ $rc -eq 0 ] && grep -q "not under review" "$T/context-custom/base.txt" && grep -qF "===== FILE $T/a.txt =====" "$T/context-custom/base.txt"'
+newlog context-cap
+head -c 3000 /dev/zero | tr '\0' x > "$T/context-big"
+"$AM" run --out "$T/context-control" --no-lens --whole 1 --max-input-kb 2 --dry-run "$T/a.txt" >/dev/null 2>&1; control=$?
+out=$("$AM" run --out "$T/context-cap" --no-lens --whole 1 --max-input-kb 2 "$T/a.txt" --context "$T/context-big" 2>&1); rc=$?
+check "context counts toward input cap before any login or model call" '[ $control -eq 0 ] && [ $rc -eq 2 ] && echo "$out" | grep -q "above --max-input-kb 2" && [ "$(calls)" = 0 ] && [ ! -e "$FAKE_LOG/auth_envnames" ]'
+printf 'before\0after' > "$T/context/-binary"
+out=$(cd "$T/context" && "$AM" run --out "$T/context-nul" --no-lens --whole 1 "$T/a.txt" --context -binary 2>&1); rc=$?
+check "dash context containing NUL is refused as binary before calls" '[ $rc -eq 2 ] && echo "$out" | grep -q "contains NUL bytes" && [ "$(calls)" = 0 ]'
+out=$("$AM" run --out "$T/context-missing" "$T/a.txt" --context "$T/not-present" 2>&1); rc=$?
+check "missing context refused with path and read diagnostic" '[ $rc -eq 2 ] && echo "$out" | grep -qF "cannot read $T/not-present" && [ "$(calls)" = 0 ]'
+out=$("$AM" run --out "$T/context-dir" "$T/a.txt" --context "$T/context" 2>&1); rc=$?
+check "directory context refused" '[ $rc -eq 2 ] && echo "$out" | grep -qF "cannot read $T/context" && [ "$(calls)" = 0 ]'
+printf 'unreadable\n' > "$T/context-unreadable"; chmod 000 "$T/context-unreadable"
+out=$("$AM" run --out "$T/context-perms" "$T/a.txt" --context "$T/context-unreadable" 2>&1); rc=$?
+if [ ! -r "$T/context-unreadable" ]; then
+  check "unreadable context refused before calls" '[ $rc -eq 2 ] && echo "$out" | grep -qF "cannot read $T/context-unreadable" && [ "$(calls)" = 0 ]'
+else
+  echo "note: unreadable context test skipped (user can read mode 000 files)"
+fi
+chmod 600 "$T/context-unreadable"
+out=$("$AM" run --out "$T/context-empty" "$T/a.txt" --context 2>&1); rc=$?
+check "empty context group refused with useful diagnostic" '[ $rc -eq 2 ] && echo "$out" | grep -qF -- "--context needs FILE"'
+out=$("$AM" run --out "$T/context-option" "$T/a.txt" --context --dry-run 2>&1); rc=$?
+check "context cannot consume the next long option as a filename" '[ $rc -eq 2 ] && echo "$out" | grep -qF -- "--context needs FILE"'
+out=$("$AM" run --out "$T/context-only" --context "$T/a.txt" 2>&1); rc=$?
+check "context alone does not populate the empty reviewed-file array" '[ $rc -eq 2 ] && echo "$out" | grep -q "no FILE to inline"'
+
+# 10. User-facing caveats and the pre-created-output refusal are explicit.
+out=$("$AM" --help 2>&1)
+for doc in help readme; do
+  if [ "$doc" = help ]; then printf '%s\n' "$out" > "$T/doc"; else cp "$REPO/README-amass.md" "$T/doc"; fi
+  check "$doc documents model labels and both measured precision ranges" 'grep -q "model.*labels\|labels.*model" "$T/doc" && grep -q "15-20" "$T/doc" && grep -q "40 percent" "$T/doc"'
+  check "$doc documents diff scope and caller/callee context" 'grep -q "inside the diff" "$T/doc" && grep -q "callers and callees.*--context" "$T/doc"'
+  check "$doc documents --out must not exist and exit 2" 'grep -q -- "--out.*must not exist" "$T/doc" && grep -q "pre-creates.*exit 2" "$T/doc"'
+  check "$doc documents normal counted parse failures" 'grep -q "3-5 of 18.*failing to parse.*normal.*counted" "$T/doc"'
+done
+mkdir "$T/precreated"
+out=$("$AM" run --out "$T/precreated" --no-lens --whole 1 "$T/a.txt" 2>&1); rc=$?
+check "pre-created --out fails with exit 2 and an explanation" '[ $rc -eq 2 ] && echo "$out" | grep -q "already exists.*new --out"'
 
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
