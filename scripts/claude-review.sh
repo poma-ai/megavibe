@@ -64,7 +64,7 @@ use strict;
 use POSIX qw(WNOHANG);
 use IO::Select;
 use Time::HiRes qw(time sleep);
-my ($t, $ps_command) = (shift, shift);
+my ($t, $ps_command, $state) = (shift, shift, shift);
 my ($cancel, $pid, $status, $inspection_failed, $cleaning) = (0, undef, undef, 0, 0);
 my ($guard, $pulse, $inspector);
 $SIG{INT} = sub { $cancel ||= 130 };
@@ -131,6 +131,45 @@ sub snapshot {
     }
     return \%rows;
 }
+# Only the parent side can write this file: the control directory is outside
+# every worker-writable root. Atomic replacement leaves a complete snapshot if
+# the supervisor is stopped or killed midway through publishing the next one.
+sub save_observed {
+    open my $f, ">", "$state.tmp.$$" or die "descendant state: $!";
+    for my $p (keys %live) { print $f "$p $seen{$p}\n" or die "descendant state: $!"; }
+    close $f or die "descendant state: $!";
+    rename "$state.tmp.$$", $state or die "descendant state rename: $!";
+}
+sub read_observed {
+    my %observed;
+    if (open my $f, "<", $state) {
+        while (<$f>) { $observed{$1} = $2 if /^\s*(\d+)\s+(.+?)\s*$/; }
+    }
+    return \%observed;
+}
+sub signal_observed {
+    my ($signal, $observed) = @_;
+    my $sent = 0;
+    for my $p (keys %$observed) {
+        next unless kill 0, $p;
+        # Each inspection is bounded, including when ps hangs. Never signal a
+        # saved PID on inspection loss or after its start time has changed.
+        my $rows = eval { snapshot() };
+        if ($@) { warn $@; $inspection_failed = 1; stop_inspector(); }
+        next unless $rows && exists $rows->{$p} && $rows->{$p}[1] eq $observed->{$p};
+        $sent += kill $signal, $p;
+    }
+    return $sent;
+}
+# The wrapper uses the same identity checks before removing either directory,
+# even when its wait returned before the independent watchdog finished.
+if ($t eq "cleanup") {
+    $cleaning = 1;
+    my $observed = read_observed();
+    sleep 2 if signal_observed("TERM", $observed);
+    signal_observed("KILL", $observed);
+    exit 0;
+}
 snapshot(); # Bounded pre-start check: refuse if process inspection is unavailable.
 exit $cancel if $cancel;
 exit 3 if $inspection_failed;
@@ -171,6 +210,7 @@ sub members {
         }
     }
     $seen{$_} = $rows->{$_}[1] for keys %live;
+    save_observed();
     return keys %live;
 }
 sub reap {
@@ -189,6 +229,7 @@ eval {
     die "watchdog fork: $!" unless defined $guard;
     if (!$guard) {
         close $pulse;
+        undef $pulse;
         close $gate_w;
         $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "DEFAULT";
         my $select = IO::Select->new($watch);
@@ -205,11 +246,16 @@ eval {
                 $ps = $1 if $line =~ /^ps (\d+)$/;
             }
         }
-        # No ps dependency: even a stuck/dead supervisor cannot abandon its group.
+        # Group cleanup still works without ps. Detached descendants require
+        # fresh identity checks against the last atomically published snapshot.
+        $cleaning = 1;
+        my $observed = read_observed();
         kill "TERM", -$pid;
         kill "KILL", -$ps if $ps;
+        signal_observed("TERM", $observed);
         sleep 2;
         kill "KILL", -$pid;
+        signal_observed("KILL", $observed);
         # EOF can mean the supervisor already died; do not signal a reused PID.
         kill "KILL", $supervisor if getppid() == $supervisor;
         POSIX::_exit(0);
@@ -323,6 +369,9 @@ fi
 
 SC=''; CTL=''; TOOLDIR=''; SUP_PID=''
 cleanup() {
+  if [ -n "$CTL" ] && [ -f "$CTL/descendants" ]; then
+    "${CLEAN[@]}" perl -e "$SUP" cleanup "$PS_BIN" "$CTL/descendants" || true
+  fi
   if [ "$KEEP" = 0 ]; then
     if [ -n "$SC" ]; then chmod -R u+rwX "$SC" 2>/dev/null || true; rm -rf "$SC" 2>/dev/null || true; fi
     if [ -n "$CTL" ]; then rm -rf "$CTL" 2>/dev/null || true; fi
@@ -427,7 +476,7 @@ print "$ctl\n";
 CTL=$(perl -e "$POLICY" "$SC" "$TOOLDIR" "$TOOLS") || die "cannot isolate the control directory from worker-writable roots"
 
 # Subscription login only, supervised and interruptible just like the worker.
-"${CLEAN[@]}" perl -e "$SUP" 30 "$PS_BIN" "$CLAUDE_BIN" auth status > "$CTL/auth.json" 2>/dev/null &
+"${CLEAN[@]}" perl -e "$SUP" 30 "$PS_BIN" "$CTL/descendants" "$CLAUDE_BIN" auth status > "$CTL/auth.json" 2>/dev/null &
 SUP_PID=$!
 AUTH_RC=0
 wait "$SUP_PID" || AUTH_RC=$?
@@ -480,7 +529,7 @@ printf '[claude-review: tools=%s (%s) model=%s timeout=%ss request=%sKB]\n' "$TO
 START=$(date +%s)
 RC=0
 ( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" \
-    perl -e "$SUP" "$TIMEOUT" "$PS_BIN" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
+    perl -e "$SUP" "$TIMEOUT" "$PS_BIN" "$CTL/descendants" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
 SUP_PID=$!
 wait "$SUP_PID" || RC=$?
 SUP_PID=''

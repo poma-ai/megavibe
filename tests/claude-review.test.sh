@@ -55,7 +55,7 @@ if [ -n "${FAKE_PLANT:-}" ]; then
   ln -sf "$FAKE_OUTSIDE/victim" settings.json 2>/dev/null; ln -sf "$FAKE_OUTSIDE/victim" request.txt 2>/dev/null
 fi
 case "${FAKE_MODE:-ok}" in
-  detached_timeout|detached_normal)
+  detached_timeout|detached_normal|detached_watchdog)
     # This child leaves the worker process group/session, as Claude Bash does.
     perl -MPOSIX=setsid -e '
       open my $rows, ">>", "$ARGV[1]/ps.rows" or die $!;
@@ -63,9 +63,10 @@ case "${FAKE_MODE:-ok}" in
       my $pid = fork(); die "fork: $!" unless defined $pid;
       if (!$pid) {
         setsid() >= 0 or die "setsid: $!";
+        $SIG{TERM} = "IGNORE";
         open my $rows, ">>", "$ARGV[1]/ps.rows" or die $!;
         print $rows "$$ ", getppid(), " fixture-$$\n"; close $rows;
-        $SIG{TERM} = "IGNORE"; sleep 30; exit 0;
+        sleep 30; exit 0;
       }
       open my $f, ">", $ARGV[0] or die $!; print $f "$pid\n"; close $f;
       sleep 2; # keep ancestry observable across several supervisor polls
@@ -209,6 +210,10 @@ my $dir = "$FindBin::Bin/outside";
 my $mode = "";
 if (open my $f, "<", "$dir/ps.mode") { chomp($mode = <$f> // ""); }
 if ($mode eq "pre_fail") { exit 1; }
+if ($mode eq "observed" && -s "$dir/child.pid") {
+    open my $f, ">>", "$dir/snapshots" or die $!;
+    print $f "snapshot\n"; close $f;
+}
 if (-s "$dir/worker.pid") {
     if ($mode eq "fail") { exit 1; }
     if ($mode eq "block") {
@@ -223,12 +228,13 @@ if (-s "$dir/worker.pid") {
         exit 0;
     }
 }
-if (-e "$dir/use-real-ps") { exec "/bin/ps", @ARGV; exit 127; }
+if (-e "$dir/use-real-ps" && $mode !~ /^identity_/) { exec "/bin/ps", @ARGV; exit 127; }
 if (open my $f, "<", "$dir/ps.rows") {
     while (<$f>) {
         my ($pid, $parent, $start) = split;
         next unless $pid && kill(0, $pid);
         $parent = 1 unless kill(0, $parent);
+        $start = "changed-$start" if $mode eq "identity_change" && -e "$dir/term.received";
         print "$pid $parent $start\n";
     }
 }
@@ -437,6 +443,88 @@ for fault in block stopped stopped_block; do
   for f in worker inspection inspection-child supervisor; do
     if [ -s "$T/outside/$f.pid" ]; then kill -KILL "$(cat "$T/outside/$f.pid")" 2>/dev/null || true; fi
   done
+done
+
+# A detached child already observed by the supervisor must remain covered when
+# that supervisor can no longer clean up. Wait for several fixture snapshots AND
+# the published identity, so these cases do not test the unobserved-child risk.
+for fault in killed stopped_term; do
+  clean_kept
+  rm -f "$T/outside/worker.pid" "$T/outside/child.pid" "$T/outside/supervisor.pid" "$T/outside/snapshots"
+  echo observed > "$T/outside/ps.mode"
+  defconf
+  printf 'export FAKE_MODE=detached_watchdog\n' >> "$T/conf.sh"
+  "$CR" --prompt p --tools none --timeout 30 "$T/a.txt" >"$T/signal.out" 2>"$T/signal.err" &
+  wrapper=$!
+  n=0; observed=0
+  while [ "$n" -lt 100 ]; do
+    signal_sc=$(kept); signal_ctl=$(ctl)
+    if [ -s "$T/outside/child.pid" ] && [ -s "$T/outside/snapshots" ] &&
+       [ "$(wc -l < "$T/outside/snapshots")" -ge 5 ] &&
+       grep -q "^$(cat "$T/outside/child.pid") " "$signal_ctl/descendants" 2>/dev/null; then
+      observed=1; break
+    fi
+    sleep 0.05; n=$((n + 1))
+  done
+  check "$fault: detached child identity published after several snapshots" '[ "$observed" = 1 ]'
+  start=$(date +%s)
+  expected=3
+  if [ -s "$T/outside/supervisor.pid" ]; then
+    supervisor=$(cat "$T/outside/supervisor.pid")
+    if [ "$fault" = killed ]; then
+      kill -KILL "$supervisor" 2>/dev/null || true
+    else
+      kill -STOP "$supervisor" 2>/dev/null || true
+      kill -TERM "$wrapper" 2>/dev/null || true
+      expected=143
+    fi
+  else
+    kill -TERM "$wrapper" 2>/dev/null || true
+  fi
+  wait "$wrapper"; rc=$?
+  dur=$(( $(date +%s) - start ))
+  defconf
+  sleep 0.2
+  check "$fault: observed setsid child ignoring TERM is killed within bound" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/child.pid" ] && ! kill -0 "$(cat "$T/outside/child.pid")" 2>/dev/null'
+  check "$fault: scratch and control directories are both cleaned" '[ -n "$signal_sc" ] && [ -n "$signal_ctl" ] && [ ! -e "$signal_sc" ] && [ ! -e "$signal_ctl" ] && [ -z "$(kept)" ] && [ -z "$(ctl)" ]'
+  for f in worker child supervisor; do
+    if [ -s "$T/outside/$f.pid" ]; then kill -KILL "$(cat "$T/outside/$f.pid")" 2>/dev/null || true; fi
+  done
+done
+rm -f "$T/outside/ps.mode"
+
+# Exercise the wrapper fallback directly with a process owned by this test.
+# The shim simulates PID reuse without ever targeting an unrelated process,
+# including an identity change between the TERM and KILL phases.
+for mode in identity_stale identity_change identity_match; do
+  rm -f "$T/outside/identity.ready" "$T/outside/term.received"
+  echo "$mode" > "$T/outside/ps.mode"
+  perl -e '
+    my $dir = shift;
+    $SIG{TERM} = sub {
+      open my $f, ">", "$dir/term.received" or die $!;
+      print $f "TERM\n"; close $f;
+    };
+    open my $r, ">>", "$dir/ps.rows" or die $!;
+    print $r "$$ ", getppid(), " fixture-$$\n"; close $r;
+    open my $f, ">", "$dir/identity.ready" or die $!;
+    print $f "ready\n"; close $f;
+    sleep 30 while 1;
+  ' "$T/outside" &
+  target=$!
+  n=0
+  while [ ! -s "$T/outside/identity.ready" ] && [ "$n" -lt 100 ]; do sleep 0.02; n=$((n + 1)); done
+  identity="fixture-$target"
+  [ "$mode" != identity_stale ] || identity="old-$identity"
+  printf '%s %s\n' "$target" "$identity" > "$T/observed"
+  perl -e "$SUP" cleanup "$T/ps-fixture" "$T/observed" >"$T/identity.out" 2>"$T/identity.err"; rc=$?
+  case $mode in
+    identity_stale) check "fallback skips TERM and KILL for a stale identity" '[ $rc -eq 0 ] && kill -0 "$target" 2>/dev/null && [ ! -e "$T/outside/term.received" ]' ;;
+    identity_change) check "fallback rechecks identity before KILL after sending TERM" '[ $rc -eq 0 ] && kill -0 "$target" 2>/dev/null && [ -s "$T/outside/term.received" ]' ;;
+    identity_match) check "fallback sends TERM then KILL for a matching identity" '[ $rc -eq 0 ] && ! kill -0 "$target" 2>/dev/null && [ -s "$T/outside/term.received" ]' ;;
+  esac
+  kill -KILL "$target" 2>/dev/null || true
+  wait "$target" 2>/dev/null || true
 done
 rm -f "$T/outside/ps.mode"
 if [ "$REAL_PS" = 1 ]; then unset CLAUDE_REVIEW_TESTING CLAUDE_REVIEW_TEST_PS; fi
