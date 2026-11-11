@@ -405,6 +405,11 @@ cmd_dedupe() {
   perl -e '
     use strict; use warnings;
     open my $seen, ">", shift @ARGV or die "members_seen: $!";
+    # n counts DISTINCT, known finding ids only: a repeated or invented id is not support
+    my %valid;
+    open my $vin, "<", shift @ARGV or die "dedupe_in: $!";
+    while (my $vl = <$vin>) { chomp $vl; my ($vid) = split / /, $vl, 2; $valid{$vid} = 1 if defined $vid && length $vid; }
+    close $vin;
     while (<>) {
       chomp; s/\r$//;
       next unless /^[^A-Za-z0-9]*(C[0-9]+)\s*\|\s*([^|]+?)\s*\|\s*(.*?)\s*$/;
@@ -413,11 +418,11 @@ cmd_dedupe() {
       my $members = $body =~ s/\s*\|\s*members:\s*([^|]*)$// ? $1 : "";
       my @ids = grep { length } map { s/^\s+|\s+$//g; $_ } split /,/, $members;
       print $seen "$_\n" for @ids;
-      my $count = scalar @ids;
+      my %once; my $count = grep { $valid{$_} && !$once{$_}++ } @ids;
       print "$count\t$id\t$id | $severity | n=$count | $body | members: ", join(",", @ids), "$flag\n";
     }
     close $seen or die "members_seen: $!";
-  ' "$OUT/members_seen.txt" "$OUT/clusters_raw.md" > "$OUT/clusters.tsv"
+  ' "$OUT/members_seen.txt" "$OUT/dedupe_in.txt" "$OUT/clusters_raw.md" > "$OUT/clusters.tsv"
   # nothing may be lost: every id exactly once; the omitted ones are appended as one cluster
   sort -o "$OUT/members_seen.txt" "$OUT/members_seen.txt"
   cut -d' ' -f1 "$OUT/dedupe_in.txt" | sort > "$OUT/members_all.txt"

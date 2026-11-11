@@ -54,6 +54,12 @@ if grep -q 'dedupe stage' "$d/prompt"; then
     all) body=$(printf 'C1 | P2 | everything | members: %s\n' "$(echo "$ids" | paste -sd, -)") ;;
     partial) first=$(echo "$ids" | head -1); body=$(printf 'C1 | P2 | only first | members: %s\n' "$first") ;;
     dup) first=$(echo "$ids" | head -1); body=$(printf 'C1 | P2 | all | members: %s\nC2 | P2 | again | members: %s\n' "$(echo "$ids" | paste -sd, -)" "$first") ;;
+    inflate) body=$(cat <<'INFLATE'
+C1 | P2 | one finding listed three times | members: x_1.F1,x_1.F1,x_1.F1
+C2 | P2 | two distinct findings | members: y_1.F1,y_1.F2
+C3 | P2 | only invented ids | members: ghost_1.F1,ghost_1.F2,ghost_1.F3
+INFLATE
+    ) ;;
     clusters) body=$(cat <<'CLUSTERS'
 C9 | P2 | vague concern | members: , , [no-input]
 C2 | P1 | another vague concern | members: y_1.F2,y_2.F1,y_2.F2 [no-input]
@@ -148,6 +154,12 @@ check "the fallback cluster is counted and sorted too" 'head -1 "$T/o2/clusters.
 rm -rf "$T/o2/dedupe_"* "$T/o2/clusters"* "$T/o2/members_"*
 out=$(fk FAKE_DEDUPE=dup -- "$AM" dedupe --out "$T/o2" 2>&1)
 check "duplicated ids are reported" 'echo "$out" | grep -q "1 duplicated ids"'
+rm -rf "$T/o2/dedupe_"* "$T/o2/clusters"* "$T/o2/members_"*
+out=$(fk FAKE_DEDUPE=inflate -- "$AM" dedupe --out "$T/o2" 2>&1)
+check "n counts distinct findings: a finding listed three times is n=1, not n=3" 'grep -q "^C1 | P2 | n=1 |" "$T/o2/clusters.md"'
+check "invented ids are not support: n=0" 'grep -q "^C3 | P2 | n=0 |" "$T/o2/clusters.md"'
+check "a cluster with two distinct findings outranks one finding repeated" '[ "$(grep -n "^C2 " "$T/o2/clusters.md" | cut -d: -f1)" -lt "$(grep -n "^C1 " "$T/o2/clusters.md" | cut -d: -f1)" ]'
+check "the original references and diagnostics are kept" 'grep -q "^C1 .*members: x_1.F1,x_1.F1,x_1.F1" "$T/o2/clusters.md" && echo "$out" | grep -q "unknown ids"'
 
 # 5. refusals and failures
 newlog 3
