@@ -186,7 +186,10 @@ cmd_run() {
   for i in "$COPIES" "$PARALLEL" "$TIMEOUT" "$MAXKB"; do isnum "$i" || die "numeric option expected, got '$i'"; done
   [ "$COPIES" -ge 1 ] && [ "$PARALLEL" -ge 1 ] && [ "$TIMEOUT" -ge 1 ] || die "--copies, --parallel and --timeout must be at least 1"
   [ -z "$WHOLE" ] || isnum "$WHOLE" || die "--whole must be a number"
-  [ -n "${FILES[*]+x}" ] || die "no FILE to inline"
+  if [ -z "${FILES[*]+x}" ]; then
+    [ -n "${CONTEXT[*]+x}" ] && die "no FILE to inline (files after --context are context: put the reviewed files before --context, or after --)"
+    die "no FILE to inline"
+  fi
   # a path that starts with - must not become an option of cat, cmp or tr: make every operand explicit,
   # and read files by redirection
   for i in "${!FILES[@]}"; do case ${FILES[$i]} in /*|./*) ;; *) FILES[$i]=./${FILES[$i]} ;; esac; done

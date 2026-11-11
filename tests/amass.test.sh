@@ -370,6 +370,9 @@ out=$("$AM" run --out "$T/context-option" "$T/a.txt" --context --dry-run 2>&1); 
 check "context cannot consume the next long option as a filename" '[ $rc -eq 2 ] && echo "$out" | grep -qF -- "--context needs FILE"'
 out=$("$AM" run --out "$T/context-only" --context "$T/a.txt" 2>&1); rc=$?
 check "context alone does not populate the empty reviewed-file array" '[ $rc -eq 2 ] && echo "$out" | grep -q "no FILE to inline"'
+check "the diagnostic explains that files after --context are context" 'echo "$out" | grep -qF -- "put the reviewed files before --context"'
+out=$("$AM" run --out "$T/no-files-no-context" 2>&1); rc=$?
+check "without any context the plain diagnostic stays" '[ $rc -eq 2 ] && echo "$out" | grep -q "no FILE to inline" && ! echo "$out" | grep -qF -- "--context"'
 
 # 10. User-facing caveats and the pre-created-output refusal are explicit.
 out=$("$AM" --help 2>&1)
