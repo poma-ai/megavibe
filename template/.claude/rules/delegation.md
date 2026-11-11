@@ -65,7 +65,7 @@ Measurements, prices, cliffs and limits: **`README-amass.md`**.
 ## Both providers, in every shape: allocation and spawn paths
 
 Every unit of work (a review reader, a fix round, an implementation, a digest, a second opinion) can go to either subscription, and the continuous allocation rule above decides it by weighing both windows each time:
-- **Claude, lean, no tools:** `amass.sh` (about 5K tokens of context per call).
+- **Claude, lean, no tools:** `amass.sh`, for suspect enumeration and deduplication only (its parser accepts finding-formatted output, so a prose digest fails); digests and other work go to the `summarizer` or an Agent-tool subagent until a general headless transport exists.
 - **Claude, Agent tool:** the subagent inherits this project's whole instruction stack (about 93K tokens here), so pin `model:` and use it where the task needs the rules, hooks, writes or the conversation; it is the Claude reader for reviews.
 - **Codex:** `codex-review.sh` (reviews: always `--as-reviewer`, never raw `codex exec`); `codex exec -s workspace-write -C <worktree>` only for implementation and fix rounds.
 
