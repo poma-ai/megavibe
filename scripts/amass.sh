@@ -102,12 +102,12 @@ alive() { kill -0 "$1" 2>/dev/null; }
 
 # one line per run/dedupe in a local ledger, so adoption and spend can be measured later.
 # Best effort: a ledger that cannot be written never fails or slows a run.
-ledger() { # cmd model calls ok cost input_kb unknown_costs   (cost "?" or empty = unknown, written as null)
+ledger() { # cmd model calls ok cost input_kb unknown_costs   (cost is null whenever any call's cost is unknown; cost_known is the known subtotal)
   local f=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd "$1" --arg model "$2" --arg proj "$(basename "$PWD")" \
     --argjson calls "$3" --argjson ok "$4" --arg cost "$5" --argjson kb "$6" --argjson unk "${7:-0}" \
-    '{ts:$ts,cmd:$cmd,model:$model,project:$proj,calls:$calls,ok:$ok,cost:($cost|tonumber? // null),cost_unknown_calls:$unk,input_kb:$kb}' >> "$f" 2>/dev/null || true
+    '{ts:$ts,cmd:$cmd,model:$model,project:$proj,calls:$calls,ok:$ok,cost:(if $unk > 0 then null else ($cost|tonumber? // null) end),cost_known:($cost|tonumber? // null),cost_unknown_calls:$unk,input_kb:$kb}' >> "$f" 2>/dev/null || true
 }
 
 cmd_summary() {
@@ -156,6 +156,11 @@ cmd_run() {
   [ "$COPIES" -ge 1 ] && [ "$PARALLEL" -ge 1 ] && [ "$TIMEOUT" -ge 1 ] || die "--copies, --parallel and --timeout must be at least 1"
   [ -z "$WHOLE" ] || isnum "$WHOLE" || die "--whole must be a number"
   [ -n "${FILES[*]+x}" ] || die "no FILE to inline"
+  # a path that starts with - must not become an option of cat, cmp or tr: make every operand explicit,
+  # and read files by redirection
+  for i in "${!FILES[@]}"; do case ${FILES[$i]} in /*|./*) ;; *) FILES[$i]=./${FILES[$i]} ;; esac; done
+  case $TASK_FILE in ""|/*|./*) ;; *) TASK_FILE=./$TASK_FILE ;; esac
+  case $LENSFILE in ""|/*|./*) ;; *) LENSFILE=./$LENSFILE ;; esac
   need jq; need perl
   if [ -n "$TASK_FILE" ]; then [ -f "$TASK_FILE" ] || die "no such task file $TASK_FILE"; fi
   for i in "${FILES[@]}"; do
@@ -169,7 +174,7 @@ cmd_run() {
       case $line in ''|'#'*) continue ;; esac
       name=${line%%|*}; text=${line#*|}; valid_name "$name" || die "bad lens name '$name' in lens list"
       LNAME+=("$name"); LTEXT+=("$text")
-    done < <(if [ -n "$LENSFILE" ]; then cat "$LENSFILE"; else default_lenses; fi)
+    done < <(if [ -n "$LENSFILE" ]; then cat < "$LENSFILE"; else default_lenses; fi)
     # a lenses file that yields nothing must not silently become twelve whole-change calls
     if [ -n "$LENSFILE" ] && [ ${#LNAME[@]} -eq 0 ]; then die "no lens found in $LENSFILE (one 'name|text' per line)"; fi
   fi
@@ -202,12 +207,12 @@ cmd_run() {
   mkdir "$OUT/raw" "$OUT/lists" "$OUT/prompts" "$OUT/work"
   OUT=$(cd "$OUT" && pwd -P); WORK="$OUT/work"
   {
-    if [ -n "$TASK_FILE" ]; then cat "$TASK_FILE"; else
+    if [ -n "$TASK_FILE" ]; then cat < "$TASK_FILE"; else
       printf '%s\n' "$DEFAULT_HEAD"
       [ -z "$CHANGE" ] || printf '\nChange under review: %s\n' "$CHANGE"
       printf '%s\n' "$FORMAT"
     fi
-    for i in "${FILES[@]}"; do printf '\n===== FILE %s =====\n' "$i"; cat "$i"; done
+    for i in "${FILES[@]}"; do printf '\n===== FILE %s =====\n' "$i"; cat < "$i"; done
   } > "$OUT/base.txt"
   local bytes kb
   bytes=$(wc -c < "$OUT/base.txt" | tr -d ' '); kb=$(( (bytes + 1023) / 1024 ))
@@ -281,6 +286,8 @@ cmd_run() {
       k=$((k + 1))
     done
   done
+  # the run is final now: lists/ and runs.tsv are complete, so dedupe may read them
+  printf 'done\n' > "$OUT/.complete.tmp" && mv "$OUT/.complete.tmp" "$OUT/.complete"
   cmd_summary
   local tn tok tc tu
   read -r tn tok tc tu < <(awk -F'\t' '{n++; if($3=="ok")o++; if($2 ~ /^[0-9.eE+-]+$/)c+=$2; else k++} END{printf "%d %d %.6f %d\n", n, o+0, c+0, k+0}' "$OUT/runs.tsv")
@@ -303,6 +310,7 @@ cmd_dedupe() {
     esac
   done
   [ -n "${OUT:-}" ] && [ -d "$OUT/lists" ] || die "--out must be a finished run directory"
+  [ -e "$OUT/.complete" ] || die "$OUT is not a finished run (no .complete marker): wait for amass.sh run to return before dedupe"
   valid_model "$MODEL" || die "bad --model"; isnum "$TIMEOUT" && isnum "$MAXKB" || die "numeric option expected"
   [ "$TIMEOUT" -ge 1 ] || die "--timeout must be at least 1 (0 would disable the deadline)"
   need jq; need perl

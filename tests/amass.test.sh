@@ -227,7 +227,7 @@ check "a NUL inside a finding does not cut it short" 'grep -q "before" "$T/o15/l
 newlog 15
 out=$(AMASS_CLAUDE="$T/fake-nocost" "$AM" run --out "$T/o16" --lens x=t --copies 2 "$T/a.txt" 2>&1)
 check "worker calls without a cost are reported as unknown" 'echo "$out" | grep -q "2 call(s) with unknown cost"'
-check "the usage ledger writes null for an unknown cost, with the count" 'tail -1 "$AMASS_LEDGER" | jq -e ".cost == 0 and .cost_unknown_calls == 2" >/dev/null'
+check "the usage ledger writes null for an incomplete run cost, with the known subtotal and the count" 'tail -1 "$AMASS_LEDGER" | jq -e ".cost == null and .cost_known == 0 and .cost_unknown_calls == 2" >/dev/null'
 out=$(AMASS_CLAUDE="$T/fake-nocost" "$AM" dedupe --out "$T/o16" 2>&1); out2=$("$AM" summary --out "$T/o16" 2>&1)
 check "an unknown dedupe cost makes the totals PARTIAL" 'echo "$out2" | grep -q "PARTIAL" && echo "$out2" | grep -q "unknown cost"'
 check "the dedupe ledger line carries null and the unknown count" 'tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .cost == null and .cost_unknown_calls == 1" >/dev/null'
@@ -240,6 +240,15 @@ check "a failed dedupe exits 3 and is in the usage ledger with ok=0" '[ $rc -eq 
 newlog 17
 out=$(FAKE_MODE=prose "$AM" run --out "$T/o17" --lens x=t --copies 1 "$T/a.txt" 2>&1)
 check "unparsed lines of a failed (unformatted) response are counted in the summary" 'echo "$out" | grep -q "unparsed lines 1"'
+# 7h. dedupe refuses a run directory that is not finished (no completion marker)
+cp -R "$T/o2" "$T/o2u" && mv "$T/o2u/.complete" "$T/o2u/.complete.off"
+"$AM" dedupe --out "$T/o2u" >/dev/null 2>&1; rc=$?
+check "dedupe on an unfinished run (no .complete marker) is refused" '[ $rc -eq 2 ]'
+check "a finished run carries the marker" '[ -e "$T/o2/.complete" ] && [ ! -e "$T/o2/.complete.tmp" ]'
+# 7i. a file whose name starts with - is a file, not an option, and is read from the file, not from stdin
+mkdir -p "$T/dash" && printf 'dash-file-content\n' > "$T/dash/-n"
+( cd "$T/dash" && "$AM" run --out "$T/o18" --lens x=t --copies 1 --timeout 20 -- -n < /dev/null >/dev/null 2>&1 ); rc=$?
+check "a file named -n is inlined by its content" '[ $rc -eq 0 ] && grep -q "dash-file-content" "$T/o18/base.txt" && grep -q "===== FILE ./-n =====" "$T/o18/base.txt"'
 # 7g. one dedupe at a time per run directory; the cap covers the whole prompt
 mkdir "$T/o2/.dedupe.lock"
 "$AM" dedupe --out "$T/o2" >/dev/null 2>&1; rc=$?
