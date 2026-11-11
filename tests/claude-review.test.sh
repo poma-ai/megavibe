@@ -1,0 +1,170 @@
+#!/bin/bash
+# /bin/bash tests/claude-review.test.sh
+# scripts/claude-review.sh against a FAKE claude on CLAUDE_REVIEW_CLAUDE: nothing here calls the real
+# claude. On macOS the fake runs inside the REAL seatbelt the script builds, so write containment
+# is asserted for real: the fake tries to write outside and inside its scratch directory and logs
+# what the operating system said. The fake logs into its own scratch dir (the only place it may
+# write), which the tests read through --keep-scratch.
+set -u
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+CR="$REPO/scripts/claude-review.sh"
+T=$(mktemp -d "${TMPDIR:-/tmp}/claude-review-test.XXXXXX") || exit 2
+T=$(cd "$T" && pwd -P)
+trap '/bin/rm -rf "$T"' EXIT
+PASS=0; FAIL=0
+ok() { PASS=$((PASS + 1)); }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
+check() { if eval "$2"; then ok; else bad "$1"; fi; }
+command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 || { echo "SKIP: needs jq and perl"; exit 0; }
+MAC=0; [ "$(uname -s)" = Darwin ] && command -v sandbox-exec >/dev/null 2>&1 && MAC=1
+
+mkdir -p "$T/tmp" "$T/outside"
+cat > "$T/fake-claude" <<'EOF'
+#!/bin/bash
+. "$(dirname "$0")/conf.sh" 2>/dev/null || true
+if [ "${1:-}" = auth ]; then
+  env | cut -d= -f1 | sort >> "$FAKE_OUTSIDE/auth.envnames"
+  case "${FAKE_AUTH:-sub}" in
+    apikey) echo '{"loggedIn":true,"authMethod":"apiKey"}' ;;
+    broken) exit 1 ;;
+    *) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
+  esac
+  exit 0
+fi
+# the worker call: log into the cwd (the scratch dir), the only place a sandboxed worker may write
+printf '%s\n' "$@" > fake.argv
+printf '%s' "${ANTHROPIC_API_KEY:-<unset>}" > fake.apikey
+printf '%s' "${TMPDIR:-<unset>}" > fake.tmpdir
+pwd > fake.cwd
+env | cut -d= -f1 | sort > fake.envnames
+cat > fake.prompt
+ls in > fake.in 2>/dev/null
+( touch "$FAKE_OUTSIDE/should-not-exist" 2> fake.outside.err; echo "$?" > fake.outside.rc )
+( touch ./inside-ok 2> /dev/null; echo "$?" > fake.inside.rc )
+case "${FAKE_MODE:-ok}" in
+  fail) echo boom >&2; exit 1 ;;
+  slow) sleep 6 ;;
+  garbled) echo "not json"; exit 0 ;;
+  iserror) printf '[{"type":"result","is_error":true,"result":"x","total_cost_usd":0.1}]'; exit 0 ;;
+esac
+jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | a.sh:1 | something | because","total_cost_usd":0.005,"num_turns":3}]'
+EOF
+chmod +x "$T/fake-claude"
+export CLAUDE_REVIEW_CLAUDE="$T/fake-claude" AMASS_LEDGER="$T/ledger.jsonl" TMPDIR="$T/tmp" FAKE_OUTSIDE="$T/outside"
+export ANTHROPIC_API_KEY=example-placeholder-not-a-key
+export ANTHROPIC_CUSTOM_HEADERS=$'Authorization:\nx-api-key: example-placeholder' ANTHROPIC_FOUNDRY_API_KEY=example AWS_BEARER_TOKEN_BEDROCK=example ANTHROPIC_FUTURE_SWITCH=1 CLAUDE_CODE_USE_ANYTHING=1
+printf 'alpha\nbeta\n' > "$T/a.txt"; printf 'gamma\n' > "$T/b.txt"
+
+# The worker runs in an allow-listed environment, so the fake cannot be steered through environment
+# variables. It reads its settings from conf.sh next to it; fk writes them for one command, then resets.
+defconf() { { printf 'export FAKE_LOG=%q\n' "${FAKE_LOG:-}"; printf 'export FAKE_OUTSIDE=%q\n' "${FAKE_OUTSIDE:-}"; } > "$T/conf.sh"; }
+fk() {
+  defconf
+  while [ "$1" != -- ]; do printf 'export %s=%q\n' "${1%%=*}" "${1#*=}" >> "$T/conf.sh"; shift; done
+  shift
+  "$@"; local rc=$?
+  defconf
+  return $rc
+}
+defconf
+kept() { ls -d "$T"/tmp/claude-review-scratch.* 2>/dev/null | head -1; }
+clean_kept() { /bin/rm -rf "$T"/tmp/claude-review-scratch.* 2>/dev/null; }
+
+check "bash -n" '/bin/bash -n "$CR"'
+check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\$\{[A-Za-z_]+,,\}" "$CR"'
+
+# usage and refusals
+"$CR" --tools none a.txt >/dev/null 2>&1; rc=$?
+check "no prompt is refused" '[ $rc -eq 2 ]'
+"$CR" --prompt p --tools bogus "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "bad --tools refused" '[ $rc -eq 2 ]'
+"$CR" --prompt p --model "--evil" "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "option-looking model refused" '[ $rc -eq 2 ]'
+"$CR" --prompt p --timeout 0 "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "timeout 0 refused (it would disable the deadline)" '[ $rc -eq 2 ]'
+"$CR" --prompt p --sandbox danger-full-access "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "a caller-supplied sandbox or permission mode is refused" '[ $rc -eq 2 ]'
+"$CR" --prompt p --permission-mode bypassPermissions "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "--permission-mode refused" '[ $rc -eq 2 ]'
+head -c 2000 /dev/zero > "$T/bin.dat"
+"$CR" --prompt p --tools none "$T/bin.dat" >/dev/null 2>&1; rc=$?
+check "a binary file is refused" '[ $rc -eq 2 ]'
+fk FAKE_AUTH=apikey -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "an API-key login is refused" '[ $rc -eq 2 ] && [ -z "$(kept)" ]'
+fk FAKE_AUTH=broken -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "an unverifiable login is refused" '[ $rc -eq 2 ]'
+out=$("$CR" --prompt p --tools none --max-input-kb 1 "$T/a.txt" 2>&1 < /dev/null); [ -f "$T/big.txt" ] || head -c 5000 /dev/zero | tr '\0' 'x' > "$T/big.txt"
+"$CR" --prompt p --tools none --max-input-kb 1 "$T/big.txt" >/dev/null 2>&1; rc=$?
+check "an oversized request is refused" '[ $rc -eq 2 ]'
+
+# tools none: nothing but the prompt
+clean_kept
+out=$("$CR" --prompt "review this" --tools none --keep-scratch --out "$T/ans.txt" "$T/a.txt" "$T/b.txt" 2>"$T/err.txt"); rc=$?
+S0=$(kept)
+check "tools none exits 0 and prints the answer" '[ $rc -eq 0 ] && echo "$out" | grep -q "F1 | P2"'
+check "--out got the answer, mode 600" 'grep -q "F1 | P2" "$T/ans.txt" && [ "$(stat -f %Lp "$T/ans.txt" 2>/dev/null || stat -c %a "$T/ans.txt")" = 600 ]'
+check "tools none: empty tool list, no allowedTools, no settings" 'sed -n "/^--tools\$/{n;p;}" "$S0/fake.argv" | grep -qx "" && ! grep -qx -- "--allowedTools" "$S0/fake.argv" && ! grep -qx -- "--settings" "$S0/fake.argv"'
+check "the flags that isolate the call are all present" 'grep -qx -- "--no-session-persistence" "$S0/fake.argv" && grep -qx -- "--strict-mcp-config" "$S0/fake.argv" && grep -qx -- "--disable-slash-commands" "$S0/fake.argv" && sed -n "/^--setting-sources\$/{n;p;}" "$S0/fake.argv" | grep -qx ""'
+check "model defaults to sonnet" 'sed -n "/^--model\$/{n;p;}" "$S0/fake.argv" | grep -qx sonnet'
+check "files are appended as ===== path ===== blocks, harness note first" 'grep -q "===== $T/a.txt =====" "$S0/fake.prompt" && grep -q "alpha" "$S0/fake.prompt" && grep -q "gamma" "$S0/fake.prompt" && head -c 40 "$S0/fake.prompt" | grep -q "NOTE FROM THE HARNESS"'
+check "the caller dir is named as read-only project" 'grep -q "which is the project: treat it as READ-ONLY" "$S0/fake.prompt"'
+check "the worker sees an allow-listed environment: nothing ANTHROPIC, AWS or cloud-switch, PATH and HOME present" '! grep -qE "ANTHROPIC|AWS_|CLAUDE_CODE_USE" "$S0/fake.envnames" && grep -qx PATH "$S0/fake.envnames" && grep -qx HOME "$S0/fake.envnames"'
+check "the login check runs in the same allow-listed environment" '[ -s "$T/outside/auth.envnames" ] && ! grep -qE "ANTHROPIC|AWS_|CLAUDE_CODE_USE" "$T/outside/auth.envnames"'
+check "the API key is removed from the worker environment" '[ "$(cat "$S0/fake.apikey")" = "<unset>" ]'
+check "the worker runs in its scratch dir with TMPDIR inside it" '[ "$(cat "$S0/fake.cwd")" = "$S0" ] && [ "$(cat "$S0/fake.tmpdir")" = "$S0/tmp" ]'
+check "no copies of the files for tools none" '[ -z "$(cat "$S0/fake.in")" ]'
+check "the cost and turns are reported" 'grep -q "cost \$0.005" "$T/err.txt" && grep -q "3 turn" "$T/err.txt"'
+check "one ledger line for the call" 'jq -e "select(.cmd == \"review\") | .ok == 1 and .tools == \"none\" and .cost == 0.005 and .model == \"sonnet\"" "$AMASS_LEDGER" >/dev/null'
+check "no key material in the ledger" '! grep -q "example-placeholder" "$AMASS_LEDGER"'
+clean_kept
+
+# tools read
+out=$("$CR" --prompt "p" --tools read --keep-scratch "$T/a.txt" 2>/dev/null); S1=$(kept)
+check "tools read: Read, Grep, Glob only, and copies of the files in in/" 'sed -n "/^--tools\$/{n;p;}" "$S1/fake.argv" | grep -qx "Read,Grep,Glob" && grep -q "a.txt" "$S1/fake.in"'
+clean_kept
+
+# tools exec (needs the macOS seatbelt)
+if [ "$MAC" = 1 ]; then
+  # the runs above had no sandbox, so the fake could create this file; start clean
+  rm -f "$T/outside/should-not-exist"
+  out=$("$CR" --prompt "p" --as-reviewer --keep-scratch "$T/a.txt" 2>"$T/err2.txt"); rc=$?; S2=$(kept)
+  check "exec is the default under --as-reviewer and runs" '[ $rc -eq 0 ] && grep -q "tools=exec" "$T/err2.txt"'
+  check "exec tool set and allowedTools" 'sed -n "/^--tools\$/{n;p;}" "$S2/fake.argv" | grep -qx "Read,Grep,Glob,Bash,Write" && sed -n "/^--allowedTools\$/{n;p;}" "$S2/fake.argv" | grep -qx "Read,Grep,Glob,Bash,Write"'
+  check "the guard hooks are registered through --settings, without loading other settings" 'jq -e ".hooks.PreToolUse[0].hooks[0].command | endswith(\"block-dangerous-bash.sh\")" "$S2/settings.json" >/dev/null && sed -n "/^--setting-sources\$/{n;p;}" "$S2/fake.argv" | grep -qx ""'
+  check "a write OUTSIDE the scratch dir is denied by the operating system" '[ "$(cat "$S2/fake.outside.rc")" != 0 ] && [ ! -e "$T/outside/should-not-exist" ] && grep -qi "not permitted" "$S2/fake.outside.err"'
+  check "a write INSIDE the scratch dir works" '[ "$(cat "$S2/fake.inside.rc")" = 0 ] && [ -e "$S2/inside-ok" ]'
+  check "the profile allows only the scratch dir, the worker tool folder and claude state" 'grep -q "(deny file-write\*)" "$S2/profile.sb" && grep -q "subpath \"$S2\"" "$S2/profile.sb" && ! grep -q "subpath \"/private/tmp\")" "$S2/profile.sb" && ! grep -q "subpath \"/Users\")" "$S2/profile.sb"'
+  clean_kept
+  # without --keep-scratch the scratch dir is gone, also when the call fails
+  fk FAKE_MODE=fail -- "$CR" --prompt p --as-reviewer "$T/a.txt" >/dev/null 2>&1; rc=$?
+  check "a failed exec call exits 3 and leaves no scratch dir" '[ $rc -eq 3 ] && [ -z "$(kept)" ]'
+else
+  echo "note: exec tests skipped (no macOS sandbox-exec here)"
+  "$CR" --prompt p --tools exec "$T/a.txt" >/dev/null 2>&1; rc=$?
+  check "exec is refused where writes cannot be confined" '[ $rc -eq 2 ]'
+fi
+
+# failures, timeouts
+fk FAKE_MODE=fail -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "a failing call exits 3" '[ $rc -eq 3 ]'
+fk FAKE_MODE=garbled -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "garbled output exits 3" '[ $rc -eq 3 ]'
+fk FAKE_MODE=iserror -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "an is_error result exits 3" '[ $rc -eq 3 ]'
+start=$(date +%s)
+fk FAKE_MODE=slow -- "$CR" --prompt p --tools none --timeout 1 "$T/a.txt" >/dev/null 2>&1; rc=$?
+dur=$(( $(date +%s) - start ))
+check "a hanging call is killed: exit 124 within the bound" '[ $rc -eq 124 ] && [ $dur -lt 5 ]'
+check "a failed or timed-out call is in the ledger with ok=0" 'jq -s -e "map(select(.ok == 0)) | length >= 3" "$AMASS_LEDGER" >/dev/null'
+check "no scratch dir is left behind by any of the runs" '[ -z "$(kept)" ]'
+
+# a file whose name starts with - is a file, not an option, and is read from the file
+mkdir -p "$T/dash" && printf 'dash-file-content\n' > "$T/dash/-n"
+clean_kept
+out=$( cd "$T/dash" && "$CR" --prompt p --tools read --keep-scratch -- -n < /dev/null 2>/dev/null ); rc=$?
+S9=$(kept)
+check "a file named -n is inlined and copied by its content" '[ $rc -eq 0 ] && grep -q "dash-file-content" "$S9/fake.prompt" && grep -q "===== ./-n =====" "$S9/fake.prompt"'
+clean_kept
+
+printf 'claude-review.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

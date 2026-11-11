@@ -62,6 +62,16 @@ When a Fable/Opus session or subtask is stuck on a problem that is well posed (y
 
 Measurements, prices, cliffs and limits: **`README-amass.md`**.
 
+## Both providers, in every shape: allocation and spawn paths
+
+Every unit of work (a review reader, a fix round, an implementation, a digest, a second opinion) can go to either subscription, in any of these shapes, and the continuous allocation rule above decides it by weighing both windows each time:
+- **Claude, lean, no tools:** `amass.sh`, `claude-review.sh --tools none` (about 5K tokens of context).
+- **Claude, lean, with execution:** `claude-review.sh --tools exec` (the default under `--as-reviewer`): scratch directory, writes confined by a macOS seatbelt, the guard hooks registered, no project rules loaded; refused where it cannot confine writes. About 5-8K tokens of context.
+- **Claude, Agent tool:** the subagent inherits this project's whole instruction stack (about 93K tokens here), so use it only when the task needs the rules, hooks, writes or the conversation.
+- **Codex:** `codex-review.sh`, or `codex exec -s workspace-write -C <worktree>`; its own sandbox, network closed (the lean Claude worker's network is open, because claude itself needs it).
+
+How much weighing a call is worth follows its price class: calls in the Haiku or luna class ($0.10/$0.50 per million) may stay on whichever side is convenient; for Sonnet, Opus and Fable against terra, sol and astra, never default to one side by habit, and state the allocation in one line each time. Every `claude-review.sh`, `amass.sh run` and `dedupe` call appends a line to `~/.megavibe/amass-usage.jsonl`; compare it with the Agent-tool calls in the transcripts to see whether this is followed.
+
 ## Two review tiers, and why
 
 Every intermediate round gets **one** reviewer — Codex or the `reviewer` subagent, selected by continuous weighing among eligible backends, with the subagent replacing an absent, switched-off or failed Codex (Gemini may join that round, never take it alone). The round that gates the ship normally requires two independent readers that actually reviewed the final candidate in full, **in parallel**, allocated as below, plus available Gemini when pinned as a peer; the availability/failure floor below is the explicit exception. Intermediate rounds need only one reader, critical work included. Critical means credentials or security, data loss or destructive paths, anything public or user-facing, the protocol and templates themselves, and anything the user names: such work is held to the same ship round and is the work for which a missing or failed review is least acceptable, but it does not get a second reader on rounds that are still moving.

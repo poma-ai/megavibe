@@ -1828,7 +1828,8 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/disk-watch.sh" "$REPO_DIR/scripts/usage-route.sh" \
               "$REPO_DIR/scripts/second-opinion.sh" "$REPO_DIR/scripts/deliverables-index.sh" \
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
-              "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh"; do
+              "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
+              "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
