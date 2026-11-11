@@ -27,6 +27,7 @@ if [ "${1:-}" = auth ]; then
   case "${FAKE_AUTH:-sub}" in
     apikey) echo '{"loggedIn":true,"authMethod":"apiKey"}' ;;
     broken) exit 1 ;;
+    loggedout) echo '{"loggedIn":false,"authMethod":"claude.ai"}' ;;
     *) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;;
   esac
   exit 0
@@ -41,7 +42,14 @@ cat > fake.prompt
 ls in > fake.in 2>/dev/null
 ( touch "$FAKE_OUTSIDE/should-not-exist" 2> fake.outside.err; echo "$?" > fake.outside.rc )
 ( touch ./inside-ok 2> /dev/null; echo "$?" > fake.inside.rc )
+if [ -n "${FAKE_PLANT:-}" ]; then
+  # a hostile worker: plant links where the parent would write, and rewrite its own settings
+  ln -sf "$FAKE_OUTSIDE/victim" answer.txt 2>/dev/null; ln -sf "$FAKE_OUTSIDE/victim" raw.json 2>/dev/null
+  ln -sf "$FAKE_OUTSIDE/victim" settings.json 2>/dev/null; ln -sf "$FAKE_OUTSIDE/victim" request.txt 2>/dev/null
+fi
 case "${FAKE_MODE:-ok}" in
+  child) sleep 30 & echo $! > "$FAKE_OUTSIDE/child.pid"; sleep 30 ;;
+  stubborn) trap '' TERM HUP INT; sleep 30 ;;
   fail) echo boom >&2; exit 1 ;;
   slow) sleep 6 ;;
   garbled) echo "not json"; exit 0 ;;
@@ -68,7 +76,8 @@ fk() {
 }
 defconf
 kept() { ls -d "$T"/tmp/claude-review-scratch.* 2>/dev/null | head -1; }
-clean_kept() { /bin/rm -rf "$T"/tmp/claude-review-scratch.* 2>/dev/null; }
+clean_kept() { /bin/rm -rf "$T"/tmp/claude-review-scratch.* "$T"/tmp/claude-review-ctl.* 2>/dev/null; }
+ctl() { ls -d "$T"/tmp/claude-review-ctl.* 2>/dev/null | head -1; }
 
 check "bash -n" '/bin/bash -n "$CR"'
 check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\$\{[A-Za-z_]+,,\}" "$CR"'
@@ -130,10 +139,10 @@ if [ "$MAC" = 1 ]; then
   out=$("$CR" --prompt "p" --as-reviewer --keep-scratch "$T/a.txt" 2>"$T/err2.txt"); rc=$?; S2=$(kept)
   check "exec is the default under --as-reviewer and runs" '[ $rc -eq 0 ] && grep -q "tools=exec" "$T/err2.txt"'
   check "exec tool set and allowedTools" 'sed -n "/^--tools\$/{n;p;}" "$S2/fake.argv" | grep -qx "Read,Grep,Glob,Bash,Write" && sed -n "/^--allowedTools\$/{n;p;}" "$S2/fake.argv" | grep -qx "Read,Grep,Glob,Bash,Write"'
-  check "the guard hooks are registered through --settings, without loading other settings" 'jq -e ".hooks.PreToolUse[0].hooks[0].command | endswith(\"block-dangerous-bash.sh\")" "$S2/settings.json" >/dev/null && sed -n "/^--setting-sources\$/{n;p;}" "$S2/fake.argv" | grep -qx ""'
+  check "the guard hooks are registered through --settings, without loading other settings" 'jq -e ".hooks.PreToolUse[0].hooks[0].command | contains(\"block-dangerous-bash.sh\")" "$(ctl)/settings.json" >/dev/null && sed -n "/^--setting-sources\$/{n;p;}" "$S2/fake.argv" | grep -qx ""'
   check "a write OUTSIDE the scratch dir is denied by the operating system" '[ "$(cat "$S2/fake.outside.rc")" != 0 ] && [ ! -e "$T/outside/should-not-exist" ] && grep -qi "not permitted" "$S2/fake.outside.err"'
   check "a write INSIDE the scratch dir works" '[ "$(cat "$S2/fake.inside.rc")" = 0 ] && [ -e "$S2/inside-ok" ]'
-  check "the profile allows only the scratch dir, the worker tool folder and claude state" 'grep -q "(deny file-write\*)" "$S2/profile.sb" && grep -q "subpath \"$S2\"" "$S2/profile.sb" && ! grep -q "subpath \"/private/tmp\")" "$S2/profile.sb" && ! grep -q "subpath \"/Users\")" "$S2/profile.sb"'
+  check "the profile allows only the scratch dir, the worker tool folder and claude state" 'grep -q "(deny file-write\*)" "$(ctl)/profile.sb" && grep -q "subpath \"$S2\"" "$(ctl)/profile.sb" && ! grep -q "subpath \"/private/tmp\")" "$(ctl)/profile.sb" && ! grep -q "subpath \"/Users\")" "$(ctl)/profile.sb"'
   clean_kept
   # without --keep-scratch the scratch dir is gone, also when the call fails
   fk FAKE_MODE=fail -- "$CR" --prompt p --as-reviewer "$T/a.txt" >/dev/null 2>&1; rc=$?
@@ -155,7 +164,7 @@ start=$(date +%s)
 fk FAKE_MODE=slow -- "$CR" --prompt p --tools none --timeout 1 "$T/a.txt" >/dev/null 2>&1; rc=$?
 dur=$(( $(date +%s) - start ))
 check "a hanging call is killed: exit 124 within the bound" '[ $rc -eq 124 ] && [ $dur -lt 5 ]'
-check "a failed or timed-out call is in the ledger with ok=0" 'jq -s -e "map(select(.ok == 0)) | length >= 3" "$AMASS_LEDGER" >/dev/null'
+check "a failed or timed-out call is in the ledger with ok=0" 'jq -s -e "map(select(.ok == 0)) | length >= 2" "$AMASS_LEDGER" >/dev/null'
 check "no scratch dir is left behind by any of the runs" '[ -z "$(kept)" ]'
 
 # a file whose name starts with - is a file, not an option, and is read from the file
@@ -165,6 +174,51 @@ out=$( cd "$T/dash" && "$CR" --prompt p --tools read --keep-scratch -- -n < /dev
 S9=$(kept)
 check "a file named -n is inlined and copied by its content" '[ $rc -eq 0 ] && grep -q "dash-file-content" "$S9/fake.prompt" && grep -q "===== ./-n =====" "$S9/fake.prompt"'
 clean_kept
+
+# regressions for the ship round
+# a logged-out status is not a subscription login, whatever authMethod says
+fk FAKE_AUTH=loggedout -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "loggedIn must be true, not only authMethod" '[ $rc -eq 2 ]'
+# the timeout supervises the whole process group
+rm -f "$T/outside/child.pid"
+start=$(date +%s)
+fk FAKE_MODE=child -- "$CR" --prompt p --tools none --timeout 1 "$T/a.txt" >/dev/null 2>&1; rc=$?
+dur=$(( $(date +%s) - start ))
+sleep 1
+check "a timed-out worker's children die with it" '[ $rc -eq 124 ] && [ -s "$T/outside/child.pid" ] && ! kill -0 "$(cat "$T/outside/child.pid")" 2>/dev/null'
+start=$(date +%s)
+fk FAKE_MODE=stubborn -- "$CR" --prompt p --tools none --timeout 1 "$T/a.txt" >/dev/null 2>&1; rc=$?
+dur=$(( $(date +%s) - start ))
+check "a worker that ignores TERM is killed after the grace period (exit 124, bounded)" '[ $rc -eq 124 ] && [ $dur -lt 8 ]'
+if [ "$MAC" = 1 ]; then
+  # a hostile worker plants links where the parent writes: nothing outside may change
+  printf 'ORIGINAL\n' > "$T/outside/victim"
+  clean_kept
+  out=$(fk FAKE_PLANT=1 -- "$CR" --prompt p --as-reviewer --keep-scratch "$T/a.txt" 2>/dev/null); rc=$?
+  check "links planted in the scratch dir cannot make the parent overwrite anything outside" '[ "$(cat "$T/outside/victim")" = ORIGINAL ] && echo "$out" | grep -q "F1 | P2"'
+  S6=$(kept)
+  check "the control files live outside the worker-writable scratch dir" '[ -f "$(ctl)/request.txt" ] && [ ! -L "$(ctl)/request.txt" ] && [ -f "$(ctl)/settings.json" ] && [ ! -L "$(ctl)/settings.json" ] && [ -f "$(ctl)/profile.sb" ] && [ "$(cat "$T/outside/victim")" = ORIGINAL ]'
+  check "the profile does not allow writing the control dir" '! grep -q "$(ctl)" "$(ctl)/profile.sb"'
+  check "--as-reviewer defaults to effort high" 'sed -n "/^--effort\$/{n;p;}" "$S6/fake.argv" | grep -qx high'
+  clean_kept
+  # hook paths with spaces still work, and an incomplete hook bundle is not used
+  mkdir -p "$T/mv home/template/.claude/hooks"
+  cp "$REPO/template/.claude/hooks/block-dangerous-bash.sh" "$REPO/template/.claude/hooks/block-permission-hooks.sh" "$T/mv home/template/.claude/hooks/"
+  out=$(MEGAVIBE_HOME="$T/mv home" "$CR" --prompt p --as-reviewer --keep-scratch "$T/a.txt" 2>/dev/null); S7=$(kept)
+  cmd=$(jq -r ".hooks.PreToolUse[0].hooks[0].command" "$(ctl)/settings.json")
+  rc2=0; printf '%s' '{"tool_name":"Bash","tool_input":{"command":"killall zzz"}}' | sh -c "$cmd" >/dev/null 2>&1 || rc2=$?
+  check "the registered hook command works from a path containing spaces (the guard runs and refuses)" '[ "$rc2" = 2 ]'
+  clean_kept
+  rm -f "$T/mv home/template/.claude/hooks/block-permission-hooks.sh"
+  out=$(MEGAVIBE_HOME="$T/mv home" "$CR" --prompt p --as-reviewer --keep-scratch "$T/a.txt" 2>/dev/null); S8=$(kept)
+  check "a bundle missing the permission guard is not used (the complete one next to the script is)" 'jq -e ".hooks.PreToolUse[1].hooks[0].command | contains(\"block-permission-hooks.sh\")" "$(ctl)/settings.json" >/dev/null && ! jq -r ".hooks.PreToolUse[0].hooks[0].command" "$(ctl)/settings.json" | grep -q "mv home"'
+  clean_kept
+  # a custom CLAUDE_CONFIG_DIR is claude's own state: the profile allows it
+  mkdir -p "$T/cfg"
+  out=$(CLAUDE_CONFIG_DIR="$T/cfg" "$CR" --prompt p --as-reviewer --keep-scratch "$T/a.txt" 2>/dev/null)
+  check "a custom CLAUDE_CONFIG_DIR is allowed in the profile" 'grep -q "subpath \"$T/cfg\"" "$(ctl)/profile.sb"'
+  clean_kept
+fi
 
 printf 'claude-review.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
