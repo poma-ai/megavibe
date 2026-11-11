@@ -277,5 +277,18 @@ rmdir "$T/o2/.dedupe.lock"
 check "the dedupe cap counts the instructions, not only the findings" '[ $rc -eq 2 ]'
 check "the lock is released after a dedupe" '[ ! -d "$T/o2/.dedupe.lock" ]'
 
+# 7j. a decimal-comma locale must not change the cost accounting (awk reads and writes numbers by locale)
+if locale -a 2>/dev/null | grep -qi '^de_DE'; then
+  newlog 19
+  out=$(LC_ALL=de_DE.UTF-8 "$AM" run --out "$T/o19" --lens x=t --copies 2 "$T/a.txt" 2>&1)
+  check "under a decimal-comma locale the worker cost is summed correctly" 'echo "$out" | grep -q "worker cost \$0.0100"'
+  check "under a decimal-comma locale the ledger stays numeric" 'tail -1 "$AMASS_LEDGER" | jq -e ".cost == 0.01 and .cost_known == 0.01 and .cost_unknown_calls == 0" >/dev/null'
+  LC_ALL=de_DE.UTF-8 "$AM" dedupe --out "$T/o19" >/dev/null 2>&1
+  out2=$(LC_ALL=de_DE.UTF-8 "$AM" summary --out "$T/o19" 2>&1)
+  check "under a decimal-comma locale the combined total is right" 'echo "$out2" | grep -q "total cost \$0.0200" && ! echo "$out2" | grep -q "PARTIAL"'
+else
+  echo "note: decimal-comma locale test skipped (no de_DE locale here)"
+fi
+
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -119,13 +119,15 @@ ledger() { # cmd model calls ok cost input_kb unknown_costs   (cost is null when
 }
 
 cmd_summary() {
+  # every awk here runs under LC_ALL=C: in a decimal-comma locale (de_DE, fr_FR, ...) awk would read the
+  # JSON costs wrongly and print $0,0000, which looks like a real zero
   [ -s "$OUT/runs.tsv" ] || die "no runs.tsv in $OUT"
   local dc=0 dn=0 du=0
   if [ -s "$OUT/dedupe_cost.tsv" ]; then
-    dc=$(awk -F'\t' '$2 ~ /^[0-9.eE+-]+$/ {s+=$2} END{printf "%.6f", s+0}' "$OUT/dedupe_cost.tsv"); dn=$(wc -l < "$OUT/dedupe_cost.tsv" | tr -d ' ')
-    du=$(awk -F'\t' '$2 !~ /^[0-9.eE+-]+$/ {n++} END{print n+0}' "$OUT/dedupe_cost.tsv")
+    dc=$(LC_ALL=C awk -F'\t' '$2 ~ /^[0-9.eE+-]+$/ {s+=$2} END{printf "%.6f", s+0}' "$OUT/dedupe_cost.tsv"); dn=$(wc -l < "$OUT/dedupe_cost.tsv" | tr -d ' ')
+    du=$(LC_ALL=C awk -F'\t' '$2 !~ /^[0-9.eE+-]+$/ {n++} END{print n+0}' "$OUT/dedupe_cost.tsv")
   fi
-  awk -F'\t' -v dc="$dc" -v dn="$dn" -v du="$du" 'BEGIN{n=0;ok=0;c=0;f=0;u=0;unk=0}
+  LC_ALL=C awk -F'\t' -v dc="$dc" -v dn="$dn" -v du="$du" 'BEGIN{n=0;ok=0;c=0;f=0;u=0;unk=0}
     {n++; if($2 ~ /^[0-9.eE+-]+$/){c+=$2} else unk++; u+=$5; if($3=="ok"){ok++; f+=$4} else bad=bad" "$1}
     END{printf "runs %d, ok %d, failed %d, findings %d, unparsed lines %d (kept in lists/, not clustered), worker cost $%.4f (mean $%.4f per ok run)%s\n", n, ok, n-ok, f, u, c, (ok?c/ok:0), (unk?" plus "unk" call(s) with unknown cost":"");
       if(dn>0) printf "dedupe calls %d, cost $%.4f%s; total cost $%.4f%s\n", dn, dc, (du?" (+"du" with unknown cost)":""), c+dc, ((unk+du)?" (PARTIAL: some costs unknown)":"");
@@ -298,7 +300,7 @@ cmd_run() {
   printf 'done\n' > "$OUT/.complete.tmp" && mv "$OUT/.complete.tmp" "$OUT/.complete"
   cmd_summary
   local tn tok tc tu
-  read -r tn tok tc tu < <(awk -F'\t' '{n++; if($3=="ok")o++; if($2 ~ /^[0-9.eE+-]+$/)c+=$2; else k++} END{printf "%d %d %.6f %d\n", n, o+0, c+0, k+0}' "$OUT/runs.tsv")
+  read -r tn tok tc tu < <(LC_ALL=C awk -F'\t' '{n++; if($3=="ok")o++; if($2 ~ /^[0-9.eE+-]+$/)c+=$2; else k++} END{printf "%d %d %.6f %d\n", n, o+0, c+0, k+0}' "$OUT/runs.tsv")
   ledger run "$MODEL" "$tn" "$tok" "$tc" "$kb" "$tu"
   if ! grep -q "$(printf '\tok\t')" "$OUT/runs.tsv"; then
     echo "$PROG: no call succeeded; first error:" >&2; head -c 300 "$OUT"/raw/*.err 2>/dev/null | head -3 >&2; exit 3
@@ -366,7 +368,7 @@ cmd_dedupe() {
   [ "$dok" = 1 ] || { echo "$PROG: dedupe output unusable" >&2; exit 3; }
   grep -E '^[^A-Za-z0-9]*C[0-9]+[[:space:]]*\|.*members:' "$OUT/clusters_raw.md" > "$OUT/clusters.md" || true
   # nothing may be lost: every id exactly once; the omitted ones are appended as one cluster
-  awk -F'members:' '{n=split($2, a, ","); for(i=1;i<=n;i++){gsub(/[ \t]/,"",a[i]); if(a[i]!="") print a[i]}}' "$OUT/clusters.md" | sort > "$OUT/members_seen.txt"
+  LC_ALL=C awk -F'members:' '{n=split($2, a, ","); for(i=1;i<=n;i++){gsub(/[ \t]/,"",a[i]); if(a[i]!="") print a[i]}}' "$OUT/clusters.md" | sort > "$OUT/members_seen.txt"
   cut -d' ' -f1 "$OUT/dedupe_in.txt" | sort > "$OUT/members_all.txt"
   comm -13 "$OUT/members_seen.txt" "$OUT/members_all.txt" > "$OUT/members_missing.txt"
   uniq -d "$OUT/members_seen.txt" > "$OUT/members_dup.txt"
