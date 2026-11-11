@@ -193,9 +193,9 @@ if (!$pid) {
 my $deadline = time() + $t;
 sub members {
     my $rows = snapshot();
-    # On inspection loss retain the last observed descendants for best-effort
-    # cleanup; no new detached children can be discovered or identities refreshed.
-    return keys %live unless $rows;
+    # Cached observations are not signal targets when identities cannot be
+    # refreshed. Group cleanup remains available without process inspection.
+    return () unless $rows;
     %live = ();
     for my $p (keys %seen) {
         $live{$p} = 1 if exists $rows->{$p} && $rows->{$p}[1] eq $seen{$p};
@@ -285,11 +285,11 @@ my %termed;
 while (1) {
     heartbeat();
     my @live = eval { members() };
-    if ($@) { $error ||= $@; $inspection_failed = 1; @live = keys %live; stop_inspector(); }
+    if ($@) { $error ||= $@; $inspection_failed = 1; @live = (); stop_inspector(); }
     for my $p (@live) {
         next if defined($status) && $p == $pid;
-        kill "TERM", $p unless ($termed{$p} // "") eq $seen{$p};
-        $termed{$p} = $seen{$p};
+        next if ($termed{$p} // "") eq $seen{$p};
+        $termed{$p} = $seen{$p} if signal_observed("TERM", { $p => $seen{$p} });
     }
     reap();
     last if time() >= $until;
@@ -297,7 +297,8 @@ while (1) {
     sleep 0.05;
 }
 kill "KILL", -$pid;
-kill "KILL", $_ for grep { !defined($status) || $_ != $pid } keys %live;
+signal_observed("KILL", { map { $_ => $seen{$_} }
+    grep { !defined($status) || $_ != $pid } keys %live });
 if (!defined $status) { waitpid($pid, 0); $status = $?; }
 if ($pulse) { print {$pulse} "done\n"; close $pulse; }
 waitpid($guard, 0) if $guard;

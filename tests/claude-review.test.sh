@@ -210,6 +210,18 @@ my $dir = "$FindBin::Bin/outside";
 my $mode = "";
 if (open my $f, "<", "$dir/ps.mode") { chomp($mode = <$f> // ""); }
 if ($mode eq "pre_fail") { exit 1; }
+my ($sentinel, $worker);
+if ($mode =~ /^sentinel_/) {
+    if (open my $f, "<", "$dir/sentinel.pid") { chomp($sentinel = <$f>); }
+    if (open my $f, "<", "$dir/worker.pid") { chomp($worker = <$f>); }
+    if (-e "$dir/sentinel.observed") {
+        # The first table reported this test-owned process as a descendant.
+        # Later tables either fail or show a reused PID with a different start.
+        exit 1 if $mode eq "sentinel_fail";
+        my $start = $mode eq "sentinel_match" ? "fixture-$sentinel" : "changed-$sentinel";
+        print "$sentinel 1 $start\n";
+    }
+}
 if ($mode eq "observed" && -s "$dir/child.pid") {
     open my $f, ">>", "$dir/snapshots" or die $!;
     print $f "snapshot\n"; close $f;
@@ -228,7 +240,7 @@ if (-s "$dir/worker.pid") {
         exit 0;
     }
 }
-if (-e "$dir/use-real-ps" && $mode !~ /^identity_/) { exec "/bin/ps", @ARGV; exit 127; }
+if (-e "$dir/use-real-ps" && $mode !~ /^(identity_|sentinel_)/) { exec "/bin/ps", @ARGV; exit 127; }
 if (open my $f, "<", "$dir/ps.rows") {
     while (<$f>) {
         my ($pid, $parent, $start) = split;
@@ -236,6 +248,11 @@ if (open my $f, "<", "$dir/ps.rows") {
         $parent = 1 unless kill(0, $parent);
         $start = "changed-$start" if $mode eq "identity_change" && -e "$dir/term.received";
         print "$pid $parent $start\n";
+        if ($worker && $pid == $worker && !-e "$dir/sentinel.observed") {
+            print "$sentinel $worker fixture-$sentinel\n";
+            open my $seen, ">", "$dir/sentinel.observed" or die $!;
+            print $seen "observed\n"; close $seen;
+        }
     }
 }
 EOF
@@ -489,6 +506,68 @@ for fault in killed stopped_term; do
   check "$fault: scratch and control directories are both cleaned" '[ -n "$signal_sc" ] && [ -n "$signal_ctl" ] && [ ! -e "$signal_sc" ] && [ ! -e "$signal_ctl" ] && [ -z "$(kept)" ] && [ -z "$(ctl)" ]'
   for f in worker child supervisor; do
     if [ -s "$T/outside/$f.pid" ]; then kill -KILL "$(cat "$T/outside/$f.pid")" 2>/dev/null || true; fi
+  done
+done
+rm -f "$T/outside/ps.mode"
+
+# A test-owned sentinel is deliberately misreported as a descendant once, then
+# inspection fails or its identity changes; a matching identity is the positive
+# control. It is detached from the worker group, so only an individual signal
+# could touch it. Exercise main cleanup and the watchdog with a stopped parent.
+for route in main watchdog; do
+  for fault in fail mismatch match; do
+    clean_kept
+    rm -f "$T/outside/worker.pid" "$T/outside/supervisor.pid" "$T/outside/sentinel.observed" "$T/outside/sentinel.ready" "$T/outside/sentinel.term"
+    echo "sentinel_$fault" > "$T/outside/ps.mode"
+    perl -MPOSIX=setsid -e '
+      my $dir = shift;
+      setsid() >= 0 or die "setsid: $!";
+      $SIG{TERM} = sub {
+        open my $f, ">", "$dir/sentinel.term" or die $!;
+        print $f "TERM\n"; close $f;
+      };
+      open my $f, ">", "$dir/sentinel.ready" or die $!;
+      print $f "ready\n"; close $f;
+      sleep 30 while 1;
+    ' "$T/outside" &
+    sentinel=$!
+    echo "$sentinel" > "$T/outside/sentinel.pid"
+    n=0
+    while [ ! -s "$T/outside/sentinel.ready" ] && [ "$n" -lt 100 ]; do sleep 0.02; n=$((n + 1)); done
+    defconf
+    printf 'export FAKE_MODE=stubborn\n' >> "$T/conf.sh"
+    limit=1; expected=124
+    if [ "$route" = watchdog ]; then limit=30; expected=3; fi
+    "$CR" --prompt p --tools none --timeout "$limit" "$T/a.txt" >"$T/sentinel.out" 2>"$T/sentinel.err" &
+    wrapper=$!
+    if [ "$route" = watchdog ]; then
+      n=0; observed=0
+      while [ "$n" -lt 100 ]; do
+        signal_ctl=$(ctl)
+        if grep -q "^$sentinel fixture-$sentinel$" "$signal_ctl/descendants" 2>/dev/null; then
+          observed=1; break
+        fi
+        sleep 0.02; n=$((n + 1))
+      done
+      check "$route/$fault: sentinel identity published for watchdog" '[ "$observed" = 1 ]'
+      if [ "$observed" = 1 ] && [ -s "$T/outside/supervisor.pid" ]; then
+        # Keep the wrapper waiting until the watchdog finishes both signal
+        # phases, so it cannot remove the state file before the watchdog reads.
+        kill -STOP "$(cat "$T/outside/supervisor.pid")" 2>/dev/null || true
+      else
+        kill -TERM "$wrapper" 2>/dev/null || true
+      fi
+    fi
+    wait "$wrapper"; rc=$?
+    defconf
+    if [ "$fault" = match ]; then
+      check "$route/$fault: matching detached child receives TERM and KILL" '[ -s "$T/outside/sentinel.observed" ] && [ -s "$T/outside/sentinel.term" ] && ! kill -0 "$sentinel" 2>/dev/null'
+    else
+      check "$route/$fault: observed sentinel receives no TERM or KILL and survives" '[ -s "$T/outside/sentinel.observed" ] && [ ! -e "$T/outside/sentinel.term" ] && kill -0 "$sentinel" 2>/dev/null'
+    fi
+    check "$route/$fault: expected exit and worker group dead" '[ $rc -eq $expected ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 -- "-$(cat "$T/outside/worker.pid")" 2>/dev/null'
+    kill -KILL "$sentinel" 2>/dev/null || true
+    wait "$sentinel" 2>/dev/null || true
   done
 done
 rm -f "$T/outside/ps.mode"
