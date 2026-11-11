@@ -50,42 +50,117 @@ done
 
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
-# Track descendants even after setsid/reparenting. A remembered PID is signalled only
-# while its start time still matches; each poll also discovers children of live members.
+# Production always uses /bin/ps; the fixture override requires explicit test mode
+# and is passed only to the supervisor, never into the worker environment.
+PS_BIN=/bin/ps
+if [ "${CLAUDE_REVIEW_TESTING:-0}" = 1 ]; then PS_BIN=${CLAUDE_REVIEW_TEST_PS:-/bin/ps}; fi
+
+# Group signals catch unobserved/reparented children in the original group.
+# Polling additionally tracks observed descendants that call setsid. A child that
+# calls setsid AND is reparented before it was ever observed cannot be caught by
+# polling. Shorter polling does not remove this residual risk.
 SUP='
 use strict;
 use POSIX qw(WNOHANG);
+use IO::Select;
 use Time::HiRes qw(time sleep);
-my $t = shift;
-my ($cancel, $pid, $status) = (0, undef, undef);
+my ($t, $ps_command) = (shift, shift);
+my ($cancel, $pid, $status, $inspection_failed, $cleaning) = (0, undef, undef, 0, 0);
+my ($guard, $pulse, $inspector);
 $SIG{INT} = sub { $cancel ||= 130 };
 $SIG{TERM} = sub { $cancel ||= 143 };
 $SIG{HUP} = sub { $cancel ||= 129 };
-my %seen;
+$SIG{PIPE} = "IGNORE";
+my (%seen, %live);
+sub heartbeat { print {$pulse} "tick\n" if $pulse; }
+sub stop_inspector {
+    return unless $inspector;
+    kill "KILL", -$inspector;
+    kill "KILL", $inspector; # Also covers failure to establish its group.
+    waitpid($inspector, 0);
+    $inspector = undef;
+    print {$pulse} "ps 0\n" if $pulse;
+}
 sub snapshot {
+    return if $inspection_failed;
+    pipe(my $read, my $write) or die "ps pipe: $!";
+    $inspector = fork();
+    die "ps fork: $!" unless defined $inspector;
+    if (!$inspector) {
+        $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "DEFAULT";
+        close $pulse if $pulse;
+        close $read;
+        setpgrp(0, 0) or POSIX::_exit(127);
+        open STDOUT, ">&", $write or POSIX::_exit(127);
+        close $write;
+        exec $ps_command, "-axo", "pid=,ppid=,lstart=";
+        POSIX::_exit(127);
+    }
+    setpgrp($inspector, $inspector);
+    print {$pulse} "ps $inspector\n" if $pulse;
+    close $write;
+    my $select = IO::Select->new($read);
+    my ($text, $done, $rc) = ("", 0, undef);
+    my $until = time() + 0.25;
+    while (time() < $until && (!$cancel || $cleaning)) {
+        heartbeat();
+        if (!$done && $select->can_read(0.01)) {
+            my $n = sysread($read, my $buf, 65536);
+            if (defined $n) { $text .= $buf; $done = 1 if !$n; }
+        } else { sleep 0.01; }
+        if (!defined $rc && waitpid($inspector, WNOHANG) == $inspector) { $rc = $?; }
+        last if $done && defined $rc;
+    }
+    close $read;
+    if (!defined $rc) { stop_inspector(); }
+    else {
+        # A shim can exit while a child keeps stdout open. Its group still
+        # belongs to this inspection even though the direct child was reaped.
+        kill "KILL", -$inspector unless $done;
+        $inspector = undef;
+        print {$pulse} "ps 0\n" if $pulse;
+    }
+    if (!$done || !defined($rc) || $rc != 0) {
+        $inspection_failed = 1;
+        warn "inspection unavailable: cannot inspect worker descendants with ps\n";
+        return;
+    }
     my %rows;
-    open my $ps, "-|", "/bin/ps", "-axo", "pid=,ppid=,lstart=" or die "ps: $!";
-    while (<$ps>) {
+    for (split /\n/, $text) {
         $rows{$1} = [$2, $3] if /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/;
     }
-    close $ps or die "cannot inspect worker descendants with ps\n";
     return \%rows;
 }
-snapshot(); # Refuse before starting a worker if process inspection is unavailable.
+snapshot(); # Bounded pre-start check: refuse if process inspection is unavailable.
 exit $cancel if $cancel;
+exit 3 if $inspection_failed;
+
+# The gate prevents exec until the parent has established the worker group and
+# started an independent watchdog. This group is distinct from the wrapper group.
+pipe(my $gate_r, my $gate_w) or die "gate pipe: $!";
 $pid = fork();
 die "fork: $!" unless defined $pid;
 if (!$pid) {
     $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "DEFAULT";
-    setpgrp(0, 0); exec @ARGV; exit 127;
+    close $gate_w;
+    setpgrp(0, 0) or POSIX::_exit(127);
+    my $go = "";
+    sysread($gate_r, $go, 1);
+    close $gate_r;
+    POSIX::_exit(127) unless $go eq "G";
+    exec @ARGV;
+    POSIX::_exit(127);
 }
+my $deadline = time() + $t;
 sub members {
     my $rows = snapshot();
-    my %live;
+    # On inspection loss retain the last observed descendants for best-effort
+    # cleanup; no new detached children can be discovered or identities refreshed.
+    return keys %live unless $rows;
+    %live = ();
     for my $p (keys %seen) {
         $live{$p} = 1 if exists $rows->{$p} && $rows->{$p}[1] eq $seen{$p};
     }
-    # Until reaped, the worker PID cannot be reused.
     $live{$pid} = 1 if !defined($status) && exists $rows->{$pid};
     my $changed = 1;
     while ($changed) {
@@ -103,34 +178,85 @@ sub reap {
     my $r = waitpid($pid, WNOHANG);
     $status = $? if $r == $pid;
 }
-my $deadline = time() + $t;
-my @live;
-while (1) {
-    @live = members();
-    reap();
-    last if $cancel || defined $status;
-    if (time() >= $deadline) { $cancel = 124; last; }
-    sleep 0.05;
-}
-# Continue discovering descendants during the grace period, including children
-# forked by TERM handlers. Signal individuals: detached sessions have other groups.
+my $error;
+eval {
+    close $gate_r;
+    setpgrp($pid, $pid) or die "worker setpgrp: $!";
+    pipe(my $watch, $pulse) or die "watchdog pipe: $!";
+    $pulse->autoflush(1);
+    my $supervisor = $$;
+    $guard = fork();
+    die "watchdog fork: $!" unless defined $guard;
+    if (!$guard) {
+        close $pulse;
+        close $gate_w;
+        $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "DEFAULT";
+        my $select = IO::Select->new($watch);
+        my ($last, $pending, $ps) = (time(), "", 0);
+        while (time() < $deadline + 4 && time() < $last + 3) {
+            next unless $select->can_read(0.05);
+            my $n = sysread($watch, my $buf, 65536);
+            last unless $n; # Supervisor died without finishing cleanup.
+            $last = time();
+            $pending .= $buf;
+            while ($pending =~ s/^(.*?)\n//) {
+                my $line = $1;
+                POSIX::_exit(0) if $line eq "done";
+                $ps = $1 if $line =~ /^ps (\d+)$/;
+            }
+        }
+        # No ps dependency: even a stuck/dead supervisor cannot abandon its group.
+        kill "TERM", -$pid;
+        kill "KILL", -$ps if $ps;
+        sleep 2;
+        kill "KILL", -$pid;
+        # EOF can mean the supervisor already died; do not signal a reused PID.
+        kill "KILL", $supervisor if getppid() == $supervisor;
+        POSIX::_exit(0);
+    }
+    close $watch;
+    print {$gate_w} "G";
+    close $gate_w;
+    while (1) {
+        heartbeat();
+        members();
+        reap();
+        last if $cancel || defined $status;
+        if (time() >= $deadline) { $cancel = 124; last; }
+        sleep 0.05;
+    }
+    1;
+} or $error = $@ || "supervisor failed\n";
+
+# Every post-fork error, normal exit, deadline and signal reaches this cleanup.
+# Group KILL after the grace also catches children spawned by TERM handlers.
+$cleaning = 1;
+close $gate_w;
+stop_inspector();
+kill "TERM", -$pid;
 my $until = time() + 2;
 my %termed;
-while (@live) {
+while (1) {
+    heartbeat();
+    my @live = eval { members() };
+    if ($@) { $error ||= $@; $inspection_failed = 1; @live = keys %live; stop_inspector(); }
     for my $p (@live) {
         next if defined($status) && $p == $pid;
         kill "TERM", $p unless ($termed{$p} // "") eq $seen{$p};
         $termed{$p} = $seen{$p};
     }
-    last if time() >= $until;
-    sleep 0.05;
-    @live = members();
     reap();
+    last if time() >= $until;
+    last unless kill(0, -$pid) || grep { $_ != $pid && kill(0, $_) } @live;
+    sleep 0.05;
 }
-@live = members();
-kill "KILL", $_ for grep { !defined($status) || $_ != $pid } @live;
+kill "KILL", -$pid;
+kill "KILL", $_ for grep { !defined($status) || $_ != $pid } keys %live;
 if (!defined $status) { waitpid($pid, 0); $status = $?; }
-exit($cancel || ($status & 127 ? 128 + ($status & 127) : $status >> 8));
+if ($pulse) { print {$pulse} "done\n"; close $pulse; }
+waitpid($guard, 0) if $guard;
+warn $error if $error;
+exit($cancel || ($error || $inspection_failed ? 3 : ($status & 127 ? 128 + ($status & 127) : $status >> 8)));
 '
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 valid_model() { case $1 in ''|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
@@ -207,19 +333,13 @@ cleanup() {
 # A background exec keeps $! equal to the supervisor PID (including during auth).
 # wait is interruptible in bash 3.2; foreground commands defer these traps.
 terminate() {
-  local code=$1 signal=$2 watchdog
-  # Catch (rather than ignore) signals until the watchdog is started, so it
-  # inherits normal signal dispositions and can itself be stopped with TERM.
-  trap ':' INT TERM HUP
+  local code=$1 signal=$2
+  trap '' INT TERM HUP
   if [ -n "$SUP_PID" ]; then
-    # Bound the wrapper wait too, even if the supervisor itself gets stuck.
-    perl -e 'sleep 5; kill "KILL", $ARGV[0]' "$SUP_PID" &
-    watchdog=$!
-    trap '' INT TERM HUP
+    # The independent supervisor watchdog owns the known worker group and also
+    # bounds this wait if the supervisor stops responding during inspection.
     kill -"$signal" "$SUP_PID" 2>/dev/null || true
     wait "$SUP_PID" 2>/dev/null || true
-    kill -TERM "$watchdog" 2>/dev/null || true
-    wait "$watchdog" 2>/dev/null || true
     SUP_PID=''
   fi
   exit "$code"
@@ -307,7 +427,7 @@ print "$ctl\n";
 CTL=$(perl -e "$POLICY" "$SC" "$TOOLDIR" "$TOOLS") || die "cannot isolate the control directory from worker-writable roots"
 
 # Subscription login only, supervised and interruptible just like the worker.
-"${CLEAN[@]}" perl -e "$SUP" 30 "$CLAUDE_BIN" auth status > "$CTL/auth.json" 2>/dev/null &
+"${CLEAN[@]}" perl -e "$SUP" 30 "$PS_BIN" "$CLAUDE_BIN" auth status > "$CTL/auth.json" 2>/dev/null &
 SUP_PID=$!
 AUTH_RC=0
 wait "$SUP_PID" || AUTH_RC=$?
@@ -360,7 +480,7 @@ printf '[claude-review: tools=%s (%s) model=%s timeout=%ss request=%sKB]\n' "$TO
 START=$(date +%s)
 RC=0
 ( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" \
-    perl -e "$SUP" "$TIMEOUT" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
+    perl -e "$SUP" "$TIMEOUT" "$PS_BIN" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
 SUP_PID=$!
 wait "$SUP_PID" || RC=$?
 SUP_PID=''

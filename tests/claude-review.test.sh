@@ -42,6 +42,8 @@ printf '%s' "${ANTHROPIC_API_KEY:-<unset>}" > fake.apikey
 printf '%s' "${TMPDIR:-<unset>}" > fake.tmpdir
 pwd > fake.cwd
 echo $$ > "$FAKE_OUTSIDE/worker.pid"
+echo "$PPID" > "$FAKE_OUTSIDE/supervisor.pid"
+printf '%s %s fixture-%s\n' "$$" "$PPID" "$$" >> "$FAKE_OUTSIDE/ps.rows"
 env | cut -d= -f1 | sort > fake.envnames
 cat > fake.prompt
 ls in > fake.in 2>/dev/null
@@ -56,12 +58,46 @@ case "${FAKE_MODE:-ok}" in
   detached_timeout|detached_normal)
     # This child leaves the worker process group/session, as Claude Bash does.
     perl -MPOSIX=setsid -e '
+      open my $rows, ">>", "$ARGV[1]/ps.rows" or die $!;
+      print $rows "$$ ", getppid(), " fixture-$$\n"; close $rows;
       my $pid = fork(); die "fork: $!" unless defined $pid;
-      if (!$pid) { setsid() >= 0 or die "setsid: $!"; $SIG{TERM} = "IGNORE"; sleep 30; exit 0; }
+      if (!$pid) {
+        setsid() >= 0 or die "setsid: $!";
+        open my $rows, ">>", "$ARGV[1]/ps.rows" or die $!;
+        print $rows "$$ ", getppid(), " fixture-$$\n"; close $rows;
+        $SIG{TERM} = "IGNORE"; sleep 30; exit 0;
+      }
       open my $f, ">", $ARGV[0] or die $!; print $f "$pid\n"; close $f;
       sleep 2; # keep ancestry observable across several supervisor polls
-    ' "$FAKE_OUTSIDE/child.pid"
+    ' "$FAKE_OUTSIDE/child.pid" "$FAKE_OUTSIDE"
     [ "$FAKE_MODE" = detached_normal ] || sleep 30 ;;
+  orphan_timeout|orphan_normal|term_child)
+    # The helper never appears under the worker in the fixture: its short-lived
+    # intermediate exits before a snapshot. It remains in the worker group.
+    exec perl -MTime::HiRes=sleep -e '
+      my ($mode, $dir) = @ARGV;
+      sub helper {
+        my $p = fork(); die $! unless defined $p;
+        if (!$p) {
+          $SIG{TERM} = "IGNORE";
+          open my $f, ">", "$dir/child.pid" or die $!;
+          print $f "$$\n"; close $f;
+          open my $r, ">>", "$dir/ps.rows" or die $!;
+          print $r "$$ 1 fixture-$$\n"; close $r;
+          sleep 30; exit 0;
+        }
+      }
+      if ($mode eq "term_child") { $SIG{TERM} = sub { helper(); exit 0 }; sleep 30; }
+      else {
+        my $p = fork(); die $! unless defined $p;
+        if (!$p) { helper(); exit 0; }
+        waitpid($p, 0);
+        sleep 0.1 until -s "$dir/child.pid";
+        if ($mode eq "orphan_timeout") { sleep 30; }
+        print qq({"result":"ok","is_error":false}\n);
+      }
+    ' "$FAKE_MODE" "$FAKE_OUTSIDE" ;;
+  inspect_fail) sleep 1 ;;
   child) sleep 30 & echo $! > "$FAKE_OUTSIDE/child.pid"; sleep 30 ;;
   stubborn) trap '' TERM HUP INT; sleep 30 ;;
   fail) echo boom >&2; exit 1 ;;
@@ -160,10 +196,49 @@ check "--permission-mode refused" '[ $rc -eq 2 ]'
 head -c 2000 /dev/zero > "$T/bin.dat"
 "$CR" --prompt p --tools none "$T/bin.dat" >/dev/null 2>&1; rc=$?
 check "a binary file is refused" '[ $rc -eq 2 ]'
-if ! /bin/ps -axo pid=,ppid=,lstart= >/dev/null 2>&1; then
-  echo "SKIP: worker/auth/process and exec tests require ps, denied by this sandbox"
-  printf 'claude-review.test.sh: %d passed, %d failed (runtime checks skipped)\n' "$PASS" "$FAIL"
-  [ "$FAIL" -eq 0 ]; exit $?
+# A deterministic process table lets all non-seatbelt checks run when /bin/ps
+# is denied. Only our fake processes register rows; unobserved orphans report
+# PPID 1. Real ps remains the default outside this restricted environment.
+REAL_PS=1
+/bin/ps -axo pid=,ppid=,lstart= >/dev/null 2>&1 || REAL_PS=0
+cat > "$T/ps-fixture" <<'EOF'
+#!/usr/bin/perl
+use strict;
+use FindBin;
+my $dir = "$FindBin::Bin/outside";
+my $mode = "";
+if (open my $f, "<", "$dir/ps.mode") { chomp($mode = <$f> // ""); }
+if ($mode eq "pre_fail") { exit 1; }
+if (-s "$dir/worker.pid") {
+    if ($mode eq "fail") { exit 1; }
+    if ($mode eq "block") {
+        open my $f, ">", "$dir/inspection.pid" or die $!;
+        print $f "$$\n"; close $f;
+        my $child = fork(); die $! unless defined $child;
+        if (!$child) { exec "/bin/sleep", "30"; exit 127; }
+        open my $c, ">", "$dir/inspection-child.pid" or die $!;
+        print $c "$child\n"; close $c;
+        sleep 30;
+        waitpid($child, 0);
+        exit 0;
+    }
+}
+if (-e "$dir/use-real-ps") { exec "/bin/ps", @ARGV; exit 127; }
+if (open my $f, "<", "$dir/ps.rows") {
+    while (<$f>) {
+        my ($pid, $parent, $start) = split;
+        next unless $pid && kill(0, $pid);
+        $parent = 1 unless kill(0, $parent);
+        print "$pid $parent $start\n";
+    }
+}
+EOF
+chmod +x "$T/ps-fixture"
+if [ "$REAL_PS" = 0 ]; then
+  echo "note: using controlled ps fixture; real process-table inspection is denied"
+  export CLAUDE_REVIEW_TESTING=1 CLAUDE_REVIEW_TEST_PS="$T/ps-fixture"
+else
+  touch "$T/outside/use-real-ps"
 fi
 fk FAKE_AUTH=apikey -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
 check "an API-key login is refused" '[ $rc -eq 2 ] && [ -z "$(kept)" ]'
@@ -291,6 +366,80 @@ defconf
 check "TERM to wrapper stops the worker and returns promptly" '[ $rc -eq 143 ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
 check "TERM cleans scratch and control only after stopping the worker" '[ -n "$signal_sc" ] && [ -n "$signal_ctl" ] && [ ! -e "$signal_sc" ] && [ ! -e "$signal_ctl" ]'
 if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+
+# Round-3 regressions: group coverage must not depend on ancestry observation.
+for mode in orphan_timeout orphan_normal term_child; do
+  rm -f "$T/outside/child.pid"
+  limit=1; expected=124
+  if [ "$mode" = orphan_normal ]; then limit=10; expected=0; fi
+  start=$(date +%s)
+  fk FAKE_MODE="$mode" -- "$CR" --prompt p --tools none --timeout "$limit" "$T/a.txt" >/dev/null 2>&1; rc=$?
+  dur=$(( $(date +%s) - start ))
+  sleep 0.2
+  check "$mode: group cleanup kills even an unobserved helper" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/child.pid" ] && ! kill -0 "$(cat "$T/outside/child.pid")" 2>/dev/null'
+  if [ -s "$T/outside/child.pid" ]; then kill -KILL "$(cat "$T/outside/child.pid")" 2>/dev/null || true; fi
+done
+
+# These fault injections always use the guarded override, including on hosts
+# where real ps works. It is not an ordinary-user ps configuration option.
+export CLAUDE_REVIEW_TESTING=1 CLAUDE_REVIEW_TEST_PS="$T/ps-fixture"
+rm -f "$T/outside/worker.pid"
+echo pre_fail > "$T/outside/ps.mode"
+"$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "pre-start ps failure refuses to launch and cleans directories" '[ $rc -ne 0 ] && [ ! -e "$T/outside/worker.pid" ] && [ -z "$(kept)" ] && [ -z "$(ctl)" ]'
+
+for fault in fail block; do
+  rm -f "$T/outside/worker.pid" "$T/outside/inspection.pid" "$T/outside/inspection-child.pid"
+  echo "$fault" > "$T/outside/ps.mode"
+  mode=inspect_fail; limit=5; expected=3
+  if [ "$fault" = block ]; then mode=stubborn; limit=1; expected=124; fi
+  start=$(date +%s)
+  fk FAKE_MODE="$mode" -- "$CR" --prompt p --tools none --timeout "$limit" "$T/a.txt" >"$T/fault.out" 2>"$T/fault.err"; rc=$?
+  dur=$(( $(date +%s) - start ))
+  check "ps $fault after start: bounded nonzero exit and dead worker" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+  check "ps $fault after start: scratch and control directories cleaned" '[ -z "$(kept)" ] && [ -z "$(ctl)" ]'
+  if [ "$fault" = block ]; then
+    check "blocked inspection subprocess and its child are killed" '[ -s "$T/outside/inspection.pid" ] && ! kill -0 "$(cat "$T/outside/inspection.pid")" 2>/dev/null && [ -s "$T/outside/inspection-child.pid" ] && ! kill -0 "$(cat "$T/outside/inspection-child.pid")" 2>/dev/null'
+    for f in inspection inspection-child; do
+      if [ -s "$T/outside/$f.pid" ]; then kill -KILL "$(cat "$T/outside/$f.pid")" 2>/dev/null || true; fi
+    done
+  fi
+  if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+done
+
+# TERM during a blocked snapshot, and a stopped supervisor that needs its
+# independent watchdog. Signal only PIDs launched by this test invocation.
+for fault in block stopped stopped_block; do
+  rm -f "$T/outside/worker.pid" "$T/outside/inspection.pid" "$T/outside/inspection-child.pid" "$T/outside/supervisor.pid"
+  case $fault in *block) echo block ;; *) echo "$fault" ;; esac > "$T/outside/ps.mode"
+  defconf
+  printf 'export FAKE_MODE=stubborn\n' >> "$T/conf.sh"
+  "$CR" --prompt p --tools none --timeout 30 "$T/a.txt" >"$T/signal.out" 2>"$T/signal.err" &
+  wrapper=$!
+  marker="$T/outside/worker.pid"
+  case $fault in *block) marker="$T/outside/inspection-child.pid" ;; esac
+  n=0
+  while [ ! -s "$marker" ] && [ "$n" -lt 100 ]; do sleep 0.02; n=$((n + 1)); done
+  if [ "$fault" != block ] && [ -s "$T/outside/supervisor.pid" ]; then
+    kill -STOP "$(cat "$T/outside/supervisor.pid")" 2>/dev/null || true
+  fi
+  start=$(date +%s)
+  kill -TERM "$wrapper" 2>/dev/null || true
+  wait "$wrapper"; rc=$?
+  dur=$(( $(date +%s) - start ))
+  defconf
+  sleep 0.2
+  check "TERM with $fault inspection/supervisor kills workload within bound" '[ $rc -eq 143 ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+  check "TERM with $fault inspection/supervisor cleans directories" '[ -z "$(kept)" ] && [ -z "$(ctl)" ]'
+  if [ "$fault" != stopped ]; then
+    check "TERM with $fault also kills the inspection group" '[ -s "$T/outside/inspection.pid" ] && ! kill -0 "$(cat "$T/outside/inspection.pid")" 2>/dev/null && [ -s "$T/outside/inspection-child.pid" ] && ! kill -0 "$(cat "$T/outside/inspection-child.pid")" 2>/dev/null'
+  fi
+  for f in worker inspection inspection-child supervisor; do
+    if [ -s "$T/outside/$f.pid" ]; then kill -KILL "$(cat "$T/outside/$f.pid")" 2>/dev/null || true; fi
+  done
+done
+rm -f "$T/outside/ps.mode"
+if [ "$REAL_PS" = 1 ]; then unset CLAUDE_REVIEW_TESTING CLAUDE_REVIEW_TEST_PS; fi
 
 if [ "$MAC" = 1 ]; then
   # Run the wrapper too: the two overlapping configurations must select a
