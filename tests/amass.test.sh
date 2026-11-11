@@ -79,10 +79,10 @@ printf 'alpha\nbeta\n' > "$T/a.txt"; printf 'gamma\n' > "$T/b.txt"
 
 # The worker runs in an allow-listed environment, so the fake cannot be steered through environment
 # variables. It reads its settings from conf.sh next to it; fk writes them for one command, then resets.
-defconf() { { printf 'export FAKE_LOG=%s\n' "${FAKE_LOG:-}"; printf 'export FAKE_OUTSIDE=%s\n' "${FAKE_OUTSIDE:-}"; } > "$T/conf.sh"; }
+defconf() { { printf 'export FAKE_LOG=%q\n' "${FAKE_LOG:-}"; printf 'export FAKE_OUTSIDE=%q\n' "${FAKE_OUTSIDE:-}"; } > "$T/conf.sh"; }
 fk() {
   defconf
-  while [ "$1" != -- ]; do printf 'export %s\n' "$1" >> "$T/conf.sh"; shift; done
+  while [ "$1" != -- ]; do printf 'export %s=%q\n' "${1%%=*}" "${1#*=}" >> "$T/conf.sh"; shift; done
   shift
   "$@"; local rc=$?
   defconf
