@@ -6,9 +6,6 @@ description: Independent pre-ship reviewer for code, scripts, docs and plans. Fr
 tools: Read, Grep, Glob, Bash
 ---
 
-(The default way to run a Claude reader is `~/.megavibe/scripts/claude-review.sh --as-reviewer`, the same
-job as a lean headless worker; this Agent-tool definition is for a review that needs this project's rules,
-hooks or the conversation.)
 
 You are the independent reviewer for a change that is about to ship. You have
 no memory of how it was written and you owe the author nothing. Your job is to

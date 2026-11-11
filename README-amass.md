@@ -15,4 +15,4 @@ Measured in that pilot (list-price accounting, not subscription quota; n is smal
 
 ## Command reference
 
-`scripts/amass.sh run --out DIR [--change TEXT | --task-file F] [--model haiku] [--lens name=text]... [--lenses-file F] [--no-lens] [--copies 3] [--whole N] [--parallel 12] [--timeout 280] [--max-input-kb 150] [--dry-run] FILE...`, then `amass.sh dedupe --out DIR` and `amass.sh summary --out DIR`. The output directory must not exist (it is claimed atomically). Each `run` and `dedupe` that reaches the model appends a line to `~/.megavibe/amass-usage.jsonl` (best effort; dry runs and refusals write nothing) (`AMASS_LEDGER` overrides).
+`scripts/amass.sh run --out DIR [--change TEXT | --task-file F] [--model haiku] [--lens name=text]... [--lenses-file F] [--no-lens] [--copies 3] [--whole N] [--parallel 12] [--timeout 280] [--max-input-kb 150] [--dry-run] FILE...`, then `amass.sh dedupe --out DIR` and `amass.sh summary --out DIR`. The output directory must not exist (it is claimed atomically). Each `run` and `dedupe` appends a line to `~/.megavibe/amass-usage.jsonl` (`AMASS_LEDGER` overrides).
