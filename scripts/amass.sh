@@ -5,7 +5,7 @@
 #
 #   amass.sh run    --out DIR [--change TEXT | --task-file F] [--model haiku] [--lens name=text]...
 #                   [--lenses-file F] [--no-lens] [--copies 3] [--whole 0] [--parallel 12]
-#                   [--timeout 280] [--max-input-kb 150] [--dry-run] FILE...
+#                   [--timeout 280] [--max-input-kb 150] [--dry-run] FILE... [--context FILE...]...
 #   amass.sh dedupe --out DIR [--model haiku] [--timeout 280]
 #   amass.sh summary --out DIR
 #
@@ -47,6 +47,19 @@ die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
 usage() {
   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+
+P1/P2 labels are the model's, not a measurement: measured precision is about
+15-20 percent on real diffs and roughly 40 percent on fresh complex shell code.
+The tool reasons inside the diff; pass callers and callees with --context.
+Context groups consume files until the next option; repeat --context as needed.
+Put reviewed files before --context or after --; prefix option-like paths with ./.
+Context is not under review and counts toward --max-input-kb.
+--out DIR must not exist: a wrapper that pre-creates it fails with exit 2.
+3-5 of 18 workers failing to parse is normal and counted in the summary.
+Clusters show n=member count, sorted descending then by id (C locale), keeping ids.
+[no-input] flags a cluster without a concrete failing input; it is never dropped.
+EOF
   exit "${1:-2}"
 }
 
@@ -132,16 +145,24 @@ cmd_summary() {
     END{printf "runs %d, ok %d, failed %d, findings %d, unparsed lines %d (kept in lists/, not clustered), worker cost $%.4f (mean $%.4f per ok run)%s\n", n, ok, n-ok, f, u, c, (ok?c/ok:0), (unk?" plus "unk" call(s) with unknown cost":"");
       if(dn>0) printf "dedupe calls %d, cost $%.4f%s; total cost $%.4f%s\n", dn, dc, (du?" (+"du" with unknown cost)":""), c+dc, ((unk+du)?" (PARTIAL: some costs unknown)":"");
       if(bad!="") printf "FAILED:%s\n", bad}' "$OUT/runs.tsv"
+  if [ -f "$OUT/clusters.md" ]; then cat "$OUT/clusters.md"; fi
 }
 
 cmd_run() {
   local TASK_FILE='' CHANGE='' MODEL=haiku COPIES=3 WHOLE='' PARALLEL=12 TIMEOUT=280 MAXKB=150 DRY=0 NOLENS=0 LENSFILE=''
-  local LNAME=() LTEXT=() FILES=() i name text line
+  local LNAME=() LTEXT=() FILES=() CONTEXT=() i name text line
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=${2:-}; shift 2 ;;
       --task-file) TASK_FILE=${2:-}; shift 2 ;;
       --change) CHANGE=${2:-}; shift 2 ;;
+      --context)
+        case ${2:-} in ''|--*|-h) die "--context needs FILE (prefix option-like paths with ./)" ;; esac
+        CONTEXT+=("$2"); shift 2
+        while [ $# -gt 0 ]; do
+          case $1 in -*) break ;; esac
+          CONTEXT+=("$1"); shift
+        done ;;
       --model) MODEL=${2:-}; shift 2 ;;
       --lens) [ -n "${2:-}" ] || die "--lens needs name=text"; case $2 in *=*) ;; *) die "--lens needs name=text" ;; esac
               name=${2%%=*}; text=${2#*=}; valid_name "$name" || die "bad lens name '$name'"
@@ -165,15 +186,22 @@ cmd_run() {
   for i in "$COPIES" "$PARALLEL" "$TIMEOUT" "$MAXKB"; do isnum "$i" || die "numeric option expected, got '$i'"; done
   [ "$COPIES" -ge 1 ] && [ "$PARALLEL" -ge 1 ] && [ "$TIMEOUT" -ge 1 ] || die "--copies, --parallel and --timeout must be at least 1"
   [ -z "$WHOLE" ] || isnum "$WHOLE" || die "--whole must be a number"
-  [ -n "${FILES[*]+x}" ] || die "no FILE to inline"
+  if [ -z "${FILES[*]+x}" ]; then
+    [ -n "${CONTEXT[*]+x}" ] && die "no FILE to inline (files after --context are context: put the reviewed files before --context, or after --)"
+    die "no FILE to inline"
+  fi
   # a path that starts with - must not become an option of cat, cmp or tr: make every operand explicit,
   # and read files by redirection
   for i in "${!FILES[@]}"; do case ${FILES[$i]} in /*|./*) ;; *) FILES[$i]=./${FILES[$i]} ;; esac; done
+  if [ ${#CONTEXT[@]} -gt 0 ]; then
+    for i in "${!CONTEXT[@]}"; do case ${CONTEXT[$i]} in /*|./*) ;; *) CONTEXT[$i]=./${CONTEXT[$i]} ;; esac; done
+  fi
   case $TASK_FILE in ""|/*|./*) ;; *) TASK_FILE=./$TASK_FILE ;; esac
   case $LENSFILE in ""|/*|./*) ;; *) LENSFILE=./$LENSFILE ;; esac
   need jq; need perl
   if [ -n "$TASK_FILE" ]; then [ -f "$TASK_FILE" ] || die "no such task file $TASK_FILE"; fi
-  for i in "${FILES[@]}"; do
+  # The guarded expansion also works for an empty context array under bash 3.2 set -u.
+  for i in "${FILES[@]}" ${CONTEXT[@]+"${CONTEXT[@]}"}; do
     [ -f "$i" ] && [ -r "$i" ] || die "cannot read $i"
     if ! LC_ALL=C tr -d '\000' < "$i" | cmp -s - "$i"; then die "$i looks binary (contains NUL bytes)"; fi
   done
@@ -222,7 +250,11 @@ cmd_run() {
       [ -z "$CHANGE" ] || printf '\nChange under review: %s\n' "$CHANGE"
       printf '%s\n' "$FORMAT"
     fi
+    if [ ${#CONTEXT[@]} -gt 0 ]; then
+      printf '\n%s\n' 'CONTEXT blocks are context (callers, callees, tests of the changed functions), not under review; findings must be about the reviewed files in FILE blocks.'
+    fi
     for i in "${FILES[@]}"; do printf '\n===== FILE %s =====\n' "$i"; cat < "$i"; done
+    for i in ${CONTEXT[@]+"${CONTEXT[@]}"}; do printf '\n===== CONTEXT %s =====\n' "$i"; cat < "$i"; done
   } > "$OUT/base.txt"
   local bytes kb
   bytes=$(wc -c < "$OUT/base.txt" | tr -d ' '); kb=$(( (bytes + 1023) / 1024 ))
@@ -350,6 +382,7 @@ cmd_dedupe() {
   {
     printf '%s\n' 'You are the dedupe stage of a code-review pipeline. Below, each line is: ID | severity | location | what goes wrong | why. Many lines from different reviewers describe the SAME underlying defect. Group them: one cluster = one distinct underlying defect (same root cause and same kind of location). Do NOT merge different defects just because they touch the same file. Do not judge whether a defect is real, do not fix, do not drop anything: every ID must appear in exactly one cluster. Output one line per cluster, nothing else, in exactly this format:'
     printf '%s\n' 'C<n> | severity (highest in the cluster) | one-sentence defect | members: ID,ID,ID'
+    printf '%s\n' 'If the cluster text names no concrete failing input (a specific input value, call or state that triggers it), append [no-input] at the end of the line, after the members list. This marker is advisory: never drop a cluster because of it. A marker inside quoted finding text is literal text, not this flag.'
     printf '\n===== FINDINGS =====\n'; cat "$OUT/dedupe_in.txt"
   } > "$OUT/dedupe_prompt.txt"
   # the cap is on the whole prompt, instructions included
@@ -366,21 +399,50 @@ cmd_dedupe() {
   ledger dedupe "$MODEL" 1 "$dok" "$cost" "$pk" "$([ "$cost" = '?' ] && echo 1 || echo 0)"   # before any failure exit
   [ "$rc" = 0 ] || { echo "$PROG: dedupe call failed (rc=$rc)" >&2; head -c 300 "$OUT/dedupe_raw.err" >&2; exit 3; }
   [ "$dok" = 1 ] || { echo "$PROG: dedupe output unusable" >&2; exit 3; }
-  grep -E '^[^A-Za-z0-9]*C[0-9]+[[:space:]]*\|.*members:' "$OUT/clusters_raw.md" > "$OUT/clusters.md" || true
+  # Parse the final members field, not arbitrary pipes or n= in the defect text.
+  # Only a terminal, unquoted marker is metadata; quoted occurrences stay literal.
+  # Keep clusters with missing/empty member lists too, with a count of zero.
+  perl -e '
+    use strict; use warnings;
+    open my $seen, ">", shift @ARGV or die "members_seen: $!";
+    # n counts DISTINCT, known finding ids only: a repeated or invented id is not support
+    my %valid;
+    open my $vin, "<", shift @ARGV or die "dedupe_in: $!";
+    while (my $vl = <$vin>) { chomp $vl; my ($vid) = split / /, $vl, 2; $valid{$vid} = 1 if defined $vid && length $vid; }
+    close $vin;
+    while (<>) {
+      chomp; s/\r$//;
+      next unless /^[^A-Za-z0-9]*(C[0-9]+)\s*\|\s*([^|]+?)\s*\|\s*(.*?)\s*$/;
+      my ($id, $severity, $body) = ($1, $2, $3);
+      my $flag = $body =~ s/\s+\[no-input\]$// ? " [no-input]" : "";
+      my $members = $body =~ s/\s*\|\s*members:\s*([^|]*)$// ? $1 : "";
+      my @ids = grep { length } map { s/^\s+|\s+$//g; $_ } split /,/, $members;
+      print $seen "$_\n" for @ids;
+      my %once; my $count = grep { $valid{$_} && !$once{$_}++ } @ids;
+      print "$count\t$id\t$id | $severity | n=$count | $body | members: ", join(",", @ids), "$flag\n";
+    }
+    close $seen or die "members_seen: $!";
+  ' "$OUT/members_seen.txt" "$OUT/dedupe_in.txt" "$OUT/clusters_raw.md" > "$OUT/clusters.tsv"
   # nothing may be lost: every id exactly once; the omitted ones are appended as one cluster
-  LC_ALL=C awk -F'members:' '{n=split($2, a, ","); for(i=1;i<=n;i++){gsub(/[ \t]/,"",a[i]); if(a[i]!="") print a[i]}}' "$OUT/clusters.md" | sort > "$OUT/members_seen.txt"
+  sort -o "$OUT/members_seen.txt" "$OUT/members_seen.txt"
   cut -d' ' -f1 "$OUT/dedupe_in.txt" | sort > "$OUT/members_all.txt"
   comm -13 "$OUT/members_seen.txt" "$OUT/members_all.txt" > "$OUT/members_missing.txt"
   uniq -d "$OUT/members_seen.txt" > "$OUT/members_dup.txt"
   comm -23 <(sort -u "$OUT/members_seen.txt") "$OUT/members_all.txt" > "$OUT/members_unknown.txt"
   if [ -s "$OUT/members_missing.txt" ]; then
-    printf 'CUNK | ? | not clustered by the dedupe call (kept so nothing is lost) | members: %s\n' "$(paste -sd, "$OUT/members_missing.txt")" >> "$OUT/clusters.md"
+    local missing
+    missing=$(wc -l < "$OUT/members_missing.txt" | tr -d ' ')
+    printf '%s\tCUNK\tCUNK | ? | n=%s | not clustered by the dedupe call (kept so nothing is lost) | members: %s\n' "$missing" "$missing" "$(paste -sd, "$OUT/members_missing.txt")" >> "$OUT/clusters.tsv"
   fi
+  # Explicit keys keep text (including pipes, n= and tabs) out of the ordering.
+  # -s preserves model order even if both keys tie; model ids are never renumbered.
+  LC_ALL=C sort -s -t "$(printf '\t')" -k1,1nr -k2,2 "$OUT/clusters.tsv" | cut -f3- > "$OUT/clusters.md"
   printf 'dedupe: %d clusters, %d findings omitted by the model and re-added, %d duplicated ids, %d unknown ids, cost $%s\n' \
     "$(grep -c 'members:' "$OUT/clusters.md" || true)" "$(wc -l < "$OUT/members_missing.txt" | tr -d ' ')" "$(wc -l < "$OUT/members_dup.txt" | tr -d ' ')" "$(wc -l < "$OUT/members_unknown.txt" | tr -d ' ')" "$cost"
   if [ -s "$OUT/dedupe_unparsed.txt" ]; then
     printf 'dedupe: %d response lines were not in the finding format and are NOT clustered; read them in %s\n' "$(wc -l < "$OUT/dedupe_unparsed.txt" | tr -d ' ')" "$OUT/dedupe_unparsed.txt"
   fi
+  cat "$OUT/clusters.md"
 }
 
 [ $# -ge 1 ] || usage 2
