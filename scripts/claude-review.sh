@@ -50,24 +50,87 @@ done
 
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
-# SUP: a perl supervisor run as `perl -e "$SUP" SECONDS command...`. The command runs in its OWN process
-# group; at the deadline the whole group gets TERM and, two seconds later, KILL (so a test run or other
-# child dies with the worker, and a worker that ignores signals still dies), and whatever is left in the
-# group when the command exits on its own is killed too. Exit status 124 means timed out.
+# Track descendants even after setsid/reparenting. A remembered PID is signalled only
+# while its start time still matches; each poll also discovers children of live members.
 SUP='
+use strict;
+use POSIX qw(WNOHANG);
+use Time::HiRes qw(time sleep);
 my $t = shift;
-my $pid = fork();
+my ($cancel, $pid, $status) = (0, undef, undef);
+$SIG{INT} = sub { $cancel ||= 130 };
+$SIG{TERM} = sub { $cancel ||= 143 };
+$SIG{HUP} = sub { $cancel ||= 129 };
+my %seen;
+sub snapshot {
+    my %rows;
+    open my $ps, "-|", "/bin/ps", "-axo", "pid=,ppid=,lstart=" or die "ps: $!";
+    while (<$ps>) {
+        $rows{$1} = [$2, $3] if /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/;
+    }
+    close $ps or die "cannot inspect worker descendants with ps\n";
+    return \%rows;
+}
+snapshot(); # Refuse before starting a worker if process inspection is unavailable.
+exit $cancel if $cancel;
+$pid = fork();
 die "fork: $!" unless defined $pid;
-if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127; }
-my $stop = sub { kill "-TERM", $pid; select(undef, undef, undef, 2); kill "-KILL", $pid; waitpid($pid, 0); };
-$SIG{ALRM} = sub { $stop->(); exit 124; };
-$SIG{INT} = $SIG{TERM} = $SIG{HUP} = sub { $stop->(); exit 143; };
-alarm $t;
-waitpid($pid, 0);
-my $st = $?;
-alarm 0;
-kill "-KILL", $pid;
-exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
+if (!$pid) {
+    $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "DEFAULT";
+    setpgrp(0, 0); exec @ARGV; exit 127;
+}
+sub members {
+    my $rows = snapshot();
+    my %live;
+    for my $p (keys %seen) {
+        $live{$p} = 1 if exists $rows->{$p} && $rows->{$p}[1] eq $seen{$p};
+    }
+    # Until reaped, the worker PID cannot be reused.
+    $live{$pid} = 1 if !defined($status) && exists $rows->{$pid};
+    my $changed = 1;
+    while ($changed) {
+        $changed = 0;
+        for my $p (keys %$rows) {
+            next if $live{$p};
+            if ($live{$rows->{$p}[0]}) { $live{$p} = 1; $changed = 1; }
+        }
+    }
+    $seen{$_} = $rows->{$_}[1] for keys %live;
+    return keys %live;
+}
+sub reap {
+    return if defined $status;
+    my $r = waitpid($pid, WNOHANG);
+    $status = $? if $r == $pid;
+}
+my $deadline = time() + $t;
+my @live;
+while (1) {
+    @live = members();
+    reap();
+    last if $cancel || defined $status;
+    if (time() >= $deadline) { $cancel = 124; last; }
+    sleep 0.05;
+}
+# Continue discovering descendants during the grace period, including children
+# forked by TERM handlers. Signal individuals: detached sessions have other groups.
+my $until = time() + 2;
+my %termed;
+while (@live) {
+    for my $p (@live) {
+        next if defined($status) && $p == $pid;
+        kill "TERM", $p unless ($termed{$p} // "") eq $seen{$p};
+        $termed{$p} = $seen{$p};
+    }
+    last if time() >= $until;
+    sleep 0.05;
+    @live = members();
+    reap();
+}
+@live = members();
+kill "KILL", $_ for grep { !defined($status) || $_ != $pid } @live;
+if (!defined $status) { waitpid($pid, 0); $status = $?; }
+exit($cancel || ($status & 127 ? 128 + ($status & 127) : $status >> 8));
 '
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 valid_model() { case $1 in ''|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
@@ -132,7 +195,7 @@ if [ "$TOOLS" = exec ]; then
   [ -n "$HOOKS" ] || die "--tools exec needs both block-dangerous-bash.sh and block-permission-hooks.sh, executable, in one directory (looked in $MV_HOME/template and next to this script); refusing to run Bash unguarded"
 fi
 
-SC=''; CTL=''; TOOLDIR=''
+SC=''; CTL=''; TOOLDIR=''; SUP_PID=''
 cleanup() {
   if [ "$KEEP" = 0 ]; then
     if [ -n "$SC" ]; then chmod -R u+rwX "$SC" 2>/dev/null || true; rm -rf "$SC" 2>/dev/null || true; fi
@@ -141,24 +204,117 @@ cleanup() {
     case $TOOLDIR in /private/tmp/claude-*/-*claude-review-scratch*) rm -rf "$TOOLDIR" 2>/dev/null || true ;; esac
   fi
 }
+# A background exec keeps $! equal to the supervisor PID (including during auth).
+# wait is interruptible in bash 3.2; foreground commands defer these traps.
+terminate() {
+  local code=$1 signal=$2 watchdog
+  # Catch (rather than ignore) signals until the watchdog is started, so it
+  # inherits normal signal dispositions and can itself be stopped with TERM.
+  trap ':' INT TERM HUP
+  if [ -n "$SUP_PID" ]; then
+    # Bound the wrapper wait too, even if the supervisor itself gets stuck.
+    perl -e 'sleep 5; kill "KILL", $ARGV[0]' "$SUP_PID" &
+    watchdog=$!
+    trap '' INT TERM HUP
+    kill -"$signal" "$SUP_PID" 2>/dev/null || true
+    wait "$SUP_PID" 2>/dev/null || true
+    kill -TERM "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+    SUP_PID=''
+  fi
+  exit "$code"
+}
 trap cleanup EXIT
-
-# subscription login only, checked under the same cleaned environment the call will use
-J=$("${CLEAN[@]}" \
-      perl -e "$SUP" 30 "$CLAUDE_BIN" auth status 2>/dev/null) \
-  || die "cannot verify the login ('$CLAUDE_BIN auth status' failed); refusing to send anything"
-M=$(printf '%s' "$J" | jq -r 'select(.loggedIn == true) | .authMethod // empty' 2>/dev/null) || M=''
-[ "$M" = "claude.ai" ] || die "the login is not a claude.ai subscription login (authMethod='${M:-unknown}'); refusing, because such calls could bill an API key"
+trap 'terminate 130 INT' INT
+trap 'terminate 143 TERM' TERM
+trap 'terminate 129 HUP' HUP
 
 SC=$(mktemp -d "${TMPDIR:-/tmp}/claude-review-scratch.XXXXXX") || die "cannot create the scratch dir"
 SC=$(CDPATH= cd -- "$SC" && pwd -P)
 mkdir "$SC/tmp" "$SC/in"
-# CTL holds everything the PARENT reads or writes (request, settings, seatbelt profile, raw output, answer).
-# It is outside every path the worker may write, so the worker cannot plant a symlink or a FIFO there, nor
-# rewrite its own hook settings; the worker's stdout and stderr reach it only through descriptors the
-# parent opened.
-CTL=$(mktemp -d "${TMPDIR:-/tmp}/claude-review-ctl.XXXXXX") || die "cannot create the control dir"
-CTL=$(CDPATH= cd -- "$CTL" && pwd -P)
+SLUG=$(printf '%s' "$SC" | sed 's/[^A-Za-z0-9]/-/g')
+TOOLDIR="/private/tmp/claude-$(id -u)/$SLUG"
+# One canonical list drives both the profile and control-directory exclusion.
+# Resolve existing symlink ancestors even when a granted leaf does not yet exist.
+POLICY='
+use strict;
+use Cwd qw(realpath);
+use File::Basename qw(dirname basename);
+use File::Temp qw(tempdir);
+sub canonical {
+    my ($p) = @_;
+    $p = "$ENV{PWD}/$p" unless $p =~ m{^/};
+    my @tail;
+    while (!-e $p) {
+        die "cannot resolve writable path $p\n" if -l $p;
+        unshift @tail, basename($p);
+        my $parent = dirname($p);
+        die "cannot resolve writable path $p\n" if $parent eq $p;
+        $p = $parent;
+    }
+    $p = realpath($p) // die "realpath: $!";
+    for (@tail) {
+        next if $_ eq ".";
+        if ($_ eq "..") { $p = dirname($p); }
+        else { $p .= ($p eq "/" ? "" : "/") . $_; }
+    }
+    return $p;
+}
+sub quote_sb { my $s = shift; $s =~ s/(["\\])/\\$1/g; return qq{"$s"}; }
+sub inside { return $_[1] eq "/" || $_[0] eq $_[1] || index($_[0], "$_[1]/") == 0; }
+my ($scratch, $tool, $mode) = @ARGV;
+my $home = canonical($ENV{HOME});
+my @roots = map { canonical($_) } ($scratch, $tool, "$home/.claude");
+push @roots, canonical($ENV{CLAUDE_CONFIG_DIR}) if length($ENV{CLAUDE_CONFIG_DIR} // "");
+my @devices = map { canonical($_) } qw(/dev/null /dev/tty /dev/dtracehelper /dev/fd);
+# Future .claude.json siblings and cwd markers need prefix grants; also resolve
+# existing matching symlinks so their targets participate in the exclusion.
+my @prefixes = ("$home/.claude.json", canonical("/private/tmp") . "/claude-");
+for my $prefix (@prefixes) {
+    my $dir = dirname($prefix);
+    next unless -d $dir;
+    opendir my $dh, $dir or die "opendir $dir: $!";
+    for my $name (readdir $dh) {
+        next unless index("$dir/$name", $prefix) == 0;
+        next if $prefix eq $prefixes[1] && $name !~ /^claude-[0-9A-Za-z]+-cwd/;
+        push @roots, canonical("$dir/$name") if -l "$dir/$name";
+    }
+    closedir $dh;
+}
+my $ctl;
+for my $base ($ENV{TMPDIR} // "/tmp", "$home/Library/Caches", "$home/.cache", "/private/var/tmp", "/tmp") {
+    next unless -d $base && -w $base;
+    my $try = eval { canonical(tempdir("claude-review-ctl.XXXXXX", DIR => $base)) };
+    next unless defined $try;
+    my $overlap = grep { inside($try, $_) || inside($_, $try) } (@roots, @devices);
+    $overlap ||= grep { index($try, $_) == 0 || inside($_, $try) } @prefixes;
+    if ($overlap) { rmdir $try or die "rmdir $try: $!"; next; }
+    $ctl = $try; last;
+}
+die "no control directory disjoint from all worker-writable roots; refusing exec\n" unless defined $ctl;
+if ($mode eq "exec") {
+    open my $fh, ">", "$ctl/profile.sb" or die "profile: $!";
+    print $fh "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write*\n";
+    print $fh "  (subpath ", quote_sb($_), ")\n" for @roots;
+    print $fh "  (literal ", quote_sb($_), ")\n" for @devices[0..2];
+    print $fh "  (subpath ", quote_sb($devices[3]), ")\n";
+    print $fh "  (regex ", quote_sb("^" . quotemeta($prefixes[0])), ")\n";
+    print $fh "  (regex ", quote_sb("^" . quotemeta($prefixes[1]) . "[0-9A-Za-z]+-cwd"), "))\n";
+    close $fh or die "profile: $!";
+}
+print "$ctl\n";
+'
+CTL=$(perl -e "$POLICY" "$SC" "$TOOLDIR" "$TOOLS") || die "cannot isolate the control directory from worker-writable roots"
+
+# Subscription login only, supervised and interruptible just like the worker.
+"${CLEAN[@]}" perl -e "$SUP" 30 "$CLAUDE_BIN" auth status > "$CTL/auth.json" 2>/dev/null &
+SUP_PID=$!
+AUTH_RC=0
+wait "$SUP_PID" || AUTH_RC=$?
+SUP_PID=''
+[ "$AUTH_RC" = 0 ] || die "cannot verify the login ('$CLAUDE_BIN auth status' failed); refusing to send anything"
+M=$(jq -r 'select(.loggedIn == true) | .authMethod // empty' "$CTL/auth.json" 2>/dev/null) || M=''
+[ "$M" = "claude.ai" ] || die "the login is not a claude.ai subscription login (authMethod='${M:-unknown}'); refusing, because such calls could bill an API key"
 
 # the request: harness note, the caller's prompt, then the files
 {
@@ -197,34 +353,17 @@ if [ "$TOOLS" = exec ]; then
       {matcher:"Bash",hooks:[{type:"command",command:(($d+"/block-dangerous-bash.sh")|@sh)}]},
       {matcher:"Write|Edit",hooks:[{type:"command",command:(($d+"/block-permission-hooks.sh")|@sh)}]}]}}' > "$CTL/settings.json"
   ARGS+=(--settings "$CTL/settings.json")
-  # claude's Bash tool keeps a per-working-directory folder under /private/tmp/claude-<uid>/ (named
-  # after the cwd) and a /tmp/claude-<id>-cwd file; only THIS worker's own folder is allowed, not the
-  # whole tree, which also holds other sessions' scratch
-  SLUG=$(printf '%s' "$SC" | sed 's/[^A-Za-z0-9]/-/g')
-  TOOLDIR="/private/tmp/claude-$(id -u)/$SLUG"
-  CFGLINE=''
-  case ${CLAUDE_CONFIG_DIR:-} in /*) CFGLINE="  (subpath \"$CLAUDE_CONFIG_DIR\")" ;; esac
-  cat > "$CTL/profile.sb" <<EOF
-(version 1)
-(allow default)
-(deny file-write*)
-(allow file-write*
-  (subpath "$SC")
-  (subpath "$TOOLDIR")
-  (subpath "$HOME/.claude")
-$CFGLINE
-  (regex #"^$HOME/\\.claude\\.json")
-  (regex #"^/private/tmp/claude-[0-9A-Za-z]+-cwd")
-  (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper") (regex #"^/dev/fd/"))
-EOF
   PRE=(sandbox-exec -f "$CTL/profile.sb")
 fi
 
 printf '[claude-review: tools=%s (%s) model=%s timeout=%ss request=%sKB]\n' "$TOOLS" "$SANDBOX_NOTE" "$MODEL" "$TIMEOUT" "$KB" >&2
 START=$(date +%s)
 RC=0
-( cd "$SC" && "${CLEAN[@]}" TMPDIR="$SC/tmp" \
-    perl -e "$SUP" "$TIMEOUT" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) || RC=$?
+( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" \
+    perl -e "$SUP" "$TIMEOUT" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
+SUP_PID=$!
+wait "$SUP_PID" || RC=$?
+SUP_PID=''
 DUR=$(( $(date +%s) - START ))
 
 COST=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$CTL/raw.json" 2>/dev/null) || COST=''

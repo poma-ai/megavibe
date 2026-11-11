@@ -18,7 +18,11 @@ check() { if eval "$2"; then ok; else bad "$1"; fi; }
 command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 || { echo "SKIP: needs jq and perl"; exit 0; }
 MAC=0; [ "$(uname -s)" = Darwin ] && command -v sandbox-exec >/dev/null 2>&1 && MAC=1
 
-mkdir -p "$T/tmp" "$T/outside"
+# All state/path tests use a fake HOME, never the real Claude configuration.
+export HOME="$T/home"
+unset CLAUDE_CONFIG_DIR
+mkdir -p "$T/tmp" "$T/outside" "$HOME/.claude" "$HOME/Library/Caches"
+if [ "${CLAUDE_REVIEW_TEST_SKIP_EXEC:-0}" = 1 ]; then MAC=0; fi
 cat > "$T/fake-claude" <<'EOF'
 #!/bin/bash
 . "$(dirname "$0")/conf.sh" 2>/dev/null || true
@@ -37,6 +41,7 @@ printf '%s\n' "$@" > fake.argv
 printf '%s' "${ANTHROPIC_API_KEY:-<unset>}" > fake.apikey
 printf '%s' "${TMPDIR:-<unset>}" > fake.tmpdir
 pwd > fake.cwd
+echo $$ > "$FAKE_OUTSIDE/worker.pid"
 env | cut -d= -f1 | sort > fake.envnames
 cat > fake.prompt
 ls in > fake.in 2>/dev/null
@@ -48,6 +53,15 @@ if [ -n "${FAKE_PLANT:-}" ]; then
   ln -sf "$FAKE_OUTSIDE/victim" settings.json 2>/dev/null; ln -sf "$FAKE_OUTSIDE/victim" request.txt 2>/dev/null
 fi
 case "${FAKE_MODE:-ok}" in
+  detached_timeout|detached_normal)
+    # This child leaves the worker process group/session, as Claude Bash does.
+    perl -MPOSIX=setsid -e '
+      my $pid = fork(); die "fork: $!" unless defined $pid;
+      if (!$pid) { setsid() >= 0 or die "setsid: $!"; $SIG{TERM} = "IGNORE"; sleep 30; exit 0; }
+      open my $f, ">", $ARGV[0] or die $!; print $f "$pid\n"; close $f;
+      sleep 2; # keep ancestry observable across several supervisor polls
+    ' "$FAKE_OUTSIDE/child.pid"
+    [ "$FAKE_MODE" = detached_normal ] || sleep 30 ;;
   child) sleep 30 & echo $! > "$FAKE_OUTSIDE/child.pid"; sleep 30 ;;
   stubborn) trap '' TERM HUP INT; sleep 30 ;;
   fail) echo boom >&2; exit 1 ;;
@@ -80,7 +94,55 @@ clean_kept() { /bin/rm -rf "$T"/tmp/claude-review-scratch.* "$T"/tmp/claude-revi
 ctl() { ls -d "$T"/tmp/claude-review-ctl.* 2>/dev/null | head -1; }
 
 check "bash -n" '/bin/bash -n "$CR"'
+SUP=$(sed -n "/^SUP='$/,/^'$/p" "$CR" | sed '1d;$d')
+check "supervisor compiles" 'perl -c -e "$SUP" >/dev/null 2>&1'
 check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\$\{[A-Za-z_]+,,\}" "$CR"'
+
+# Exercise exactly the policy used by the wrapper without needing sandbox-exec
+# or process inspection. This also permits useful checks inside nested seatbelt.
+POLICY=$(sed -n "/^POLICY='$/,/^'$/p" "$CR" | sed '1d;$d')
+profile_disjoint() {
+  perl - "$1" <<'CHECK'
+use strict;
+my $ctl = shift;
+open my $f, "<", "$ctl/profile.sb" or exit 1;
+sub inside { $_[1] eq "/" || $_[0] eq $_[1] || index($_[0], "$_[1]/") == 0 }
+my $grants = 0;
+while (<$f>) {
+    if (/\((subpath|literal|regex) #?"((?:\\.|[^"\\])*)"\)/) {
+        my ($kind, $path) = ($1, $2);
+        $path =~ s/\\(["\\])/$1/g;
+        if ($kind eq "regex") { exit 1 if $ctl =~ /$path/; }
+        else { exit 1 if inside($ctl, $path) || inside($path, $ctl); }
+        $grants++;
+    }
+}
+exit($grants >= 8 ? 0 : 1);
+CHECK
+}
+policy_case() {
+  local name=$1 base=$2 cfg=$3 c rc
+  mkdir -p "$base" "$base/claude-review-scratch.policy"
+  c=$(TMPDIR="$base" CLAUDE_CONFIG_DIR="$cfg" perl -e "$POLICY" \
+      "$base/claude-review-scratch.policy" "$T/tool-folder" exec 2>"$T/policy.err")
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    check "$name: control is disjoint from every profile grant" 'profile_disjoint "$c"'
+    case $c in "$HOME/Library/Caches/"*) ok ;; *) bad "$name: expected safe cache fallback" ;; esac
+    /bin/rm -rf "$c"
+  else
+    bad "$name: policy generation failed"
+    cat "$T/policy.err"
+  fi
+}
+policy_case "config equals TMPDIR" "$T/tmp" "$T/tmp"
+policy_case "TMPDIR below .claude" "$HOME/.claude/tmp" ""
+# Symlink spelling must resolve to the same grant/exclusion path.
+ln -s "$HOME/.claude" "$T/state-link"
+policy_case "symlinked TMPDIR and config" "$T/state-link/tmp" "$T/state-link"
+c=$(TMPDIR="$T/tmp" CLAUDE_CONFIG_DIR=/ perl -e "$POLICY" "$T/tmp" "$T/tool-folder" exec 2>"$T/policy.err"); rc=$?
+check "overlap with every candidate refuses control creation clearly" '[ $rc -ne 0 ] && grep -q "no control directory disjoint" "$T/policy.err"'
+/bin/rm -rf "$T/tmp/claude-review-scratch.policy"
 
 # usage and refusals
 "$CR" --tools none a.txt >/dev/null 2>&1; rc=$?
@@ -98,6 +160,11 @@ check "--permission-mode refused" '[ $rc -eq 2 ]'
 head -c 2000 /dev/zero > "$T/bin.dat"
 "$CR" --prompt p --tools none "$T/bin.dat" >/dev/null 2>&1; rc=$?
 check "a binary file is refused" '[ $rc -eq 2 ]'
+if ! /bin/ps -axo pid=,ppid=,lstart= >/dev/null 2>&1; then
+  echo "SKIP: worker/auth/process and exec tests require ps, denied by this sandbox"
+  printf 'claude-review.test.sh: %d passed, %d failed (runtime checks skipped)\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]; exit $?
+fi
 fk FAKE_AUTH=apikey -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
 check "an API-key login is refused" '[ $rc -eq 2 ] && [ -z "$(kept)" ]'
 fk FAKE_AUTH=broken -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
@@ -147,6 +214,8 @@ if [ "$MAC" = 1 ]; then
   # without --keep-scratch the scratch dir is gone, also when the call fails
   fk FAKE_MODE=fail -- "$CR" --prompt p --as-reviewer "$T/a.txt" >/dev/null 2>&1; rc=$?
   check "a failed exec call exits 3 and leaves no scratch dir" '[ $rc -eq 3 ] && [ -z "$(kept)" ]'
+elif [ "${CLAUDE_REVIEW_TEST_SKIP_EXEC:-0}" = 1 ]; then
+  echo "SKIP: real exec containment requested off (nested seatbelt)"
 else
   echo "note: exec tests skipped (no macOS sandbox-exec here)"
   "$CR" --prompt p --tools exec "$T/a.txt" >/dev/null 2>&1; rc=$?
@@ -190,7 +259,55 @@ start=$(date +%s)
 fk FAKE_MODE=stubborn -- "$CR" --prompt p --tools none --timeout 1 "$T/a.txt" >/dev/null 2>&1; rc=$?
 dur=$(( $(date +%s) - start ))
 check "a worker that ignores TERM is killed after the grace period (exit 124, bounded)" '[ $rc -eq 124 ] && [ $dur -lt 8 ]'
+# Detached descendants must die on both deadline and successful completion.
+for mode in detached_timeout detached_normal; do
+  rm -f "$T/outside/child.pid"
+  limit=1; expected=124
+  if [ "$mode" = detached_normal ]; then limit=10; expected=0; fi
+  start=$(date +%s)
+  fk FAKE_MODE="$mode" -- "$CR" --prompt p --tools none --timeout "$limit" "$T/a.txt" >/dev/null 2>&1; rc=$?
+  dur=$(( $(date +%s) - start ))
+  sleep 1
+  check "$mode: detached child is dead, with expected status and bounded cleanup" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/child.pid" ] && ! kill -0 "$(cat "$T/outside/child.pid")" 2>/dev/null'
+  # Only this test child, if a regression left it alive.
+  if [ -s "$T/outside/child.pid" ]; then kill -KILL "$(cat "$T/outside/child.pid")" 2>/dev/null || true; fi
+done
+
+# TERM goes only to the wrapper PID; no process-group signal from the test.
+clean_kept
+rm -f "$T/outside/worker.pid"
+defconf
+printf 'export FAKE_MODE=stubborn\n' >> "$T/conf.sh"
+"$CR" --prompt p --tools none --timeout 30 "$T/a.txt" >"$T/signal.out" 2>"$T/signal.err" &
+wrapper=$!
+n=0
+while [ ! -s "$T/outside/worker.pid" ] && [ "$n" -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+signal_sc=$(kept); signal_ctl=$(ctl)
+start=$(date +%s)
+kill -TERM "$wrapper" 2>/dev/null || true
+wait "$wrapper"; rc=$?
+dur=$(( $(date +%s) - start ))
+defconf
+check "TERM to wrapper stops the worker and returns promptly" '[ $rc -eq 143 ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+check "TERM cleans scratch and control only after stopping the worker" '[ -n "$signal_sc" ] && [ -n "$signal_ctl" ] && [ ! -e "$signal_sc" ] && [ ! -e "$signal_ctl" ]'
+if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+
 if [ "$MAC" = 1 ]; then
+  # Run the wrapper too: the two overlapping configurations must select a
+  # disjoint control directory (or refuse before the fake worker can start).
+  for layout in config_tmp home_tmp; do
+    clean_kept
+    case $layout in
+      config_tmp) base="$T/tmp"; cfg="$T/tmp" ;;
+      home_tmp) base="$HOME/.claude/tmp"; cfg="" ;;
+    esac
+    rm -f "$T/outside/worker.pid"
+    out=$(TMPDIR="$base" CLAUDE_CONFIG_DIR="$cfg" "$CR" --prompt p --as-reviewer --keep-scratch "$T/a.txt" 2>"$T/layout.err"); rc=$?
+    c=$(ls -d "$HOME"/Library/Caches/claude-review-ctl.* 2>/dev/null | head -1)
+    check "$layout: exec control is disjoint, or exec is refused" '{ [ $rc -eq 0 ] && profile_disjoint "$c"; } || { [ $rc -eq 2 ] && [ ! -e "$T/outside/worker.pid" ] && grep -q "control directory" "$T/layout.err"; }'
+    /bin/rm -rf "$HOME"/Library/Caches/claude-review-ctl.* "$HOME"/.claude/tmp/claude-review-scratch.*
+    clean_kept
+  done
   # a hostile worker plants links where the parent writes: nothing outside may change
   printf 'ORIGINAL\n' > "$T/outside/victim"
   clean_kept
