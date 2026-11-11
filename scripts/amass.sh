@@ -9,7 +9,7 @@
 #   amass.sh dedupe --out DIR [--model haiku] [--timeout 280]
 #   amass.sh summary --out DIR
 #
-# Why it is built this way (measured, see the 2026-11-11 pilot in megavibe-deliverables/):
+# Why it is built this way (measured in a pilot; the numbers are in README-amass.md):
 #  - Each call is `claude -p` with NO tools, no user, project or local settings (so no CLAUDE.md,
 #    rules or hooks of yours; an administrator's managed policy, if the machine has one, still
 #    applies), no MCP and no session: about 5K tokens of fixed overhead where an Agent-tool
