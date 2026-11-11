@@ -67,7 +67,7 @@ Measurements, prices, cliffs and limits: **`README-amass.md`**.
 Every unit of work (a review reader, a fix round, an implementation, a digest, a second opinion) can go to either subscription, and the continuous allocation rule above decides it by weighing both windows each time:
 - **Claude, lean, no tools:** `amass.sh` (about 5K tokens of context per call).
 - **Claude, Agent tool:** the subagent inherits this project's whole instruction stack (about 93K tokens here), so pin `model:` and use it where the task needs the rules, hooks, writes or the conversation; it is the Claude reader for reviews.
-- **Codex:** `codex-review.sh`, or `codex exec -s workspace-write -C <worktree>`.
+- **Codex:** `codex-review.sh` (reviews: always `--as-reviewer`, never raw `codex exec`); `codex exec -s workspace-write -C <worktree>` only for implementation and fix rounds.
 
 How much weighing a call is worth follows its price class: calls in the Haiku or luna class ($0.10/$0.50 per million) may stay on whichever side is convenient; for Sonnet, Opus and Fable against terra, sol and astra, never default to one side by habit, and state the allocation in one line each time. Every `amass.sh run` and `dedupe` call that reaches the model appends a line to `~/.megavibe/amass-usage.jsonl` (best effort); compare it with the Agent-tool calls in the transcripts to see whether this is followed.
 
