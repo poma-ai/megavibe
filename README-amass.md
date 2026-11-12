@@ -17,6 +17,17 @@ Measured in that pilot (list-price accounting, not subscription quota; n is smal
 - **Safety:** the workers run with `--setting-sources ""`, so none of your hooks or rules applies to them (rm-to-trash, block-dangerous-bash); an administrator's managed policy, if the machine has one, still applies: keep them tool-less or read-only, and never hand such a worker Bash, Write or Edit. The files you inline are sent to the model, as with any call. API keys and cloud-provider switches are removed from each call's environment, and before anything is sent `claude auth status` must report a claude.ai subscription login (a saved Console key would still bill), otherwise the script refuses. Nothing is dropped silently: response lines that are not finding lines are counted and reported, prose with no finding line fails the run, and dedupe re-adds what the model omitted. Each `run` and `dedupe` appends one line (time, model, calls, cost, input size, project folder name) to `~/.megavibe/amass-usage.jsonl`, so adoption and spend can be measured against the Agent-tool subagent calls in the transcripts.
 
 
+## In a fix loop: implement, sweep, fix (measured)
+
+One session ran the loop on two changes: four shell items (a review wrapper, a config guard, a PreToolUse guard, a launcher check) and a batch of protocol text. Each step was cheap: a sweep took 70-125 s and about $0.03 of Haiku plus about 90K luna tokens; a fix batch by a cheap model took 2-13 minutes. "Real" below means confirmed by execution or by a later ship reader; there was no independent ground truth, so read the numbers as a calibration.
+
+- **Code: the second sweep yielded little.** Sweep 1 gave 29 clusters, 9 accepted after triage; sweep 2 gave 23, 2 accepted. Each fix batch (Sonnet for the 9 sweep-1 items, Haiku for the 2 sweep-2 items and later for 8 items from the first ship round (its blocker, six P2s and one P3), all with failing-first tests) passed its tests. The ship rounds that followed still found a blocker and six P2s.
+- **About half of those reader findings had been raised by the sweeps** and dropped in triage: a nearby input was run instead of the lead's exact one; an "evasion" lead was ruled out of scope without checking its false-block side; a real lead was filed as a known gap; and one lead was "refuted" by a run in the session shell that a clean environment then reproduced (a CLI flag a fresh login requires). The rest concerned code written by later fix batches that no sweep saw.
+- **Text: sweeps find cross-file contradictions only with the files attached.** With only the diff and the always-loaded file, two sweeps had none of the 4 P1s the first ship round found. With all five rule files attached and a lens that must quote the conflicting rule, one sweep found 8-9 of a later round's 10 findings. The cluster count stayed at 23-30 across four sweeps, including one over 16 added lines, many on text that already existed: it is not a convergence signal.
+- **Text fixers.** Haiku changed the text for 25 of 27 leads (the other 2 concerned text that already existed), rejected none, filled the size budget and caused about 8 regressions; an earlier brief that said "prefer deleting" made it delete most of the content. luna under a zero-growth rule rejected 14 of 29 leads with reasons and shrank the text. The comparison is not controlled (Haiku had no growth rule).
+- **Provider yield.** Haiku gave about 10 findings per call and luna about 5; of the clusters judged real, 12 came from Haiku alone, 2 from luna alone and 8 from both. A controlled pilot on known defects measured equal recall (0.80) and precision 0.16 (Haiku) against 0.58 (luna). A 3:2 Haiku:luna split (`--split 3:2`) was then used, to keep Haiku's volume while giving luna's fewer, more often real leads more weight than 4:1 would.
+- **Churn.** Four added protocol sections drew findings in every sweep and every ship round; each rewording produced the next round's findings. Removing them (for a separate change) was followed by ship rounds with 1, 3, 1 and 0 material findings (one session, not a controlled comparison).
+
 ## Mixed runs: Claude and Codex in one run
 
 `--provider auto` is the default for `run` and `dedupe`. Both models are near-free, so a run uses both for diversity and leans on the subscription that has more room.
@@ -44,8 +55,9 @@ scripts/amass.sh summary --out /tmp/amass-codex-new
 Codex defaults to `gpt-5.6-luna`; `--model gpt-6-luna` also works on the tested
 plan. The bare name `luna` does not. Luna is about ten times cheaper than terra.
 The historical Claude precision ranges above are pilot observations, not a
-provider comparison: measured precision for either provider is **unknown until compared**
-on the same inputs. P1/P2 labels are the model's; reproduce the suspected defect.
+provider comparison. One later pilot on the same known-defect set (see "In a fix loop"
+above) measured precision 0.16 for Haiku and 0.58 for luna at equal recall; it is a single
+pilot, not a settled ranking. P1/P2 labels are the model's; reproduce the suspected defect.
 
 Each Codex worker is one headless `codex exec`, with the prompt on stdin and its
 own final-answer file in the run directory. It runs in throwaway scratch space,
