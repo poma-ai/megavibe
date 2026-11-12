@@ -876,8 +876,9 @@ _rd_gate() {
   # a continuation inside a word (r\<newline>m) joins into an rm rm-to-trash.sh never sees
   [ "$c" != "$COMMAND" ] && printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$)' && return 0
   # worktree + remove in any quoting (git "worktree" remove): a bash pattern, no fork
-  local cq="${c//[\"\'\\]/}"     # quotes and backslashes out: wor"ktree" spells worktree too
-  [[ $cq == *worktree* && $cq == *remove* ]] && return 0
+  # _TE is the command with quotes, backslashes and brackets already out (wor"ktree" spells
+  # worktree too): no second pass over the text, a per-character ${//} is quadratic in bash 3.2
+  [[ $_TE == *worktree* && $_TE == *remove* ]] && return 0
   printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
   printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_])(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|awk|gawk|mawk|sh|bash|zsh|dash|ksh|tcsh|csh|fish|eval|trap|env|xargs|parallel|source)([^[:alnum:]_]|$)' \
     && printf '%s' "$c" | grep -Eiq 'rm|remove|unlink|delete|empty'     # every pattern below contains one of these
@@ -1097,6 +1098,15 @@ def git_reason(w):
     return None
 
 
+class Cmd(list):
+    """A simple command's words; .hs holds the texts of its here-strings (<<<)."""
+    def __init__(self, *a):
+        list.__init__(self, *a); self.hs = []
+
+
+SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh"}
+
+
 def cmd_words(text):
     """The simple commands of a shell text as word lists. posix shlex, like the guards above:
     quotes and backslashes are resolved, so "git", \\git and 'worktree' are the words they spell.
@@ -1109,15 +1119,20 @@ def cmd_words(text):
         toks = list(lx)
     except ValueError:
         return None          # unbalanced quote, trailing backslash: the caller decides
-    cmds, cur, skip = [], [], False
+    cmds, cur, skip, hs = [], Cmd(), False, False
     for tok in toks:
-        if skip: skip = False; continue
+        if skip:
+            skip = False
+            if hs: cur.hs.append(tok); hs = False
+            continue
         if tok and set(tok) <= PUNCT:
-            if ("<" in tok or ">" in tok) and not tok.endswith("("):
+            if tok == "<<<":
+                skip = hs = True         # a here-string: its text is what a shell would run
+            elif ("<" in tok or ">" in tok) and not tok.endswith("("):
                 if cur and cur[-1].isdigit(): cur.pop()
                 skip = True
             else:
-                cmds.append(cur); cur = []
+                cmds.append(cur); cur = Cmd()
             continue
         cur.append(tok)
     cmds.append(cur)
@@ -1138,15 +1153,16 @@ def command_start(w):
             i += 1                                  # the duration
             continue
         if b in ("stdbuf", "caffeinate"):
+            vals = {"stdbuf": ("-i", "-o", "-e"), "caffeinate": ("-t", "-w")}[b]
             i += 1
-            while i < n and w[i].startswith("-"): i += 1
+            while i < n and w[i].startswith("-"): i += 2 if w[i] in vals else 1
             continue
         if b in ("command", "builtin", "exec", "nohup", "time"):
             i += 1
             if b == "exec" and i < n and w[i] == "-a": i += 2       # exec -a NAME
             while i < n and w[i].startswith("-"):
                 if b == "command" and re.match(r"-[A-Za-z]*[vV]", w[i]): return None    # a lookup, not a run
-                i += 1
+                i += 2 if b == "time" and w[i] in ("-o", "-f", "--output", "--format") else 1
             continue
         if b == "env":
             i += 1
@@ -1180,12 +1196,21 @@ def walk_reason(text, shell=False, depth=0):
         if i is not None and os.path.basename(w[i]) == "git":
             r = git_reason(w[i + 1:])
             if r: return r
-        # find runs its -exec/-execdir/-ok/-okdir command itself: walk that command too
+        # find runs its -exec/-execdir/-ok/-okdir command itself: walk that command too, through
+        # the same wrappers ({} stays an operand: git -C {} worktree ...)
         if i is not None and os.path.basename(w[i]) in ("find", "gfind"):
             for k in range(i + 1, len(w) - 1):
-                if w[k] in ("-exec", "-execdir", "-ok", "-okdir") and os.path.basename(w[k + 1]) == "git":
-                    r = git_reason([x for x in w[k + 2:] if x not in ("{}", "+")])
-                    if r: return r
+                if w[k] in ("-exec", "-execdir", "-ok", "-okdir"):
+                    sub = [x for x in w[k + 1:] if x not in (";", "+")]
+                    j = command_start(sub)
+                    if j is not None and os.path.basename(sub[j]) == "git":
+                        r = git_reason(sub[j + 1:])
+                        if r: return r
+        # a shell reads its here-string as a script: bash <<< 'git worktree remove --force x'
+        if i is not None and os.path.basename(w[i]) in SHELL_NAMES and depth < 3:
+            for x in w.hs:
+                r = walk_reason(x, True, depth + 1)
+                if r: return r
         if shell and depth < 3:
             for x in w:
                 if " " in x and "git" in x:
@@ -1241,7 +1266,8 @@ def interp_runs_deleter(raw):
         return m.group(1)
     # Argument lists as string literals, one element each (a value may hold spaces, the list
     # may span lines, Black-style): ["git", "-C", "my dir", "worktree", "remove", "--force", "x"]
-    for m in re.finditer(r"(?:(?:\"[^\"\n]*\"|\x27[^\x27\n]*\x27)\s*,\s*)+(?:\"[^\"\n]*\"|\x27[^\x27\n]*\x27)", raw.replace("\\\"", "\"").replace("\\\x27", "\x27")):
+    nocom = re.sub(r"(\"(?:[^\"\\\n]|\\.)*\"|\x27(?:[^\x27\\\n]|\\.)*\x27)|#[^\n]*", lambda m: m.group(1) or "", raw)   # a # comment line between list elements
+    for m in re.finditer(r"(?:(?:\"[^\"\n]*\"|\x27[^\x27\n]*\x27)\s*,\s*)+(?:\"[^\"\n]*\"|\x27[^\x27\n]*\x27)", nocom.replace("\\\"", "\"").replace("\\\x27", "\x27")):
         lits = [a if a else b for a, b in re.findall(r"\"([^\"\n]*)\"|\x27([^\x27\n]*)\x27", m.group(0))]
         for k, x in enumerate(lits):
             if os.path.basename(x) == "git":

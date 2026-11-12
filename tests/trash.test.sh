@@ -464,6 +464,50 @@ A|git --git-dir x clean -n
 A|git --git-dir x rm --cached -f a.txt
 A|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','wt'])"
 WTCASES
+# Review round 2 findings: comments in argument lists, find -exec operands, wrapper option
+# values, here-strings to a shell, and a pre-filter that stays fast on large text.
+check "python list with a # comment line inside blocked" '[ "$(bd "python3 - <<'\''PY'\''
+import subprocess
+subprocess.run([
+    '\''git'\'',
+    # why we do this
+    '\''worktree'\'',
+    '\''remove'\'',
+    '\''--force'\'',
+    '\''../wt'\'',
+])
+PY")" = 2 ]'
+while IFS= read -r _wl; do
+  [ -n "$_wl" ] || continue
+  _we=2; [ "${_wl%%|*}" = A ] && _we=0
+  _wc=${_wl#*|}
+  check "wt walk2 ${_wl%%|*}: $_wc" '[ "$(bd "$_wc")" = "$_we" ]'
+done <<'WTCASES2'
+B|find . -maxdepth 0 -exec git -C {} worktree remove --force ../wt \;
+B|find . -maxdepth 0 -exec env X=1 git worktree remove --force ../wt \;
+B|find . -maxdepth 0 -execdir git -C {} worktree remove -f ../wt +
+B|caffeinate -t 60 git worktree remove --force x
+B|caffeinate -w 123 git worktree remove --force x
+B|stdbuf -o L git worktree remove --force x
+B|stdbuf -i 0 -o L -e 0 git worktree remove --force x
+B|time -o out.txt git worktree remove --force x
+B|time -f %e git worktree remove --force x
+B|bash <<< 'git worktree remove --force ../wt'
+B|sh <<< "git worktree remove --force ../wt"
+B|zsh <<<'git worktree remove -f ../wt'
+B|bash -s <<< 'git worktree remove --force ../wt'
+A|find . -maxdepth 0 -exec git -C {} status \;
+A|find . -exec env X=1 git status \;
+A|caffeinate -t 60 git status
+A|stdbuf -o L git status
+A|time -o out.txt git status
+A|cat <<< 'git worktree remove --force ../wt'
+A|grep x <<< 'git worktree remove --force ../wt'
+A|bash <<< 'echo hi'
+WTCASES2
+_big=$(python3 -c 'print("cat <<'"'"'EOF'"'"'\n" + "a row of plain documentation and a quoted \"word\"\n" * 100 + "EOF")')
+_t0=$(python3 -c 'import time; print(time.time())'); _r=$(bd "$_big"); _t1=$(python3 -c 'import time; print(time.time())')
+check "100-row quoted heredoc allowed in under 1 s" '[ "$_r" = 0 ] && python3 -c "import sys; sys.exit(0 if $_t1 - $_t0 < 1.0 else 1)"'
 check "commit message naming the forced removal allowed" '[ "$(bd "git commit -m \"never git worktree remove --force\"")" = 0 ]'
 check "heredoc to cat naming the forced removal allowed" '[ "$(bd "cat <<'\''EOF'\''
 git worktree remove --force x
