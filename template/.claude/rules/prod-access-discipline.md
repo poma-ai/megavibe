@@ -70,9 +70,9 @@ The obviously-mutating verbs (`apply`, `patch`, `delete`, `scale`,
 blocking them would break ordinary operations. The guard covers the one class
 that disguises itself.
 
-## Consent comes from the harness, not the agent
+## Consent comes from the user, not the agent
 
-Consent for a destructive step comes only from harness-written evidence, such as the user's answer to a question. A flag, environment variable or terminal the agent supplies is not consent, however it is spelled.
+Consent for a destructive step is the user's own answer, given in the conversation or at a harness prompt. A flag, environment variable or command the agent supplies is not consent by itself, however it is spelled.
 
 ## Changing a Deployment restarts it
 

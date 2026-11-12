@@ -61,7 +61,7 @@ and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
 by default, so every wait past 5 minutes re-writes the whole context at 1.25x
 instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
 tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
-subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while its own background work still runs: stop that work once the result is used, and list running tasks before declaring done.
+subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while its own background work still runs: stop the disposable work it started once its result is used, but keep any server or harness you still need for verification; list running tasks before declaring done.
 
 ## Bind dev servers to localhost by default
 
@@ -120,4 +120,4 @@ Never copy over or edit a script that a running process or a review is reading. 
 
 ## Discarding output
 
-Discard output (`>/dev/null`, `2>&1 | tail -1`) only from read-only commands; a mutating command's failure must stay visible. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
+Discard output (`>/dev/null`, `2>&1 | tail -1`) only from read-only commands. A mutating command writes its output to a log file, and its exit status and tail are shown. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
