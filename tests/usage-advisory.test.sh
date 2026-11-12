@@ -104,6 +104,12 @@ o=$(ev SessionStart | (cd "$P" && PATH="$T/nobin" /bin/bash "$HOOK"); echo "rc=$
 check 'no perl on PATH: exit 0, unknown, silent' '[ "$o" = "rc=0" ]'
 check 'no temp files left behind' '[ -z "$(ls "$TMPDIR" | grep usage-pace)" ]'
 
+# a bucket move under an unchanged band and preference re-sends only the projections line
+reset; export STUB_BAND=under STUB_ADVISORY='upgrade advice.' STUB_BALANCE='claude|lean on claude.'; claude_pace 50 40 75 '' ''; codex_pace 60 30 222 '' ''
+ev PreToolUse | run | ctx >/dev/null
+claude_pace 50 40 69 '' ''
+o=$(ev PreToolUse | run | ctx)
+check 'bucket move, same band and preference: projections line only' '[ "$o" = "usage router: projections claude 69 (linear), codex 222 (linear)" ]'
 # existing behaviour unchanged when projections are unknown (needs the old hook)
 if [ -n "$OLD_HOOK" ] && [ -f "$OLD_HOOK" ]; then
   for case_ in "over|-|over advice." "under|-|under advice." "normal|codex|" "normal|claude|"; do

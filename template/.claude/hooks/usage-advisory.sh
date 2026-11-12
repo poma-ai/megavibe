@@ -37,7 +37,7 @@ PROJMSG=""; PROJKNOWN=0
 proj() {   # provider -> "value|basis" or "unknown"
   local f u lp rp v="" basis="" extra=""
   f=$(mktemp "${TMPDIR:-/tmp}/usage-pace.XXXXXX" 2>/dev/null) || { echo unknown; return; }
-  trap 'rm -f "$f"' EXIT TERM
+  trap 'rm -f "$f"' EXIT
   if command -v perl &>/dev/null; then
     MEGAVIBE_ROUTER_PROVIDER="$1" perl -e 'alarm 3; exec @ARGV' bash "$UR" pace >"$f" 2>/dev/null </dev/null
   fi
@@ -64,6 +64,12 @@ fi
 if [ "$EVENT" != "SessionStart" ] && [ "$KEY" = "$PREVKEY" ]; then exit 0; fi
 mkdir -p .agent/LOGS 2>/dev/null
 { [ ! -e "$FLAG" ] || [ -f "$FLAG" ]; } && printf '%s' "$KEY" > "$FLAG" 2>/dev/null
+# Only a projection bucket moved (band and preference as before): the advice is unchanged, so
+# say just the new numbers.
+if [ "$EVENT" != "SessionStart" ] && [ "$BAND:$PREF" = "$PB:${PP%%:*}" ] && [ -n "$PROJMSG" ]; then
+  jq -n --arg ev "$EVENT" --arg ctx "$PROJMSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null
+  exit 0
+fi
 MSG=""
 case "$BAND" in over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;; esac
 [ -n "$BALMSG" ] && MSG="${MSG:+$MSG }$BALMSG"
