@@ -70,6 +70,9 @@ case "${FAKE_MODE:-ok}" in
       --arg short "verdict stands: ship" \
       '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$n1},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}},{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"alpha"}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$long}]}},{"type":"result","is_error":false,"result":$short,"total_cost_usd":0.005,"num_turns":4}]'
     exit 0 ;;
+  trailws)
+    jq -cn '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":"TRAILING REPORT\n"}]}},{"type":"result","is_error":false,"result":"TRAILING REPORT","total_cost_usd":0.005,"num_turns":1}]'
+    exit 0 ;;
   splittool)
     jq -cn --arg n "Let me read every hook before I write the review, so that the findings cite real lines." \
       --arg p1 "PART ONE: findings F1 and F2 with file and line evidence." --arg p2 "PART TWO: ship recommendation after the fixes." \
@@ -312,6 +315,8 @@ check "A7 no non-blank assistant text: the result is the answer" '[ $rc -eq 0 ] 
 fk FAKE_MODE=splittool -- "$CR" --prompt p --tools none --out "$T/split.out" "$T/a.txt" >/dev/null 2>"$T/split.err"; rc=$?
 check "A7a narration in a message that also called a tool is excluded" '[ $rc -eq 0 ] && grep -q "PART ONE" "$T/split.out" && ! grep -q "Let me read every hook" "$T/split.out"'
 check "A7b a report split into two text blocks after the last tool call keeps both, in order, no trailing separator" '[ $rc -eq 0 ] && [ "$(grep -n "PART ONE" "$T/split.out" | cut -d: -f1)" -lt "$(grep -n "PART TWO" "$T/split.out" | cut -d: -f1)" ] && ! grep -qx -- "---" "$T/split.out"'
+fk FAKE_MODE=trailws -- "$CR" --prompt p --tools none --out "$T/trailws.out" "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "R2 a result that differs only in trailing whitespace is not appended again" '[ $rc -eq 0 ] && [ "$(grep -c "TRAILING REPORT" "$T/trailws.out")" = 1 ] && ! grep -qx -- "---" "$T/trailws.out"'
 fk FAKE_MODE=stream -- "$CR" --prompt p --tools none --out "$T/stream.out" "$T/a.txt" >/dev/null 2>"$T/stream.err"; rc=$?
 check "newline-delimited stream-json output: answer kept, turns and cost reported" '[ $rc -eq 0 ] && grep -q "STREAMED REPORT F1" "$T/stream.out" && grep -q "3 turn(s), cost \$0.005" "$T/stream.err"'
 fk FAKE_AUTH=apikey -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
@@ -330,7 +335,7 @@ check "tools none exits 0 and prints the answer" '[ $rc -eq 0 ] && echo "$out" |
 check "--out got the answer, mode 600" 'grep -q "F1 | P2" "$T/ans.txt" && [ "$(stat -f %Lp "$T/ans.txt" 2>/dev/null || stat -c %a "$T/ans.txt")" = 600 ]'
 check "tools none: empty tool list, no allowedTools, no settings" 'sed -n "/^--tools\$/{n;p;}" "$S0/fake.argv" | grep -qx "" && ! grep -qx -- "--allowedTools" "$S0/fake.argv" && ! grep -qx -- "--settings" "$S0/fake.argv"'
 check "the flags that isolate the call are all present" 'grep -qx -- "--no-session-persistence" "$S0/fake.argv" && grep -qx -- "--strict-mcp-config" "$S0/fake.argv" && grep -qx -- "--disable-slash-commands" "$S0/fake.argv" && sed -n "/^--setting-sources\$/{n;p;}" "$S0/fake.argv" | grep -qx ""'
-check "F1 stream-json is passed with --verbose (the CLI requires it in -p mode)" 'grep -qx -- "--verbose" "$S0/fake.argv"'
+check "F1 stream-json is passed with --verbose (the CLI requires it in -p mode)" 'grep -qx -- "--verbose" "$S0/fake.argv" && sed -n "/^--output-format\$/{n;p;}" "$S0/fake.argv" | grep -qx stream-json'
 check "model defaults to sonnet" 'sed -n "/^--model\$/{n;p;}" "$S0/fake.argv" | grep -qx sonnet'
 check "files are appended as ===== path ===== blocks, harness note first" 'grep -q "===== $T/a.txt =====" "$S0/fake.prompt" && grep -q "alpha" "$S0/fake.prompt" && grep -q "gamma" "$S0/fake.prompt" && head -c 40 "$S0/fake.prompt" | grep -q "NOTE FROM THE HARNESS"'
 check "the caller dir is named as read-only project" 'grep -q "which is the project: treat it as READ-ONLY" "$S0/fake.prompt"'

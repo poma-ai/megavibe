@@ -43,7 +43,9 @@ if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then
     # An explicit PIPESTATUS check between the formatter and git is the status check itself.
     _mpipe=${_m%%|*}
     _between=${COMMAND:${#_pre}:$(( ${#_m} - ${#_mpipe} ))}
-    if [[ "$_between" != *PIPESTATUS* ]]; then
+    # The rest of the matched git command: a --dry-run there changes nothing.
+    _rest=${_PIPE_TEXT#*"$_m"}; _rest=${_rest%%[;&|]*}
+    if [[ "$_between" != *PIPESTATUS* && " $_m$_rest " != *" --dry-run "* ]]; then
       echo 'Blocked: capture the status first (check; rc=$?), or set -o pipefail;' >&2
       exit 2
     fi

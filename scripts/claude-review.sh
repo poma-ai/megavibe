@@ -570,7 +570,7 @@ if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
     | ($events | map(select(type == "object" and (.type == "result" or (has("type") | not)) and .is_error == false and (.result | type) == "string")) | last) as $result
     | select($result != null)
     | if ($texts | length) == 0 then $result.result
-      elif ($result.result | test("[^[:space:]]")) and $result.result != $texts[-1]
+      elif ($result.result | test("[^[:space:]]")) and ($result.result | gsub("^\\s+|\\s+$"; "")) != ($texts[-1] | gsub("^\\s+|\\s+$"; ""))
       then $assistant + "\n\n---\n" + $result.result
       else $assistant end)
   ' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then

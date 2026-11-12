@@ -48,6 +48,9 @@ run_review
 # A8: the recorded argv carries the provider pin as its own -c argument on a normal run.
 grep -qx -- 'model_provider="openai"' "$CODEX_TEST_ARGV"
 [ "$(grep -x -B1 -- 'model_provider="openai"' "$CODEX_TEST_ARGV" | head -1)" = "-c" ]
+# The user's own model and effort settings stay in effect: no config bypass, no forced model.
+! grep -qx -- '--ignore-user-config' "$CODEX_TEST_ARGV"
+! grep -qx -- '--model' "$CODEX_TEST_ARGV"
 
 # A9: the key under the ACTIVE profile is refused; under an inactive profile it is not.
 cat > "$CODEX_HOME/config.toml" <<'EOF'

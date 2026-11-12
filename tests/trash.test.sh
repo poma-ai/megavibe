@@ -301,6 +301,9 @@ F6A='npm test | tail -20 && git -C "$PWD" push'
 check "F6 a quoted -C path does not hide the git command" '[ "$(bd "$F6A")" = 2 ]'
 F7A='npm test | tee test.log && test "${PIPESTATUS[0]}" -eq 0 && git push'
 check "F7 an explicit PIPESTATUS check between the formatter and git push is allowed" '[ "$(bd "$F7A")" = 0 ]'
+check "R2 a --dry-run commit after a formatter is allowed" '[ "$(bd "git status --short | head -20 && git commit --dry-run")" = 0 ]'
+check "R2 a --dry-run push after a formatter is allowed" '[ "$(bd "make | tail -1 && git push --dry-run origin x")" = 0 ]'
+check "R2 --dry-run inside a quoted message does not exempt the commit" '[ "$(bd "make | tail -1 && git commit -m \"x --dry-run\"")" = 2 ]'
 check "python heredoc rmtree blocked" '[ "$(bd "python3 - <<EOF
 import shutil
 shutil.rmtree(\"/tmp/x\")
