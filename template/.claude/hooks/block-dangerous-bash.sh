@@ -18,6 +18,53 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # If we couldn't parse the command, allow it (don't block on parse errors)
 [ -n "$COMMAND" ] || exit 0
 
+# A formatter at the end of a pipeline otherwise hides the check's status from
+# the following destructive command. Keep this gate fork-free and before the
+# slower Python parser. Mask quoted text so commit messages remain prose.
+# Most commands fail the fork-free prefilter; only candidates pay one perl call.
+_PIPE_TEXT=''
+if [[ "$COMMAND" == *'|'* && ( "$COMMAND" == *push* || "$COMMAND" == *commit* || "$COMMAND" == *merge* ) ]] && command -v perl >/dev/null 2>&1; then
+  # A backslash-newline continuation becomes two spaces (same length, so offsets map back to COMMAND);
+  # quoted text becomes Q, not spaces, so a quoted path such as "$PWD" still leaves a token for the pattern.
+  _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\\n/  /g; s/\\.|'"'"'[^'"'"']*'"'"'|"(?:\\.|[^"\\])*"/"Q" x length($&)/gse' 2>/dev/null) || _PIPE_TEXT=''
+  # A newline ends a command, as ';' does.
+  _PIPE_TEXT=${_PIPE_TEXT//$'\n'/;}
+fi
+# Only an && after the formatter counts: after ; the destructive command does not depend on the pipeline.
+# The pipe is a single | (not ||): the character before it must not be a pipe.
+_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*[^|]\|&?[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee|jq|rg|tr|cat)([[:space:]][^;|]*)?[[:space:]]*\&\&[[:space:]]*(cd[[:space:]]+[^;&|]*\&\&[[:space:]]*)*(git[[:space:]]+(-C[[:space:]]+[^[:space:];&|]+[[:space:]]+)?(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:];&|]|$)'
+# A pipefail set in the same segment or an earlier one; a newline, { or ( may start that segment too.
+_PIPEFAIL='(^|[;&{(])[[:space:]]*set[[:space:]]+[^;|&]*-[a-zA-Z]*o[[:space:]]*pipefail'
+if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then
+  _m=${BASH_REMATCH[0]}
+  # Only a pipefail set before the pipeline counts (same segment or earlier).
+  _pre="${_PIPE_TEXT%%"$_m"*}${_m%%|*}"
+  if [[ ! "$_pre" =~ $_PIPEFAIL ]]; then
+    # An explicit PIPESTATUS check between the formatter and git is the status check itself.
+    _mpipe=${_m%%|*}
+    _between=${COMMAND:${#_pre}:$(( ${#_m} - ${#_mpipe} ))}
+    # Every push, commit or merge in the && chain after the formatter must be a dry run to pass
+    # (--dry-run; for push also -n, alone or in a short-option cluster; commit -n skips hooks).
+    _chain=${_PIPE_TEXT#*"$_mpipe"}; _chain=${_chain#*|}; _chain=${_chain%%;*}
+    _live=0; _cmd=''
+    while [ -n "$_chain" ]; do
+      _cmd=${_chain%%&&*}
+      if [ "$_cmd" = "$_chain" ]; then _chain=''; else _chain=${_chain#*&&}; fi
+      if [[ " $_cmd " =~ [[:space:]]gh[[:space:]]+pr[[:space:]]+merge[[:space:]] ]]; then _live=1; break; fi
+      if [[ " $_cmd " =~ [[:space:]]git([[:space:]].*)?[[:space:]](push|commit)[[:space:]] ]]; then
+        _verb=${BASH_REMATCH[2]}
+        if [[ " $_cmd " == *" --dry-run "* ]]; then continue; fi
+        if [ "$_verb" = push ] && [[ " $_cmd " =~ [[:space:]]-[a-zA-Z]*n[a-zA-Z]*[[:space:]] ]]; then continue; fi
+        _live=1; break
+      fi
+    done
+    if [[ "$_between" != *PIPESTATUS* && $_live = 1 ]]; then
+      echo 'Blocked: capture the status first (check; rc=$?), or set -o pipefail;' >&2
+      exit 2
+    fi
+  fi
+fi
+
 # Recursive/forced rm targeting root, home, or cwd — INCLUDING glob forms.
 #
 # Three tests ANDed: is rm invoked, does it carry a destructive flag, is the target

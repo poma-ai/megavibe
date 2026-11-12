@@ -826,6 +826,13 @@ fi
 
 if [ "${1:-}" = "worktree" ]; then
   shift
+  # Validate an explicit name before even asking Git anything. A leading dash
+  # must never become an option-shaped branch/path (or silently mean --help).
+  if [ "$#" -gt 0 ]; then
+    case "$1" in
+      ''|-*) echo "usage: megavibe worktree <name>" >&2; exit 2 ;;
+    esac
+  fi
   git rev-parse --git-dir >/dev/null 2>&1 || { echo "Not a git repository."; exit 1; }
   # --show-toplevel, not the git dir's parent and not `git worktree list`.
   # Both of those lie when .git is a SYMLINK into a separate store (this repo:

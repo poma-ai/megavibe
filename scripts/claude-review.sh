@@ -521,7 +521,7 @@ case $TOOLS in
   none) TL=""; SANDBOX_NOTE="no tools" ;;
 esac
 if [ -z "$EFFORT" ] && [ "$AS_REVIEWER" = 1 ]; then EFFORT=high; fi
-ARGS=(-p --model "$MODEL" --output-format json --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
+ARGS=(-p --model "$MODEL" --output-format stream-json --verbose --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
 [ -z "$TL" ] || ARGS+=(--allowedTools "$TL")
 [ -z "$EFFORT" ] || ARGS+=(--effort "$EFFORT")
 PRE=(); SBX=()
@@ -554,16 +554,35 @@ DUR=$(( $(date +%s) - START ))
 INSPECT_LOST=0; NORESULT=0; RESCUE=0
 if [ "$RC" = 3 ] && grep -q '^inspection unavailable' "$CTL/sup.err" 2>/dev/null && grep -q '^worker-ok$' "$CTL/sup.err" 2>/dev/null; then RESCUE=1; fi
 if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
-  if jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then
+  # The report is the assistant text after the LAST assistant message that called a tool: narration
+  # before a tool call is dropped, and a report split across text blocks keeps every block. With no
+  # tool call, every assistant text block is kept. A final result that is non-blank and differs from
+  # the last kept block follows after a separator. The fixture and older CLIs may still return one
+  # JSON array, so normalize both forms.
+  if jq -e -s -r '
+    ((if length == 1 and (.[0] | type) == "array" then .[0] else . end) as $events
+    | ([$events | to_entries[] | select(.value | type == "object" and .type == "assistant"
+        and any((.message.content? // [])[]?; type == "object" and .type == "tool_use")) | .key] | last // -1) as $cut
+    | ($events | to_entries | map(select(.key > $cut and (.value | type == "object" and .type == "assistant"))
+        | .value.message.content[]? | select(type == "object" and .type == "text" and (.text | type) == "string") | .text
+        | select(test("[^[:space:]]")))) as $texts
+    | ($texts | join("\n\n")) as $assistant
+    | ($events | map(select(type == "object" and (.type == "result" or (has("type") | not)) and .is_error == false and (.result | type) == "string")) | last) as $result
+    | select($result != null)
+    | if ($texts | length) == 0 then $result.result
+      elif ($result.result | test("[^[:space:]]")) and ($result.result | gsub("^\\s+|\\s+$"; "")) != ($texts[-1] | gsub("^\\s+|\\s+$"; ""))
+      then $assistant + "\n\n---\n" + $result.result
+      else $assistant end)
+  ' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then
     if [ "$RESCUE" = 1 ]; then RC=0; INSPECT_LOST=1; fi
   else
     NORESULT=1
   fi
 fi
 
-COST=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$CTL/raw.json" 2>/dev/null) || COST=''
+COST=$(jq -s -r '((if length == 1 and (.[0] | type) == "array" then .[0] else . end) | map(select(type == "object" and (.type == "result" or (has("type") | not)))) | last) | select(type == "object") | (.total_cost_usd | select(type == "number"))' "$CTL/raw.json" 2>/dev/null) || COST=''
 [ -n "$COST" ] || COST='?'
-TURNS=$(jq -s -r '.[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | .num_turns // empty' "$CTL/raw.json" 2>/dev/null) || TURNS=''
+TURNS=$(jq -s -r '((if length == 1 and (.[0] | type) == "array" then .[0] else . end) | map(select(type == "object" and (.type == "result" or (has("type") | not)))) | last) | select(type == "object") | .num_turns // empty' "$CTL/raw.json" 2>/dev/null) || TURNS=''
 LED=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
 if mkdir -p "$(dirname "$LED")" 2>/dev/null; then
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd review --arg model "$MODEL" --arg proj "$(basename "$PWD")" --arg tools "$TOOLS" \

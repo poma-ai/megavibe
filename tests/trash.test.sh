@@ -263,6 +263,50 @@ unset MEGAVIBE_TRASH_REVIEW_COUNT
 
 # 5. Real-delete guard.
 bd() { printf '%s' "$1" | jq -Rs '{tool_input:{command:.}}' | env "${@:2}" bash "$HOOKS/block-dangerous-bash.sh" 2>/dev/null; echo $?; }
+
+# A pipeline's formatter status must not be the condition that permits a
+# destructive command. The guard is intentionally tested before the Python net.
+check "tail followed by git push is blocked without pipefail" '[ "$(bd "check | tail -1 && git push")" = 2 ]'
+check "head followed by git commit after a semicolon is allowed (the commit does not depend on the pipeline)" '[ "$(bd "check | head -1; git commit -m ship")" = 0 ]'
+check "git diff piped to head, then ; git commit is allowed" '[ "$(bd "git diff | head -5; git commit -am wip")" = 0 ]'
+check "head followed by && cd dir && git commit is blocked" '[ "$(bd "check | head -1 && cd sub && git commit -m ship")" = 2 ]'
+check "grep followed by gh pr merge is blocked" '[ "$(bd "check | grep ok && gh pr merge 1")" = 2 ]'
+check "pipefail permits the same push" '[ "$(bd "set -o pipefail; check | tail -1 && git push")" = 0 ]'
+check "git log head followed by echo is allowed" '[ "$(bd "git log | head -1; echo done")" = 0 ]'
+check "grep followed by git status is allowed" '[ "$(bd "grep x f && git status")" = 0 ]'
+check "a commit message mentioning the pattern is allowed" '[ "$(bd "git commit -m '\''check | tail -1 && git push'\''")" = 0 ]'
+PG_A1="echo \"it's\" | tail -1 && git push && echo \"don't\""
+check "A1 apostrophe inside double quotes does not break masking" '[ "$(bd "$PG_A1")" = 2 ]'
+check "A2 git -C dir push after a formatter is blocked" '[ "$(bd "check | tail -1 && git -C sub push")" = 2 ]'
+check "A2 git -C dir commit after a formatter is blocked" '[ "$(bd "check | tail -1 && git -C sub commit -m x")" = 2 ]'
+check "A3 |& into a formatter is blocked" '[ "$(bd "check |& tail -1 && git push")" = 2 ]'
+check "A4 set -euo pipefail before the pipeline permits it" '[ "$(bd "set -euo pipefail; check | tail -1 && git push")" = 0 ]'
+check "A4 pipefail set after the pipeline stays blocked" '[ "$(bd "check | tail -1 && git push; set -o pipefail")" = 2 ]'
+check "A5 jq formatter is blocked" '[ "$(bd "check | jq . && git push")" = 2 ]'
+check "A5 rg formatter is blocked" '[ "$(bd "check | rg x && git push")" = 2 ]'
+check "A5 tr formatter is blocked" '[ "$(bd "check | tr a b && git push")" = 2 ]'
+check "A5 cat formatter is blocked" '[ "$(bd "check | cat && git push")" = 2 ]'
+check "A6 an intervening cd is still caught" '[ "$(bd "check | tail -1 && cd .. && git push")" = 2 ]'
+F3A=$'cd /x\nset -euo pipefail\nmake test | tail -5 && git push'
+check "F3 set -euo pipefail on its own line before the pipeline permits it" '[ "$(bd "$F3A")" = 0 ]'
+check "F3 pipefail inside a brace group permits it" '[ "$(bd "{ set -o pipefail; npm test | tail -20 && git push; }")" = 0 ]'
+F4A=$'npm test 2>&1 | tail -5\ngit add -A && git commit -m x'
+check "F4 a newline ends the command: formatter on one line, git commit on the next" '[ "$(bd "$F4A")" = 0 ]'
+F4B=$'ls | head\ngit add . && git commit -m x'
+check "F4 a newline after a head pipe does not reach the next line's git commit" '[ "$(bd "$F4B")" = 0 ]'
+F4C=$'make | tail \\\n && git push'
+check "F4 a backslash-newline continuation still joins the formatter to git push" '[ "$(bd "$F4C")" = 2 ]'
+check "F5 || is not a pipe" '[ "$(bd "make || cat log && git push")" = 0 ]'
+F6A='npm test | tail -20 && git -C "$PWD" push'
+check "F6 a quoted -C path does not hide the git command" '[ "$(bd "$F6A")" = 2 ]'
+F7A='npm test | tee test.log && test "${PIPESTATUS[0]}" -eq 0 && git push'
+check "F7 an explicit PIPESTATUS check between the formatter and git push is allowed" '[ "$(bd "$F7A")" = 0 ]'
+check "R2 a --dry-run commit after a formatter is allowed" '[ "$(bd "git status --short | head -20 && git commit --dry-run")" = 0 ]'
+check "R2 a --dry-run push after a formatter is allowed" '[ "$(bd "make | tail -1 && git push --dry-run origin x")" = 0 ]'
+check "R2 --dry-run inside a quoted message does not exempt the commit" '[ "$(bd "make | tail -1 && git commit -m \"x --dry-run\"")" = 2 ]'
+check "R3 git push -n after a formatter is allowed" '[ "$(bd "git diff --stat | head -20 && git push -n origin HEAD")" = 0 ]'
+check "R3 a dry-run push followed by a real push is blocked" '[ "$(bd "make test | tail -20 && git push --dry-run && git push")" = 2 ]'
+check "R3 git commit -n (skips hooks) is not a dry run" '[ "$(bd "make | tail -1 && git commit -n -m x")" = 2 ]'
 check "python heredoc rmtree blocked" '[ "$(bd "python3 - <<EOF
 import shutil
 shutil.rmtree(\"/tmp/x\")
