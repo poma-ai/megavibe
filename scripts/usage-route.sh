@@ -145,16 +145,16 @@ if [ "$MODE" = balance ]; then
   # Hysteresis: a preference is entered at a 20-point gap and kept until the gap falls under 10. The caller (the
   # advisory hook) passes its last preference in MEGAVIBE_BALANCE_PREV; without it the rule is a plain 20.
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
-  IFS='|' read -r cb cu cp _ cs _ _ _ _ clp _ crp _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status-pace $pk 2>/dev/null) || true
-  IFS='|' read -r xb xu xp _ xs _ _ _ _ xlp _ xrp _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status-pace $pk 2>/dev/null) || true
-  LC_ALL=C awk -v clp="${clp:-}" -v crp="${crp:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" \
+  IFS='|' read -r cb cu cp _ cs _ _ _ _ clp crate crp _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status-pace $pk 2>/dev/null) || true
+  IFS='|' read -r xb xu xp _ xs _ _ _ _ xlp xrate xrp _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status-pace $pk 2>/dev/null) || true
+  LC_ALL=C awk -v clp="${clp:-}" -v crp="${crp:-}" -v crate="${crate:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" -v xrate="${xrate:-}" \
     -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" '
-  function estimate(label, used, proj, linear, recent, stale, text) {
+  function estimate(label, used, proj, linear, recent, rate, stale, text) {
     text = sprintf("%s %d%% used", label, used)
     if (proj != "") text = text sprintf(" (linear estimate ~%d%% by week end)", proj)
     else if (linear != "") text = text sprintf(" [linear estimate ~%d%%]", linear)
     else text = text " [linear estimate unavailable]"
-    if (recent != "") text = text sprintf(" (recent estimate ~%d%%)", recent)
+    if (recent != "" && rate ~ /^[0-9]+([.][0-9]+)?$/) text = text sprintf(" (recent estimate ~%d%% at %s pts/day)", recent, rate)
     if (stale == 1) text = text " [stale reading]"
     return text
   }
@@ -173,7 +173,7 @@ if [ "$MODE" = balance ]; then
     # whose figure is stale, only away from one.
     if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"
     if (pref == "-") { print "-|"; exit }
-    st = estimate("Claude", cu, cp, clp, crp, cs) "; " estimate("Codex", xu, xp, xlp, xrp, xs)
+    st = estimate("Claude", cu, cp, clp, crp, crate, cs) "; " estimate("Codex", xu, xp, xlp, xrp, xrate, xs)
     hot = (cb == "over" || xb == "over") ? " (one is running hot)" : ""
     to = (pref == "codex" ? "Codex" : "the Claude subagents")
     printf "%s|usage balance: %s%s. Lean optional work (digests, exploration, second opinions) on %s; the review floor does not move.\n", pref, st, hot, to
@@ -188,10 +188,11 @@ elif [ -f "$FILE" ] && [ -r "$FILE" ]; then
   if [ "$MODE" = pace ] || [ "$MODE" = status-pace ]; then
     # One read for both outputs. Slice raw lines before parsing, exactly as status
     # does, so malformed rows cannot change which 50 lines the router considers.
-    RAW=$(tail -n 5000 "$FILE" 2>/dev/null; printf 'x')
+    RAW=$(tail -n 5000 "$FILE" 2>/dev/null && printf 'x') || none
     RAW=${RAW%x}   # preserve trailing blank lines stripped by command substitution
-    HISTORY=$(printf '%s' "$RAW" | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc '.' 2>/dev/null)
-    ROW=$(printf '%s' "$RAW" | tail -n 50 | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
+    HISTORY=$(printf '%s' "$RAW" | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc '.' 2>/dev/null) || none
+    [ -n "$HISTORY" ] || none
+    ROW=$(printf '%s' "$RAW" | tail -n 50 | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null) || none
   else
     ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
   fi
@@ -265,10 +266,12 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
      mx: {fh: ($fh | if . == null then null else {r: .r, p: .used} end), sd: ($sd | if . == null then null else {r: .r, p: .used} end)},
      wk: ($sd | if . == null then null else {used, proj, rem, stale} end),
      reason: (if $pair[1] == null then "" else "\($pair[0]) \($pair[1].used | floor)% used, resets in \(human($pair[1].rem))" end)}
-' <<<"$ROW" 2>/dev/null)
+' <<<"$ROW" 2>/dev/null) || none
 [ -n "$DECISION" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 
-BAND=$(jq -r '.band' <<<"$DECISION"); REASON=$(jq -r '.reason' <<<"$DECISION")
+BAND=$(jq -r '.band' <<<"$DECISION" 2>/dev/null) || none
+[ -n "$BAND" ] || none
+REASON=$(jq -r '.reason' <<<"$DECISION" 2>/dev/null) || none
 NEWSTATE=$(jq -c '{band, since, pend, calm, mx}' <<<"$DECISION")
 # keep the history bounded: past 2 MB, keep the newest 5000 rows
 if [ "$PEEK" = 0 ] && [ -f "$FILE" ] && [ "$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')" -gt 2097152 ] 2>/dev/null; then
@@ -281,12 +284,19 @@ if [ "$PEEK" = 0 ] && { [ ! -e "$STATE" ] || [ -f "$STATE" ]; } && [ "$NEWSTATE"
 fi
 
 if [ "$MODE" = pace ]; then
-  emit_pace
+  PACE=$(emit_pace) || none
+  [ -n "$PACE" ] || none
+  printf '%s\n' "$PACE"
   exit 0
 fi
 if [ "$MODE" = status ] || [ "$MODE" = status-pace ]; then
-  STATUS=$(jq -r --arg b "$BAND" --arg r "$REASON" '[$b, (.wk.used // "" | if type == "number" then floor else . end), (.wk.proj // "" | if type == "number" then floor else . end), (.wk.rem // "" | if type == "number" then floor else . end), (.wk.stale // false | if . then 1 else 0 end), $r] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null)
-  if [ "$MODE" = status-pace ]; then printf '%s|%s\n' "$STATUS" "$(emit_pace)"
+  STATUS=$(jq -r --arg b "$BAND" --arg r "$REASON" '[$b, (.wk.used // "" | if type == "number" then floor else . end), (.wk.proj // "" | if type == "number" then floor else . end), (.wk.rem // "" | if type == "number" then floor else . end), (.wk.stale // false | if . then 1 else 0 end), $r] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || none
+  # Never append pace to a missing status prefix: it would shift every column.
+  [ -n "$STATUS" ] || none
+  if [ "$MODE" = status-pace ]; then
+    PACE=$(emit_pace) || PACE=""
+    [ -n "$PACE" ] || PACE="$PROVIDER||||||"
+    printf '%s|%s\n' "$STATUS" "$PACE"
   else printf '%s\n' "$STATUS"; fi
   exit 0
 fi

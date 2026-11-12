@@ -140,13 +140,15 @@ fi
 UR="$SELF_DIR/usage-route.sh"; [ -f "$UR" ] || UR="$MV/scripts/usage-route.sh"
 if [ -f "$UR" ]; then
   fmt_status() {   # $1 label, $2 combined status/pace snapshot
-    local b u p r s _ lp rp; IFS='|' read -r b u p r s _ _ _ _ lp _ rp _ <<<"$2"
+    local b u p r s _ lp rate rp; IFS='|' read -r b u p r s _ _ _ _ lp rate rp _ <<<"$2"
     [ -n "$u" ] || { printf '%s: no reading' "$1"; return; }
     printf '%s %s%% used' "$1" "$u"
     if [ -n "$p" ]; then printf ' (linear estimate ~%s%% by week end)' "$p"
     elif [ -n "$lp" ]; then printf ' [linear estimate ~%s%%]' "${lp%%.*}"
     else printf ' [linear estimate unavailable]'; fi
-    [ -n "$rp" ] && printf ' (recent estimate ~%s%%)' "${rp%%.*}"
+    if [ -n "$rp" ] && [[ "$rate" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      printf ' (recent estimate ~%s%% at %s pts/day)' "${rp%%.*}" "$rate"
+    fi
     case "$r" in ''|*[!0-9]*) ;; *) printf ', resets in %s' "$(human "$r")" ;; esac
     [ "$s" = 1 ] && printf ' [stale reading]'
     case "$b" in over|under) printf ' [%s]' "$b" ;; esac

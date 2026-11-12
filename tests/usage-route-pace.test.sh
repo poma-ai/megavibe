@@ -115,6 +115,135 @@ o=$(MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CRED
 usage=$(printf '%s\n' "$o" | grep '^usage:')
 check 'tick keeps first-line and one usage-line format with both projections' '[[ "$o" == "tick default: quiet | window "* ]] && [[ "$usage" == "usage: Claude 95% used"*"~190%"*"recent estimate ~109%"*" | Codex 19% used"*"[linear estimate ~135%]"*" | lean optional work on codex" ]] && [ "$(printf "%s\n" "$usage" | wc -l | tr -d " ")" = 1 ]'
 
+# Exact display contract: a recent projection always includes its non-negative rate.
+tick_usage() {
+  MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/credentials.json" TICK_LINEAR=0 \
+    /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo | grep '^usage:'
+}
+expected_balance() {
+  printf 'codex|usage balance: Claude 95%% used (linear estimate ~190%% by week end)%s; Codex 19%% used [linear estimate ~135%%] (one is running hot). Lean optional work (digests, exploration, second opinions) on Codex; the review floor does not move.' "$1"
+}
+expected_tick() {
+  printf 'usage: Claude 95%% used (linear estimate ~190%% by week end)%s, resets in 3d [over] | Codex 19%% used [linear estimate ~135%%], resets in 6d | lean optional work on codex' "$1"
+}
+o=$(pace)
+check 'exact high linear, low recent pace record' '[ "$o" = "claude|95|50|190|4|109|3.5" ]'
+o=$(route balance --peek)
+check 'balance exact recent estimate with burn rate' '[ "$o" = "$(expected_balance " (recent estimate ~109% at 4 pts/day)")" ]'
+o=$(tick_usage)
+check 'tick exact recent estimate with burn rate' '[ "$o" = "$(expected_tick " (recent estimate ~109% at 4 pts/day)")" ]'
+
+# Only the selected jq invocation is faulty; all other jq calls use the real binary.
+export PACE_REAL_JQ=$(command -v jq)
+cat > "$T/bin/jq" <<'SHIM'
+#!/bin/bash
+stage=""
+for arg in "$@"; do
+  case "$arg" in
+    '[$b, (.wk.used'*) stage=status ;;
+    *'def blank: [$provider'*) stage=pace ;;
+    '.band') stage=band ;;
+    '.reason') stage=reason ;;
+    *'def pick($k):'*) stage=decision ;;
+    'fromjson? | select(type == "object")') stage=stream ;;
+    '.') stage=history ;;
+    'select(length > 0)') stage=row ;;
+  esac
+done
+if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = claude ] && [ "$stage" = "${PACE_FAULT_STAGE:-unset}" ]; then
+  case "${PACE_FAULT_MODE:-fail}" in
+    fail) exit 1 ;;
+    empty) exit 0 ;;
+    partial) printf 'broken'; exit 1 ;;
+    record) printf '%s\n' "$PACE_FAULT_RECORD"; exit 0 ;;
+  esac
+fi
+exec "$PACE_REAL_JQ" "$@"
+SHIM
+chmod +x "$T/bin/jq"
+export PACE_REAL_TAIL=$(command -v tail)
+cat > "$T/bin/tail" <<'SHIM'
+#!/bin/bash
+if [ "${PACE_FAULT_STAGE:-}" = raw ] && [ "$*" = "-n 5000 $MEGAVIBE_USAGE_FILE" ]; then
+  case "$PACE_FAULT_MODE" in
+    fail) exit 1 ;;
+    empty) exit 0 ;;
+    partial) "$PACE_REAL_TAIL" "$@"; exit 1 ;;
+  esac
+fi
+exec "$PACE_REAL_TAIL" "$@"
+SHIM
+chmod +x "$T/bin/tail"
+export PATH="$T/bin:$PATH"
+
+# Status failures must never turn the pace provider into the used percentage.
+for stage in raw status band reason decision history row stream; do
+  for fault in fail empty partial; do
+    # An empty reason is legitimate (no live windows), unlike failed serialization.
+    [ "$stage:$fault" != reason:empty ] || continue
+    o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault route status-pace --peek); rc=$?
+    check "$stage $fault: exact combined no-data record, exit zero" '[ "$rc" = 0 ] && [ "$o" = "normal||||||claude||||||" ]'
+    o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault route balance --peek)
+    check "$stage $fault: balance gives no advice" '[ "$o" = "-|" ]'
+    o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault tick_usage)
+    check "$stage $fault: tick no reading, no false reset or lean advice" '[ "$o" = "usage: Claude: no reading | Codex 19% used [linear estimate ~135%], resets in 6d" ]'
+  done
+done
+# With Codex hot, a shifted Claude record used to invent spare Claude capacity.
+codex "$NOW" 95 "$((NOW + WEEK / 2))" > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(PACE_FAULT_STAGE=status route balance --peek)
+check 'failed Claude status cannot recommend Claude when Codex is hot' '[ "$o" = "-|" ]'
+codex "$NOW" 19 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
+for fault in fail empty partial; do
+  o=$(PACE_FAULT_STAGE=status PACE_FAULT_MODE=$fault route status --peek); rc=$?
+  check "status $fault: legacy no-data shape, exit zero" '[ "$rc" = 0 ] && [ "$o" = "normal|||||" ]'
+  o=$(PACE_FAULT_STAGE=pace PACE_FAULT_MODE=$fault route status-pace --peek); rc=$?
+  check "pace $fault: valid status and seven empty pace fields" '[ "$rc" = 0 ] && [ "$o" = "over|95|190|302400|0|7d 95% used, resets in 3d|claude||||||" ]'
+  o=$(PACE_FAULT_STAGE=pace PACE_FAULT_MODE=$fault route balance --peek)
+  check "pace $fault: balance retains status and advice" '[ "$o" = "$(expected_balance "")" ]'
+  o=$(PACE_FAULT_STAGE=pace PACE_FAULT_MODE=$fault tick_usage)
+  check "pace $fault: tick retains status and reset" '[ "$o" = "$(expected_tick "")" ]'
+  o=$(PACE_FAULT_STAGE=pace PACE_FAULT_MODE=$fault pace); rc=$?
+  check "pace $fault: standalone no-data record, exit zero" '[ "$rc" = 0 ] && [ "$o" = "claude||||||" ]'
+done
+
+# Missing/invalid rate cannot masquerade as zero; zero is a valid observed rate.
+while IFS=';' read -r rate projection suffix; do
+  export PACE_FAULT_STAGE=pace PACE_FAULT_MODE=record
+  export PACE_FAULT_RECORD="claude|95|50|190|$rate|$projection|3.5"
+  o=$(LC_ALL=de_DE route balance --peek)
+  check "balance exact rate '$rate' under de_DE" '[ "$o" = "$(expected_balance "$suffix")" ]'
+  o=$(LC_ALL=de_DE tick_usage)
+  check "tick exact rate '$rate' under de_DE" '[ "$o" = "$(expected_tick "$suffix")" ]'
+done <<'EOF'
+;109;
+-4;81;
+0;95; (recent estimate ~95% at 0 pts/day)
+4.125;109.438; (recent estimate ~109% at 4.125 pts/day)
+EOF
+unset PACE_FAULT_STAGE PACE_FAULT_MODE PACE_FAULT_RECORD
+
+# Real samples: a decrease suppresses both recent fields; flat use retains zero.
+{ row "$((NOW - 21600))" 96 "$((NOW + WEEK / 2))"; row "$NOW" 95 "$((NOW + WEEK / 2))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'negative observed rate never emitted' '[ "$o" = "claude|96|50|192|||3.5" ]'
+{ row "$((NOW - 21600))" 95 "$((NOW + WEEK / 2))"; row "$NOW" 95 "$((NOW + WEEK / 2))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'zero observed rate retained exactly' '[ "$o" = "claude|95|50|190|0|95|3.5" ]'
+
+# A PATH with required system tools but no jq exercises both callers too.
+mkdir "$T/no-jq"
+for tool in bash dirname cut tr; do
+  ln -s "$(command -v "$tool")" "$T/no-jq/$tool"
+done
+for mode in pace status status-pace balance; do
+  case "$mode" in pace) expected='' ;; status) expected='normal|||||' ;; status-pace) expected='normal||||||claude||||||' ;; balance) expected='-|' ;; esac
+  o=$(PATH="$T/no-jq" route "$mode" --peek); rc=$?
+  check "jq absent: $mode exact fallback, exit zero" '[ "$rc" = 0 ] && [ "$o" = "$expected" ]'
+done
+o=$(PATH="$T/no-jq" MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/credentials.json" TICK_LINEAR=0 /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo)
+check 'jq absent: tick reports its existing dependency fallback' '[ "$o" = "tick default: jq is required" ]'
+
 # Projection starts at the observation, while remaining/elapsed are measured at NOW.
 { row "$((NOW - 21600))" 10 "$((NOW + WEEK / 2))"; row "$((NOW - 10800))" 20 "$((NOW + WEEK / 2))"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(pace)
