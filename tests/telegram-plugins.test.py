@@ -216,6 +216,25 @@ class TestEscapes(Base):  # F4
             await bot.apply_plugin_result(res, Msg(), B())
 
 
+class TestLostEdit(Base):  # round 2 P2
+    async def test_failed_edit_delivers_its_text(self):
+        sent = []
+
+        class Msg:
+            chat_id = 1
+            message_id = 2
+            async def edit_text(self, text, **k): raise Exception("Message to edit not found")
+
+        class B:
+            async def send_message(self, *a, **k): sent.append(a[1])
+
+        res = {"edit_text": "<b>unique result content</b>", "parse_mode": "HTML", "_answered": True}
+        ok = await bot.apply_plugin_result(res, Msg(), B())
+        self.assertTrue(any("unique result content" in s for s in sent), sent)
+        self.assertFalse(any("<b>" in s for s in sent), sent)
+        self.assertTrue(ok)
+
+
 class TestShutdown(Base):  # F5
     async def test_kill_plugin_groups_stops_running_plugin(self):
         p = self.plugin("sleep 300 &\necho $! > %s/pid\nwait\n" % self.dir)
@@ -246,6 +265,23 @@ class TestShutdown(Base):  # F5
         finally:
             bot.kill_plugin_groups, signal.raise_signal = orig_kill, orig_raise
         self.assertEqual(calls, ["kill", signal.SIGTERM])
+
+    def test_stop_signal_kills_groups_before_shutdown_waits(self):
+        calls = []
+        orig_kill = bot.kill_plugin_groups
+        bot.kill_plugin_groups = lambda: calls.append("kill")
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                bot.on_stop_signal(signal.SIGTERM, None)
+        finally:
+            bot.kill_plugin_groups = orig_kill
+        self.assertEqual(calls, ["kill"])
+
+    def test_polling_leaves_signals_to_the_bot(self):
+        src = (ROOT / "telegram-bot.py").read_text()
+        self.assertIn("stop_signals=None", src)
+        self.assertIn("signal.signal(signal.SIGTERM, on_stop_signal)", src)
+        self.assertIn("signal.signal(signal.SIGINT, on_stop_signal)", src)
 
 
 if __name__ == "__main__":

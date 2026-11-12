@@ -562,6 +562,15 @@ def kill_plugin_groups():
         _killpg(pgid, signal.SIGKILL)
 
 
+def on_stop_signal(signum, frame):
+    """SIGTERM/SIGINT: kill the plugin groups FIRST, then stop through PTB's
+    KeyboardInterrupt path. PTB's own stop waits for running handler tasks before
+    post_stop, so a running plugin would otherwise hold shutdown for up to its
+    180 s limit."""
+    kill_plugin_groups()
+    raise KeyboardInterrupt
+
+
 def on_sighup(signum, frame):
     """tmux kill-session sends SIGHUP: plugins have their own sessions, so they
     would survive it. Kill them, then take the normal SIGTERM shutdown."""
@@ -749,7 +758,8 @@ async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
         ok = await _safe_answer(query.answer, toast)
         # A press toast holds 200 characters; a longer outcome is ALSO sent whole.
         toast_done = ok and bool(toast) and len(toast) <= 200
-    failed = False
+    failed = reply_failed = False
+    lost_text = []
     if res.get("edit_text") and message:
         text, mode = fit(res["edit_text"], res.get("parse_mode"))
         try:
@@ -757,7 +767,13 @@ async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
                                     reply_markup=markup_from(res.get("buttons")),
                                     disable_web_page_preview=True)
         except Exception as e:
-            failed = failed or "not modified" not in str(e).lower()
+            if "not modified" not in str(e).lower():
+                failed = True
+                # The card is gone or refused: deliver its text as a message instead.
+                plain = str(res["edit_text"])[:PLUGIN_TEXT_MAX]
+                if isinstance(res.get("parse_mode"), str) and res["parse_mode"].upper() == "HTML":
+                    plain = html.unescape(re.sub(r"<[^<>]*>", "", plain))
+                lost_text.append(plain)
             log.info("plugin edit skipped: %s", e)
     if res.get("reply_text") and message:
         text, mode = fit(res["reply_text"], res.get("parse_mode"))
@@ -767,12 +783,14 @@ async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
                                    reply_to_message_id=message.message_id,
                                    disable_web_page_preview=True)
         except Exception:
-            failed = True
+            failed = reply_failed = True
             log.exception("plugin reply failed")
     notes = []
     if toast and not toast_done:
         notes.append(toast)
-    if failed:
+    if lost_text:
+        notes.append("\u26a0\ufe0f The card could not be updated; its new text:\n" + lost_text[0])
+    elif failed:
         notes.append("\u26a0\ufe0f The result could not be shown.")
     if not notes:
         return True
@@ -783,7 +801,8 @@ async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
         await bot.send_message(message.chat_id, "\n".join(notes)[:4096],
                                reply_to_message_id=message.message_id,
                                allow_sending_without_reply=True)
-        return not failed
+        # A refused edit whose text arrived here as a message still reached the user.
+        return not reply_failed
     except Exception as e:
         log.info("plugin toast message failed: %s", e)
         return False
@@ -1133,6 +1152,8 @@ def main():
     app = (ApplicationBuilder().token(TOKEN)
            .post_stop(_post_stop).post_shutdown(_post_stop).build())
     signal.signal(signal.SIGHUP, on_sighup)
+    signal.signal(signal.SIGTERM, on_stop_signal)
+    signal.signal(signal.SIGINT, on_stop_signal)
 
     app.add_handler(CommandHandler("register", cmd_register))
     app.add_handler(CommandHandler("projects", cmd_projects))
@@ -1145,7 +1166,8 @@ def main():
     app.add_error_handler(on_error)
 
     log.info("Megavibe Remote v4 — personal (tmux:%s) + project launcher", TMUX_SESSION)
-    app.run_polling(drop_pending_updates=True)
+    # Signals are ours (on_stop_signal kills plugin groups before PTB waits for tasks).
+    app.run_polling(drop_pending_updates=True, stop_signals=None)
 
 
 if __name__ == "__main__":
