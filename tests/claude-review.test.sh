@@ -105,6 +105,9 @@ case "${FAKE_MODE:-ok}" in
   slow) sleep 6 ;;
   garbled) echo "not json"; exit 0 ;;
   inspect_fail_garbled) sleep 1; echo "not json"; exit 0 ;;
+  inspect_exit1) sleep 1; jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | exit1 | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 1 ;;
+  inspect_selfterm) sleep 1; jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | selfterm | x | y","total_cost_usd":0.005,"num_turns":3}]'; kill -TERM $$ ;;
+  bigerr) head -c 1000000 /dev/zero | tr '\0' x >&2; exit 1 ;;
   forge_err) echo "inspection unavailable: cannot inspect worker descendants with ps" >&2
              jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | forged | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 3 ;;
   fd3_write) echo "inspection unavailable: cannot inspect worker descendants with ps" >&3 2>/dev/null
@@ -437,6 +440,23 @@ rm -f "$T/outside/worker.pid"
 echo fail > "$T/outside/ps.mode"
 fk FAKE_MODE=inspect_fail_garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1
 check "inspection lost and no valid result: the ledger records ok 0, not 1" 'tail -1 "$T/ledger.jsonl" | jq -e ".ok == 0" >/dev/null'
+
+# the rescue needs the WORKER to have exited 0: a worker that failed or killed itself after printing a result is not rescued
+for wm in inspect_exit1 inspect_selfterm; do
+  rm -f "$T/outside/worker.pid"
+  echo fail > "$T/outside/ps.mode"
+  fk FAKE_MODE=$wm -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/wfail.out" 2>"$T/wfail.err"; rc=$?
+  check "inspection lost and the worker failed after printing a result ($wm): exit 3, nothing delivered" '[ $rc -eq 3 ] && [ ! -s "$T/wfail.out" ]'
+done
+# diagnostics never change the failure exit code (SIGPIPE under pipefail turned exit 3 into 141)
+rm -f "$T/outside/worker.pid"
+echo ok > "$T/outside/ps.mode"
+fk FAKE_MODE=bigerr -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "a worker that writes 1 MB to stderr and fails still exits 3, not 141" '[ $rc -eq 3 ]'
+# a normally rejected result is not recorded as a success either
+: > "$T/ledger.jsonl"
+fk FAKE_MODE=garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1
+check "healthy inspection, worker exits 0 with malformed JSON: ledger ok 0" 'tail -1 "$T/ledger.jsonl" | jq -e ".ok == 0" >/dev/null'
 
 # inspection lost AND no valid result: still a failure (nothing to keep)
 rm -f "$T/outside/worker.pid"

@@ -309,6 +309,9 @@ if (!defined $status) { waitpid($pid, 0); $status = $?; }
 if ($pulse) { print {$pulse} "done\n"; close $pulse; }
 waitpid($guard, 0) if $guard;
 warn $error if $error;
+# Rescue eligibility, on the private channel only: inspection was lost, and nothing else went wrong.
+print {$diag} "worker-ok\n" if $inspection_failed && !$cancel && !$error && defined($status) && $status == 0;
+close $diag if $diag != \*STDERR;
 exit($cancel || ($error || $inspection_failed ? 3 : ($status & 127 ? 128 + ($status & 127) : $status >> 8)));
 '
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
@@ -542,11 +545,18 @@ wait "$SUP_PID" || RC=$?
 SUP_PID=''
 DUR=$(( $(date +%s) - START ))
 # A supervisor that lost process inspection (a slow ps on a loaded machine) exits 3 even when the worker
-# finished; the saved result must be a complete, valid, non-error result (the supervisor's own channel
-# says why it exited 3; the worker cannot write that file), then a paid answer is not thrown away.
-INSPECT_LOST=0
-if [ "$RC" = 3 ] && grep -q 'inspection unavailable' "$CTL/sup.err" 2>/dev/null \
-   && jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then RC=0; INSPECT_LOST=1; fi
+# finished. It says so on its private channel (a file the worker cannot write) and adds worker-ok only when
+# the worker itself exited 0 and nothing else failed; then the saved result is judged on its own validity.
+# The result is validated once, here, before the ledger, so the ledger sees the real outcome.
+INSPECT_LOST=0; NORESULT=0; RESCUE=0
+if [ "$RC" = 3 ] && grep -q '^inspection unavailable' "$CTL/sup.err" 2>/dev/null && grep -q '^worker-ok$' "$CTL/sup.err" 2>/dev/null; then RESCUE=1; fi
+if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
+  if jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then
+    if [ "$RESCUE" = 1 ]; then RC=0; INSPECT_LOST=1; fi
+  else
+    NORESULT=1
+  fi
+fi
 
 COST=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$CTL/raw.json" 2>/dev/null) || COST=''
 [ -n "$COST" ] || COST='?'
@@ -554,13 +564,12 @@ TURNS=$(jq -s -r '.[0] | (if type == "array" then (map(select(type == "object" a
 LED=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
 if mkdir -p "$(dirname "$LED")" 2>/dev/null; then
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd review --arg model "$MODEL" --arg proj "$(basename "$PWD")" --arg tools "$TOOLS" \
-    --argjson ok "$([ "$RC" = 0 ] && echo 1 || echo 0)" --arg cost "$COST" --argjson kb "$KB" --argjson dur "$DUR" \
+    --argjson ok "$([ "$RC" = 0 ] && [ "$NORESULT" = 0 ] && echo 1 || echo 0)" --arg cost "$COST" --argjson kb "$KB" --argjson dur "$DUR" \
     '{ts:$ts,cmd:$cmd,model:$model,project:$proj,tools:$tools,calls:1,ok:$ok,cost:($cost|tonumber? // null),input_kb:$kb,seconds:$dur}' >> "$LED" 2>/dev/null || true
 fi
 if [ "$RC" = 124 ]; then echo "$PROG: timed out after ${TIMEOUT}s (cost $COST)" >&2; exit 124; fi
-if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2; exit 3; fi
-jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null \
-  || { echo "$PROG: the call returned no usable result (cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2; exit 3; }
+if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2 || true; exit 3; fi
+if [ "$NORESULT" = 1 ]; then echo "$PROG: the call returned no usable result (cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2 || true; exit 3; fi
 printf '[claude-review: done in %ss, %s turn(s), cost $%s]\n' "$DUR" "${TURNS:-?}" "$COST" >&2
 if [ "$INSPECT_LOST" = 1 ]; then
   echo "$PROG: note: process inspection was unavailable during the run, so cleanup used the process group only" >&2
