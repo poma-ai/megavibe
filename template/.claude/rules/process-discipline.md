@@ -61,7 +61,7 @@ and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
 by default, so every wait past 5 minutes re-writes the whole context at 1.25x
 instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
 tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
-subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while background work it launched still runs: once its result is used, stop that work (a test server or watcher its own task started, not one another session or the user relies on) with `TaskStop` by task id, as the kill rules in `delegation.md` say; keep any server a remaining verification step needs, and list running tasks before declaring done.
+subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while background work it launched still runs: once its result is used, stop only a test server or watcher its own task started (never a job that writes or deploys, nor one another session or the user relies on; if unsure, ask) with `TaskStop` by task id; keep any server a remaining verification step needs, and list running tasks before declaring done.
 
 ## Bind dev servers to localhost by default
 

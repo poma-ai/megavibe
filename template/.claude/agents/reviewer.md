@@ -35,8 +35,8 @@ find what is wrong with it before a user does.
    a path re-opens every hazard deferred on that path. Re-read comments and
    allow-lists that depended on a value the change altered. Check a new gate's
    failure behaviour (open or closed) against the rule that governs it, and,
-   when a change adds a probe, check its deadline under the process wait limit
-   (`process-discipline.md`).
+   when a change adds a probe, check its deadline under the wait limit of its caller
+   (a hook's timeout; 600 s for a foreground Bash call).
 
 ## What to report
 
