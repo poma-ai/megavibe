@@ -101,7 +101,7 @@ sub snapshot {
     close $write;
     my $select = IO::Select->new($read);
     my ($text, $done, $rc) = ("", 0, undef);
-    my $until = time() + 0.25;
+    my $until = time() + 2.0; # a loaded machine needs more than a quarter of a second for the whole table
     while (time() < $until && (!$cancel || $cleaning)) {
         heartbeat();
         if (!$done && $select->can_read(0.01)) {
@@ -303,7 +303,9 @@ if (!defined $status) { waitpid($pid, 0); $status = $?; }
 if ($pulse) { print {$pulse} "done\n"; close $pulse; }
 waitpid($guard, 0) if $guard;
 warn $error if $error;
-exit($cancel || ($error || $inspection_failed ? 3 : ($status & 127 ? 128 + ($status & 127) : $status >> 8)));
+# Lost process inspection only narrows cleanup to the process group (warned above). The result of the
+# worker still decides the exit status, so a finished answer is never discarded because ps was slow.
+exit($cancel || ($error ? 3 : ($status & 127 ? 128 + ($status & 127) : $status >> 8)));
 '
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 valid_model() { case $1 in ''|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
@@ -550,5 +552,8 @@ if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; 
 jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null \
   || { echo "$PROG: the call returned no usable result (cost $COST)" >&2; head -c 400 "$CTL/raw.err" >&2; exit 3; }
 printf '[claude-review: done in %ss, %s turn(s), cost $%s]\n' "$DUR" "${TURNS:-?}" "$COST" >&2
+if grep -q 'inspection unavailable' "$CTL/raw.err" 2>/dev/null; then
+  echo "$PROG: note: process inspection was unavailable during the run, so cleanup used the process group only" >&2
+fi
 if [ -n "$OUT" ]; then ( umask 077; cp -- "$CTL/answer.txt" "$OUT" ) || die "cannot write $OUT"; fi
 cat "$CTL/answer.txt"

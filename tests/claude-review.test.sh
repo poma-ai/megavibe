@@ -227,6 +227,7 @@ if ($mode eq "observed" && -s "$dir/child.pid") {
     print $f "snapshot\n"; close $f;
 }
 if (-s "$dir/worker.pid") {
+    if ($mode eq "slow") { select(undef, undef, undef, 1.2); }
     if ($mode eq "fail") { exit 1; }
     if ($mode eq "block") {
         open my $f, ">", "$dir/inspection.pid" or die $!;
@@ -411,15 +412,25 @@ echo pre_fail > "$T/outside/ps.mode"
 "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
 check "pre-start ps failure refuses to launch and cleans directories" '[ $rc -ne 0 ] && [ ! -e "$T/outside/worker.pid" ] && [ -z "$(kept)" ] && [ -z "$(ctl)" ]'
 
+# a ps that is slow but works (1.2 s per table, a loaded machine) is not an inspection loss
+rm -f "$T/outside/worker.pid"
+echo slow > "$T/outside/ps.mode"
+fk FAKE_MODE=inspect_fail -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/slow.out" 2>"$T/slow.err"; rc=$?
+check "a slow but working ps is not an inspection loss: exit 0, answer kept, no warning" '[ $rc -eq 0 ] && grep -q "F1 | P2" "$T/slow.out" && ! grep -q "inspection unavailable" "$T/slow.err"'
+if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+
 for fault in fail block; do
   rm -f "$T/outside/worker.pid" "$T/outside/inspection.pid" "$T/outside/inspection-child.pid"
   echo "$fault" > "$T/outside/ps.mode"
-  mode=inspect_fail; limit=5; expected=3
+  mode=inspect_fail; limit=5; expected=0   # a lost ps only narrows cleanup; the finished worker's answer is kept
   if [ "$fault" = block ]; then mode=stubborn; limit=1; expected=124; fi
   start=$(date +%s)
   fk FAKE_MODE="$mode" -- "$CR" --prompt p --tools none --timeout "$limit" "$T/a.txt" >"$T/fault.out" 2>"$T/fault.err"; rc=$?
   dur=$(( $(date +%s) - start ))
-  check "ps $fault after start: bounded nonzero exit and dead worker" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+  check "ps $fault after start: bounded exit with the worker's own status and a dead worker" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+  if [ "$fault" = fail ]; then
+    check "ps fail after start: the finished worker's answer is delivered and the loss is warned" 'grep -q "F1 | P2" "$T/fault.out" && grep -q "process inspection was unavailable" "$T/fault.err"'
+  fi
   check "ps $fault after start: scratch and control directories cleaned" '[ -z "$(kept)" ] && [ -z "$(ctl)" ]'
   if [ "$fault" = block ]; then
     check "blocked inspection subprocess and its child are killed" '[ -s "$T/outside/inspection.pid" ] && ! kill -0 "$(cat "$T/outside/inspection.pid")" 2>/dev/null && [ -s "$T/outside/inspection-child.pid" ] && ! kill -0 "$(cat "$T/outside/inspection-child.pid")" 2>/dev/null'
