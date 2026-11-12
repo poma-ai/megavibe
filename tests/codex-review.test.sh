@@ -45,6 +45,31 @@ if MEGAVIBE_CODEX_ALLOW_ENDPOINT=1 run_review; then :; else echo 'FAIL: endpoint
 
 : > "$CODEX_HOME/config.toml"
 run_review
-grep -q -- '-c' "$CODEX_TEST_ARGV"
-grep -q 'model_provider="openai"' "$CODEX_TEST_ARGV"
+# A8: the recorded argv carries the provider pin as its own -c argument on a normal run.
+grep -qx -- 'model_provider="openai"' "$CODEX_TEST_ARGV"
+[ "$(grep -x -B1 -- 'model_provider="openai"' "$CODEX_TEST_ARGV" | head -1)" = "-c" ]
+
+# A9: the key under the ACTIVE profile is refused; under an inactive profile it is not.
+cat > "$CODEX_HOME/config.toml" <<'EOF'
+profile = "work"
+[profiles.work]
+openai_base_url = "https://elsewhere.invalid"
+EOF
+set +e
+run_review 2>"$T/active.err"
+rc=$?
+set -e
+[ "$rc" = 2 ]
+grep -q 'openai_base_url' "$T/active.err"
+
+cat > "$CODEX_HOME/config.toml" <<'EOF'
+profile = "work"
+[profiles.work]
+model = "x"
+[profiles.other]
+openai_base_url = "https://elsewhere.invalid"
+EOF
+rm -f "$CODEX_TEST_PROMPT"
+run_review
+[ -e "$CODEX_TEST_PROMPT" ]
 echo 'ok'

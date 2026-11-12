@@ -63,6 +63,17 @@ case "${FAKE_MODE:-ok}" in
       --arg short "that notification was only a background job finishing; my verdict stands: ship" \
       '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$long}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$short}]}},{"type":"result","is_error":false,"result":$short,"total_cost_usd":0.005,"num_turns":3}]'
     exit 0 ;;
+  narrated)
+    jq -cn --arg n1 "Let me look at the file." --arg long "FULL REVIEW: findings, evidence and the ship recommendation, written out in full." \
+      --arg short "verdict stands: ship" \
+      '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$n1}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$long}]}},{"type":"result","is_error":false,"result":$short,"total_cost_usd":0.005,"num_turns":4}]'
+    exit 0 ;;
+  differs)
+    jq -cn '[{"type":"assistant","message":{"content":[{"type":"text","text":"ASSISTANT SIDE TEXT"}]}},{"type":"result","is_error":false,"result":"RESULT SIDE TEXT","total_cost_usd":0.005,"num_turns":2}]'
+    exit 0 ;;
+  resultonly)
+    jq -cn '[{"type":"assistant","message":{"content":[{"type":"text","text":"  "}]}},{"type":"result","is_error":false,"result":"ONLY RESULT","total_cost_usd":0.005,"num_turns":1}]'
+    exit 0 ;;
   detached_timeout|detached_normal|detached_watchdog)
     # This child leaves the worker process group/session, as Claude Bash does.
     perl -MPOSIX=setsid -e '
@@ -154,6 +165,12 @@ check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\
 fk FAKE_MODE=followup -- "$CR" --prompt p --tools none --out "$T/followup.out" "$T/a.txt" >/dev/null 2>"$T/followup.err"; rc=$?
 if [ "$rc" -ne 0 ]; then cat "$T/followup.err" >&2; fi
 check "a short final follow-up does not discard the substantive review" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: this is the substantive report" "$T/followup.out" && grep -q "my verdict stands: ship" "$T/followup.out"'
+fk FAKE_MODE=narrated -- "$CR" --prompt p --tools none --out "$T/narr.out" "$T/a.txt" >/dev/null 2>"$T/narr.err"; rc=$?
+check "A7 narration dropped: longest block plus the terse final kept" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: findings" "$T/narr.out" && grep -q "verdict stands: ship" "$T/narr.out" && ! grep -q "Let me look at the file" "$T/narr.out" && grep -qx -- "---" "$T/narr.out"'
+fk FAKE_MODE=differs -- "$CR" --prompt p --tools none --out "$T/differs.out" "$T/a.txt" >/dev/null 2>"$T/differs.err"; rc=$?
+check "A7 assistant text and a different result are both kept, assistant first" '[ $rc -eq 0 ] && [ "$(grep -n "ASSISTANT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" -lt "$(grep -n "RESULT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" ]'
+fk FAKE_MODE=resultonly -- "$CR" --prompt p --tools none --out "$T/ronly.out" "$T/a.txt" >/dev/null 2>"$T/ronly.err"; rc=$?
+check "A7 no non-blank assistant text: the result is the answer" '[ $rc -eq 0 ] && grep -q "ONLY RESULT" "$T/ronly.out" && ! grep -qx -- "---" "$T/ronly.out"'
 fk FAKE_MODE=stream -- "$CR" --prompt p --tools none --out "$T/stream.out" "$T/a.txt" >/dev/null 2>"$T/stream.err"; rc=$?
 check "newline-delimited stream-json output: answer kept, turns and cost reported" '[ $rc -eq 0 ] && grep -q "STREAMED REPORT F1" "$T/stream.out" && grep -q "3 turn(s), cost \$0.005" "$T/stream.err"'
 

@@ -24,12 +24,15 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # Most commands fail the fork-free prefilter; only candidates pay one perl call.
 _PIPE_TEXT=''
 if [[ "$COMMAND" == *'|'* && ( "$COMMAND" == *push* || "$COMMAND" == *commit* || "$COMMAND" == *merge* ) ]] && command -v perl >/dev/null 2>&1; then
-  _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\./  /gs; s/'"'"'[^'"'"']*'"'"'/" " x length($&)/ges; s/"[^"]*"/" " x length($&)/ges' 2>/dev/null) || _PIPE_TEXT=''
+  _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\.|'"'"'[^'"'"']*'"'"'|"(?:\\.|[^"\\])*"/" " x length($&)/gse' 2>/dev/null) || _PIPE_TEXT=''
 fi
-_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*\|[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee)([[:space:]][^;|]*)?[[:space:]]*(\&\&|;)[[:space:]]*(git[[:space:]]+(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:]]|$)'
-_PIPEFAIL='(^|[;])[[:space:]]*set[[:space:]][^;]*(\-o[[:space:]]*pipefail|\-[^;[:space:]]*pipefail)'
+_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*\|&?[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee|jq|rg|tr|cat)([[:space:]][^;|]*)?[[:space:]]*(\&\&|;)[[:space:]]*(cd[[:space:]]+[^;&|]*\&\&[[:space:]]*)*(git[[:space:]]+(-C[[:space:]]+[^[:space:];&|]+[[:space:]]+)?(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:];&|]|$)'
+_PIPEFAIL='(^|[;&])[[:space:]]*set[[:space:]]+[^;|&]*-[a-zA-Z]*o[[:space:]]*pipefail'
 if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then
-  if [[ ! "$_PIPE_TEXT" =~ $_PIPEFAIL ]]; then
+  _m=${BASH_REMATCH[0]}
+  # Only a pipefail set before the pipeline counts (same segment or earlier).
+  _pre="${_PIPE_TEXT%%"$_m"*}${_m%%|*}"
+  if [[ ! "$_pre" =~ $_PIPEFAIL ]]; then
     echo 'Blocked: capture the status first (check; rc=$?), or set -o pipefail;' >&2
     exit 2
   fi

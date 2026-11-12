@@ -273,6 +273,18 @@ check "pipefail permits the same push" '[ "$(bd "set -o pipefail; check | tail -
 check "git log head followed by echo is allowed" '[ "$(bd "git log | head -1; echo done")" = 0 ]'
 check "grep followed by git status is allowed" '[ "$(bd "grep x f && git status")" = 0 ]'
 check "a commit message mentioning the pattern is allowed" '[ "$(bd "git commit -m '\''check | tail -1 && git push'\''")" = 0 ]'
+PG_A1="echo \"it's\" | tail -1 && git push && echo \"don't\""
+check "A1 apostrophe inside double quotes does not break masking" '[ "$(bd "$PG_A1")" = 2 ]'
+check "A2 git -C dir push after a formatter is blocked" '[ "$(bd "check | tail -1 && git -C sub push")" = 2 ]'
+check "A2 git -C dir commit after a formatter is blocked" '[ "$(bd "check | tail -1 && git -C sub commit -m x")" = 2 ]'
+check "A3 |& into a formatter is blocked" '[ "$(bd "check |& tail -1 && git push")" = 2 ]'
+check "A4 set -euo pipefail before the pipeline permits it" '[ "$(bd "set -euo pipefail; check | tail -1 && git push")" = 0 ]'
+check "A4 pipefail set after the pipeline stays blocked" '[ "$(bd "check | tail -1 && git push; set -o pipefail")" = 2 ]'
+check "A5 jq formatter is blocked" '[ "$(bd "check | jq . && git push")" = 2 ]'
+check "A5 rg formatter is blocked" '[ "$(bd "check | rg x && git push")" = 2 ]'
+check "A5 tr formatter is blocked" '[ "$(bd "check | tr a b && git push")" = 2 ]'
+check "A5 cat formatter is blocked" '[ "$(bd "check | cat && git push")" = 2 ]'
+check "A6 an intervening cd is still caught" '[ "$(bd "check | tail -1 && cd .. && git push")" = 2 ]'
 check "python heredoc rmtree blocked" '[ "$(bd "python3 - <<EOF
 import shutil
 shutil.rmtree(\"/tmp/x\")
