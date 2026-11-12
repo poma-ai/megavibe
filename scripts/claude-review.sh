@@ -560,7 +560,7 @@ if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
     ((if length == 1 and (.[0] | type) == "array" then .[0] else . end) as $events
     | ($events | map(select(type == "object" and .type == "assistant")
         | .message.content[]? | select(type == "object" and .type == "text") | .text) | join("\n\n")) as $assistant
-    | ($events | map(select(type == "object" and .type == "result" and .is_error == false and (.result | type) == "string")) | last) as $result
+    | ($events | map(select(type == "object" and (.type == "result" or (has("type") | not)) and .is_error == false and (.result | type) == "string")) | last) as $result
     | select($result != null)
     | if ($assistant | length) > 0 then $assistant
       else $result.result end)
@@ -571,9 +571,9 @@ if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
   fi
 fi
 
-COST=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$CTL/raw.json" 2>/dev/null) || COST=''
+COST=$(jq -s -r '((if length == 1 and (.[0] | type) == "array" then .[0] else . end) | map(select(type == "object" and (.type == "result" or (has("type") | not)))) | last) | select(type == "object") | (.total_cost_usd | select(type == "number"))' "$CTL/raw.json" 2>/dev/null) || COST=''
 [ -n "$COST" ] || COST='?'
-TURNS=$(jq -s -r '.[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | .num_turns // empty' "$CTL/raw.json" 2>/dev/null) || TURNS=''
+TURNS=$(jq -s -r '((if length == 1 and (.[0] | type) == "array" then .[0] else . end) | map(select(type == "object" and (.type == "result" or (has("type") | not)))) | last) | select(type == "object") | .num_turns // empty' "$CTL/raw.json" 2>/dev/null) || TURNS=''
 LED=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
 if mkdir -p "$(dirname "$LED")" 2>/dev/null; then
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd review --arg model "$MODEL" --arg proj "$(basename "$PWD")" --arg tools "$TOOLS" \

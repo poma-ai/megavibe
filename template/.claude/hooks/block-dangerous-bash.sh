@@ -21,22 +21,11 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # A formatter at the end of a pipeline otherwise hides the check's status from
 # the following destructive command. Keep this gate fork-free and before the
 # slower Python parser. Mask quoted text so commit messages remain prose.
-_PIPE_TEXT=''; _PIPE_QUOTE=''; _PIPE_ESC=0; _PIPE_I=0
-while [ "$_PIPE_I" -lt "${#COMMAND}" ]; do
-  _PIPE_C=${COMMAND:$_PIPE_I:1}
-  if [ "$_PIPE_ESC" = 1 ]; then
-    _PIPE_TEXT="$_PIPE_TEXT "; _PIPE_ESC=0
-  elif [ -n "$_PIPE_QUOTE" ]; then
-    _PIPE_TEXT="$_PIPE_TEXT "
-    [ "$_PIPE_QUOTE" = '"' ] && [ "$_PIPE_C" = '\\' ] && _PIPE_ESC=1
-    [ "$_PIPE_C" = "$_PIPE_QUOTE" ] && _PIPE_QUOTE=''
-  elif [ "$_PIPE_C" = "'" ] || [ "$_PIPE_C" = '"' ]; then
-    _PIPE_QUOTE=$_PIPE_C; _PIPE_TEXT="$_PIPE_TEXT "
-  else
-    _PIPE_TEXT="$_PIPE_TEXT$_PIPE_C"
-  fi
-  _PIPE_I=$((_PIPE_I + 1))
-done
+# Most commands fail the fork-free prefilter; only candidates pay one perl call.
+_PIPE_TEXT=''
+if [[ "$COMMAND" == *'|'* && ( "$COMMAND" == *push* || "$COMMAND" == *commit* || "$COMMAND" == *merge* ) ]] && command -v perl >/dev/null 2>&1; then
+  _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\./  /gs; s/'"'"'[^'"'"']*'"'"'/" " x length($&)/ges; s/"[^"]*"/" " x length($&)/ges' 2>/dev/null) || _PIPE_TEXT=''
+fi
 _PIPE_DANGER='(^|[;])[[:space:]]*[^;]*\|[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee)([[:space:]][^;|]*)?[[:space:]]*(\&\&|;)[[:space:]]*(git[[:space:]]+(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:]]|$)'
 _PIPEFAIL='(^|[;])[[:space:]]*set[[:space:]][^;]*(\-o[[:space:]]*pipefail|\-[^;[:space:]]*pipefail)'
 if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then

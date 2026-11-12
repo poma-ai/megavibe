@@ -55,6 +55,9 @@ if [ -n "${FAKE_PLANT:-}" ]; then
   ln -sf "$FAKE_OUTSIDE/victim" settings.json 2>/dev/null; ln -sf "$FAKE_OUTSIDE/victim" request.txt 2>/dev/null
 fi
 case "${FAKE_MODE:-ok}" in
+  stream)
+    printf '%s\n' '{"type":"system"}' '{"type":"assistant","message":{"content":[{"type":"text","text":"STREAMED REPORT F1"}]}}' '{"type":"result","is_error":false,"result":"STREAMED REPORT F1","total_cost_usd":0.005,"num_turns":3}'
+    exit 0 ;;
   followup)
     jq -cn --arg long "FULL REVIEW: this is the substantive report with findings, evidence, and the ship recommendation. It must survive a short final follow-up." \
       --arg short "that notification was only a background job finishing; my verdict stands: ship" \
@@ -151,6 +154,8 @@ check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\
 fk FAKE_MODE=followup -- "$CR" --prompt p --tools none --out "$T/followup.out" "$T/a.txt" >/dev/null 2>"$T/followup.err"; rc=$?
 if [ "$rc" -ne 0 ]; then cat "$T/followup.err" >&2; fi
 check "a short final follow-up does not discard the substantive review" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: this is the substantive report" "$T/followup.out" && grep -q "my verdict stands: ship" "$T/followup.out"'
+fk FAKE_MODE=stream -- "$CR" --prompt p --tools none --out "$T/stream.out" "$T/a.txt" >/dev/null 2>"$T/stream.err"; rc=$?
+check "newline-delimited stream-json output: answer kept, turns and cost reported" '[ $rc -eq 0 ] && grep -q "STREAMED REPORT F1" "$T/stream.out" && grep -q "3 turn(s), cost \$0.005" "$T/stream.err"'
 
 # Exercise exactly the policy used by the wrapper without needing sandbox-exec
 # or process inspection. This also permits useful checks inside nested seatbelt.
