@@ -554,19 +554,23 @@ DUR=$(( $(date +%s) - START ))
 INSPECT_LOST=0; NORESULT=0; RESCUE=0
 if [ "$RC" = 3 ] && grep -q '^inspection unavailable' "$CTL/sup.err" 2>/dev/null && grep -q '^worker-ok$' "$CTL/sup.err" 2>/dev/null; then RESCUE=1; fi
 if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
-  # stream-json keeps the assistant messages that preceded a terse final follow-up: keep the
-  # longest assistant text block (narration between tool calls is dropped) plus a differing final result.
-  # The fixture and older CLIs may still return one JSON array, so normalize both forms.
+  # The report is the assistant text after the LAST assistant message that called a tool: narration
+  # before a tool call is dropped, and a report split across text blocks keeps every block. With no
+  # tool call, every assistant text block is kept. A final result that is non-blank and differs from
+  # the last kept block follows after a separator. The fixture and older CLIs may still return one
+  # JSON array, so normalize both forms.
   if jq -e -s -r '
     ((if length == 1 and (.[0] | type) == "array" then .[0] else . end) as $events
-    | ($events | map(select(type == "object" and .type == "assistant")
-        | .message.content[]? | select(type == "object" and .type == "text" and (.text | type) == "string") | .text
-        | select(test("[^[:space:]]")))
-        | (if length == 0 then "" else max_by(length) end)) as $assistant
+    | ([$events | to_entries[] | select(.value | type == "object" and .type == "assistant"
+        and any((.message.content? // [])[]?; type == "object" and .type == "tool_use")) | .key] | last // -1) as $cut
+    | ($events | to_entries | map(select(.key > $cut and (.value | type == "object" and .type == "assistant"))
+        | .value.message.content[]? | select(type == "object" and .type == "text" and (.text | type) == "string") | .text
+        | select(test("[^[:space:]]")))) as $texts
+    | ($texts | join("\n\n")) as $assistant
     | ($events | map(select(type == "object" and (.type == "result" or (has("type") | not)) and .is_error == false and (.result | type) == "string")) | last) as $result
     | select($result != null)
-    | if ($assistant | length) == 0 then $result.result
-      elif ($result.result | test("[^[:space:]]")) and $result.result != $assistant
+    | if ($texts | length) == 0 then $result.result
+      elif ($result.result | test("[^[:space:]]")) and $result.result != $texts[-1]
       then $assistant + "\n\n---\n" + $result.result
       else $assistant end)
   ' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then

@@ -267,7 +267,9 @@ bd() { printf '%s' "$1" | jq -Rs '{tool_input:{command:.}}' | env "${@:2}" bash 
 # A pipeline's formatter status must not be the condition that permits a
 # destructive command. The guard is intentionally tested before the Python net.
 check "tail followed by git push is blocked without pipefail" '[ "$(bd "check | tail -1 && git push")" = 2 ]'
-check "head followed by git commit is blocked after a semicolon" '[ "$(bd "check | head -1; git commit -m ship")" = 2 ]'
+check "head followed by git commit after a semicolon is allowed (the commit does not depend on the pipeline)" '[ "$(bd "check | head -1; git commit -m ship")" = 0 ]'
+check "git diff piped to head, then ; git commit is allowed" '[ "$(bd "git diff | head -5; git commit -am wip")" = 0 ]'
+check "head followed by && cd dir && git commit is blocked" '[ "$(bd "check | head -1 && cd sub && git commit -m ship")" = 2 ]'
 check "grep followed by gh pr merge is blocked" '[ "$(bd "check | grep ok && gh pr merge 1")" = 2 ]'
 check "pipefail permits the same push" '[ "$(bd "set -o pipefail; check | tail -1 && git push")" = 0 ]'
 check "git log head followed by echo is allowed" '[ "$(bd "git log | head -1; echo done")" = 0 ]'

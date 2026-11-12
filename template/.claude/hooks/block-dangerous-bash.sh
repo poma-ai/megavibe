@@ -26,7 +26,8 @@ _PIPE_TEXT=''
 if [[ "$COMMAND" == *'|'* && ( "$COMMAND" == *push* || "$COMMAND" == *commit* || "$COMMAND" == *merge* ) ]] && command -v perl >/dev/null 2>&1; then
   _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\.|'"'"'[^'"'"']*'"'"'|"(?:\\.|[^"\\])*"/" " x length($&)/gse' 2>/dev/null) || _PIPE_TEXT=''
 fi
-_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*\|&?[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee|jq|rg|tr|cat)([[:space:]][^;|]*)?[[:space:]]*(\&\&|;)[[:space:]]*(cd[[:space:]]+[^;&|]*\&\&[[:space:]]*)*(git[[:space:]]+(-C[[:space:]]+[^[:space:];&|]+[[:space:]]+)?(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:];&|]|$)'
+# Only an && after the formatter counts: after ; the destructive command does not depend on the pipeline.
+_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*\|&?[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee|jq|rg|tr|cat)([[:space:]][^;|]*)?[[:space:]]*\&\&[[:space:]]*(cd[[:space:]]+[^;&|]*\&\&[[:space:]]*)*(git[[:space:]]+(-C[[:space:]]+[^[:space:];&|]+[[:space:]]+)?(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:];&|]|$)'
 _PIPEFAIL='(^|[;&])[[:space:]]*set[[:space:]]+[^;|&]*-[a-zA-Z]*o[[:space:]]*pipefail'
 if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then
   _m=${BASH_REMATCH[0]}

@@ -66,7 +66,12 @@ case "${FAKE_MODE:-ok}" in
   narrated)
     jq -cn --arg n1 "Let me look at the file." --arg long "FULL REVIEW: findings, evidence and the ship recommendation, written out in full." \
       --arg short "verdict stands: ship" \
-      '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$n1}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$long}]}},{"type":"result","is_error":false,"result":$short,"total_cost_usd":0.005,"num_turns":4}]'
+      '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$n1},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}},{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"alpha"}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$long}]}},{"type":"result","is_error":false,"result":$short,"total_cost_usd":0.005,"num_turns":4}]'
+    exit 0 ;;
+  splittool)
+    jq -cn --arg n "Let me read every hook before I write the review, so that the findings cite real lines." \
+      --arg p1 "PART ONE: findings F1 and F2 with file and line evidence." --arg p2 "PART TWO: ship recommendation after the fixes." \
+      '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$n},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.txt"}}]}},{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"alpha"}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$p1},{"type":"text","text":$p2}]}},{"type":"result","is_error":false,"result":$p2,"total_cost_usd":0.005,"num_turns":3}]'
     exit 0 ;;
   differs)
     jq -cn '[{"type":"assistant","message":{"content":[{"type":"text","text":"ASSISTANT SIDE TEXT"}]}},{"type":"result","is_error":false,"result":"RESULT SIDE TEXT","total_cost_usd":0.005,"num_turns":2}]'
@@ -171,6 +176,9 @@ fk FAKE_MODE=differs -- "$CR" --prompt p --tools none --out "$T/differs.out" "$T
 check "A7 assistant text and a different result are both kept, assistant first" '[ $rc -eq 0 ] && [ "$(grep -n "ASSISTANT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" -lt "$(grep -n "RESULT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" ]'
 fk FAKE_MODE=resultonly -- "$CR" --prompt p --tools none --out "$T/ronly.out" "$T/a.txt" >/dev/null 2>"$T/ronly.err"; rc=$?
 check "A7 no non-blank assistant text: the result is the answer" '[ $rc -eq 0 ] && grep -q "ONLY RESULT" "$T/ronly.out" && ! grep -qx -- "---" "$T/ronly.out"'
+fk FAKE_MODE=splittool -- "$CR" --prompt p --tools none --out "$T/split.out" "$T/a.txt" >/dev/null 2>"$T/split.err"; rc=$?
+check "A7a narration in a message that also called a tool is excluded" '[ $rc -eq 0 ] && grep -q "PART ONE" "$T/split.out" && ! grep -q "Let me read every hook" "$T/split.out"'
+check "A7b a report split into two text blocks after the last tool call keeps both, in order, no trailing separator" '[ $rc -eq 0 ] && [ "$(grep -n "PART ONE" "$T/split.out" | cut -d: -f1)" -lt "$(grep -n "PART TWO" "$T/split.out" | cut -d: -f1)" ] && ! grep -qx -- "---" "$T/split.out"'
 fk FAKE_MODE=stream -- "$CR" --prompt p --tools none --out "$T/stream.out" "$T/a.txt" >/dev/null 2>"$T/stream.err"; rc=$?
 check "newline-delimited stream-json output: answer kept, turns and cost reported" '[ $rc -eq 0 ] && grep -q "STREAMED REPORT F1" "$T/stream.out" && grep -q "3 turn(s), cost \$0.005" "$T/stream.err"'
 
