@@ -116,8 +116,8 @@ Match against the expected set (ssh-agent, gpg-agent / keyboxd, colima/lima/orbs
 
 ## Editing a file a live process reads
 
-Do not edit in place a script that a running process or a review is reading, since the reader then sees a mix of two versions. Reviews read a frozen copy, and files that must agree with each other change in one commit or one step. An urgent hotfix to a live script ships first and is reviewed at once (the review exceptions in `CLAUDE.md`).
+Do not edit in place a script that a running process or a review is reading, since the reader then sees a mix of two versions. Reviews read a frozen copy, and files that must agree with each other change in one commit or one step. An urgent hotfix to a live script follows `CLAUDE.md`.
 
 ## Discarding output
 
-Discard output (`>/dev/null`, `2>&1 | tail -1`) only from a command that writes no files, repo state or remote state. For a mutating command, keep the tail the Bash output discipline in `CLAUDE.md` allows, but capture the command's own exit status (`set -o pipefail`, or `$?` before the pipe), not the pipeline's. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
+Discard output (`>/dev/null`) only from a command that writes no files, repo state or remote state. For a mutating command, keep the tail the Bash output discipline in `CLAUDE.md` allows, but capture the command's own exit status (`set -o pipefail`, or `$?` before the pipe), not the pipeline's. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
