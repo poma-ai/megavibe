@@ -315,6 +315,19 @@ fresh; hit "$FRESH" 'Obsolete vector parser guidance.'
 N=$((N - 1)); run Grep 'vector parser'
 check 'changed delivered head is recalled in same session' '[[ "$CTX" == *"Obsolete vector parser guidance."* ]]'
 
+echo '== The live task register'
+touch .agent/TASKS.md
+fresh; hit .agent/TASKS.md 'vector parser behavior'; run Grep 'vector parser'
+check 'TASKS.md (live register) is not injected' '[ -z "$CTX" ] && [ "$(hit_reason)" = excluded-path ]'
+mkdir -p .agent/PLANS/x; touch .agent/PLANS/x/TASKS.md
+fresh; hit .agent/PLANS/x/TASKS.md 'vector parser behavior'; run Grep 'vector parser'
+check 'a nested TASKS.md is still recalled' '[ -n "$CTX" ]'
+export MEGAVIBE_EXTRA_AGENT_DIRS="$T/project/other/.agent"
+touch other/.agent/.poma-memory.db other/.agent/TASKS.md
+fresh; hit "$T/project/other/.agent/TASKS.md" 'vector parser behavior'; run Bash "git -C other grep 'vector parser'"
+check 'an allow-listed foreign TASKS.md is still recalled' '[ -n "$CTX" ]'
+unset MEGAVIBE_EXTRA_AGENT_DIRS
+
 echo '== Round 3 actual search semantics and explicit scope'
 mkdir -p src/nested
 printf 'vector parser\n' > src/parser.py
