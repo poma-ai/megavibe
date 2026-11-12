@@ -301,5 +301,20 @@ done <<'EOF'
 172920;60;normal;normal|60|84|172920|0|7d 60% used, resets in 2d
 344700;60;normal;over|60|139|344700|0|7d 60% used, resets in 3d
 EOF
+
+# minimum span: a rate from samples minutes apart is noise, not a trend
+{ row "$((NOW - 1200))" 17 "$RESET"; row "$NOW" 19 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'two samples 20 minutes apart: no recent rate or projection' '[ "$(field 5)$(field 6)" = "" ] && [ "$(field 2)" = 19 ] && near "$(field 3)" 14'
+{ row "$((NOW - 7199))" 17 "$RESET"; row "$NOW" 19 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'a span one second under two hours: no recent rate' '[ "$(field 5)$(field 6)" = "" ]'
+{ row "$((NOW - 7200))" 17 "$RESET"; row "$NOW" 19 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'a span of exactly two hours gives the rate (2 points in 2 h is 24 per day)' 'near "$(field 5)" 24 && [ -n "$(field 6)" ]'
+{ codex "$((NOW - 1200))" 31 "$RESET"; codex "$NOW" 33 "$RESET"; } > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex pace)
+check 'Codex samples 20 minutes apart: no recent rate (the live 1150 percent case)' '[ "$(field 5)$(field 6)" = "" ] && [ "$(field 2)" = 33 ]'
+
 printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

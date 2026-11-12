@@ -10,7 +10,7 @@
 #                             second opinions) should lean on; prefer is claude, codex or - (no preference)
 #   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
 #   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
-#                             display only; linear from 5% elapsed, recent from samples within the last 6h
+#                             display only; linear from 5% elapsed, recent from samples within the last 6h that span at least 2h
 #   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
@@ -128,7 +128,7 @@ emit_pace() {
       else ($reset - $now) as $rem | (604800 - $rem) as $elapsed
         # A remembered maximum or a differing jitter sample is not a dated anchor
         # for the selected usage. Suppress the recent estimate if it cannot agree.
-        | (if $reliable and $first != null and $last.t > $first.t and $last.p == $w.used
+        | (if $reliable and $first != null and $last.t - $first.t >= 7200 and $last.p == $w.used
            then ($last.p - $first.p) * 86400 / ($last.t - $first.t) else null end) as $rate
         | [$provider, $w.used, ($elapsed / 6048 | rounded),
            (if $elapsed >= 30240 then ($w.used * 604800 / $elapsed | rounded) else "" end),
