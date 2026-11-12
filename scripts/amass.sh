@@ -4,7 +4,7 @@
 # and never a gate (the review tiers in .claude/rules/delegation.md are unchanged).
 #
 #   amass.sh run    --out DIR [--change TEXT | --task-file F] [--provider auto|mix|claude|codex] [--split N:M]
-#                   [--model MODEL | --claude-model M --codex-model M] [--lens name=text]...
+#                   [--model MODEL | --claude-model M --codex-model M] [--codex-effort E] [--lens name=text]...
 #                   [--lenses-file F] [--no-lens] [--copies 3] [--whole 0] [--parallel 12]
 #                   [--timeout 280] [--max-input-kb KB] [--dry-run] FILE... [--context FILE...]...
 #   amass.sh dedupe --out DIR [--provider auto|claude|codex] [--model MODEL] [--timeout 280]
@@ -66,6 +66,8 @@ warning line. mix needs both; claude or codex alone behaves as before. The split
 line is printed before sending, also with --dry-run. --split N:M (claude:codex) or
 MEGAVIBE_AMASS_SPLIT overrides the weights; --claude-model and --codex-model pick
 the models (--model fits a single provider only). The mixed input cap is 150 KB.
+Codex calls run at reasoning effort low (--codex-effort to change): at a
+high effort inherited from the user config they took minutes and hit --timeout.
 dedupe picks the provider with the lower projection, so it leans on the one with
 headroom; --provider claude|codex forces one. Codex alone: gpt-5.6-luna and a
 400 KB cap. --model gpt-6-luna also works; the bare name luna does not.
@@ -124,6 +126,9 @@ REQ=auto          # what was asked: auto|mix|claude|codex
 PROVS=''          # the providers that will get calls, space separated, once resolved
 RESOLVED=0
 CLAUDE_MODEL=haiku; CODEX_MODEL=gpt-5.6-luna
+# Lens enumeration does not need deliberation: at the user config's high effort luna took
+# minutes per call and often hit the timeout; low answers in seconds. --codex-effort overrides.
+CODEX_EFFORT=low
 CX_WORK=''; CX_PID=''; CX_WORKERS=(); CX_DRY=''; CX_LOCK=''
 CX_CLEAN=(env -i)
 for _v in HOME PATH CODEX_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY ALL_PROXY https_proxy http_proxy no_proxy all_proxy NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
@@ -220,7 +225,7 @@ call_model() { # provider model timeout prompt_file out_json out_err
   local rc=0 tokens answer="$4.answer" events="$4.events"
   # Dedupe can be repeated: never accept a previous attempt's final answer.
   rm -f "$answer" "$4"
-  codex_command "$2" "$CODEX_BIN" exec --model "$1" --sandbox read-only \
+  codex_command "$2" "$CODEX_BIN" exec --model "$1" -c "model_reasoning_effort=\"$CODEX_EFFORT\"" --sandbox read-only \
     -c 'approval_policy="never"' --ignore-rules --skip-git-repo-check \
     --ephemeral --json --output-last-message "$answer" - \
     < "$3" > "$events" 2> "$5" || rc=$?
@@ -521,6 +526,7 @@ cmd_run() {
       --model) MODEL=${2:-}; MODEL_SET=1; shift 2 ;;
       --claude-model) CLAUDE_MODEL=${2:-}; shift 2 ;;
       --codex-model) CODEX_MODEL=${2:-}; shift 2 ;;
+      --codex-effort) CODEX_EFFORT=${2:-}; shift 2 ;;
       --split) SPLIT=${2:-}; SPLIT_FLAG=1; shift 2 ;;
       --lens) [ -n "${2:-}" ] || die "--lens needs name=text"; case $2 in *=*) ;; *) die "--lens needs name=text" ;; esac
               name=${2%%=*}; text=${2#*=}; valid_name "$name" || die "bad lens name '$name'"
@@ -544,6 +550,7 @@ cmd_run() {
   [ "$MODEL_SET" = 0 ] || valid_model "$MODEL" || die "bad --model"
   valid_model "$CLAUDE_MODEL" || die "bad --claude-model"
   valid_model "$CODEX_MODEL" || die "bad --codex-model"
+  case $CODEX_EFFORT in minimal|low|medium|high|xhigh) ;; *) die "--codex-effort must be minimal, low, medium, high or xhigh" ;; esac
   [ "$REQ" != mix ] || [ "$MODEL_SET" = 0 ] || die "--model cannot name both models of a mixed run: use --claude-model and --codex-model"
   if [ "$SPLIT_FLAG" = 0 ] && [ -n "${MEGAVIBE_AMASS_SPLIT:-}" ]; then
     case $REQ in claude|codex) ;; *) SPLIT=$MEGAVIBE_AMASS_SPLIT ;; esac
@@ -796,6 +803,7 @@ cmd_dedupe() {
       --model) MODEL=${2:-}; MODEL_SET=1; shift 2 ;;
       --claude-model) CLAUDE_MODEL=${2:-}; shift 2 ;;
       --codex-model) CODEX_MODEL=${2:-}; shift 2 ;;
+      --codex-effort) CODEX_EFFORT=${2:-}; shift 2 ;;
       --timeout) TIMEOUT=${2:-}; shift 2 ;;
       --max-input-kb) MAXKB=${2:-}; MAXKB_SET=1; shift 2 ;;
       -h|--help) usage 0 ;;
@@ -811,6 +819,7 @@ cmd_dedupe() {
   [ "$MODEL_SET" = 0 ] || valid_model "$MODEL" || die "bad --model"
   valid_model "$CLAUDE_MODEL" || die "bad --claude-model"
   valid_model "$CODEX_MODEL" || die "bad --codex-model"
+  case $CODEX_EFFORT in minimal|low|medium|high|xhigh) ;; *) die "--codex-effort must be minimal, low, medium, high or xhigh" ;; esac
   isnum "$TIMEOUT" && isnum "$MAXKB" || die "numeric option expected"
   [ "$TIMEOUT" -ge 1 ] || die "--timeout must be at least 1 (0 would disable the deadline)"
   need jq; need perl

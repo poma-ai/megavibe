@@ -705,6 +705,10 @@ for f in "$FAKE_LOG"/call_*/pid "$FAKE_LOG"/call_*/child; do
   [ -f "$f" ] || continue
   if kill -0 "$(cat "$f")" 2>/dev/null; then alive_cx=$((alive_cx + 1)); fi
 done
+# Codex calls pin a low reasoning effort unless --codex-effort says otherwise.
+eff_argv=$(cat "$FAKE_LOG"/call_*/argv 2>/dev/null)
+check "codex calls pass model_reasoning_effort=low by default" 'printf "%s\n" "$eff_argv" | grep -qx "model_reasoning_effort=\"low\""'
+check "a bad --codex-effort is refused before anything is sent" '! "$AM" run --provider codex --codex-effort huge --out "$T/eff-bad" "$T/a.txt" >/dev/null 2>&1 && [ ! -e "$T/eff-bad" ]'
 check "cancelling a mixed run exits 143, leaves no fake codex worker or child alive, and cleans scratch" '[ $rc -eq 143 ] && [ "$alive_cx" = 0 ] && ls "$FAKE_LOG"/call_*/pid >/dev/null 2>&1 && clean_scratch'
 # docs
 out=$("$AM" --help)
