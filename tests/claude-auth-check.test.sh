@@ -123,6 +123,28 @@ check "a +00:00 offset parses" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left
 printf '{"loggedIn":true,"loginExpiresAt":"%s"}\n' "$iso" > "$T/st-nomethod.json"
 runs "$T/st-nomethod.json" "$T/stale.json"
 check "no authMethod field: still checked by expiry" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left"* ]]'
+# The real CLI exits 1 when logged out, with valid JSON on stdout: a fake `claude` and a fake
+# `security` on PATH, so neither the real login nor the real keychain is touched.
+FB="$T/fakebin"; mkdir -p "$FB"
+printf '#!/bin/sh\nprintf "%%s\\n" "{\\"loggedIn\\":false,\\"authMethod\\":\\"none\\"}"\nexit 1\n' > "$FB/claude"
+creds "$T/fake-ok.json" 8 600
+printf '#!/bin/sh\ncat "%s"\n' "$T/fake-ok.json" > "$FB/security"
+chmod +x "$FB/claude" "$FB/security"
+o=$(PATH="$FB:$PATH" HOME="$T/home" MEGAVIBE_NOW=$NOW bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
+check "real-CLI shape: logged out (exit 1 + JSON) is not logged in, even with a valid stored record ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"not logged in"* ]]'
+printf '#!/bin/sh\nexit 1\n' > "$FB/claude"
+o=$(PATH="$FB:$PATH" HOME="$T/home" MEGAVIBE_NOW=$NOW bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
+check "status call gives nothing: stored record answers and says so ($o)" '[ "$RC" = 0 ] && [[ "$o" == *"refresh token 600.0 h"* ]] && [[ "$o" == *"unavailable"* ]]'
+printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"%s","expiresAt":%s,"refreshTokenExpiresAt":0}}\n' "$SECRET" "$SECRET" "$(( (NOW + 3600) * 1000 ))" > "$T/refunk.json"
+run "$T/refunk.json"
+check "refresh token stored with expiry 0: unknown, exit 2, no re-login alarm ($o)" '[ "$RC" = 2 ] && [[ "$o" == *"expiry is unknown"* ]] && [[ "$o" != *"/login"* ]]'
+iso2=$(date -u -r "$((NOW + 400 * 3600 + 7200))" +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d "@$((NOW + 400 * 3600 + 7200))" +%Y-%m-%dT%H:%M:%S)
+printf '{"loggedIn":true,"authMethod":"claude.ai","loginExpiresAt":"%s+02:00"}\n' "$iso2" > "$T/st-plus2.json"
+runs "$T/st-plus2.json" "$T/stale.json"
+check "a +02:00 offset is applied ($o)" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left"* ]]'
+printf '{"loggedIn":true,"authMethod":"claude.ai","loginExpiresAt":%s}\n' "$(( (NOW + 400 * 3600) * 1000 ))" > "$T/st-num.json"
+runs "$T/st-num.json" "$T/stale.json"
+check "a numeric epoch in milliseconds is read" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left"* ]]'
 o=$(bash "$REPO/scripts/claude-auth-check.sh" -h 2>&1)
 check "help shows the whole header" '[[ "$o" == *"MEGAVIBE_NOW pins the clock"* ]]'
 # Without a usable status, a zero or pre-2001 expiry is unknown, never expired.

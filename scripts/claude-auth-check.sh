@@ -49,11 +49,14 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
 fi
 # `claude auth status`: the login's own expiry. Only hours are printed from it (it also
 # carries the account's email and organisation). Bounded like the keychain call.
-status=""
+status=""; STATUS_TRIED=0
 if [ -n "${MEGAVIBE_CLAUDE_AUTH_STATUS:-}" ]; then
+  STATUS_TRIED=1
   [ -f "$MEGAVIBE_CLAUDE_AUTH_STATUS" ] && status=$(cat "$MEGAVIBE_CLAUDE_AUTH_STATUS" 2>/dev/null)
 elif [ -z "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ] && command -v claude >/dev/null 2>&1 && command -v perl >/dev/null 2>&1; then
-  status=$(perl -e 'alarm 10; exec @ARGV' claude auth status 2>/dev/null) || status=""
+  # Logged out, the CLI prints valid JSON and exits 1: keep the output, let jq judge it.
+  status=$(perl -e 'alarm 10; exec @ARGV' claude auth status 2>/dev/null </dev/null) || true
+  STATUS_TRIED=1
 fi
 if [ -n "$status" ]; then
   # "in <hours>" when the expiry parses, "out" when not logged in, "other" (an API key or
@@ -63,8 +66,14 @@ if [ -n "$status" ]; then
     elif .loggedIn == false then "out -"
     elif .loggedIn == true and has("authMethod") and .authMethod != "claude.ai" then "other -"
     elif .loggedIn == true then
-      ((.loginExpiresAt // "") | if type != "string" then null
-        else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | try fromdateiso8601 catch null end) as $e
+      ((.loginExpiresAt // null)
+        | if type == "number" then (if . > 100000000000 then . / 1000 else . end)
+          elif type == "string" then
+            ([try (sub("\\.[0-9]+"; "") | capture("^(?<t>.*?)(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2}))$")) catch empty] | .[0]) as $p
+            | (if $p == null then null else (($p.t + "Z") | try fromdateiso8601 catch null) end) as $b
+            | if $b == null then null elif $p.z == "Z" then $b
+              else $b - (if $p.s == "+" then 1 else -1 end) * (($p.h | tonumber) * 3600 + ($p.m | tonumber) * 60) end
+          else null end) as $e
       | if $e == null or $e < 1000000000 then "unknown -" else "in \((($e - $now) / 3600))" end
     else "" end' 2>/dev/null) || true
   case "${STATE:-}" in
@@ -107,12 +116,13 @@ fi
 # Hours left on each token (printed to one decimal); "n/a" when the field is missing, zero or
 # implausible (before 2001: a stale record, not an expired login). A value over 1e11 is
 # milliseconds (what Claude Code writes); seconds are accepted too.
-read -r ACC REF < <(printf '%s' "$json" | jq -r --argjson now "$NOW" '
+read -r ACC REF HASREF < <(printf '%s' "$json" | jq -r --argjson now "$NOW" '
   def sec: if . == null or (type != "number") then null elif . > 100000000000 then . / 1000 else . end
     | if . == null or . < 1000000000 then null else . end;
   (.claudeAiOauth // {}) as $o
   | [($o.expiresAt | sec), ($o.refreshTokenExpiresAt | sec)]
   | map(if . == null then "n/a" else ((. - $now) / 3600 | tostring) end)
+  | . + [if (($o.refreshToken // "") | type) == "string" and ($o.refreshToken // "") != "" then "yes" else "no" end]
   | join(" ")' 2>/dev/null) || true
 if [ -z "${ACC:-}" ] || [ -z "${REF:-}" ]; then
   echo "claude-auth: credentials found but not readable as Claude Code's OAuth record ($src)"
@@ -122,6 +132,10 @@ fi
 fmt() { case "$1" in n/a) printf 'n/a' ;; *) LC_NUMERIC=C printf '%.1f h' "$1" ;; esac; }
 msg="claude-auth: access token $(fmt "$ACC"), refresh token $(fmt "$REF")"
 [ "$src" = file ] && [ -z "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ] && msg="$msg (from ~/.claude/.credentials.json)"
+[ "$STATUS_TRIED" = 1 ] && msg="$msg (stored record; \`claude auth status\` unavailable)"
+if [ "$REF" = n/a ] && [ "${HASREF:-no}" = yes ]; then
+  echo "$msg -> a refresh token is stored but its expiry is unknown; login lifetime unknown"; exit 2
+fi
 if [ "$REF" = n/a ] && [ "$ACC" = n/a ]; then
   echo "$msg -> login lifetime unknown: the stored record has no usable expiry and \`claude auth status\` gave none"; exit 2
 fi
