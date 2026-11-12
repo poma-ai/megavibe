@@ -501,6 +501,14 @@ def plugin_for(data: str | None):
 
 
 def markup_from(rows):
+    try:
+        return _markup_from(rows)
+    except Exception as e:             # a malformed "buttons" value must not lose the result
+        log.info("plugin buttons ignored: %s", e)
+        return None
+
+
+def _markup_from(rows):
     out = []
     for row in rows or []:
         btns = []
@@ -531,59 +539,176 @@ async def _safe_answer(answer, text="") -> bool:
         return False
 
 
+PLUGIN_OUT_MAX = 1 << 20          # stdout beyond this kills the plugin
+PLUGIN_ERR_KEEP = 8 << 10         # only the tail of stderr is kept (for the log)
+PLUGIN_DRAIN = 1.0                # after the leader exits, wait this long for output
+PLUGIN_TEXT_MAX = 16 << 10        # any text from a plugin is cut to this BEFORE processing
+PLUGIN_GROUPS: set[int] = set()   # process groups of plugins that are running now
+
+
+def _killpg(pgid: int, sig) -> bool:
+    """Signal a group; False when it no longer exists."""
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def kill_plugin_groups():
+    """Kill every live plugin group (shutdown, SIGHUP). Synchronous and safe in a
+    signal handler."""
+    for pgid in list(PLUGIN_GROUPS):
+        _killpg(pgid, signal.SIGKILL)
+
+
+def on_sighup(signum, frame):
+    """tmux kill-session sends SIGHUP: plugins have their own sessions, so they
+    would survive it. Kill them, then take the normal SIGTERM shutdown."""
+    kill_plugin_groups()
+    signal.raise_signal(signal.SIGTERM)
+
+
+async def _reap_group(pgid: int):
+    """Whatever is left in the plugin's group: TERM, then KILL after 1 s."""
+    if not _killpg(pgid, signal.SIGTERM):
+        return
+    for _ in range(20):
+        await asyncio.sleep(0.05)
+        if not _killpg(pgid, 0):
+            return
+    _killpg(pgid, signal.SIGKILL)
+
+
 async def run_plugin(path: Path, mode: str, arg: str, ctx: dict, answer=None) -> dict:
     """Run a plugin under ONE deadline (PLUGIN_TIMEOUT). If it outlives
     Telegram's ~15 s callback window, acknowledge the press first so the button
-    stops spinning. The plugin gets its own process group, so a timeout or a
-    cancellation kills its children too. Never raises; failures come back as a
-    toast, and `_answered` says whether the press was already acknowledged."""
+    stops spinning. The plugin gets its own process group; whatever is left in
+    it is killed on EVERY way out (result, failure, timeout, cancellation).
+    Output is read with caps, never buffered whole. Never raises (except
+    cancellation); failures come back as a toast, and `_answered` says whether
+    the press was already acknowledged."""
+    try:
+        return await _run_plugin(path, mode, arg, ctx, answer)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        # RecursionError, ValueError and friends: still answer the press.
+        log.warning("plugin %s runner failed: %r", path.name, e)
+        return {"toast": f"\u274c {path.name} failed", "_answered": False}
+
+
+async def _run_plugin(path, mode, arg, ctx, answer) -> dict:
     answered = False
     loop = asyncio.get_running_loop()
     deadline = loop.time() + PLUGIN_TIMEOUT
     try:
+        stdin_data = json.dumps(ctx).encode()
         proc = await asyncio.create_subprocess_exec(
             str(path), mode, arg, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             start_new_session=True)
-    except OSError as e:
+    except (OSError, ValueError, RecursionError, TypeError) as e:
         log.warning("plugin %s could not start: %s", path.name, e)
         return {"toast": f"\u274c {path.name} could not start", "_answered": False}
 
-    def kill_group():
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+    pgid = proc.pid
+    PLUGIN_GROUPS.add(pgid)
+    out_buf = bytearray()
+    err_buf = bytearray()
+    state = {"overflow": False}
 
-    comm = asyncio.ensure_future(proc.communicate(json.dumps(ctx).encode()))
-    try:
+    async def feed():
         try:
-            out, err = await asyncio.wait_for(asyncio.shield(comm), 8)
-        except asyncio.TimeoutError:
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    async def read_out():
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                return
+            out_buf.extend(chunk)
+            if len(out_buf) > PLUGIN_OUT_MAX:
+                state["overflow"] = True
+                _killpg(pgid, signal.SIGKILL)
+                return
+
+    async def read_err():
+        while True:
+            chunk = await proc.stderr.read(65536)
+            if not chunk:
+                return
+            err_buf.extend(chunk)
+            if len(err_buf) > 2 * PLUGIN_ERR_KEEP:
+                del err_buf[:-PLUGIN_ERR_KEEP]
+
+    async def collect():
+        readers = [asyncio.ensure_future(read_out()), asyncio.ensure_future(read_err()),
+                   asyncio.ensure_future(feed())]
+        try:
+            # The leader only. proc.wait() also waits for the pipes to close, which a
+            # backgrounded child holding them would delay until it exits.
+            while proc.returncode is None:
+                await asyncio.sleep(0.05)
+            await asyncio.wait(readers, timeout=PLUGIN_DRAIN)
+        finally:
+            for r in readers:
+                if not r.done():
+                    r.cancel()
+
+    work = asyncio.ensure_future(collect())
+    hard = False
+    try:
+        done, _ = await asyncio.wait({work}, timeout=8)
+        if not done:
             answered = await _safe_answer(answer, "\u23f3 working\u2026")
-            out, err = await asyncio.wait_for(comm, max(1.0, deadline - loop.time()))
-    except asyncio.TimeoutError:
-        kill_group()
-        return {"toast": f"\u274c {path.name} timed out", "_answered": answered}
+            done, _ = await asyncio.wait({work}, timeout=max(1.0, deadline - loop.time()))
+        if not done:
+            hard = True
+            _killpg(pgid, signal.SIGKILL)
+            return {"toast": f"\u274c {path.name} timed out", "_answered": answered}
+        work.result()
     except BaseException:
-        kill_group()           # cancelled or crashed: leave nothing running
+        hard = True
+        _killpg(pgid, signal.SIGKILL)      # cancelled or crashed: leave nothing running
         raise
     finally:
-        if proc.returncode is None:
-            kill_group()
-        if not comm.done():
-            comm.cancel()
-        try:                    # reap, so no zombie is left behind
-            await asyncio.wait_for(proc.wait(), 5)
+        if not work.done():
+            work.cancel()
+        try:
+            if proc.returncode is None:
+                _killpg(pgid, signal.SIGKILL)
+            for _ in range(100):                       # the leader is reaped by asyncio
+                if proc.returncode is not None:
+                    break
+                await asyncio.sleep(0.05)
         except BaseException:
             pass
+        try:
+            if not hard:
+                await _reap_group(pgid)
+        except BaseException:
+            _killpg(pgid, signal.SIGKILL)
+        PLUGIN_GROUPS.discard(pgid)
+
+    if state["overflow"]:
+        log.warning("plugin %s output over %d bytes; killed", path.name, PLUGIN_OUT_MAX)
+        return {"toast": f"\u274c {path.name}: output too large", "_answered": answered}
     if proc.returncode != 0:
         log.warning("plugin %s exited %s: %s", path.name, proc.returncode,
-                    err.decode(errors="replace")[-300:])
+                    bytes(err_buf[-300:]).decode(errors="replace"))
         return {"toast": f"\u274c {path.name} failed", "_answered": answered}
     try:
-        res = json.loads(out.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        res = json.loads(bytes(out_buf).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
         res = None
     if not isinstance(res, dict):
         return {"toast": f"\u274c {path.name} returned no JSON object", "_answered": answered}
@@ -594,12 +719,16 @@ async def run_plugin(path: Path, mode: str, arg: str, ctx: dict, answer=None) ->
 def fit(text, parse_mode):
     """Telegram's 4096-character limit, without cutting formatting in half: an
     over-long formatted text is sent as plain text instead (a slice can end
-    inside a tag, and then the whole message is rejected)."""
-    text = str(text)
+    inside a tag, and then the whole message is rejected). The input is cut to
+    PLUGIN_TEXT_MAX first and stripped in one linear pass, so a hostile text
+    costs the event loop microseconds."""
+    text = str(text)[:PLUGIN_TEXT_MAX]
+    if not isinstance(parse_mode, str):
+        parse_mode = None
     if len(text) <= 4096:
         return text, parse_mode
     if parse_mode and parse_mode.upper() == "HTML":
-        text = html.unescape(re.sub(r"<[^>]+>", "", text))
+        text = html.unescape(re.sub(r"<[^<>]*>", "", text))
     elif parse_mode:
         text = re.sub(r"[*_`\\[\]]", "", text)
     return (text if len(text) <= 4096 else text[:4095] + "\u2026"), None
@@ -614,7 +743,7 @@ async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
     an edit also succeeded — the edit may not say what the toast says. A failed
     edit (other than "not modified") or a failed reply always produces a
     warning, so a lost card never looks like success."""
-    toast = str(res.get("toast") or "").strip()
+    toast = str(res.get("toast") or "")[:PLUGIN_TEXT_MAX].strip()
     toast_done = False
     if query and not res.get("_answered"):
         ok = await _safe_answer(query.answer, toast)
@@ -988,6 +1117,10 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.error("Unhandled error in update %s", update, exc_info=err)
 
 
+async def _post_stop(app):
+    kill_plugin_groups()
+
+
 def main():
     # Ensure personal session is running
     if subprocess.run(["which", "tmux"], capture_output=True).returncode != 0:
@@ -997,7 +1130,9 @@ def main():
     acquire_single_instance_lock()
     start_personal_session()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (ApplicationBuilder().token(TOKEN)
+           .post_stop(_post_stop).post_shutdown(_post_stop).build())
+    signal.signal(signal.SIGHUP, on_sighup)
 
     app.add_handler(CommandHandler("register", cmd_register))
     app.add_handler(CommandHandler("projects", cmd_projects))
