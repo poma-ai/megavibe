@@ -304,6 +304,7 @@ clean_kept
 # tools read
 out=$("$CR" --prompt "p" --tools read --keep-scratch "$T/a.txt" 2>/dev/null); S1=$(kept)
 check "tools read: Read, Grep, Glob only, and copies of the files in in/" 'sed -n "/^--tools\$/{n;p;}" "$S1/fake.argv" | grep -qx "Read,Grep,Glob" && grep -q "a.txt" "$S1/fake.in"'
+check "MEGAVIBE_SANDBOX is not set outside exec mode (tools none, tools read)" '! grep -qx MEGAVIBE_SANDBOX "$S0/fake.envnames" && ! grep -qx MEGAVIBE_SANDBOX "$S1/fake.envnames"'
 clean_kept
 
 # tools exec (needs the macOS seatbelt)
@@ -312,6 +313,7 @@ if [ "$MAC" = 1 ]; then
   rm -f "$T/outside/should-not-exist"
   out=$("$CR" --prompt "p" --as-reviewer --keep-scratch "$T/a.txt" 2>"$T/err2.txt"); rc=$?; S2=$(kept)
   check "exec is the default under --as-reviewer and runs" '[ $rc -eq 0 ] && grep -q "tools=exec" "$T/err2.txt"'
+  check "exec mode exports MEGAVIBE_SANDBOX to the worker, so its commands can tell they are sandboxed" 'grep -qx MEGAVIBE_SANDBOX "$S2/fake.envnames"'
   check "exec tool set and allowedTools" 'sed -n "/^--tools\$/{n;p;}" "$S2/fake.argv" | grep -qx "Read,Grep,Glob,Bash,Write" && sed -n "/^--allowedTools\$/{n;p;}" "$S2/fake.argv" | grep -qx "Read,Grep,Glob,Bash,Write"'
   check "the guard hooks are registered through --settings, without loading other settings" 'jq -e ".hooks.PreToolUse[0].hooks[0].command | contains(\"block-dangerous-bash.sh\")" "$(ctl)/settings.json" >/dev/null && sed -n "/^--setting-sources\$/{n;p;}" "$S2/fake.argv" | grep -qx ""'
   check "a write OUTSIDE the scratch dir is denied by the operating system" '[ "$(cat "$S2/fake.outside.rc")" != 0 ] && [ ! -e "$T/outside/should-not-exist" ] && grep -qi "not permitted" "$S2/fake.outside.err"'
