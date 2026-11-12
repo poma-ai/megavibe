@@ -379,6 +379,144 @@ check "\$(which rm) blocked" '[ "$(bd "\$(which rm) x")" = 2 ]'
 check "git rm -f blocked" '[ "$(bd "git rm -f notes.md")" = 2 ]'
 check "__import__ os remove blocked" '[ "$(bd "python3 -c \"__import__('\''os'\'').remove('\''x'\'')\"")" = 2 ]'
 check "git rm without -f allowed" '[ "$(bd "git rm notes.md")" = 0 ]'
+check "git worktree remove --force blocked" '[ "$(bd "git worktree remove --force ../wt")" = 2 ]'
+check "git worktree remove -f blocked" '[ "$(bd "git worktree remove -f ../wt")" = 2 ]'
+check "git worktree remove -f -f (locked) blocked" '[ "$(bd "git worktree remove -f -f ../wt")" = 2 ]'
+check "git -C repo worktree remove --force blocked" '[ "$(bd "git -C repo worktree remove --force ../wt")" = 2 ]'
+check "git --git-dir=x worktree remove --force blocked" '[ "$(bd "git --git-dir=x worktree remove --force -- ../wt")" = 2 ]'
+check "python subprocess git worktree remove --force blocked" '[ "$(bd "python3 -c \"import subprocess; subprocess.run(['\''git'\'','\''worktree'\'','\''remove'\'','\''--force'\'','\''wt'\''])\"")" = 2 ]'
+check "find -exec git worktree remove --force blocked" '[ "$(bd "find . -maxdepth 0 -exec git worktree remove --force ../wt \\;")" = 2 ]'
+check "find -execdir git worktree remove -f blocked" '[ "$(bd "find . -maxdepth 0 -execdir git worktree remove -f ../wt +")" = 2 ]'
+check "Black-style multi-line python list blocked" '[ "$(bd "python3 -c \"import subprocess
+subprocess.run([
+    \\\"git\\\",
+    \\\"worktree\\\",
+    \\\"remove\\\",
+    \\\"--force\\\",
+    \\\"x\\\",
+])\"")" = 2 ]'
+check "python list with a -C path containing a space blocked" '[ "$(bd "python3 -c '\''import subprocess; subprocess.run([\"git\",\"-C\",\"my dir\",\"worktree\",\"remove\",\"-f\",\"x\"])'\''")" = 2 ]'
+check "timeout 5 git worktree remove -f blocked" '[ "$(bd "timeout 5 git worktree remove -f x")" = 2 ]'
+check "gtimeout -s KILL 5 git worktree remove -f blocked" '[ "$(bd "gtimeout -s KILL 5 git worktree remove -f x")" = 2 ]'
+check "stdbuf -o0 git worktree remove -f blocked" '[ "$(bd "stdbuf -o0 git worktree remove -f x")" = 2 ]'
+check "exec -a name git worktree remove -f blocked" '[ "$(bd "exec -a foo git worktree remove -f x")" = 2 ]'
+check "partly quoted worktree word blocked" '[ "$(bd "git wor\"ktree\" remove -f x")" = 2 ]'
+check "git --attr-source HEAD worktree remove -f blocked" '[ "$(bd "git --attr-source HEAD worktree remove -f z")" = 2 ]'
+check "timeout 5 git status allowed" '[ "$(bd "timeout 5 git status")" = 0 ]'
+check "xcrun git -C repo worktree remove --force blocked" '[ "$(bd "xcrun git -C repo worktree remove --force ../wt")" = 2 ]'
+check "arch -arm64 git worktree remove -f blocked" '[ "$(bd "arch -arm64 git worktree remove -f ../wt")" = 2 ]'
+check "node template literal git worktree remove --force blocked" '[ "$(bd "node -e '\''require(\"child_process\").execSync(\`git worktree remove --force x\`)'\''")" = 2 ]'
+check "node template literal git clean -fd blocked (as on main before)" '[ "$(bd "node -e '\''execSync(\`git clean -fd\`)'\''")" = 2 ]'
+check "xcrun --find git allowed" '[ "$(bd "xcrun --find git")" = 0 ]'
+check "find -exec git status allowed" '[ "$(bd "find . -maxdepth 0 -exec git status \\;")" = 0 ]'
+check "unparsable command with a forced worktree remove blocked (fails closed)" '[ "$(bd "git worktree remove --force ../wt; : \\")" = 2 ]'
+check "git worktree remove without --force allowed" '[ "$(bd "git worktree remove ../wt")" = 0 ]'
+check "git worktree list and prune allowed" '[ "$(bd "git worktree list; git worktree prune")" = 0 ]'
+check "git worktree add -f allowed (it creates, never deletes)" '[ "$(bd "git worktree add -f ../wt main")" = 0 ]'
+# Token walk for git worktree remove / clean / rm: one case per line, B| blocked, A| allowed.
+while IFS= read -r _wl; do
+  [ -n "$_wl" ] || continue
+  _we=2; [ "${_wl%%|*}" = A ] && _we=0
+  _wc=${_wl#*|}
+  check "wt walk ${_wl%%|*}: $_wc" '[ "$(bd "$_wc")" = "$_we" ]'
+done <<'WTCASES'
+B|git worktree remove --for ../wt
+B|git worktree remove --f ../wt
+B|git worktree remove ../wt --force>/dev/null
+B|git worktree remove ../wt 2>&1 --force
+B|git worktree remove --force 2>&1
+B|git "worktree" remove --force ../wt
+B|git worktree "remove" -f ../wt
+B|"git" worktree remove -f ../wt
+B|\git worktree remove -f ../wt
+B|/usr/bin/git worktree remove -f ../wt
+B|git --git-dir x worktree remove --force ../wt
+B|git --work-tree x worktree remove --force ../wt
+B|git --namespace foo -C main worktree remove --force ../wt
+B|git --config-env a=B worktree remove --force ../wt
+B|git -c core.x=1 worktree remove -qf ../wt
+B|git -C a --git-dir x worktree remove ../wt -f
+B|git --no-pager --bare worktree remove -ff ../wt
+B|GIT_X=1 git worktree remove -f ../wt
+B|sudo -u bob git worktree remove -f ../wt
+B|env -i FOO=1 git worktree remove -f ../wt
+B|nice -n 5 git worktree remove -f ../wt
+B|command git worktree remove -f ../wt
+B|ls && (git worktree remove -f ../wt)
+B|echo hi | xargs git worktree remove -f
+B|echo $(git worktree remove -f ../wt)
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','--force','wt'])"
+B|node -e "require('child_process').execFileSync('git',['-C','x','worktree','remove','-f','wt'])"
+B|python3 -c "import subprocess; subprocess.run(['git','worktree','remove','wt']); subprocess.run(['git','worktree','remove','--force','wt2'])"
+B|bash -c "git worktree remove --force ../wt"
+B|git --git-dir x clean -fd
+B|git --work-tree x clean --f
+B|git --git-dir x rm -f a.txt
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','clean','-f'])"
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','rm','-f','a'])"
+A|echo git worktree remove --force x
+A|git worktree remove -- --force
+A|git worktree remove ./wt -- -f
+A|git worktree remove ../wt
+A|git worktree remove --help
+A|git worktree list
+A|git worktree prune
+A|git worktree add -f ../wt main
+A|git worktree move -f ../wt ../wt2
+A|git worktree lock ../wt
+A|git -C x worktree remove ../wt 2>&1
+A|git --git-dir x clean -n
+A|git --git-dir x rm --cached -f a.txt
+A|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','wt'])"
+WTCASES
+# Review round 2 findings: comments in argument lists, find -exec operands, wrapper option
+# values, here-strings to a shell, and a pre-filter that stays fast on large text.
+check "python list with a # comment line inside blocked" '[ "$(bd "python3 - <<'\''PY'\''
+import subprocess
+subprocess.run([
+    '\''git'\'',
+    # why we do this
+    '\''worktree'\'',
+    '\''remove'\'',
+    '\''--force'\'',
+    '\''../wt'\'',
+])
+PY")" = 2 ]'
+while IFS= read -r _wl; do
+  [ -n "$_wl" ] || continue
+  _we=2; [ "${_wl%%|*}" = A ] && _we=0
+  _wc=${_wl#*|}
+  check "wt walk2 ${_wl%%|*}: $_wc" '[ "$(bd "$_wc")" = "$_we" ]'
+done <<'WTCASES2'
+B|find . -maxdepth 0 -exec git -C {} worktree remove --force ../wt \;
+B|find . -maxdepth 0 -exec env X=1 git worktree remove --force ../wt \;
+B|find . -maxdepth 0 -execdir git -C {} worktree remove -f ../wt +
+B|caffeinate -t 60 git worktree remove --force x
+B|caffeinate -w 123 git worktree remove --force x
+B|stdbuf -o L git worktree remove --force x
+B|stdbuf -i 0 -o L -e 0 git worktree remove --force x
+B|time -o out.txt git worktree remove --force x
+B|time -f %e git worktree remove --force x
+B|bash <<< 'git worktree remove --force ../wt'
+B|sh <<< "git worktree remove --force ../wt"
+B|zsh <<<'git worktree remove -f ../wt'
+B|bash -s <<< 'git worktree remove --force ../wt'
+A|find . -maxdepth 0 -exec git -C {} status \;
+A|find . -exec env X=1 git status \;
+A|caffeinate -t 60 git status
+A|stdbuf -o L git status
+A|time -o out.txt git status
+A|cat <<< 'git worktree remove --force ../wt'
+A|grep x <<< 'git worktree remove --force ../wt'
+A|bash <<< 'echo hi'
+WTCASES2
+_big=$(python3 -c 'print("cat <<'"'"'EOF'"'"'\n" + "a row of plain documentation and a quoted \"word\"\n" * 100 + "EOF")')
+_t0=$(python3 -c 'import time; print(time.time())'); _r=$(bd "$_big"); _t1=$(python3 -c 'import time; print(time.time())')
+check "100-row quoted heredoc allowed in under 1 s" '[ "$_r" = 0 ] && python3 -c "import sys; sys.exit(0 if $_t1 - $_t0 < 1.0 else 1)"'
+check "commit message naming the forced removal allowed" '[ "$(bd "git commit -m \"never git worktree remove --force\"")" = 0 ]'
+check "heredoc to cat naming the forced removal allowed" '[ "$(bd "cat <<'\''EOF'\''
+git worktree remove --force x
+EOF")" = 0 ]'
 check "commit message heredoc through cat allowed" '[ "$(bd "git commit -m \"\$(cat <<'\''EOF'\''
 use rm -rf, find -delete and git clean -f in bash scripts
 EOF
