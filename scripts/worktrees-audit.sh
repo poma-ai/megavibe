@@ -4,7 +4,8 @@ set -euo pipefail
 export LC_ALL=C
 # Repository selection must come from paths, not a caller's Git overrides.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
-unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_GRAFT_FILE GIT_REPLACE_REF_BASE
+unset GIT_NO_REPLACE_OBJECTS GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1
 
 usage() {
@@ -27,7 +28,8 @@ KEEP reasons: remote-unverified = offline, absent or failed remote verification;
 git-lock = Git transaction lock or an unverifiable lock scan;
 pending-operation = unfinished Git operation/autostash; submodule = any indexed
 gitlink, initialized or not; parked-branch = unmerged named branch; unpushed =
-commits not on a verified remote. Dirty, locked, hidden-index-state, changed and
+commits not on a verified remote; grafts / replace-refs = the repository has
+info/grafts or replace refs, which can fake reachability. Dirty, locked, hidden-index-state, changed and
 unreadable states also mean KEEP. Local safety checks run again before removal.
 The tool never removes a worktree it can detect as dirty, unpushed, locked,
 mid-operation, or unverifiable.
@@ -205,7 +207,7 @@ git_locks_clear() {
 }
 
 assess() {
-  local actual common entry logs rc gitdir marker
+  local actual common entry logs rc gitdir marker replaced
   SIZE='?' DIRTY='?' UNPUSHED='?' MERGED=no DATE='?' SHA='?'
   VERDICT=SAFE REASON=''
   [[ $MAIN == no ]] || keep main-worktree
@@ -232,6 +234,12 @@ assess() {
   case "$common" in /*) ;; *) common=$WT/$common ;; esac
   common=$(cd "$common" 2>/dev/null && pwd -P) || { keep unreadable-common-dir; return; }
   [[ $common == "$COMMON" ]] || { keep wrong-repository; return; }
+  # Grafts and replace refs rewrite history: a local-only commit grafted below a
+  # remote tip would look reachable. Refuse the whole repository.
+  if [[ -e $COMMON/info/grafts || -L $COMMON/info/grafts ]]; then keep grafts; fi
+  if replaced=$(git --git-dir="$COMMON" replace --list 2>/dev/null); then
+    [[ -z $replaced ]] || keep replace-refs
+  else keep unreadable-replace; fi
   gitdir=$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null) || { keep unreadable-git-dir; return; }
   git_locks_clear "$gitdir" || keep git-lock
   for marker in rebase-merge rebase-apply MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG sequencer AUTO_MERGE; do
