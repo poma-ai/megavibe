@@ -1107,7 +1107,7 @@ def cmd_words(text):
         lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
     except ValueError:
-        return []
+        return None          # unbalanced quote, trailing backslash: the caller decides
     cmds, cur, skip = [], [], False
     for tok in toks:
         if skip: skip = False; continue
@@ -1156,11 +1156,24 @@ def command_start(w):
 def walk_reason(text, shell=False, depth=0):
     """git worktree remove --force, git clean, git rm -f in command position of `text`.
     With a shell in the call, a quoted word that holds a command line is walked too."""
-    for w in cmd_words(text):
+    words = cmd_words(text)
+    if words is None:
+        # Not parsable as shell (bash itself may still run it): fail closed on the one
+        # combination this gate exists for.
+        if re.search(r"worktree", text) and re.search(r"\bremove\b", text) and re.search(r"(?<!\S)(?:--f\w*|-[A-Za-z]*f)(?!\S)", text):
+            return WT_MSG
+        return None
+    for w in words:
         i = command_start(w)
         if i is not None and os.path.basename(w[i]) == "git":
             r = git_reason(w[i + 1:])
             if r: return r
+        # find runs its -exec/-execdir/-ok/-okdir command itself: walk that command too
+        if i is not None and os.path.basename(w[i]) in ("find", "gfind"):
+            for k in range(i + 1, len(w) - 1):
+                if w[k] in ("-exec", "-execdir", "-ok", "-okdir") and os.path.basename(w[k + 1]) == "git":
+                    r = git_reason([x for x in w[k + 2:] if x not in ("{}", "+")])
+                    if r: return r
         if shell and depth < 3:
             for x in w:
                 if " " in x and "git" in x:
