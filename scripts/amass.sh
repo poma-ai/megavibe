@@ -3,10 +3,11 @@
 # input, one lens per prompt, then ONE dedupe call. It is a source of LEADS, never a review
 # and never a gate (the review tiers in .claude/rules/delegation.md are unchanged).
 #
-#   amass.sh run    --out DIR [--change TEXT | --task-file F] [--provider claude|codex] [--model MODEL] [--lens name=text]...
+#   amass.sh run    --out DIR [--change TEXT | --task-file F] [--provider auto|mix|claude|codex] [--split N:M]
+#                   [--model MODEL | --claude-model M --codex-model M] [--lens name=text]...
 #                   [--lenses-file F] [--no-lens] [--copies 3] [--whole 0] [--parallel 12]
 #                   [--timeout 280] [--max-input-kb KB] [--dry-run] FILE... [--context FILE...]...
-#   amass.sh dedupe --out DIR [--provider claude|codex] [--model MODEL] [--timeout 280]
+#   amass.sh dedupe --out DIR [--provider auto|claude|codex] [--model MODEL] [--timeout 280]
 #   amass.sh summary --out DIR
 #
 # Why it is built this way (measured in a pilot; the numbers are in README-amass.md):
@@ -27,6 +28,8 @@
 #  - Nothing is dropped silently: every response line that is not a finding line is counted
 #    and reported, a response with text but no finding lines fails, and dedupe re-adds the
 #    findings the model omitted. Every call's cost is kept, failed ones included.
+#  - The default --provider auto mixes both: every provider whose login check passes gets calls, split
+#    inversely to its projected end-of-window usage (usage-route.sh pace), at least one call each.
 #  - Codex uses read-only exec in throwaway scratch space, a ChatGPT login, a 400 KB
 #    input cap and token accounting; dollar estimates require an explicit price.
 set -euo pipefail
@@ -48,17 +51,25 @@ done
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
 usage() {
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 P1/P2 labels are the model's, not a measurement: historical precision was about
 15-20 percent on real diffs and roughly 40 percent on fresh complex shell code
 in the historical Claude pilot. Measured precision for either provider is
 unknown until compared on the same inputs.
-Use --provider codex when Claude is hot and Codex has headroom. Claude is the
-default (haiku, 150 KB cap); Codex defaults to gpt-5.6-luna and a 400 KB cap.
---model gpt-6-luna also works; the bare name luna does not. Set --provider on
-both run and dedupe. Codex requires a ChatGPT-account login and reports tokens;
+--provider auto (the default) mixes Claude (haiku) and Codex (gpt-5.6-luna) calls
+in one run, split inversely to each subscription's projected end-of-window usage
+(usage-route.sh pace; recent, else linear, else used; clamped to 10-1000), at
+least one call each; a provider whose login check fails is dropped with one
+warning line. mix needs both; claude or codex alone behaves as before. The split
+line is printed before sending, also with --dry-run. --split N:M (claude:codex) or
+MEGAVIBE_AMASS_SPLIT overrides the weights; --claude-model and --codex-model pick
+the models (--model fits a single provider only). The mixed input cap is 150 KB.
+dedupe picks the provider with the lower projection, so it leans on the one with
+headroom; --provider claude|codex forces one. Codex alone: gpt-5.6-luna and a
+400 KB cap. --model gpt-6-luna also works; the bare name luna does not.
+Codex requires a ChatGPT-account login and reports tokens;
 MEGAVIBE_AMASS_CODEX_PRICE (USD per 1M tokens) optionally enables cost estimates.
 The tool reasons inside the diff; pass callers and callees with --context.
 Context groups consume files until the next option; repeat --context as needed.
@@ -108,7 +119,11 @@ call_claude() { # model timeout prompt_file out_json out_err ; returns the exit 
 # Codex keeps its own environment: in particular no OPENAI/CODEX credential,
 # endpoint or header override can select API billing. Saved account auth remains
 # available through HOME/CODEX_HOME. The Claude invocation above is unchanged.
-PROVIDER=claude
+CODEX_BIN=${AMASS_CODEX:-codex}
+REQ=auto          # what was asked: auto|mix|claude|codex
+PROVS=''          # the providers that will get calls, space separated, once resolved
+RESOLVED=0
+CLAUDE_MODEL=haiku; CODEX_MODEL=gpt-5.6-luna
 CX_WORK=''; CX_PID=''; CX_WORKERS=(); CX_DRY=''; CX_LOCK=''
 CX_CLEAN=(env -i)
 for _v in HOME PATH CODEX_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY ALL_PROXY https_proxy http_proxy no_proxy all_proxy NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
@@ -131,23 +146,41 @@ codex_cleanup() {
   if [ -n "$CX_DRY" ]; then rm -rf "$CX_DRY" || true; fi
   if [ -n "$CX_LOCK" ]; then rmdir "$CX_LOCK" 2>/dev/null || true; fi
 }
-provider_defaults() {
+model_of() { if [ "$1" = codex ]; then printf '%s' "$CODEX_MODEL"; else printf '%s' "$CLAUDE_MODEL"; fi; }
+
+# Everything that can involve Codex (any request but plain claude) cleans up after itself and
+# forwards cancellation.
+setup_provider() {
+  case $REQ in claude|codex|mix|auto) ;; *) die '--provider must be auto, mix, claude or codex' ;; esac
+  [ "$REQ" != claude ] || return 0
+  trap codex_cleanup EXIT
+  trap 'exit 143' TERM HUP
+  trap 'exit 130' INT
+  if [ -n "${MEGAVIBE_AMASS_CODEX_PRICE+x}" ]; then
+    printf '%s\n' "$MEGAVIBE_AMASS_CODEX_PRICE" | LC_ALL=C grep -Eq '^[0-9]+([.][0-9]+)?$' \
+      || die 'MEGAVIBE_AMASS_CODEX_PRICE must be a nonnegative USD price per 1M tokens'
+  fi
+}
+# The input cap follows the strictest provider in play (Haiku's cliff when Claude is involved).
+apply_caps() {
+  local hc=0 hx=0 p
+  for p in $PROVS; do if [ "$p" = codex ]; then hx=1; else hc=1; fi; done
   CAP_SUFFIX=''
-  case $PROVIDER in
-    claude) CAP_REASON='Haiku bills the whole request 5x past 100K tokens' ;;
-    codex)
-      [ "$MODEL_SET" = 1 ] || MODEL=gpt-5.6-luna
-      [ "$MAXKB_SET" = 1 ] || MAXKB=400
-      CAP_REASON='Codex luna doubles in price past 272K tokens'
-      CAP_SUFFIX=" ($CAP_REASON)"
-      trap codex_cleanup EXIT
-      trap 'exit 143' TERM HUP
-      trap 'exit 130' INT
-      if [ -n "${MEGAVIBE_AMASS_CODEX_PRICE+x}" ]; then
-        printf '%s\n' "$MEGAVIBE_AMASS_CODEX_PRICE" | LC_ALL=C grep -Eq '^[0-9]+([.][0-9]+)?$' \
-          || die 'MEGAVIBE_AMASS_CODEX_PRICE must be a nonnegative USD price per 1M tokens'
-      fi ;;
-    *) die '--provider must be claude or codex' ;;
+  if [ "$hx" = 1 ] && [ "$hc" = 0 ]; then
+    CAP_REASON='Codex luna doubles in price past 272K tokens'; CAP_SUFFIX=" ($CAP_REASON)"
+    [ "$MAXKB_SET" = 1 ] || MAXKB=400
+  else
+    CAP_REASON='Haiku bills the whole request 5x past 100K tokens'
+    [ "$hx" = 0 ] || CAP_SUFFIX=" ($CAP_REASON)"
+    [ "$MAXKB_SET" = 1 ] || MAXKB=150
+  fi
+}
+finalize_models() { # --model names one model, so it only fits a single provider
+  [ "$MODEL_SET" = 1 ] || return 0
+  case $PROVS in
+    *' '*) die "--model cannot name both models of a mixed run: use --claude-model and --codex-model" ;;
+    codex) CODEX_MODEL=$MODEL ;;
+    *) CLAUDE_MODEL=$MODEL ;;
   esac
 }
 
@@ -181,12 +214,13 @@ codex_command() { # timeout argv...; callers redirect stdin/stdout/stderr
   return "$rc"
 }
 
-call_model() {
-  if [ "$PROVIDER" = claude ]; then call_claude "$@"; return $?; fi
+call_model() { # provider model timeout prompt_file out_json out_err
+  local pv=$1; shift
+  if [ "$pv" = claude ]; then call_claude "$@"; return $?; fi
   local rc=0 tokens answer="$4.answer" events="$4.events"
   # Dedupe can be repeated: never accept a previous attempt's final answer.
   rm -f "$answer" "$4"
-  codex_command "$2" codex exec --model "$1" --sandbox read-only \
+  codex_command "$2" "$CODEX_BIN" exec --model "$1" --sandbox read-only \
     -c 'approval_policy="never"' --ignore-rules --skip-git-repo-check \
     --ephemeral --json --output-last-message "$answer" - \
     < "$3" > "$events" 2> "$5" || rc=$?
@@ -211,22 +245,22 @@ call_tokens() {
   printf '%s' "${t:-?}"
 }
 # A total with any unknown member is itself unknown, not the known subtotal.
-total_tokens() { # tsv column
-  LC_ALL=C awk -F'\t' -v col="$2" '{if ($col ~ /^[0-9]+$/) s+=$col; else u++}
+total_tokens() { # tsv column provider (rows of that provider only)
+  LC_ALL=C awk -F'\t' -v col="$2" -v p="$3" '$7 == p {if ($col ~ /^[0-9]+$/) s+=$col; else u++}
     END {if (u) print "?"; else printf "%.0f\n", s+0}' "$1"
 }
 
 # the cost of one call, whether or not it succeeded ("?" when the output has none)
-call_cost() { # raw_json
+call_cost() { # provider raw_json
   local c
-  if [ "$PROVIDER" = codex ]; then
-    c=$(call_tokens "$1")
+  if [ "$1" = codex ]; then
+    c=$(call_tokens "$2")
     if [ "$c" != '?' ] && [ -n "${MEGAVIBE_AMASS_CODEX_PRICE+x}" ]; then
       jq -n --argjson t "$c" --arg p "$MEGAVIBE_AMASS_CODEX_PRICE" '$t * ($p|tonumber) / 1000000'
     else printf '?'; fi
     return
   fi
-  c=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$1" 2>/dev/null) || c=''
+  c=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$2" 2>/dev/null) || c=''
   [ -n "$c" ] && printf '%s' "$c" || printf '?'
 }
 
@@ -236,39 +270,131 @@ extract() { # raw_json text_out
   jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$1" 2>/dev/null | tr -d '\000' > "$2"
 }
 
-# refuse anything but a claude.ai subscription login (a saved Console key would bill)
-check_login() {
+# Availability: refuse anything but a claude.ai subscription login (a saved Console key would bill)
+# and a ChatGPT-account Codex login. Each check sets AV_ERR and returns 1 instead of dying, so that
+# auto can fall back to the other provider.
+AV_ERR=''
+avail_claude() {
   local j m
-  if [ "$PROVIDER" = codex ]; then
-    need codex
-    CX_WORK=$(mktemp -d "${TMPDIR:-/tmp}/amass-codex.XXXXXX") || die 'cannot create Codex scratch directory'
-    local resolved
-    resolved=$(cd "$CX_WORK" && pwd -P) || die 'cannot resolve Codex scratch directory'
-    CX_WORK=$resolved
-    codex_command 30 codex exec --help </dev/null > "$CX_WORK/help" 2>&1 \
-      || die 'codex exec --help failed; refusing to send anything'
-    codex_command 30 codex login status </dev/null > "$CX_WORK/login" 2>&1 \
-      || die 'cannot verify the Codex login; a ChatGPT-account login is required'
-    grep -qx 'Logged in using ChatGPT' "$CX_WORK/login" \
-      || die 'Codex login is not a ChatGPT-account login; refusing to send anything'
-    return
-  fi
   j=$("${CLEAN[@]}" \
         perl -e 'alarm shift; exec @ARGV' 30 "$CLAUDE_BIN" auth status 2>/dev/null) \
-    || die "cannot verify the login ('$CLAUDE_BIN auth status' failed); refusing to send anything"
+    || { AV_ERR="cannot verify the login ('$CLAUDE_BIN auth status' failed); refusing to send anything"; return 1; }
   m=$(printf '%s' "$j" | jq -r '.authMethod // empty' 2>/dev/null) || m=''
-  [ "$m" = "claude.ai" ] || die "the login is not a claude.ai subscription login (authMethod='${m:-unknown}'); refusing, because such calls could bill an API key"
+  [ "$m" = "claude.ai" ] \
+    || { AV_ERR="the login is not a claude.ai subscription login (authMethod='${m:-unknown}'); refusing, because such calls could bill an API key"; return 1; }
+  return 0
+}
+avail_codex() {
+  command -v "$CODEX_BIN" >/dev/null 2>&1 || { AV_ERR='needs codex'; return 1; }
+  if [ -z "$CX_WORK" ]; then
+    local resolved
+    CX_WORK=$(mktemp -d "${TMPDIR:-/tmp}/amass-codex.XXXXXX") || { CX_WORK=''; AV_ERR='cannot create Codex scratch directory'; return 1; }
+    resolved=$(cd "$CX_WORK" && pwd -P) || { AV_ERR='cannot resolve Codex scratch directory'; return 1; }
+    CX_WORK=$resolved
+  fi
+  codex_command 30 "$CODEX_BIN" exec --help </dev/null > "$CX_WORK/help" 2>&1 \
+    || { AV_ERR='codex exec --help failed; refusing to send anything'; return 1; }
+  codex_command 30 "$CODEX_BIN" login status </dev/null > "$CX_WORK/login" 2>&1 \
+    || { AV_ERR='cannot verify the Codex login; a ChatGPT-account login is required'; return 1; }
+  grep -qx 'Logged in using ChatGPT' "$CX_WORK/login" \
+    || { AV_ERR='Codex login is not a ChatGPT-account login; refusing to send anything'; return 1; }
+  return 0
+}
+# Decide which providers get calls. Explicit claude/codex: that one, checked. mix: both, checked.
+# auto: every provider whose check passes; one warning line if one fails. A dry run checks nothing.
+resolve_providers() {
+  [ "$RESOLVED" = 0 ] || return 0
+  RESOLVED=1
+  local ec='' ex='' okc=0 okx=0 dry=${DRY:-0}
+  case $REQ in
+    claude|codex)
+      PROVS=$REQ
+      if [ "$dry" != 1 ]; then
+        if [ "$REQ" = codex ]; then avail_codex || die "$AV_ERR"; else avail_claude || die "$AV_ERR"; fi
+      fi ;;
+    mix)
+      PROVS='claude codex'
+      if [ "$dry" != 1 ]; then
+        avail_claude || die "mix needs both providers; claude: $AV_ERR"
+        avail_codex || die "mix needs both providers; codex: $AV_ERR"
+      fi ;;
+    auto)
+      # a dry run checks no login (it must not touch the provider tools): it plans for both
+      if [ "$dry" = 1 ]; then PROVS='claude codex'; return 0; fi
+      if avail_claude; then okc=1; else ec=$AV_ERR; fi
+      if avail_codex; then okx=1; else ex=$AV_ERR; fi
+      if [ "$okc$okx" = 11 ]; then PROVS='claude codex'
+      elif [ "$okc" = 1 ]; then PROVS=claude; printf '%s: warning: codex is not usable (%s); running everything on claude\n' "$PROG" "$ex" >&2
+      elif [ "$okx" = 1 ]; then PROVS=codex; printf '%s: warning: claude is not usable (%s); running everything on codex\n' "$PROG" "$ec" >&2
+      else die "no usable provider: claude: $ec; codex: $ex"; fi ;;
+  esac
+}
+
+# Effective projected end-of-window usage of one provider, from usage-route.sh pace:
+# provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days.
+# recent_proj, else linear_proj, else used, else unknown; clamped to [10, 1000]. A probe that fails,
+# blocks or prints nothing means unknown, never an error. Sets PV (number or empty) and PS (source).
+isdec() { printf '%s' "$1" | LC_ALL=C grep -Eq '^[0-9]+([.][0-9]+)?$'; }
+pace_proj() { # provider
+  PV=''; PS=unknown
+  local ur out line used lin rec v=''
+  ur=${MEGAVIBE_AMASS_USAGE_ROUTE:-}
+  if [ -z "$ur" ]; then
+    ur="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/usage-route.sh"
+    [ -f "$ur" ] || ur="$HOME/.megavibe/scripts/usage-route.sh"
+  fi
+  [ -f "$ur" ] || return 0
+  out=$(MEGAVIBE_ROUTER_PROVIDER=$1 perl -e 'alarm shift; exec @ARGV' 20 bash "$ur" pace 2>/dev/null) || out=''
+  line=${out%%$'\n'*}
+  used=''; lin=''; rec=''
+  IFS='|' read -r _ used _ lin _ rec _ <<< "$line" || true
+  if isdec "$rec"; then v=$rec; PS=recent
+  elif isdec "$lin"; then v=$lin; PS=linear
+  elif isdec "$used"; then v=$used; PS=used; fi
+  [ -n "$v" ] || return 0
+  PV=$(LC_ALL=C awk -v p="$v" 'BEGIN{if (p < 10) p = 10; if (p > 1000) p = 1000; print p}')
+}
+# both providers' projections; an unknown side takes the other's value (equal weight), both unknown -> ''
+# sets PC PX (numbers or empty), SC SX (sources), EC EX (effective values used for weighting)
+both_proj() {
+  pace_proj claude; PC=$PV; SC=$PS
+  pace_proj codex; PX=$PV; SX=$PS
+  EC=$PC; EX=$PX
+  [ -n "$EC" ] || EC=$PX
+  [ -n "$EX" ] || EX=$PC
+}
+proj_text() { if [ -n "$1" ]; then printf '%s (%s)' "$(LC_ALL=C awk -v p="$1" 'BEGIN{printf "%.0f", p}')" "$2"; else printf '? (unknown)'; fi; }
+
+# n_claude of total calls: weights 1/P (or the --split N:M weights); rounded half up, so with equal
+# weights Claude gets the extra call of an odd total; at least one call per provider when total >= 2
+# (a zero weight from --split is honoured); a single call goes to the larger weight (tie: Claude).
+split_calls() { # total split_or_empty ; sets NC and SPLIT_DESC
+  local total=$1 wa wb
+  if [ -n "$2" ]; then
+    wa=${2%%:*}; wb=${2#*:}
+    SPLIT_DESC=''
+  else
+    both_proj
+    if [ -z "$EC" ]; then wa=1; wb=1
+    else read -r wa wb < <(LC_ALL=C awk -v pc="$EC" -v px="$EX" 'BEGIN{printf "%.12g %.12g\n", 1/pc, 1/px}'); fi
+    SPLIT_DESC="projections claude $(proj_text "$PC" "$SC"), codex $(proj_text "$PX" "$SX")"
+  fi
+  NC=$(LC_ALL=C awk -v T="$total" -v a="$wa" -v b="$wb" 'BEGIN{
+    if (T == 1) { print (a >= b) ? 1 : 0; exit }
+    n = int(T * a / (a + b) + 0.5)
+    if (a > 0 && b > 0 && T >= 2) { if (n < 1) n = 1; if (n > T - 1) n = T - 1 }
+    print n }')
 }
 
 alive() { kill -0 "$1" 2>/dev/null; }
 
 # one line per run/dedupe in a local ledger, so adoption and spend can be measured later.
 # Best effort: a ledger that cannot be written never fails or slows a run.
-ledger() { # cmd model calls ok cost input_kb unknown_costs tokens   (cost is null whenever any call's cost is unknown; cost_known is the known subtotal)
+ledger() { # cmd model calls ok cost input_kb unknown_costs tokens provider   (cost is null whenever any call's cost is unknown; cost_known is the known subtotal)
   local f=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd "$1" --arg model "$2" --arg proj "$(basename "$PWD")" \
-    --arg provider "$PROVIDER" --arg tokens "${8:-?}" --argjson calls "$3" --argjson ok "$4" --arg cost "$5" --argjson kb "$6" --argjson unk "${7:-0}" \
+    --arg provider "$9" --arg tokens "${8:-?}" --argjson calls "$3" --argjson ok "$4" --arg cost "$5" --argjson kb "$6" --argjson unk "${7:-0}" \
     '{ts:$ts,cmd:$cmd,model:$model,provider:$provider,tokens:($tokens|tonumber? // null),project:$proj,calls:$calls,ok:$ok,cost:(if $unk > 0 then null else ($cost|tonumber? // null) end),cost_known:(if $provider == "codex" and $unk == $calls then null else ($cost|tonumber? // null) end),cost_unknown_calls:$unk,input_kb:$kb} + (if $provider == "codex" then {cost_estimated:($unk < $calls)} else {} end)' >> "$f" 2>/dev/null || true
 }
 
@@ -307,12 +433,59 @@ codex_summary() {
   if [ -f "$OUT/clusters.md" ]; then cat "$OUT/clusters.md"; fi
 }
 
+# a run that used both providers: per provider calls, ok, findings and cost (claude, USD) or tokens (codex)
+mix_summary() {
+  LC_ALL=C awk -F'\t' '
+    function money(x) { return sprintf("$%.6f", x) }
+    FILENAME == ARGV[1] {
+      p = (NF >= 7) ? $7 : "claude"; n[p]++; tn++
+      if ($3 == "ok") {ok[p]++; tok++; f[p] += $4; tf += $4} else bad = bad " " $1
+      u += $5
+      if ($2 ~ /^[0-9.eE+-]+$/) c[p] += $2; else cu[p]++
+      if (p == "codex") {if ($6 ~ /^[0-9]+$/) t += $6; else tu++}
+      next
+    }
+    { p = ($3 == "codex") ? "codex" : "claude"; dn[p]++
+      if ($2 ~ /^[0-9.eE+-]+$/) dc[p] += $2; else dcu[p]++
+      if (p == "codex") {if ($4 ~ /^[0-9]+$/) dt += $4; else dtu++} }
+    END {
+      printf "runs %d, ok %d, failed %d, findings %d, unparsed lines %d (kept in lists/, not clustered)\n", tn, tok, tn - tok, tf, u
+      split("claude codex", ps, " ")
+      for (k = 1; k <= 2; k++) {
+        p = ps[k]
+        if (!n[p]) continue
+        printf "%s: worker calls %d, ok %d, findings %d, ", p, n[p], ok[p], f[p]
+        if (p == "codex") {
+          if (tu && !t) printf "tokens unknown (%d unknown calls), ", tu
+          else if (tu) printf "tokens unknown (known %.0f; %d unknown calls), ", t, tu
+          else printf "tokens %.0f, ", t
+          if (cu[p] == n[p]) printf "cost unknown\n"; else printf "estimated cost %s%s\n", money(c[p]), (cu[p] ? " (PARTIAL: some costs unknown)" : "")
+        } else {
+          if (cu[p] == n[p]) printf "cost unknown\n"; else printf "cost %s%s\n", money(c[p]), (cu[p] ? " (PARTIAL: some costs unknown)" : "")
+        }
+      }
+      for (k = 1; k <= 2; k++) {
+        p = ps[k]
+        if (!dn[p]) continue
+        printf "dedupe %s: calls %d, ", p, dn[p]
+        if (p == "codex") printf "tokens %s, ", (dtu ? "unknown" : sprintf("%.0f", dt))
+        if (dcu[p] == dn[p]) printf "cost unknown\n"; else printf "%scost %s%s\n", (p == "codex" ? "estimated " : ""), money(dc[p]), (dcu[p] ? " (PARTIAL: some costs unknown)" : "")
+      }
+      cc = c["claude"] + dc["claude"]
+      printf "total: claude cost %s%s; codex tokens %s\n", money(cc), ((cu["claude"] + dcu["claude"]) ? " (PARTIAL: some costs unknown)" : ""), ((tu + dtu) ? "unknown" : sprintf("%.0f", t + dt))
+      if (bad != "") printf "FAILED:%s\n", bad
+    }' "$OUT/runs.tsv" ${SUMMARY_DEDUPE:+"$SUMMARY_DEDUPE"}
+  if [ -f "$OUT/clusters.md" ]; then cat "$OUT/clusters.md"; fi
+}
+
 cmd_summary() {
   # every awk here runs under LC_ALL=C: in a decimal-comma locale (de_DE, fr_FR, ...) awk would read the
   # JSON costs wrongly and print $0,0000, which looks like a real zero
   [ -s "$OUT/runs.tsv" ] || die "no runs.tsv in $OUT"
-  local SUMMARY_DEDUPE=''
+  local SUMMARY_DEDUPE='' provs
   [ ! -s "$OUT/dedupe_cost.tsv" ] || SUMMARY_DEDUPE="$OUT/dedupe_cost.tsv"
+  provs=$(LC_ALL=C awk -F'\t' 'NF >= 7 {print $7}' "$OUT/runs.tsv" | sort -u | tr '\n' ' ')
+  case $provs in *claude*codex*) mix_summary; return ;; esac
   if [ -f "$OUT/provider" ] || { [ -n "$SUMMARY_DEDUPE" ] && grep -q "$(printf '\tcodex\t')" "$SUMMARY_DEDUPE"; }; then
     codex_summary; return
   fi
@@ -330,7 +503,7 @@ cmd_summary() {
 }
 
 cmd_run() {
-  local TASK_FILE='' CHANGE='' MODEL=haiku MODEL_SET=0 MAXKB_SET=0 COPIES=3 WHOLE='' PARALLEL=12 TIMEOUT=280 MAXKB=150 DRY=0 NOLENS=0 LENSFILE=''
+  local TASK_FILE='' CHANGE='' MODEL='' MODEL_SET=0 MAXKB_SET=0 COPIES=3 WHOLE='' PARALLEL=12 TIMEOUT=280 MAXKB=150 DRY=0 NOLENS=0 LENSFILE='' SPLIT='' SPLIT_FLAG=0
   local LNAME=() LTEXT=() FILES=() CONTEXT=() i name text line
   while [ $# -gt 0 ]; do
     case $1 in
@@ -344,8 +517,11 @@ cmd_run() {
           case $1 in -*) break ;; esac
           CONTEXT+=("$1"); shift
         done ;;
-      --provider) [ $# -ge 2 ] || die "--provider needs claude or codex"; PROVIDER=$2; shift 2 ;;
+      --provider) [ $# -ge 2 ] || die "--provider needs auto, mix, claude or codex"; REQ=$2; shift 2 ;;
       --model) MODEL=${2:-}; MODEL_SET=1; shift 2 ;;
+      --claude-model) CLAUDE_MODEL=${2:-}; shift 2 ;;
+      --codex-model) CODEX_MODEL=${2:-}; shift 2 ;;
+      --split) SPLIT=${2:-}; SPLIT_FLAG=1; shift 2 ;;
       --lens) [ -n "${2:-}" ] || die "--lens needs name=text"; case $2 in *=*) ;; *) die "--lens needs name=text" ;; esac
               name=${2%%=*}; text=${2#*=}; valid_name "$name" || die "bad lens name '$name'"
               LNAME+=("$name"); LTEXT+=("$text"); shift 2 ;;
@@ -363,9 +539,22 @@ cmd_run() {
       *) FILES+=("$1"); shift ;;
     esac
   done
-  provider_defaults
+  setup_provider
   [ -n "${OUT:-}" ] || die "--out DIR is required"
-  valid_model "$MODEL" || die "bad --model"
+  [ "$MODEL_SET" = 0 ] || valid_model "$MODEL" || die "bad --model"
+  valid_model "$CLAUDE_MODEL" || die "bad --claude-model"
+  valid_model "$CODEX_MODEL" || die "bad --codex-model"
+  [ "$REQ" != mix ] || [ "$MODEL_SET" = 0 ] || die "--model cannot name both models of a mixed run: use --claude-model and --codex-model"
+  if [ "$SPLIT_FLAG" = 0 ] && [ -n "${MEGAVIBE_AMASS_SPLIT:-}" ]; then
+    case $REQ in claude|codex) ;; *) SPLIT=$MEGAVIBE_AMASS_SPLIT ;; esac
+  fi
+  if [ -n "$SPLIT" ] || [ "$SPLIT_FLAG" = 1 ]; then
+    printf '%s' "$SPLIT" | LC_ALL=C grep -Eq '^[0-9]+:[0-9]+$' || die "the split must be N:M (claude:codex), non-negative integers"
+    case $SPLIT in *[1-9]*) ;; *) die "the split must not be 0:0" ;; esac
+    case $REQ in claude|codex) die "--split needs --provider mix or auto" ;; esac
+  fi
+  case $REQ in claude|codex) PROVS=$REQ ;; *) PROVS='claude codex' ;; esac
+  apply_caps
   for i in "$COPIES" "$PARALLEL" "$TIMEOUT" "$MAXKB"; do isnum "$i" || die "numeric option expected, got '$i'"; done
   [ "$COPIES" -ge 1 ] && [ "$PARALLEL" -ge 1 ] && [ "$TIMEOUT" -ge 1 ] || die "--copies, --parallel and --timeout must be at least 1"
   [ -z "$WHOLE" ] || isnum "$WHOLE" || die "--whole must be a number"
@@ -418,7 +607,7 @@ cmd_run() {
   # anything (a directory, a file, a symlink) already has that name, so two runs cannot share one
   local DRYDIR=''
   if [ "$DRY" = 1 ]; then
-    OUT=$(mktemp -d "${TMPDIR:-/tmp}/amass-dry.XXXXXX") || die "cannot create a scratch directory"; DRYDIR=$OUT; [ "$PROVIDER" != codex ] || CX_DRY=$OUT
+    OUT=$(mktemp -d "${TMPDIR:-/tmp}/amass-dry.XXXXXX") || die "cannot create a scratch directory"; DRYDIR=$OUT; CX_DRY=$OUT; trap codex_cleanup EXIT   # a refusal after this point must not leave the scratch directory
   else
     case $OUT in */) OUT=${OUT%/} ;; esac
     [ -n "$OUT" ] || die "bad --out"
@@ -441,7 +630,9 @@ cmd_run() {
   } > "$OUT/base.txt"
   local bytes kb
   bytes=$(wc -c < "$OUT/base.txt" | tr -d ' '); kb=$(( (bytes + 1023) / 1024 ))
-  printf 'input %d KB (about %d tokens at 1.8 bytes per token), model %s\n' "$kb" $(( bytes * 10 / 18 )) "$MODEL"
+  printf 'input %d KB (about %d tokens at 1.8 bytes per token)\n' "$kb" $(( bytes * 10 / 18 ))
+  # auto without an explicit cap needs to know who is usable before it knows the cap
+  if [ "$REQ" = auto ] && [ "$MAXKB_SET" = 0 ]; then resolve_providers; apply_caps; fi
   if [ "$kb" -gt "$MAXKB" ]; then die "input is $kb KB, above --max-input-kb $MAXKB ($CAP_REASON); inline less or raise the limit on purpose"; fi
 
   # prompts: the shared base first, the lens last
@@ -465,9 +656,48 @@ cmd_run() {
   local total=0
   for i in "${!PN[@]}"; do total=$((total + PK[i])); done
   printf '%d prompts, %d calls, up to %d at once\n' "${#PN[@]}" "$total" "$PARALLEL"
-  if [ "$DRY" = 1 ]; then rm -rf "$DRYDIR"; echo "dry run: nothing was sent"; return 0; fi
-  if [ "$PROVIDER" = codex ]; then printf 'codex\n' > "$OUT/provider"; fi
-  check_login
+  resolve_providers
+  finalize_models
+  local NCL
+  case $PROVS in
+    'claude codex')
+      split_calls "$total" "$SPLIT"; NCL=$NC
+      if [ -n "$SPLIT" ]; then
+        printf 'split: override %s; claude %d (%s), codex %d (%s)\n' "$SPLIT" "$NCL" "$CLAUDE_MODEL" "$((total - NCL))" "$CODEX_MODEL"
+      else
+        printf 'split: claude %d (%s), codex %d (%s); %s\n' "$NCL" "$CLAUDE_MODEL" "$((total - NCL))" "$CODEX_MODEL" "$SPLIT_DESC"
+      fi ;;
+    codex) NCL=0; printf 'provider codex, model %s\n' "$CODEX_MODEL" ;;
+    *) NCL=$total; printf 'provider claude, model %s\n' "$CLAUDE_MODEL" ;;
+  esac
+  if [ "$DRY" = 1 ]; then
+    rm -rf "$DRYDIR"; echo "dry run: nothing was sent"
+    case $REQ in auto|mix) echo "dry run: no login was checked, so auto plans for both providers" ;; esac
+    return 0
+  fi
+  if [ "$PROVS" = codex ]; then printf 'codex\n' > "$OUT/provider"; fi
+
+  # Assign a provider to every call. The walk is copy-major (copy 1 of every prompt, then copy 2, ...) and
+  # snakes: odd copies in prompt order, even copies reversed, so an even number of prompts cannot lock one
+  # provider onto the same lenses. A running deficit (Bresenham) interleaves the two providers.
+  local AP=() AW maxk=0 j=0 cc=0 order idx
+  for i in "${!PN[@]}"; do [ "${PK[$i]}" -le "$maxk" ] || maxk=${PK[$i]}; done
+  AW=$((maxk + 1))
+  k=1
+  while [ "$k" -le "$maxk" ]; do
+    order=''
+    for i in "${!PN[@]}"; do
+      if [ "${PK[$i]}" -ge "$k" ]; then
+        if [ $((k % 2)) -eq 0 ]; then order="$i $order"; else order="$order $i"; fi
+      fi
+    done
+    for i in $order; do
+      j=$((j + 1))
+      if [ $(( (2 * j * NCL + total) / (2 * total) )) -gt "$cc" ]; then AP[$((i * AW + k))]=claude; cc=$((cc + 1))
+      else AP[$((i * AW + k))]=codex; fi
+    done
+    k=$((k + 1))
+  done
 
   local PIDS=() live n k
   throttle() {
@@ -478,35 +708,53 @@ cmd_run() {
       sleep 1
     done
   }
-  launch() { # prompt name, copy number
+  launch() { # prompt name, copy number, provider
+    local nm=$1 kk=$2 pv=$3 mdl pid
+    mdl=$(model_of "$pv")
     throttle
-    ( if [ "$PROVIDER" = codex ]; then
+    printf '%s\n' "$pv" > "$OUT/raw/${nm}_${kk}.provider"
+    ( if [ "$pv" = codex ]; then
         trap codex_stop EXIT
         trap 'exit 143' TERM HUP
         trap 'exit 130' INT
       fi
-      rc=0; call_model "$MODEL" "$TIMEOUT" "$OUT/prompts/$1.txt" "$OUT/raw/$1_$2.json" "$OUT/raw/$1_$2.err" || rc=$?
-      echo "$rc" > "$OUT/raw/$1_$2.rc" ) &
-    PIDS+=("$!")
-    if [ "$PROVIDER" = codex ]; then CX_WORKERS+=("${PIDS[${#PIDS[@]}-1]}"); fi
+      rc=0; call_model "$pv" "$mdl" "$TIMEOUT" "$OUT/prompts/$nm.txt" "$OUT/raw/${nm}_${kk}.json" "$OUT/raw/${nm}_${kk}.err" || rc=$?
+      echo "$rc" > "$OUT/raw/${nm}_${kk}.rc" ) &
+    pid=$!
+    PIDS+=("$pid")
+    if [ "$pv" = codex ]; then CX_WORKERS+=("$pid"); fi
   }
-  # phase 1: the first copy of every prompt writes the cache; phase 2: the copies read it
-  for i in "${!PN[@]}"; do launch "${PN[$i]}" 1; done
-  if [ "$total" -gt "${#PN[@]}" ]; then
+  # phase 1: the first call of every prompt on each provider it uses writes that provider's cache;
+  # phase 2: the rest read it
+  local P1=() n1=0 seenc seenx pv
+  for i in "${!PN[@]}"; do
+    seenc=0; seenx=0; k=1
+    while [ "$k" -le "${PK[$i]}" ]; do
+      idx=$((i * AW + k)); pv=${AP[$idx]}
+      if [ "$pv" = claude ] && [ "$seenc" = 0 ]; then seenc=1; P1[$idx]=1; n1=$((n1 + 1)); launch "${PN[$i]}" "$k" claude
+      elif [ "$pv" = codex ] && [ "$seenx" = 0 ]; then seenx=1; P1[$idx]=1; n1=$((n1 + 1)); launch "${PN[$i]}" "$k" codex; fi
+      k=$((k + 1))
+    done
+  done
+  if [ "$total" -gt "$n1" ]; then
     sleep "$STAGGER"
     for i in "${!PN[@]}"; do
-      k=2; while [ "$k" -le "${PK[$i]}" ]; do launch "${PN[$i]}" "$k"; k=$((k + 1)); done
+      k=1; while [ "$k" -le "${PK[$i]}" ]; do
+        idx=$((i * AW + k))
+        [ -n "${P1[$idx]:-}" ] || launch "${PN[$i]}" "$k" "${AP[$idx]}"
+        k=$((k + 1))
+      done
     done
   fi
   wait
   CX_WORKERS=()
 
   : > "$OUT/runs.tsv"
-  local cost nf st rc nl nu
+  local cost nf st rc nl nu tk
   for i in "${!PN[@]}"; do
     k=1; while [ "$k" -le "${PK[$i]}" ]; do
-      n="${PN[$i]}_$k"; rc=$(cat "$OUT/raw/$n.rc" 2>/dev/null || echo 99); nf=0; nu=0; st=ok
-      cost=$(call_cost "$OUT/raw/$n.json")
+      n="${PN[$i]}_$k"; pv=${AP[$((i * AW + k))]}; rc=$(cat "$OUT/raw/$n.rc" 2>/dev/null || echo 99); nf=0; nu=0; st=ok
+      cost=$(call_cost "$pv" "$OUT/raw/$n.json")
       if [ "$rc" != 0 ]; then st="fail(rc=$rc)"
       elif extract "$OUT/raw/$n.json" "$OUT/lists/$n.md"; then
         nf=$(grep -cE "$FPAT" "$OUT/lists/$n.md" || true)
@@ -515,52 +763,70 @@ cmd_run() {
         # text with no finding line at all is not a clean "no findings": it did not follow the format
         if [ "$nf" -eq 0 ] && [ "$nl" -gt 0 ]; then st="fail(unformatted)"; fi
       else st="fail(bad-output)"; fi
-      if [ "$PROVIDER" = codex ]; then
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$cost" "$st" "$nf" "$nu" "$(call_tokens "$OUT/raw/$n.json")" >> "$OUT/runs.tsv"
-      else
-        printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$cost" "$st" "$nf" "$nu" >> "$OUT/runs.tsv"
-      fi
+      if [ "$pv" = codex ]; then tk=$(call_tokens "$OUT/raw/$n.json"); else tk=-; fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$n" "$cost" "$st" "$nf" "$nu" "$tk" "$pv" >> "$OUT/runs.tsv"
       k=$((k + 1))
     done
   done
   # the run is final now: lists/ and runs.tsv are complete, so dedupe may read them
   printf 'done\n' > "$OUT/.complete.tmp" && mv "$OUT/.complete.tmp" "$OUT/.complete"
   cmd_summary
-  local tn tok tc tu
-  read -r tn tok tc tu < <(LC_ALL=C awk -F'\t' '{n++; if($3=="ok")o++; if($2 ~ /^[0-9.eE+-]+$/)c+=$2; else k++} END{printf "%d %d %.6f %d\n", n, o+0, c+0, k+0}' "$OUT/runs.tsv")
-  if [ "$PROVIDER" = codex ]; then
-    # Preserve small estimates instead of rounding them to the legacy six decimals.
-    tc=$(jq -Rn '[inputs | split("\t")[1] | tonumber?] | add // 0' "$OUT/runs.tsv")
-  fi
-  ledger run "$MODEL" "$tn" "$tok" "$tc" "$kb" "$tu" "$(total_tokens "$OUT/runs.tsv" 6)"
+  local tn tok tc tu used=''
+  [ "$NCL" -eq 0 ] || used=claude
+  [ "$NCL" -eq "$total" ] || used="$used codex"
+  for pv in $used; do
+    read -r tn tok tc tu < <(LC_ALL=C awk -F'\t' -v p="$pv" '$7 == p {n++; if($3=="ok")o++; if($2 ~ /^[0-9.eE+-]+$/)c+=$2; else k++} END{printf "%d %d %.6f %d\n", n, o+0, c+0, k+0}' "$OUT/runs.tsv")
+    if [ "$pv" = codex ]; then
+      # Preserve small estimates instead of rounding them to the legacy six decimals.
+      tc=$(jq -Rn '[inputs | split("\t") | select(.[6] == "codex") | .[1] | tonumber?] | add // 0' "$OUT/runs.tsv")
+    fi
+    ledger run "$(model_of "$pv")" "$tn" "$tok" "$tc" "$kb" "$tu" "$(total_tokens "$OUT/runs.tsv" 6 "$pv")" "$pv"
+  done
   if ! grep -q "$(printf '\tok\t')" "$OUT/runs.tsv"; then
     echo "$PROG: no call succeeded; first error:" >&2; head -c 300 "$OUT"/raw/*.err 2>/dev/null | head -3 >&2; exit 3
   fi
 }
 
 cmd_dedupe() {
-  local MODEL=haiku MODEL_SET=0 MAXKB_SET=0 TIMEOUT=280 MAXKB=150
+  local MODEL='' MODEL_SET=0 MAXKB_SET=0 TIMEOUT=280 MAXKB=150 DRY=0 DP
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=${2:-}; shift 2 ;;
-      --provider) [ $# -ge 2 ] || die "--provider needs claude or codex"; PROVIDER=$2; shift 2 ;;
+      --provider) [ $# -ge 2 ] || die "--provider needs auto, claude or codex"; REQ=$2; shift 2 ;;
       --model) MODEL=${2:-}; MODEL_SET=1; shift 2 ;;
+      --claude-model) CLAUDE_MODEL=${2:-}; shift 2 ;;
+      --codex-model) CODEX_MODEL=${2:-}; shift 2 ;;
       --timeout) TIMEOUT=${2:-}; shift 2 ;;
       --max-input-kb) MAXKB=${2:-}; MAXKB_SET=1; shift 2 ;;
       -h|--help) usage 0 ;;
       *) die "unknown option $1" ;;
     esac
   done
-  provider_defaults
+  [ "$REQ" != mix ] || REQ=auto
+  setup_provider
+  case $REQ in claude|codex) PROVS=$REQ ;; *) PROVS='claude codex' ;; esac
+  apply_caps
   [ -n "${OUT:-}" ] && [ -d "$OUT/lists" ] || die "--out must be a finished run directory"
   [ -e "$OUT/.complete" ] || die "$OUT is not a finished run (no .complete marker): wait for amass.sh run to return before dedupe"
-  valid_model "$MODEL" || die "bad --model"; isnum "$TIMEOUT" && isnum "$MAXKB" || die "numeric option expected"
+  [ "$MODEL_SET" = 0 ] || valid_model "$MODEL" || die "bad --model"
+  valid_model "$CLAUDE_MODEL" || die "bad --claude-model"
+  valid_model "$CODEX_MODEL" || die "bad --codex-model"
+  isnum "$TIMEOUT" && isnum "$MAXKB" || die "numeric option expected"
   [ "$TIMEOUT" -ge 1 ] || die "--timeout must be at least 1 (0 would disable the deadline)"
   need jq; need perl
   OUT=$(cd "$OUT" && pwd -P); WORK="$OUT/work"; mkdir -p "$WORK"
+  resolve_providers
+  if [ "$PROVS" = 'claude codex' ]; then
+    # the provider with the LOWER projected usage has the headroom; ties go to claude
+    both_proj
+    DP=$(LC_ALL=C awk -v a="$EC" -v b="$EX" 'BEGIN{if (a == "" || b == "") {print "claude"; exit} print (b + 0 < a + 0) ? "codex" : "claude"}')
+    printf 'dedupe: provider %s (projections claude %s, codex %s; the lower one has the headroom, a tie goes to claude)\n' "$DP" "$(proj_text "$PC" "$SC")" "$(proj_text "$PX" "$SX")"
+  else DP=$PROVS; fi
+  PROVS=$DP; finalize_models; apply_caps
+  MODEL=$(model_of "$DP")
   # two dedupes on one run directory would overwrite each other's files and costs
   mkdir "$OUT/.dedupe.lock" 2>/dev/null || die "another dedupe seems to be running on $OUT (remove $OUT/.dedupe.lock if it is stale)"
-  if [ "$PROVIDER" = codex ]; then CX_LOCK="$OUT/.dedupe.lock"
+  if [ "$REQ" != claude ]; then CX_LOCK="$OUT/.dedupe.lock"
   else trap 'rmdir "$OUT/.dedupe.lock" 2>/dev/null || true' EXIT; fi
   local f n line num
   : > "$OUT/dedupe_in.txt"; : > "$OUT/dedupe_unparsed.txt"
@@ -591,21 +857,24 @@ cmd_dedupe() {
   local pk
   pk=$(( ($(wc -c < "$OUT/dedupe_prompt.txt") + 1023) / 1024 ))
   [ "$pk" -le "$MAXKB" ] || die "the dedupe prompt is $pk KB, above --max-input-kb $MAXKB$CAP_SUFFIX; dedupe per lens in separate run directories"
-  printf 'dedupe: %d findings, %d KB, model %s\n' "$lines" "$pk" "$MODEL"
-  check_login
+  printf 'dedupe: %d findings, %d KB, provider %s, model %s\n' "$lines" "$pk" "$DP" "$MODEL"
   local rc=0 cost dok=0
-  call_model "$MODEL" "$TIMEOUT" "$OUT/dedupe_prompt.txt" "$OUT/dedupe_raw.json" "$OUT/dedupe_raw.err" || rc=$?
-  cost=$(call_cost "$OUT/dedupe_raw.json")
-  if [ "$PROVIDER" = codex ]; then
+  call_model "$DP" "$MODEL" "$TIMEOUT" "$OUT/dedupe_prompt.txt" "$OUT/dedupe_raw.json" "$OUT/dedupe_raw.err" || rc=$?
+  cost=$(call_cost "$DP" "$OUT/dedupe_raw.json")
+  if [ "$DP" = codex ]; then
     printf 'dedupe\t%s\tcodex\t%s\n' "$cost" "$(call_tokens "$OUT/dedupe_raw.json")" >> "$OUT/dedupe_cost.tsv"
   else printf 'dedupe\t%s\n' "$cost" >> "$OUT/dedupe_cost.tsv"; fi   # every attempt is accounted for, failed ones too
   if [ "$rc" = 0 ] && extract "$OUT/dedupe_raw.json" "$OUT/clusters_raw.md"; then dok=1; fi
-  ledger dedupe "$MODEL" 1 "$dok" "$cost" "$pk" "$([ "$cost" = '?' ] && echo 1 || echo 0)" "$(call_tokens "$OUT/dedupe_raw.json")"   # before any failure exit
+  ledger dedupe "$MODEL" 1 "$dok" "$cost" "$pk" "$([ "$cost" = '?' ] && echo 1 || echo 0)" "$(call_tokens "$OUT/dedupe_raw.json")" "$DP"   # before any failure exit
   [ "$rc" = 0 ] || { echo "$PROG: dedupe call failed (rc=$rc)" >&2; head -c 300 "$OUT/dedupe_raw.err" >&2; exit 3; }
   [ "$dok" = 1 ] || { echo "$PROG: dedupe output unusable" >&2; exit 3; }
   # Parse the final members field, not arbitrary pipes or n= in the defect text.
   # Only a terminal, unquoted marker is metadata; quoted occurrences stay literal.
   # Keep clusters with missing/empty member lists too, with a count of zero.
+  : > "$OUT/id_provider.txt"
+  if ls "$OUT"/raw/*.provider >/dev/null 2>&1 && [ "$(cat "$OUT"/raw/*.provider | sort -u | wc -l | tr -d ' ')" -ge 2 ]; then
+    for f in "$OUT"/raw/*.provider; do printf '%s %s\n' "$(basename "$f" .provider)" "$(cat "$f")"; done > "$OUT/id_provider.txt"
+  fi
   perl -e '
     use strict; use warnings;
     open my $seen, ">", shift @ARGV or die "members_seen: $!";
@@ -614,6 +883,11 @@ cmd_dedupe() {
     open my $vin, "<", shift @ARGV or die "dedupe_in: $!";
     while (my $vl = <$vin>) { chomp $vl; my ($vid) = split / /, $vl, 2; $valid{$vid} = 1 if defined $vid && length $vid; }
     close $vin;
+    # run name -> provider; empty unless the run used both providers (then clusters show the support split)
+    my %prov;
+    open my $pin, "<", shift @ARGV or die "id_provider: $!";
+    while (my $pl = <$pin>) { chomp $pl; my ($r, $pv) = split / /, $pl, 2; $prov{$r} = $pv if defined $pv && length $r; }
+    close $pin;
     while (<>) {
       chomp; s/\r$//;
       next unless /^[^A-Za-z0-9]*(C[0-9]+)\s*\|\s*([^|]+?)\s*\|\s*(.*?)\s*$/;
@@ -622,11 +896,17 @@ cmd_dedupe() {
       my $members = $body =~ s/\s*\|\s*members:\s*([^|]*)$// ? $1 : "";
       my @ids = grep { length } map { s/^\s+|\s+$//g; $_ } split /,/, $members;
       print $seen "$_\n" for @ids;
-      my %once; my $count = grep { $valid{$_} && !$once{$_}++ } @ids;
-      print "$count\t$id\t$id | $severity | n=$count | $body | members: ", join(",", @ids), "$flag\n";
+      my (%once, %pc); my $count = 0;
+      for my $mid (@ids) {
+        next unless $valid{$mid} && !$once{$mid}++;
+        $count++;
+        if (%prov) { my ($run) = $mid =~ /^(.*)\.F[0-9]+$/; $pc{$prov{$run} // "?"}++ if defined $run; }
+      }
+      my $sup = (%prov && %pc) ? " (" . join(", ", map { "$_ $pc{$_}" } sort keys %pc) . ")" : "";
+      print "$count\t$id\t$id | $severity | n=$count$sup | $body | members: ", join(",", @ids), "$flag\n";
     }
     close $seen or die "members_seen: $!";
-  ' "$OUT/members_seen.txt" "$OUT/dedupe_in.txt" "$OUT/clusters_raw.md" > "$OUT/clusters.tsv"
+  ' "$OUT/members_seen.txt" "$OUT/dedupe_in.txt" "$OUT/id_provider.txt" "$OUT/clusters_raw.md" > "$OUT/clusters.tsv"
   # nothing may be lost: every id exactly once; the omitted ones are appended as one cluster
   sort -o "$OUT/members_seen.txt" "$OUT/members_seen.txt"
   cut -d' ' -f1 "$OUT/dedupe_in.txt" | sort > "$OUT/members_all.txt"
@@ -642,7 +922,7 @@ cmd_dedupe() {
   # -s preserves model order even if both keys tie; model ids are never renumbered.
   LC_ALL=C sort -s -t "$(printf '\t')" -k1,1nr -k2,2 "$OUT/clusters.tsv" | cut -f3- > "$OUT/clusters.md"
   local spend="cost \$$cost"
-  if [ "$PROVIDER" = codex ]; then
+  if [ "$DP" = codex ]; then
     spend=$(call_tokens "$OUT/dedupe_raw.json")
     [ "$spend" != '?' ] || spend=unknown
     spend="tokens $spend"

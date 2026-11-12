@@ -15,10 +15,23 @@ Measured in that pilot (list-price accounting, not subscription quota; n is smal
 - **Safety:** the workers run with `--setting-sources ""`, so none of your hooks or rules applies to them (rm-to-trash, block-dangerous-bash); an administrator's managed policy, if the machine has one, still applies: keep them tool-less or read-only, and never hand such a worker Bash, Write or Edit. The files you inline are sent to the model, as with any call. API keys and cloud-provider switches are removed from each call's environment, and before anything is sent `claude auth status` must report a claude.ai subscription login (a saved Console key would still bill), otherwise the script refuses. Nothing is dropped silently: response lines that are not finding lines are counted and reported, prose with no finding line fails the run, and dedupe re-adds what the model omitted. Each `run` and `dedupe` appends one line (time, model, calls, cost, input size, project folder name) to `~/.megavibe/amass-usage.jsonl`, so adoption and spend can be measured against the Agent-tool subagent calls in the transcripts.
 
 
+## Mixed runs: Claude and Codex in one run
+
+`--provider auto` is the default for `run` and `dedupe`. Both models are near-free, so a run uses both for diversity and leans on the subscription that has more room.
+
+- **auto** uses every provider whose login check passes (Claude: the `claude auth status` claude.ai check; Codex: `codex exec --help` plus a ChatGPT-account login). Both pass: a mixed run. One fails: one warning line naming it, and everything runs on the other. Both fail: refused, nothing sent. **mix** requires both and refuses if either check fails. **claude** and **codex** behave as before. A `--dry-run` checks no login and plans for both providers.
+- **The split.** Each provider's effective projection P comes from `usage-route.sh pace` (run once per provider): the recent projection if present, else the linear one, else the used percentage, else unknown; clamped to 10-1000. `usage-route.sh` is looked up next to `amass.sh`, then in `~/.megavibe/scripts/`. A probe that fails, blocks or prints nothing means unknown. Weights are 1/P, so with T calls Claude gets `round(T * wc / (wc + wx))`, where wc and wx are the two weights, and at least one call each when T is 2 or more. P 150 against 225 over 10 calls gives Claude 6, Codex 4. An unknown side takes the other side's P (equal weight); both unknown gives 1:1, and with an odd total Claude takes the extra call. One call goes to the larger weight (a tie: Claude).
+- **Override.** `--split N:M` (claude:codex, non-negative integers, not both 0) or `MEGAVIBE_AMASS_SPLIT=N:M`; the flag wins. A zero weight is honoured with no floor (`--split 1:0` is all Claude). It needs `mix` or `auto`.
+- **Printed before sending, also with `--dry-run`:** `split: claude 6 (haiku), codex 4 (gpt-5.6-luna); projections claude 150 (recent), codex 225 (recent)`, or `split: override N:M; ...`.
+- **Which call goes where.** Calls are walked copy by copy (copy 1 of every prompt, then copy 2, ...), odd copies in prompt order and even copies reversed, and a running deficit hands them to the two providers so they interleave and each lens tends to get both. Cache sharing is kept per provider: phase 1 starts, for every prompt, its first call on each provider it uses; after the stagger, phase 2 starts the rest.
+- **Models.** `--claude-model` (default haiku) and `--codex-model` (default gpt-5.6-luna). `--model` names one model, so it only fits a single provider; with a mixed run it is refused with a pointer to the two flags. The mixed input cap is 150 KB (the stricter one, Haiku's cliff) unless `--max-input-kb` is given.
+- **Records.** `runs.tsv` has a provider column on every row (`name cost status findings unparsed tokens provider`); each call also leaves `raw/<name>.provider`. The summary of a mixed run prints calls, ok and findings per provider, with Claude's cost in USD and Codex's tokens, plus totals. The ledger gets one line per provider used.
+- **Dedupe** with auto picks the available provider with the lower effective projection (the one with headroom; a tie goes to Claude), and says which and why; `--provider claude|codex` forces one. After a mixed run, cluster lines show the provider support, for example `n=3 (claude 2, codex 1)`; the `CUNK` fallback cluster shows only its count.
+
 ## Codex when Claude is hot
 
-Use `--provider codex` when Claude is hot and Codex has headroom. Both `run` and
-`dedupe` default to `--provider claude`; specify Codex on each command:
+Use `--provider codex` when Claude is hot and Codex has headroom (or let `auto` weigh it). Specify
+the provider on each command to force one:
 
 ```bash
 scripts/amass.sh run --provider codex --out /tmp/amass-codex-new src/parser.sh
@@ -43,7 +56,7 @@ only HOME, PATH, CODEX_HOME, proxy and certificate variables, excluding API keys
 endpoint overrides and headers. As in `codex-review.sh`, user-configured MCP
 servers or notify commands run as part of Codex outside the tool sandbox.
 
-Codex's default `--max-input-kb` is 400; Claude's remains 150. The cap covers the
+Codex alone defaults to `--max-input-kb` 400; Claude's, and a mixed run's, is 150. The cap covers the
 whole prompt, including context and lens text. Luna's price doubles past about
 272K tokens; the 400 KB cap uses the rough 1.8 bytes/token estimate, not an exact
 tokenizer or a guarantee about total context. Override the cap explicitly when needed.
@@ -62,7 +75,7 @@ remain in the run directory for inspection.
 
 ## Command reference
 
-`scripts/amass.sh run --out DIR [--provider claude|codex] [--change TEXT | --task-file F] [--model MODEL] [--lens name=text]... [--lenses-file F] [--no-lens] [--copies 3] [--whole N] [--parallel 12] [--timeout 280] [--max-input-kb 150] [--dry-run] FILE... [--context FILE...]...`, then `amass.sh dedupe --out DIR` and `amass.sh summary --out DIR`. For `run`, --out DIR must not exist (it is claimed atomically); a wrapper that pre-creates it fails with exit 2 and an explanation. A dry run uses scratch space and does not claim the requested output directory. Each `run` and `dedupe` appends a line to `~/.megavibe/amass-usage.jsonl` (`AMASS_LEDGER` overrides).
+`scripts/amass.sh run --out DIR [--provider auto|mix|claude|codex] [--split N:M] [--change TEXT | --task-file F] [--model MODEL | --claude-model M --codex-model M] [--lens name=text]... [--lenses-file F] [--no-lens] [--copies 3] [--whole N] [--parallel 12] [--timeout 280] [--max-input-kb 150] [--dry-run] FILE... [--context FILE...]...`, then `amass.sh dedupe --out DIR` and `amass.sh summary --out DIR`. For `run`, --out DIR must not exist (it is claimed atomically); a wrapper that pre-creates it fails with exit 2 and an explanation. A dry run uses scratch space and does not claim the requested output directory. Each `run` and `dedupe` appends a line to `~/.megavibe/amass-usage.jsonl` (`AMASS_LEDGER` overrides).
 
 `--context` accepts one or more files until the next option and can be repeated. Put reviewed files before the first context group, or after `--`. Quote paths containing spaces or newlines, and prefix option-like filenames with `./` (for example, `--context ./-n`). Context files follow all reviewed files in `===== CONTEXT path =====` blocks. The task tells workers that these are callers, callees or tests of the changed functions, not files under review; findings must concern the reviewed files. This instruction also applies with `--task-file`. Context shares the input-size cap and the checks for readable regular files and NUL bytes. A file supplied in both roles appears in both blocks and counts toward the cap twice.
 

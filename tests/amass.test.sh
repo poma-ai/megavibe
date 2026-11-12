@@ -12,7 +12,7 @@ T=$(cd "$T" && pwd -P)
 trap '/bin/rm -rf "$T"' EXIT
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); }
-bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; [ -z "${AMASS_TEST_DEBUG:-}" ] || printf '%s\n' "--- out: ${out:-}" >&2; }
 check() { if eval "$2"; then ok; else bad "$1"; fi; }
 
 command -v jq >/dev/null 2>&1 && command -v perl >/dev/null 2>&1 || { echo "SKIP: needs jq and perl"; exit 0; }
@@ -86,6 +86,24 @@ chmod +x "$T/fake-nocost"
 export FAKE_BASE="$T/fake-claude"
 export AMASS_CLAUDE="$T/fake-claude" AMASS_STAGGER=0
 export AMASS_LEDGER="$T/ledger.jsonl"
+# The default provider is auto, which would pick up any real codex on this machine and read the real usage
+# history: until section 11 installs a fake codex, codex is absent, and usage-route is a stub that prints
+# whatever PACE_CLAUDE / PACE_CODEX hold (empty: unknown; PACE_FAIL=1: the probe fails).
+export AMASS_CODEX="$T/no-such-codex"
+cat > "$T/usage-stub" <<'STUB'
+#!/bin/bash
+[ -z "${PACE_FAIL:-}" ] || exit 1
+case "${MEGAVIBE_ROUTER_PROVIDER:-}" in
+  claude) [ -z "${PACE_CLAUDE:-}" ] || printf '%s\n' "$PACE_CLAUDE" ;;
+  codex) [ -z "${PACE_CODEX:-}" ] || printf '%s\n' "$PACE_CODEX" ;;
+esac
+exit 0
+STUB
+chmod +x "$T/usage-stub"
+export MEGAVIBE_AMASS_USAGE_ROUTE="$T/usage-stub"
+unset PACE_CLAUDE PACE_CODEX PACE_FAIL MEGAVIBE_AMASS_SPLIT
+# pace LINEAR RECENT USED -> a usage-route.sh pace line (provider|used|elapsed|linear|rate|recent|remaining)
+pace() { printf 'x|%s|50|%s|1|%s|3' "$3" "$1" "$2"; }
 export ANTHROPIC_API_KEY=example-placeholder-not-a-key CLAUDE_CODE_USE_BEDROCK=1
 export ANTHROPIC_CUSTOM_HEADERS=$'Authorization:\nx-api-key: example-placeholder' ANTHROPIC_FOUNDRY_API_KEY=example AWS_BEARER_TOKEN_BEDROCK=example ANTHROPIC_FUTURE_SWITCH=1 CLAUDE_CODE_USE_ANYTHING=1
 
@@ -454,12 +472,13 @@ fi
 EOF
 chmod +x "$T/bin/codex"
 export PATH="$T/bin:$PATH"
+unset AMASS_CODEX
 export OPENAI_API_KEY=example OPENAI_BASE_URL=https://example.invalid OPENAI_ORG_ID=example OPENAI_CUSTOM_HEADERS=example CODEX_API_KEY=example AZURE_OPENAI_API_KEY=example CODEX_FUTURE_TOKEN=example
 export CODEX_HOME="$T/codex-home"
 mkdir "$CODEX_HOME" "$T/scratch"
 # Force scratch paths under the disposable fixture, and assert none survives any exit.
 export TMPDIR="$T/scratch"
-clean_scratch() { [ -z "$(ls -A "$T/scratch")" ]; }
+clean_scratch() { [ -z "$(ls -A "$T/scratch")" ] || { [ -z "${AMASS_TEST_DEBUG:-}" ] || ls -A "$T/scratch" >&2; return 1; }; }
 cxrun() { "$AM" run --provider codex --out "$T/cx-$1" --no-lens --whole 1 "${@:2}" "$T/a.txt"; }
 newlog cx
 out=$(cxrun ok 2>&1); rc=$?
@@ -539,13 +558,161 @@ head -c 410000 /dev/zero | tr '\0' x > "$T/large"
 out=$("$AM" run --provider codex --out "$T/cx-large" --no-lens --whole 1 --dry-run "$T/large" 2>&1); rc=$?
 check "codex default cap is 400 KB with luna reason and dry scratch cleanup" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 400" && echo "$out" | grep -q "272K" && clean_scratch'
 out=$("$AM" run --provider claude --out "$T/cx-claude-cap" --no-lens --whole 1 --dry-run "$T/medium" 2>&1); rc=$?
-check "claude still defaults to 150 KB and Haiku reason" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 150" && echo "$out" | grep -q "Haiku"'
+check "claude still defaults to 150 KB and Haiku reason, and a refused dry run leaves no scratch" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 150" && echo "$out" | grep -q "Haiku" && clean_scratch'
 
 out=$("$AM" --help)
 for doc in help readme; do
   if [ "$doc" = help ]; then printf '%s\n' "$out" > "$T/doc"; else cp "$REPO/README-amass.md" "$T/doc"; fi
   check "$doc explains provider routing, full model ids and unknown comparative precision" 'grep -q -- "--provider" "$T/doc" && grep -q "gpt-5.6-luna" "$T/doc" && grep -q "gpt-6-luna" "$T/doc" && grep -q "headroom" "$T/doc" && grep -q "unknown until compared" "$T/doc"'
 done
+
+# 12. Mixed runs: both providers in one run, split inversely to the projected usage.
+ncl() { ls -d "$FAKE_LOG"/call_*/apikey 2>/dev/null | wc -l | tr -d ' '; }
+ncx() { ls -d "$FAKE_LOG"/call_*/output 2>/dev/null | wc -l | tr -d ' '; }
+splitline() { "$AM" run --out "$T/sl-unused" --no-lens --whole "$1" --dry-run "${@:2}" "$T/a.txt" 2>&1 | grep '^split:'; }
+PC150=$(pace 100 150 10); PX225=$(pace 100 225 10)
+out=$(PACE_CLAUDE=$PC150 PACE_CODEX=$PX225 splitline 10)
+check "P 150 vs 225 over 10 calls prints claude 6, codex 4 with both projections (also in --dry-run)" '[ "$out" = "split: claude 6 (haiku), codex 4 (gpt-5.6-luna); projections claude 150 (recent), codex 225 (recent)" ]'
+newlog mix1
+out=$(PACE_CLAUDE=$PC150 PACE_CODEX=$PX225 "$AM" run --out "$T/mx1" --no-lens --whole 10 "$T/a.txt" 2>&1); rc=$?
+check "the default (auto) run with both usable sends 6 Claude and 4 Codex calls and prints the split before sending" '[ $rc -eq 0 ] && [ "$(ncl)" = 6 ] && [ "$(ncx)" = 4 ] && echo "$out" | grep -q "^split: claude 6 (haiku), codex 4"'
+check "runs.tsv has a provider column on every row, and a .provider file per call" '[ "$(awk -F"\t" "NF == 7 && (\$7 == \"claude\" || \$7 == \"codex\")" "$T/mx1/runs.tsv" | wc -l | tr -d " ")" = 10 ] && [ "$(awk -F"\t" "\$7 == \"claude\"" "$T/mx1/runs.tsv" | wc -l | tr -d " ")" = 6 ] && [ "$(cat "$T"/mx1/raw/*.provider | sort | uniq -c | tr -s " " | tr "\n" ";")" = " 6 claude; 4 codex;" ]'
+check "the ledger got one line per provider used, each with its own model and calls" '[ "$(tail -2 "$AMASS_LEDGER" | jq -r ".provider + \":\" + .model + \":\" + (.calls|tostring)" | sort | tr "\n" " ")" = "claude:haiku:6 codex:gpt-5.6-luna:4 " ]'
+check "the mixed summary shows each provider and totals (claude cost, codex tokens)" 'echo "$out" | grep -q "^runs 10, ok 10, failed 0" && echo "$out" | grep -q "^claude: worker calls 6, ok 6, findings 12, cost \$0.030000" && echo "$out" | grep -q "^codex: worker calls 4, ok 4, findings 8, tokens 4936, cost unknown" && echo "$out" | grep -q "^total: claude cost \$0.030000; codex tokens 4936"'
+check "the summary subcommand reads the same mixed run" '"$AM" summary --out "$T/mx1" | grep -q "^codex: worker calls 4"'
+check "claude workers kept their flags and codex workers theirs in a mixed run" '[ "$(cat "$FAKE_LOG"/call_*/argv | grep -c -x -- "--tools")" = 6 ] && [ "$(cat "$FAKE_LOG"/call_*/argv | grep -c -x -- "--ephemeral")" = 4 ]'
+out=$(PACE_CLAUDE=$PC150 PACE_CODEX=$PX225 "$AM" dedupe --out "$T/mx1" 2>&1); rc=$?
+check "dedupe with both usable picks the lower projection (claude 150 < codex 225), says which and why" '[ $rc -eq 0 ] && echo "$out" | grep -q "^dedupe: provider claude (projections claude 150 (recent), codex 225 (recent)" && tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .provider == \"claude\"" >/dev/null'
+check "clusters of a mixed run show provider support" 'grep -q "n=20 (claude 12, codex 8)" "$T/mx1/clusters.md"'
+rm -rf "$T/mx1/dedupe_"* "$T/mx1/clusters"* "$T/mx1/members_"*
+out=$(PACE_CLAUDE=$(pace 100 300 10) PACE_CODEX=$PX225 "$AM" dedupe --out "$T/mx1" 2>&1); rc=$?
+check "dedupe takes codex when its projection is lower, and runs it" '[ $rc -eq 0 ] && echo "$out" | grep -q "^dedupe: provider codex" && tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .provider == \"codex\" and .model == \"gpt-5.6-luna\"" >/dev/null'
+out=$("$AM" summary --out "$T/mx1" 2>&1)
+check "the mixed summary includes a codex dedupe" 'echo "$out" | grep -q "^dedupe codex: calls 1, tokens 1234"'
+rm -rf "$T/mx1/dedupe_"* "$T/mx1/clusters"* "$T/mx1/members_"*
+out=$(PACE_CLAUDE=$PC150 "$AM" dedupe --out "$T/mx1" --provider codex 2>&1)
+check "dedupe --provider codex overrides the projection choice" 'tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .provider == \"codex\"" >/dev/null && ! echo "$out" | grep -q "^dedupe: provider"'
+# the projection source: recent, else linear, else used, else unknown; clamped
+out=$(PACE_CLAUDE=$(pace 150 300 10) PACE_CODEX=$(pace 225 "" 10) splitline 10)
+check "recent beats linear, linear beats used" 'echo "$out" | grep -q "projections claude 300 (recent), codex 225 (linear)"'
+out=$(PACE_CLAUDE=$(pace "" "" 150) PACE_CODEX=$(pace "" "" 225) splitline 10)
+check "used is the last resort" 'echo "$out" | grep -q "claude 6 (haiku), codex 4 (gpt-5.6-luna); projections claude 150 (used), codex 225 (used)"'
+out=$(PACE_CLAUDE=$(pace "" 5 10) PACE_CODEX=$(pace "" 5000 10) splitline 10)
+check "projections are clamped to 10..1000 and the diversity floor keeps one call on the heavy side" 'echo "$out" | grep -q "claude 9 (haiku), codex 1 (gpt-5.6-luna); projections claude 10 (recent), codex 1000 (recent)"'
+out=$(PACE_CLAUDE=$(pace "" 5000 10) PACE_CODEX=$(pace "" 10 10) splitline 10)
+check "the floor works the other way too" 'echo "$out" | grep -q "claude 1 (haiku), codex 9 (gpt-5.6-luna)"'
+out=$(PACE_CLAUDE=$(pace "" 100 10) splitline 10)
+check "one unknown side takes the other's projection (equal weight) and is shown as unknown" 'echo "$out" | grep -q "claude 5 (haiku), codex 5 (gpt-5.6-luna); projections claude 100 (recent), codex ? (unknown)"'
+out=$(splitline 5)
+check "both unknown: 1:1, and Claude takes the extra call of an odd total" 'echo "$out" | grep -q "split: claude 3 (haiku), codex 2 (gpt-5.6-luna); projections claude ? (unknown), codex ? (unknown)"'
+out=$(PACE_FAIL=1 splitline 4)
+check "a failing usage-route means unknown, not a crash" 'echo "$out" | grep -q "split: claude 2 (haiku), codex 2 (gpt-5.6-luna)"'
+out=$(PACE_CLAUDE=garbage PACE_CODEX='x|abc|2|def|1|ghi|3' splitline 4)
+check "garbled pace output means unknown" 'echo "$out" | grep -q "split: claude 2 (haiku), codex 2 (gpt-5.6-luna); projections claude ? (unknown), codex ? (unknown)"'
+out=$(MEGAVIBE_AMASS_USAGE_ROUTE="$T/no-such-route" splitline 4)
+check "a missing usage-route means unknown" 'echo "$out" | grep -q "split: claude 2 (haiku), codex 2 (gpt-5.6-luna)"'
+out=$(splitline 1)
+check "a single call goes to the larger weight (a tie: claude)" 'echo "$out" | grep -q "claude 1 (haiku), codex 0"'
+out=$(PACE_CLAUDE=$(pace "" 400 10) PACE_CODEX=$(pace "" 100 10) splitline 1)
+check "a single call goes to codex when its projection is lower" 'echo "$out" | grep -q "claude 0 (haiku), codex 1"'
+# overrides
+out=$(splitline 10 --split 1:0)
+check "--split 1:0 puts every call on claude (no floor for a zero weight)" '[ "$out" = "split: override 1:0; claude 10 (haiku), codex 0 (gpt-5.6-luna)" ]'
+out=$(splitline 10 --split 0:5)
+check "--split 0:5 puts every call on codex" 'echo "$out" | grep -q "claude 0 (haiku), codex 10"'
+out=$(MEGAVIBE_AMASS_SPLIT=1:3 splitline 8)
+check "MEGAVIBE_AMASS_SPLIT sets the split" 'echo "$out" | grep -q "split: override 1:3; claude 2 (haiku), codex 6"'
+out=$(MEGAVIBE_AMASS_SPLIT=1:3 splitline 8 --split 3:1)
+check "the flag wins over the environment" 'echo "$out" | grep -q "split: override 3:1; claude 6 (haiku), codex 2"'
+out=$(splitline 10 --split 1:100)
+check "a nonzero weight keeps the diversity floor" 'echo "$out" | grep -q "claude 1 (haiku), codex 9"'
+for bad_split in 1 a:b 0:0 1:2:3 -1:2 1:; do
+  "$AM" run --out "$T/sl-bad" --no-lens --whole 2 --dry-run --split "$bad_split" "$T/a.txt" >/dev/null 2>&1; rc=$?
+  check "invalid --split '$bad_split' is refused" '[ $rc -eq 2 ]'
+done
+MEGAVIBE_AMASS_SPLIT=0:0 "$AM" run --out "$T/sl-bad" --no-lens --whole 2 --dry-run "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "an invalid MEGAVIBE_AMASS_SPLIT is refused" '[ $rc -eq 2 ]'
+"$AM" run --out "$T/sl-bad" --provider claude --split 1:1 --no-lens --whole 2 --dry-run "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "--split with a single explicit provider is refused" '[ $rc -eq 2 ]'
+newlog mix2
+out=$(MEGAVIBE_AMASS_SPLIT=1:0 "$AM" run --out "$T/mx2" --no-lens --whole 4 "$T/a.txt" 2>&1); rc=$?
+check "a split with a zero weight sends nothing to that provider and writes one ledger line" '[ $rc -eq 0 ] && [ "$(ncl)" = 4 ] && [ "$(ncx)" = 0 ] && tail -1 "$AMASS_LEDGER" | jq -e ".provider == \"claude\" and .calls == 4" >/dev/null'
+# models
+newlog mix3
+out=$("$AM" run --out "$T/mx3" --no-lens --whole 4 --claude-model sonnet --codex-model gpt-6-luna "$T/a.txt" 2>&1); rc=$?
+check "--claude-model and --codex-model pick the model of each provider" '[ $rc -eq 0 ] && cat "$FAKE_LOG"/call_*/argv | grep -qx sonnet && cat "$FAKE_LOG"/call_*/argv | grep -qx gpt-6-luna && ! cat "$FAKE_LOG"/call_*/argv | grep -qx haiku && echo "$out" | grep -q "claude 2 (sonnet), codex 2 (gpt-6-luna)"'
+for pv in mix auto; do
+  newlog mix4
+  out=$("$AM" run --out "$T/mx4$pv" --provider "$pv" --model sonnet --no-lens --whole 4 "$T/a.txt" 2>&1); rc=$?
+  check "--model with a mixed run ($pv) is refused and points to the two flags, nothing sent" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q -- "--claude-model and --codex-model"'
+done
+newlog mix5
+out=$(AMASS_CODEX="$T/no-such-codex" "$AM" run --out "$T/mx5" --model sonnet --no-lens --whole 2 "$T/a.txt" 2>&1); rc=$?
+check "--model works when auto resolves to a single provider" '[ $rc -eq 0 ] && sed -n "/^--model\$/{n;p;}" "$FAKE_LOG"/call_*/argv | grep -qx sonnet'
+# availability
+newlog mix6
+n0=$(grep -c . "$AMASS_LEDGER")
+out=$(AMASS_CODEX="$T/no-such-codex" "$AM" run --out "$T/mx6" --no-lens --whole 3 "$T/a.txt" 2>&1); rc=$?
+check "auto with codex missing: one warning line naming it, everything on claude, one ledger line" '[ $rc -eq 0 ] && [ "$(echo "$out" | grep -c "warning")" = 1 ] && echo "$out" | grep -q "warning: codex is not usable" && [ "$(ncl)" = 3 ] && [ "$(ncx)" = 0 ] && [ "$(grep -c . "$AMASS_LEDGER")" = $((n0 + 1)) ] && [ "$(awk -F"\t" "\$7 != \"claude\"" "$T/mx6/runs.tsv" | wc -l | tr -d " ")" = 0 ]'
+newlog mix7
+out=$(fk FAKE_AUTH=apikey -- "$AM" run --out "$T/mx7" --no-lens --whole 3 "$T/a.txt" 2>&1); rc=$?
+check "auto with the claude login unusable: one warning naming it, everything on codex" '[ $rc -eq 0 ] && echo "$out" | grep -q "warning: claude is not usable" && [ "$(ncl)" = 0 ] && [ "$(ncx)" = 3 ] && [ -s "$T/mx7/provider" ] && clean_scratch'
+newlog mix8
+out=$(fk FAKE_AUTH=apikey FAKE_CX=apikey -- "$AM" run --out "$T/mx8" --no-lens --whole 3 "$T/a.txt" 2>&1); rc=$?
+check "auto with neither usable dies and names both" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q "no usable provider" && echo "$out" | grep -q "claude.ai" && echo "$out" | grep -q "ChatGPT" && clean_scratch'
+newlog mix9
+out=$(AMASS_CODEX="$T/no-such-codex" "$AM" run --out "$T/mx9" --provider mix --no-lens --whole 3 "$T/a.txt" 2>&1); rc=$?
+check "mix with codex missing dies and nothing is sent" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q "mix needs both providers" && clean_scratch'
+out=$(fk FAKE_AUTH=apikey -- "$AM" run --out "$T/mx9b" --provider mix --no-lens --whole 3 "$T/a.txt" 2>&1); rc=$?
+check "mix with the claude login unusable dies and nothing is sent" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && clean_scratch'
+# the input cap
+head -c 160000 /dev/zero | tr '\0' x > "$T/m160"
+newlog mix10
+out=$("$AM" run --out "$T/mx10" --provider mix --no-lens --whole 2 --dry-run "$T/m160" 2>&1); rc=$?
+check "the mixed cap is 150 KB (the stricter one)" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 150"'
+out=$("$AM" run --out "$T/mx10" --provider mix --no-lens --whole 2 --max-input-kb 200 --dry-run "$T/m160" 2>&1); rc=$?
+check "an explicit cap lifts it" '[ $rc -eq 0 ]'
+out=$("$AM" run --out "$T/mx10" --no-lens --whole 2 "$T/m160" 2>&1); rc=$?
+check "auto with both usable refuses 160 KB before sending anything" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q "max-input-kb 150"'
+out=$(AMASS_CODEX="$T/no-such-codex" "$AM" run --out "$T/mx10b" --no-lens --whole 2 --dry-run "$T/m160" 2>&1); rc=$?
+check "a dry run checks no login, so auto plans for both and applies the mixed cap" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 150"'
+head -c 200000 /dev/zero | tr '\0' x > "$T/m200"
+out=$(fk FAKE_AUTH=apikey -- "$AM" run --out "$T/mx10c" --no-lens --whole 1 "$T/m200" 2>&1); rc=$?
+check "auto that resolves to codex alone takes codex's 400 KB cap" '[ $rc -eq 0 ] && echo "$out" | grep -q "warning: claude is not usable"'
+# interleaving: every lens tends to get both providers
+newlog mix11
+out=$("$AM" run --out "$T/mx11" --lens a=1 --lens b=2 --lens c=3 --lens d=4 --lens e=5 --lens f=6 --copies 2 "$T/a.txt" 2>&1); rc=$?
+miss=0
+for l in a b c d e f; do
+  [ "$(cat "$T/mx11/raw/${l}_1.provider" "$T/mx11/raw/${l}_2.provider" | sort -u | wc -l | tr -d ' ')" = 2 ] || miss=$((miss + 1))
+done
+check "six lenses, two copies, 1:1: every lens got both providers (even prompt count included)" '[ $rc -eq 0 ] && [ "$miss" = 0 ] && [ "$(ncl)" = 6 ] && [ "$(ncx)" = 6 ]'
+c0=$(calls)
+out=$("$AM" run --out "$T/mx11b" --lens a=1 --lens b=2 --lens c=3 --copies 3 --dry-run "$T/a.txt" 2>&1)
+check "a dry run plans (claude 5, codex 4 of 9) without sending" '[ "$(calls)" = "$c0" ] && echo "$out" | grep -q "^split: claude 5 (haiku), codex 4"'
+# cancelling a mixed run reaps the codex workers and descendants
+newlog mix12
+defconf
+printf 'export FAKE_CX=slow\n' >> "$T/conf.sh"
+"$AM" run --out "$T/mx12" --no-lens --whole 4 "$T/a.txt" > "$T/mx-cancel.log" 2>&1 & cancel_pid=$!
+tries=0
+while [ "$tries" -lt 200 ] && ! ls "$FAKE_LOG"/call_*/child >/dev/null 2>&1; do sleep 0.05; tries=$((tries + 1)); done
+kill -TERM "$cancel_pid" 2>/dev/null
+wait "$cancel_pid"; rc=$?
+defconf
+alive_cx=0
+for f in "$FAKE_LOG"/call_*/pid "$FAKE_LOG"/call_*/child; do
+  [ -f "$f" ] || continue
+  if kill -0 "$(cat "$f")" 2>/dev/null; then alive_cx=$((alive_cx + 1)); fi
+done
+check "cancelling a mixed run exits 143, leaves no fake codex worker or child alive, and cleans scratch" '[ $rc -eq 143 ] && [ "$alive_cx" = 0 ] && ls "$FAKE_LOG"/call_*/pid >/dev/null 2>&1 && clean_scratch'
+# docs
+out=$("$AM" --help)
+for doc in help readme; do
+  if [ "$doc" = help ]; then printf '%s\n' "$out" > "$T/doc"; else cp "$REPO/README-amass.md" "$T/doc"; fi
+  check "$doc documents mixed runs: auto, the split rule, the override and the two model flags" 'grep -q -- "--provider auto" "$T/doc" && grep -q -- "--split" "$T/doc" && grep -q "MEGAVIBE_AMASS_SPLIT" "$T/doc" && grep -q -- "--claude-model" "$T/doc" && grep -q -- "--codex-model" "$T/doc" && grep -q "150 KB" "$T/doc"'
+done
+check "the delegation rule says amass mixes Claude and Codex calls" 'grep -q "mixes Claude (Haiku) and Codex (luna) calls" "$REPO/template/.claude/rules/delegation.md"'
 
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
