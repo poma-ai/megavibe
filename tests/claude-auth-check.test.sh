@@ -110,7 +110,21 @@ runs "$T/st-garbage.json" "$T/ok.json"
 check "unusable status: falls back to the stored record ($o)" '[ "$RC" = 0 ] && [[ "$o" == *"refresh token 600.0 h"* ]]'
 printf '{"loggedIn":true,"authMethod":"claude.ai"}\n' > "$T/st-noexp.json"
 runs "$T/st-noexp.json" "$T/ok.json"
-check "status without an expiry: falls back to the stored record" '[ "$RC" = 0 ] && [[ "$o" == *"refresh token 600.0 h"* ]]'
+check "logged in without an expiry: unknown, exit 2, record not consulted ($o)" '[ "$RC" = 2 ] && [[ "$o" == *"lifetime unknown"* ]] && [[ "$o" != *"refresh token"* ]]'
+runs "$T/st-noexp.json" "$T/stale.json"
+check "logged in without an expiry + stale record: never EXPIRED" '[ "$RC" = 2 ] && [[ "$o" != *EXPIRED* ]]'
+printf '{"loggedIn":true,"authMethod":"claude.ai","loginExpiresAt":"not a date"}\n' > "$T/st-baddate.json"
+runs "$T/st-baddate.json" "$T/stale.json"
+check "unparsable expiry + stale record: unknown, never EXPIRED" '[ "$RC" = 2 ] && [[ "$o" != *EXPIRED* ]]'
+iso=$(date -u -r "$((NOW + 400 * 3600))" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null || date -u -d "@$((NOW + 400 * 3600))" +%Y-%m-%dT%H:%M:%S+00:00)
+printf '{"loggedIn":true,"authMethod":"claude.ai","loginExpiresAt":"%s"}\n' "$iso" > "$T/st-offset.json"
+runs "$T/st-offset.json" "$T/stale.json"
+check "a +00:00 offset parses" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left"* ]]'
+printf '{"loggedIn":true,"loginExpiresAt":"%s"}\n' "$iso" > "$T/st-nomethod.json"
+runs "$T/st-nomethod.json" "$T/stale.json"
+check "no authMethod field: still checked by expiry" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left"* ]]'
+o=$(bash "$REPO/scripts/claude-auth-check.sh" -h 2>&1)
+check "help shows the whole header" '[[ "$o" == *"MEGAVIBE_NOW pins the clock"* ]]'
 # Without a usable status, a zero or pre-2001 expiry is unknown, never expired.
 printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"%s","expiresAt":0,"refreshTokenExpiresAt":0}}\n' "$SECRET" "$SECRET" > "$T/zero.json"
 run "$T/zero.json"

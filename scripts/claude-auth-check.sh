@@ -12,8 +12,9 @@
 # (2026-10-31): a login that expired at 20:40 killed a fix agent mid-edit and left
 # twenty scheduled ticks unprocessed until the laptop was opened the next morning.
 #
-# Exit 0: the refresh token outlasts HOURS (default 12). Exit 1: it expires inside
-# HOURS, or is missing, or has expired. Exit 2: no credentials found. --quiet prints
+# Exit 0: the login outlasts HOURS (default 12). Exit 1: it expires inside HOURS, has
+# expired, or nobody is logged in. Exit 2: no credentials found, or the lifetime is
+# unknown (logged in, but no usable expiry anywhere). --quiet prints
 # nothing on exit 0 (for hooks and ticks that only want the warning).
 #
 # Source: `claude auth status` first (its loginExpiresAt is the login's own lifetime, and
@@ -30,7 +31,7 @@ HOURS=12; QUIET=0
 for a in "$@"; do
   case "$a" in
     --quiet|-q) QUIET=1 ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     ''|*[!0-9.]*|*.*.*|.) echo "claude-auth: unknown argument: $a (HOURS is a number)" >&2; exit 2 ;;
     *) HOURS="$a" ;;
   esac
@@ -60,14 +61,18 @@ if [ -n "$status" ]; then
   read -r STATE LOGIN < <(printf '%s' "$status" | jq -r --argjson now "$NOW" '
     if type != "object" then ""
     elif .loggedIn == false then "out -"
-    elif .loggedIn == true and (.authMethod // "") != "claude.ai" then "other -"
-    elif .loggedIn == true and (.loginExpiresAt | type) == "string" then
-      ((.loginExpiresAt | sub("\\.[0-9]+Z$"; "Z") | try fromdateiso8601 catch null) as $e
-       | if $e == null or $e < 1000000000 then "" else "in \((($e - $now) / 3600))" end)
+    elif .loggedIn == true and has("authMethod") and .authMethod != "claude.ai" then "other -"
+    elif .loggedIn == true then
+      ((.loginExpiresAt // "") | if type != "string" then null
+        else sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | try fromdateiso8601 catch null end) as $e
+      | if $e == null or $e < 1000000000 then "unknown -" else "in \((($e - $now) / 3600))" end
     else "" end' 2>/dev/null) || true
   case "${STATE:-}" in
     out) echo "claude-auth: not logged in (claude auth status): $ADVICE"; exit 1 ;;
     other) [ "$QUIET" = 1 ] || echo "claude-auth: not a claude.ai login (claude auth status); no login lifetime to check"; exit 0 ;;
+    # Logged in, but no usable expiry: unknown. The stored record is not consulted here, because
+    # a stale record is exactly what reports a working login as expired.
+    unknown) echo "claude-auth: logged in (claude auth status), login lifetime unknown"; exit 2 ;;
     in)
       lmsg="claude-auth: login $(LC_NUMERIC=C printf '%.1f h' "$LOGIN") left (claude auth status)"
       if awk -v r="$LOGIN" 'BEGIN { exit !(r <= 0) }'; then echo "$lmsg -> LOGIN EXPIRED: this session fails on its next request; $ADVICE"; exit 1; fi
