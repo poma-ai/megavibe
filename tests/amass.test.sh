@@ -1,7 +1,7 @@
 #!/bin/bash
 # /bin/bash tests/amass.test.sh
-# scripts/amass.sh against a FAKE claude on AMASS_CLAUDE: nothing here calls the real
-# claude or sends anything. The fake records the flags, the environment and the prompt of
+# scripts/amass.sh against FAKE claude (AMASS_CLAUDE) and codex (PATH): nothing
+# here calls a real model or sends anything. The fake records the flags, the environment and the prompt of
 # every call, so the safety properties (no tools, no settings, no API key, bounded input,
 # lens last, identical prefix for copies) are asserted, not assumed.
 set -u
@@ -398,6 +398,154 @@ done
 mkdir "$T/precreated"
 out=$("$AM" run --out "$T/precreated" --no-lens --whole 1 "$T/a.txt" 2>&1); rc=$?
 check "pre-created --out fails with exit 2 and an explanation" '[ $rc -eq 2 ] && echo "$out" | grep -q "already exists.*new --out"'
+
+# 11. Codex is always a fake on PATH, configured through the same conf.sh.
+unset MEGAVIBE_AMASS_CODEX_PRICE
+mkdir "$T/bin"
+cat > "$T/bin/codex" <<'EOF'
+#!/bin/bash
+# Capture the real environment BEFORE conf.sh supplies fake-only settings.
+names=$(env | cut -d= -f1 | sort)
+. "$(dirname "$0")/../conf.sh"
+if [ "${2:-}" = --help ]; then
+  printf '%s\n' "$names" > "$FAKE_LOG/help_envnames"
+  pwd > "$FAKE_LOG/help_cwd"
+  [ "${FAKE_CX:-}" != helpfail ]; exit $?
+fi
+if [ "${1:-}" = login ]; then
+  printf '%s\n' "$names" > "$FAKE_LOG/login_envnames"
+  case ${FAKE_CX:-} in
+    apikey) echo 'Logged in using an API key' >&2 ;;
+    loggedout) echo 'Not logged in' >&2; exit 1 ;;
+    loginfail) exit 1 ;;
+    *) echo 'Logged in using ChatGPT' >&2 ;;
+  esac
+  exit 0
+fi
+d="$FAKE_LOG/call_$$"; mkdir "$d"
+printf '%s\n' "$@" > "$d/argv"
+printf '%s\n' "$names" > "$d/envnames"
+pwd > "$d/cwd"
+cat > "$d/prompt"
+answer=''
+while [ $# -gt 0 ]; do
+  case $1 in --output-last-message) answer=$2; shift ;; esac
+  shift
+done
+printf '%s\n' "$answer" > "$d/output"
+case ${FAKE_CX:-} in
+  slow)
+    echo $$ > "$d/pid"
+    sleep 30 & echo $! > "$d/child"
+    wait; exit 0 ;;
+  nofile) exit 0 ;;
+  fail) echo boom >&2; exit 1 ;;
+esac
+if grep -q 'dedupe stage' "$d/prompt"; then
+  ids=$(grep -E '^[A-Za-z0-9_-]+_[0-9]+\.F[0-9]+ \|' "$d/prompt" | cut -d' ' -f1 | paste -sd, -)
+  printf 'C1 | P2 | everything | members: %s\n' "$ids" > "$answer"
+else
+  printf 'F1 | P2 | a.sh:1 | boom on empty input | because\nF2 | P1 | a.sh:9 | race | because\n' > "$answer"
+fi
+if [ "${FAKE_CX:-}" != notokens ]; then
+  # cached_input_tokens is part of input_tokens, never added a second time.
+  echo '{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":1000,"output_tokens":34}}'
+fi
+EOF
+chmod +x "$T/bin/codex"
+export PATH="$T/bin:$PATH"
+export OPENAI_API_KEY=example OPENAI_BASE_URL=https://example.invalid OPENAI_ORG_ID=example OPENAI_CUSTOM_HEADERS=example CODEX_API_KEY=example AZURE_OPENAI_API_KEY=example CODEX_FUTURE_TOKEN=example
+export CODEX_HOME="$T/codex-home"
+mkdir "$CODEX_HOME" "$T/scratch"
+# Force scratch paths under the disposable fixture, and assert none survives any exit.
+export TMPDIR="$T/scratch"
+clean_scratch() { [ -z "$(ls -A "$T/scratch")" ]; }
+cxrun() { "$AM" run --provider codex --out "$T/cx-$1" --no-lens --whole 1 "${@:2}" "$T/a.txt"; }
+newlog cx
+out=$(cxrun ok 2>&1); rc=$?
+check "codex default run works with empty lens/context arrays on bash 3.2" '[ $rc -eq 0 ] && [ "$(calls)" = 1 ]'
+first=$(ls -d "$FAKE_LOG"/call_* 2>/dev/null | head -1)
+check "codex is headless, read-only, never approves, ignores rules, ephemeral, stdin prompt" '[ -n "$first" ] && grep -qx exec "$first/argv" && grep -qx read-only "$first/argv" && grep -qx "approval_policy=\"never\"" "$first/argv" && grep -qx -- --ignore-rules "$first/argv" && grep -qx -- --skip-git-repo-check "$first/argv" && grep -qx -- --ephemeral "$first/argv" && tail -1 "$first/argv" | grep -qx -- - && grep -q alpha "$first/prompt"'
+check "codex defaults to the full luna id and writes final answer in the run dir" '[ -n "$first" ] && grep -qx gpt-5.6-luna "$first/argv" && grep -qF "$T/cx-ok/raw/" "$first/output" && [ -s "$(cat "$first/output")" ]'
+check "codex login and workers exclude all planted credentials, endpoints, headers" '[ -n "$first" ] && ! cat "$first/envnames" "$FAKE_LOG/login_envnames" "$FAKE_LOG/help_envnames" | grep -qE "OPENAI|ANTHROPIC|AWS_|CODEX_API_KEY|CODEX_FUTURE|CLAUDE_CODE_USE" && grep -qx CODEX_HOME "$first/envnames" && grep -qx HOME "$first/envnames" && grep -qx PATH "$first/envnames"'
+check "codex runs outside project/output and cleans scratch after success" '[ -n "$first" ] && grep -qF "$T/scratch/" "$first/cwd" && [ ! -d "$(cat "$first/cwd")" ] && clean_scratch'
+check "codex records tokens without inventing cost" 'tail -1 "$AMASS_LEDGER" | jq -e ".provider == \"codex\" and .tokens == 1234 and .cost == null" >/dev/null && echo "$out" | grep -q "tokens 1234" && ! echo "$out" | grep -q "\$0\.000"'
+out=$(cxrun model --model gpt-6-luna 2>&1); rc=$?
+check "codex --model overrides default" '[ $rc -eq 0 ] && cat "$FAKE_LOG"/call_*/argv | grep -qx gpt-6-luna'
+for mode in helpfail apikey loggedout loginfail; do
+  newlog "cx-$mode"
+  out=$(fk "FAKE_CX=$mode" -- cxrun "$mode" 2>&1); rc=$?
+  check "codex $mode refuses before any worker and cleans scratch" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -qE "exec --help|ChatGPT|verify.*login" && clean_scratch'
+done
+# An isolated PATH has the shell utilities but cannot possibly find a real codex.
+mkdir "$T/no-codex"
+for utility in bash jq perl dirname mkdir cat tr cmp wc mktemp sed rm chmod pwd; do
+  ln -s "$(command -v "$utility")" "$T/no-codex/$utility"
+done
+out=$(PATH="$T/no-codex" cxrun missing 2>&1); rc=$?
+check "missing codex refuses clearly and cleans scratch" '[ $rc -eq 2 ] && echo "$out" | grep -q "codex" && clean_scratch'
+for mode in nofile fail notokens; do
+  newlog "cx-$mode"
+  out=$(fk "FAKE_CX=$mode" -- cxrun "$mode" 2>&1); rc=$?
+  if [ "$mode" = notokens ]; then
+    check "missing token event stays unknown, never zero" '[ $rc -eq 0 ] && tail -1 "$AMASS_LEDGER" | jq -e ".provider == \"codex\" and .tokens == null and .cost == null" >/dev/null && echo "$out" | grep -q "tokens unknown"'
+  else
+    check "codex $mode counts a failed worker and no usable result" '[ $rc -eq 3 ] && echo "$out" | grep -q "ok 0, failed 1"'
+  fi
+  check "codex cleans scratch after $mode" 'clean_scratch'
+done
+newlog cx-slow
+start=$(date +%s)
+out=$(fk FAKE_CX=slow -- cxrun slow --timeout 1 2>&1); rc=$?
+dur=$(( $(date +%s) - start ))
+check "codex timeout is supervised, counted, and scratch cleaned" '[ $rc -eq 3 ] && [ $dur -lt 6 ] && grep -q "fail(rc=124)" "$T/cx-slow/runs.tsv" && clean_scratch'
+check "codex timeout kills worker and child" '[ "$(calls)" = 1 ] && ! kill -0 "$(cat "$FAKE_LOG"/call_*/pid)" 2>/dev/null && ! kill -0 "$(cat "$FAKE_LOG"/call_*/child)" 2>/dev/null'
+# Cancellation must forward through shell workers to the supervised process group.
+newlog cx-cancel
+defconf
+printf 'export FAKE_CX=slow\n' >> "$T/conf.sh"
+"$AM" run --provider codex --out "$T/cx-cancel" --no-lens --whole 1 "$T/a.txt" > "$T/cancel.log" 2>&1 & cancel_pid=$!
+tries=0
+while [ "$tries" -lt 100 ] && ! ls "$FAKE_LOG"/call_*/child >/dev/null 2>&1; do sleep 0.05; tries=$((tries + 1)); done
+kill -TERM "$cancel_pid" 2>/dev/null
+wait "$cancel_pid"; rc=$?
+defconf
+check "cancelling codex cleans scratch and kills worker descendants" '[ $rc -eq 143 ] && [ "$(calls)" = 1 ] && clean_scratch && ! kill -0 "$(cat "$FAKE_LOG"/call_*/pid)" 2>/dev/null && ! kill -0 "$(cat "$FAKE_LOG"/call_*/child)" 2>/dev/null'
+newlog cx-invalid
+out=$(cxrun dash --model --evil 2>&1); rc=$?
+check "codex rejects option-looking models before calling" '[ $rc -eq 2 ] && echo "$out" | grep -q "bad --model" && [ "$(calls)" = 0 ] && clean_scratch'
+for verb in run dedupe; do
+  out=$("$AM" "$verb" --provider other --out "$T/cx-ok" 2>&1); rc=$?
+  check "$verb rejects an invalid provider" '[ $rc -eq 2 ] && echo "$out" | grep -q -- "--provider must be"'
+done
+newlog cx-parallel
+out=$("$AM" run --provider codex --out "$T/cx-parallel" --lens x=one --lens y=two --copies 2 --parallel 4 "$T/a.txt" 2>&1); rc=$?
+check "parallel codex workers write four distinct final-answer files" '[ $rc -eq 0 ] && [ "$(calls)" = 4 ] && [ "$(cat "$FAKE_LOG"/call_*/output | sort -u | wc -l | tr -d " ")" = 4 ] && echo "$out" | grep -q "runs 4, ok 4" && clean_scratch'
+out=$("$AM" dedupe --provider codex --out "$T/cx-ok" 2>&1); rc=$?
+check "codex dedupe preserves cluster format and accounting" '[ $rc -eq 0 ] && grep -qx "C1 | P2 | n=2 | everything | members: whole_1.F1,whole_1.F2" "$T/cx-ok/clusters.md" && tail -1 "$AMASS_LEDGER" | jq -e ".provider == \"codex\" and .cmd == \"dedupe\" and .tokens == 1234 and .cost == null" >/dev/null && clean_scratch'
+out=$("$AM" summary --out "$T/cx-ok" 2>&1)
+check "standalone summary remembers codex token usage including dedupe" 'echo "$out" | grep -q "tokens 1234" && echo "$out" | grep -q "total tokens 2468"'
+# A second attempt must not accept the previous dedupe answer.
+out=$(fk FAKE_CX=nofile -- "$AM" dedupe --provider codex --out "$T/cx-ok" 2>&1); rc=$?
+check "missing dedupe answer cannot reuse stale final output" '[ $rc -eq 3 ] && tail -1 "$AMASS_LEDGER" | jq -e ".ok == 0" >/dev/null && clean_scratch'
+out=$(MEGAVIBE_AMASS_CODEX_PRICE=2 cxrun priced 2>&1); rc=$?
+check "explicit USD per million price produces only a labelled estimate" '[ $rc -eq 0 ] && tail -1 "$AMASS_LEDGER" | jq -e ".tokens == 1234 and .cost == 0.002468" >/dev/null && echo "$out" | grep -q "estimated cost"'
+out=$(MEGAVIBE_AMASS_CODEX_PRICE=invalid cxrun badprice 2>&1); rc=$?
+check "invalid codex price is refused" '[ $rc -eq 2 ] && echo "$out" | grep -q MEGAVIBE_AMASS_CODEX_PRICE && clean_scratch'
+head -c 200000 /dev/zero | tr '\0' x > "$T/medium"
+out=$("$AM" run --provider codex --out "$T/cx-medium" --no-lens --whole 1 --dry-run "$T/medium" 2>&1); rc=$?
+check "codex default input cap accepts 200 KB" '[ $rc -eq 0 ] && clean_scratch'
+head -c 410000 /dev/zero | tr '\0' x > "$T/large"
+out=$("$AM" run --provider codex --out "$T/cx-large" --no-lens --whole 1 --dry-run "$T/large" 2>&1); rc=$?
+check "codex default cap is 400 KB with luna reason and dry scratch cleanup" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 400" && echo "$out" | grep -q "272K" && clean_scratch'
+out=$("$AM" run --provider claude --out "$T/cx-claude-cap" --no-lens --whole 1 --dry-run "$T/medium" 2>&1); rc=$?
+check "claude still defaults to 150 KB and Haiku reason" '[ $rc -eq 2 ] && echo "$out" | grep -q "max-input-kb 150" && echo "$out" | grep -q "Haiku"'
+
+out=$("$AM" --help)
+for doc in help readme; do
+  if [ "$doc" = help ]; then printf '%s\n' "$out" > "$T/doc"; else cp "$REPO/README-amass.md" "$T/doc"; fi
+  check "$doc explains provider routing, full model ids and unknown comparative precision" 'grep -q -- "--provider" "$T/doc" && grep -q "gpt-5.6-luna" "$T/doc" && grep -q "gpt-6-luna" "$T/doc" && grep -q "headroom" "$T/doc" && grep -q "unknown until compared" "$T/doc"'
+done
 
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

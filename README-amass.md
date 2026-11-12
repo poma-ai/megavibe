@@ -15,9 +15,54 @@ Measured in that pilot (list-price accounting, not subscription quota; n is smal
 - **Safety:** the workers run with `--setting-sources ""`, so none of your hooks or rules applies to them (rm-to-trash, block-dangerous-bash); an administrator's managed policy, if the machine has one, still applies: keep them tool-less or read-only, and never hand such a worker Bash, Write or Edit. The files you inline are sent to the model, as with any call. API keys and cloud-provider switches are removed from each call's environment, and before anything is sent `claude auth status` must report a claude.ai subscription login (a saved Console key would still bill), otherwise the script refuses. Nothing is dropped silently: response lines that are not finding lines are counted and reported, prose with no finding line fails the run, and dedupe re-adds what the model omitted. Each `run` and `dedupe` appends one line (time, model, calls, cost, input size, project folder name) to `~/.megavibe/amass-usage.jsonl`, so adoption and spend can be measured against the Agent-tool subagent calls in the transcripts.
 
 
+## Codex when Claude is hot
+
+Use `--provider codex` when Claude is hot and Codex has headroom. Both `run` and
+`dedupe` default to `--provider claude`; specify Codex on each command:
+
+```bash
+scripts/amass.sh run --provider codex --out /tmp/amass-codex-new src/parser.sh
+scripts/amass.sh dedupe --provider codex --out /tmp/amass-codex-new
+scripts/amass.sh summary --out /tmp/amass-codex-new
+```
+
+Codex defaults to `gpt-5.6-luna`; `--model gpt-6-luna` also works on the tested
+plan. The bare name `luna` does not. Luna is about ten times cheaper than terra.
+The historical Claude precision ranges above are pilot observations, not a
+provider comparison: measured precision for either provider is **unknown until compared**
+on the same inputs. P1/P2 labels are the model's; reproduce the suspected defect.
+
+Each Codex worker is one headless `codex exec`, with the prompt on stdin and its
+own final-answer file in the run directory. It runs in throwaway scratch space,
+with a read-only sandbox, approval policy `never`, `--ignore-rules`,
+`--skip-git-repo-check` and `--ephemeral`. Scratch is removed on completion,
+failure, timeout or handled cancellation. Timeout supervision kills the worker's
+process group. `codex exec --help` must succeed and `codex login status` must
+report a ChatGPT-account login; neither check prompts. The environment allows
+only HOME, PATH, CODEX_HOME, proxy and certificate variables, excluding API keys,
+endpoint overrides and headers. As in `codex-review.sh`, user-configured MCP
+servers or notify commands run as part of Codex outside the tool sandbox.
+
+Codex's default `--max-input-kb` is 400; Claude's remains 150. The cap covers the
+whole prompt, including context and lens text. Luna's price doubles past about
+272K tokens; the 400 KB cap uses the rough 1.8 bytes/token estimate, not an exact
+tokenizer or a guarantee about total context. Override the cap explicitly when needed.
+
+Codex reports tokens rather than dollars. JSONL `turn.completed` usage supplies
+input plus output tokens (cached input is already included). Missing usage stays
+unknown, never zero. The ledger adds `provider` and `tokens` (null when unknown);
+Codex cost stays null unless `MEGAVIBE_AMASS_CODEX_PRICE` supplies a nonnegative
+USD price per million tokens. That optional blended rate produces a labelled
+estimate, not a bill or subscription-quota measurement; it does not separately
+price input, output, caching or the price cliff. Failed attempts are accounted
+for too. Summary reads the saved token totals without needing provider flags or
+the pricing environment again. Raw events, final answers and normalized results
+remain in the run directory for inspection.
+
+
 ## Command reference
 
-`scripts/amass.sh run --out DIR [--change TEXT | --task-file F] [--model haiku] [--lens name=text]... [--lenses-file F] [--no-lens] [--copies 3] [--whole N] [--parallel 12] [--timeout 280] [--max-input-kb 150] [--dry-run] FILE... [--context FILE...]...`, then `amass.sh dedupe --out DIR` and `amass.sh summary --out DIR`. For `run`, --out DIR must not exist (it is claimed atomically); a wrapper that pre-creates it fails with exit 2 and an explanation. A dry run uses scratch space and does not claim the requested output directory. Each `run` and `dedupe` appends a line to `~/.megavibe/amass-usage.jsonl` (`AMASS_LEDGER` overrides).
+`scripts/amass.sh run --out DIR [--provider claude|codex] [--change TEXT | --task-file F] [--model MODEL] [--lens name=text]... [--lenses-file F] [--no-lens] [--copies 3] [--whole N] [--parallel 12] [--timeout 280] [--max-input-kb 150] [--dry-run] FILE... [--context FILE...]...`, then `amass.sh dedupe --out DIR` and `amass.sh summary --out DIR`. For `run`, --out DIR must not exist (it is claimed atomically); a wrapper that pre-creates it fails with exit 2 and an explanation. A dry run uses scratch space and does not claim the requested output directory. Each `run` and `dedupe` appends a line to `~/.megavibe/amass-usage.jsonl` (`AMASS_LEDGER` overrides).
 
 `--context` accepts one or more files until the next option and can be repeated. Put reviewed files before the first context group, or after `--`. Quote paths containing spaces or newlines, and prefix option-like filenames with `./` (for example, `--context ./-n`). Context files follow all reviewed files in `===== CONTEXT path =====` blocks. The task tells workers that these are callers, callees or tests of the changed functions, not files under review; findings must concern the reviewed files. This instruction also applies with `--task-file`. Context shares the input-size cap and the checks for readable regular files and NUL bytes. A file supplied in both roles appears in both blocks and counts toward the cap twice.
 
