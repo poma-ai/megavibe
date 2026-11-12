@@ -431,7 +431,7 @@ if [ "${2:-}" = --help ]; then
   pwd > "$FAKE_LOG/help_cwd"
   echo '      --skip-git-repo-check'
   [ "${FAKE_CX:-}" = noignore ] || echo '      --ignore-rules'
-  [ "${FAKE_CX:-}" = noignore ] || echo '      --ignore-user-config'
+  [ "${FAKE_CX:-}" = noiuc ] || echo '      --ignore-user-config'
   [ "${FAKE_CX:-}" != helpfail ]; exit $?
 fi
 if [ "${1:-}" = login ]; then
@@ -823,8 +823,11 @@ newlog r2a
 out=$(cxrun iuc 2>&1)
 check "--ignore-user-config is passed when codex exec --help lists it" 'cxargv | grep -qx -- --ignore-user-config'
 newlog r2b
-out=$(fk FAKE_CX=noignore -- cxrun noiuc 2>&1); rc=$?
-check "--ignore-user-config is left off for a codex whose help lacks it, and the call still runs" '[ $rc -eq 0 ] && [ "$(calls)" = 1 ] && ! cxargv | grep -qx -- --ignore-user-config'
+out=$(fk FAKE_CX=noiuc -- cxrun noiuc 2>&1); rc=$?
+check "a codex without --ignore-user-config is refused for --provider codex and nothing is sent" '[ $rc -ne 0 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q -- "--ignore-user-config"'
+newlog r2b2
+out=$(fk FAKE_CX=noiuc -- "$AM" run --out "$T/r2b2" --no-lens --whole 2 "$T/a.txt" 2>&1); rc=$?
+check "auto drops a codex without --ignore-user-config with a warning and runs on claude" '[ $rc -eq 0 ] && echo "$out" | grep -q -- "--ignore-user-config" && [ ! -s "$T/r2b2/raw/whole_1.provider" -o "$(cat "$T/r2b2/raw/whole_1.provider")" = claude ] && ! grep -q codex "$T/r2b2"/raw/*.provider 2>/dev/null'
 # R2: --model under auto must name a model of the provider that remains
 newlog r2c
 out=$(fk FAKE_AUTH=apikey -- "$AM" run --model sonnet --out "$T/r2c" --no-lens --whole 2 "$T/a.txt" 2>&1); rc=$?
@@ -832,6 +835,12 @@ check "auto falling back to codex refuses a Claude --model instead of passing it
 # R2: --help ends with the usage block, not a dangling heading
 out=$("$AM" --help 2>&1)
 check "--help does not end on a dangling heading" '! echo "$out" | tail -1 | grep -q "Why it is built"'
+newlog r3s
+out=$("$AM" run --claude-model sonnet --dry-run --out "$T/r3s" --no-lens --whole 2 "$T/a.txt" 2>&1); rc=$?
+check "the documented Sonnet escalation (--claude-model sonnet) runs with both providers usable" '[ $rc -eq 0 ] && echo "$out" | grep -q "claude [0-9]* (sonnet)"'
+for doc in "$REPO/README-amass.md" "$REPO/template/.claude/rules/delegation.md"; do
+  check "$(basename "$doc") no longer recommends a bare --model sonnet escalation" '! grep -q "amass.sh run --model sonnet\|one-shots (\`--model sonnet\`)" "$doc"'
+done
 # F7: docs say Codex workers are sandboxed, not tool-less
 for doc in "$REPO/README-amass.md" "$REPO/README.md" "$REPO/template/.claude/rules/delegation.md"; do
   check "$(basename "$doc") says Codex workers run in a read-only sandbox and can read local files" 'grep -i "amass" "$doc" | grep -qi "read-only sandbox" && grep -i "amass\|codex worker" "$doc" | grep -qi "read local files\|read files"'

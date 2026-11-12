@@ -324,7 +324,11 @@ avail_codex() {
   supervise "$CX_WORK" 30 codex "$CODEX_BIN" exec --help </dev/null > "$CX_WORK/help" 2>&1 \
     || { AV_ERR='codex exec --help failed; refusing to send anything'; return 1; }
   if grep -q -e '--ignore-rules' "$CX_WORK/help"; then CX_IGNORE=1; else CX_IGNORE=0; fi
-  if grep -q -e '--ignore-user-config' "$CX_WORK/help"; then CX_IUC=1; else CX_IUC=0; fi
+  # Without it a saved endpoint (openai_base_url, chatgpt_base_url) could redirect the token and
+  # the inlined files: such a build is not usable here (auto falls back to Claude).
+  grep -q -e '--ignore-user-config' "$CX_WORK/help" \
+    || { AV_ERR='this codex lacks exec --ignore-user-config (needed so saved endpoints cannot redirect calls); update codex'; return 1; }
+  CX_IUC=1
   supervise "$CX_WORK" 30 codex "$CODEX_BIN" login status </dev/null > "$CX_WORK/login" 2>&1 \
     || { AV_ERR='cannot verify the Codex login; a ChatGPT-account login is required'; return 1; }
   grep -qx 'Logged in using ChatGPT' "$CX_WORK/login" \
