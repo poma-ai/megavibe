@@ -45,10 +45,10 @@ o=$(pace)
 check 'reset boundary: only current-window increase counts' 'near "$(field 5)" 4.8 && near "$(field 6)" 47.896'
 { row "$((NOW - 21600))" 90 "$RESET"; row "$((NOW - 18000))" 18 "$RESET"; row "$NOW" 19 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(pace)
-check 'percent drop with same reset starts a new sequence' 'near "$(field 5)" 4.8'
+check 'percent drop makes the selected window unreliable' '[ "$(field 5)$(field 6)" = "" ]'
 { row "$((NOW - 21600))" 17 "$RESET"; row "$((NOW - 18000))" 18 "$((RESET + 60))"; row "$NOW" 19 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(pace)
-check 'different reset breaks sequence even when the old reset returns' '[ "$(field 5)$(field 6)" = "" ] && [ "$(field 2)" = 19 ]'
+check 'reset jitter of seconds remains one window' '[ "$(field 5)" = 8 ] && [ "$(field 6)" = 67.16 ] && [ "$(field 2)" = 19 ]'
 { row "$((NOW - 21601))" 18 "$RESET"; row "$NOW" 19 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(pace)
 check 'fewer than two samples inside six hours: no recent guess' '[ "$(field 5)$(field 6)" = "" ] && [ "$(field 2)" = 19 ]'
@@ -60,10 +60,10 @@ o=$(pace)
 check 'duplicate latest reading does not erase valid history' 'near "$(field 5)" 4'
 { row "$((NOW - 21600))" 17 "$RESET"; row "$((NOW - 18000))" 18 "$((RESET + 60))"; row "$((NOW - 18000))" 19 "$RESET"; row "$NOW" 20 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(pace)
-check 'duplicate timestamp cannot hide an intervening reset boundary' 'near "$(field 5)" 4.8'
+check 'duplicate timestamp with reset jitter stays in one window' '[ "$(field 5)" = 12 ]'
 { row "$((NOW - 21600))" 17 "$RESET"; row "$((NOW - 18000))" 21 "$RESET"; row "$((NOW - 18000))" 19 "$RESET"; row "$NOW" 20 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(pace)
-check 'duplicate timestamp cannot hide a percentage drop' 'near "$(field 5)" 4.8'
+check 'duplicate timestamp cannot hide a percentage drop' '[ "$(field 5)$(field 6)" = "" ]'
 { row "$((NOW - 18000))" 18.25 "$RESET"; row "$NOW" 19.5 "$RESET"; } > "$MEGAVIBE_USAGE_FILE"
 o=$(LC_ALL=de_DE pace)
 check 'decimal readings under comma locale remain numeric' 'near "$(field 4)" 139.286 && near "$(field 5)" 6 && near "$(field 6)" 55.62'
@@ -115,6 +115,42 @@ o=$(MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CRED
 usage=$(printf '%s\n' "$o" | grep '^usage:')
 check 'tick keeps first-line and one usage-line format with both projections' '[[ "$o" == "tick default: quiet | window "* ]] && [[ "$usage" == "usage: Claude 95% used"*"~190%"*"recent estimate ~109%"*" | Codex 19% used"*"[linear estimate ~135%]"*" | lean optional work on codex" ]] && [ "$(printf "%s\n" "$usage" | wc -l | tr -d " ")" = 1 ]'
 
+# Projection starts at the observation, while remaining/elapsed are measured at NOW.
+{ row "$((NOW - 21600))" 10 "$((NOW + WEEK / 2))"; row "$((NOW - 10800))" 20 "$((NOW + WEEK / 2))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'three-hour-old reading: exact 310 percent projection, 3.5 days remaining now' '[ "$o" = "claude|20|50|40|80|310|3.5" ]'
+# Same observations appended in reverse order must keep the same result.
+{ row "$((NOW - 10800))" 20 "$((NOW + WEEK / 2))"; row "$((NOW - 21600))" 10 "$((NOW + WEEK / 2))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'out-of-order appends within one window preserve exact projection' '[ "$o" = "claude|20|50|40|80|310|3.5" ]'
+row "$((NOW - 60))" 95 "$((NOW - 1))" > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'after reset no negative remaining days or estimates' '[ "$o" = "claude||||||" ]'
+
+# Reviewer reproduction: the last appended live window wins even with an older timestamp.
+{ row "$((NOW - 18000))" 10 "$((NOW + 6 * 86400))"; row "$NOW" 20 "$((NOW + 6 * 86400))"; row "$((NOW - 20000))" 95 "$((NOW + 86400))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(route status --peek)
+check 'delayed-window status byte-identical' '[ "$o" = "over|95|110|86400|0|7d 95% used, resets in 24h" ]'
+o=$(pace)
+check 'delayed-window pace uses status window, one sample has no recent estimate' '[ "$o" = "claude|95|85.714|110.833|||1" ]'
+o=$(route balance --peek)
+check 'balance never borrows recent estimate from other window' '[[ "$o" == codex\|*"Claude 95% used (linear estimate ~110% by week end); Codex"* ]]'
+o=$(MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/credentials.json" TICK_LINEAR=0 /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo)
+usage=$(printf '%s\n' "$o" | grep '^usage:')
+check 'tick uses one window for used, linear, recent and remaining' '[[ "$usage" == "usage: Claude 95% used (linear estimate ~110% by week end), resets in 24h [over] | Codex"* ]]'
+
+# Interleaving a different live window must not discard the selected window's baseline.
+{ row "$((NOW - 21600))" 90 "$((NOW + 86400))"; row "$((NOW - 18000))" 8 "$((NOW + 6 * 86400))"; row "$((NOW - 10800))" 95 "$((NOW + 86400))"; row "$NOW" 20 "$((NOW + 6 * 86400))"; row "$((NOW - 14400))" 92 "$((NOW + 86400))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(pace)
+check 'two interleaved windows: sort only selected samples and extrapolate from last observation' '[ "$o" = "claude|95|85.714|110.833|40|140|1" ]'
+o=$(route status --peek)
+check 'interleaved status byte-identical' '[ "$o" = "over|95|110|86400|0|7d 95% used, resets in 24h" ]'
+
+# Combined display must preserve the raw 50-line status slice, including trailing blanks.
+{ row "$NOW" 95 "$((NOW + 86400))"; for i in $(seq 1 50); do printf '\n'; done; } > "$MEGAVIBE_USAGE_FILE"
+o=$(route status-pace --peek)
+check 'combined snapshot respects trailing blank lines in status slice' '[ "$(printf "%s\n" "$o" | cut -d"|" -f1-6)" = "$(route status --peek)" ]'
+
 # Byte-for-byte snapshots from the pre-change script, reproducing the existing early fixtures.
 while IFS=';' read -r rem used prev expected; do
   row "$((NOW - 60))" "$used" "$((NOW + rem))" > "$MEGAVIBE_USAGE_FILE"
@@ -124,6 +160,8 @@ while IFS=';' read -r rem used prev expected; do
   for provider in claude codex; do
     o=$(MEGAVIBE_ROUTER_PROVIDER=$provider route status --peek)
     check "$provider status unchanged: $expected" '[ "$o" = "$expected" ]'
+    o=$(MEGAVIBE_ROUTER_PROVIDER=$provider route status-pace --peek)
+    check "$provider combined status unchanged: $expected" '[ "$(printf "%s\n" "$o" | cut -d"|" -f1-6)" = "$expected" ]'
   done
 done <<'EOF'
 504360;64;normal;over|64||504360|0|7d 64% used, resets in 5d
