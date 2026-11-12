@@ -37,6 +37,32 @@ if [ -n "${HOME:-}" ] && [ "$PROJECT" -ef "$HOME" ]; then
   exit 0
 fi
 
+# A checkout older than the installed megavibe must not install over it: a working
+# copy left on an old branch silently replaced a project's newer hooks and rules.
+# Offline: refuse only when SCRIPT_DIR is itself a git work tree, the installed
+# commit ($MEGAVIBE_HOME/version) is a full id that this repo knows, and HEAD is a
+# strict ancestor of it. Anything else (not git, version "3", unknown, equal,
+# newer, diverged) installs as before. The same test guards the launcher's repo sync.
+if [ "${MEGAVIBE_INIT_ALLOW_STALE:-}" != 1 ] \
+   && [ "$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)" = "$(cd "$SCRIPT_DIR" && pwd -P)" ]; then
+  _inst="$(tr -d '[:space:]' < "${MEGAVIBE_HOME:-$HOME/.megavibe}/version" 2>/dev/null || true)"
+  _head="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$_inst" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [ -n "$_head" ] && [ "$_head" != "$_inst" ] \
+     && git -C "$SCRIPT_DIR" cat-file -e "${_inst}^{commit}" 2>/dev/null \
+     && git -C "$SCRIPT_DIR" merge-base --is-ancestor "$_head" "$_inst" 2>/dev/null; then
+    {
+      echo "Refusing to install: this megavibe checkout is older than the installed megavibe."
+      echo "  checkout:  $SCRIPT_DIR at $_head"
+      echo "  installed: $_inst"
+      echo "Installing from it would overwrite newer hooks and rules with older ones. Either:"
+      echo "  1. run ~/.megavibe/init.sh $PROJECT (the installed copy);"
+      echo "  2. update this checkout (git -C $SCRIPT_DIR pull, or switch to a newer branch);"
+      echo "  3. MEGAVIBE_INIT_ALLOW_STALE=1 bash $0 $PROJECT to install from it anyway."
+    } >&2
+    exit 1
+  fi
+fi
+
 # --- Check prerequisites ---
 if ! command -v jq &>/dev/null; then
   echo "Warning: jq is not installed. Hooks require jq to function."
