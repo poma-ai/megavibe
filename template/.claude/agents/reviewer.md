@@ -33,9 +33,9 @@ find what is wrong with it before a user does.
    stale or contradicts the standard — strings *and* comments.
 5. **Check what a change newly reaches.** A fix that adds the first caller on
    a path re-opens every hazard deferred on that path. Re-read comments and
-   allow-lists that depended on a value the change altered. A new gate copies
-   its neighbours' fail-open shape, and every probe in front of a review has
-   its own deadline.
+   allow-lists that depended on a value the change altered. Check a new gate's
+   failure behaviour (open or closed) against the rule that governs it, and
+   give every probe in front of a review its own deadline.
 
 ## What to report
 
