@@ -1152,6 +1152,13 @@ def command_start(w):
                 i += 2 if w[i] in ("-s", "--signal", "-k", "--kill-after") else 1
             i += 1                                  # the duration
             continue
+        if b in ("xcrun", "arch"):                      # macOS tool selection: xcrun [-sdk X] git, arch -arm64 git
+            i += 1
+            while i < n and w[i].startswith("-"):
+                if w[i] in ("-sdk", "--sdk", "-toolchain", "--toolchain", "-e"): i += 2
+                elif b == "xcrun" and w[i] in ("--find", "-f", "--show-sdk-path", "--show-sdk-version"): return None
+                else: i += 1
+            continue
         if b in ("stdbuf", "caffeinate"):
             vals = {"stdbuf": ("-i", "-o", "-e"), "caffeinate": ("-t", "-w")}[b]
             i += 1
@@ -1273,7 +1280,7 @@ def interp_runs_deleter(raw):
             if os.path.basename(x) == "git":
                 r = git_reason(lits[k + 1:])
                 if r: return r
-    toks = re.sub(r"[;|&<>]+", " ; ", norm.replace("\n", " ; ")).split()
+    toks = re.sub(r"[;|&<>`()]+", " ; ", norm.replace("\n", " ; ")).split()
     for k, t in enumerate(toks):                 # every git, not the first: a plain removal hides nothing
         if os.path.basename(t) == "git":
             args = []
