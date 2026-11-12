@@ -29,23 +29,29 @@ IFS=: read -r PB PP _ <<<"$PREVKEY"
 BAL=$(MEGAVIBE_BALANCE_PREV="$PP" bash "$UR" balance 2>/dev/null); PREF="${BAL%%|*}"; BALMSG="${BAL#*|}"
 case "$PREF" in claude|codex) ;; *) PREF="-"; BALMSG="" ;; esac
 KEY="$BAND:$PREF"
-# Both subscriptions' projections (recent, else linear, else used), only behind a working band call.
+# Both subscriptions' projections, only behind a working band call. The headline is what the band and
+# balance decide on (the linear projection, else used percent), truncated like the balance sentence;
+# the recent-rate projection, where there is one, is shown beside it.
 # Each pace call is bounded (3 s) and writes to a file, so a lingering child cannot hold the hook open.
 PROJMSG=""; PROJKNOWN=0
 proj() {   # provider -> "value|basis" or "unknown"
-  local f u lp rp v="" basis=""
+  local f u lp rp v="" basis="" extra=""
   f=$(mktemp "${TMPDIR:-/tmp}/usage-pace.XXXXXX" 2>/dev/null) || { echo unknown; return; }
+  trap 'rm -f "$f"' EXIT TERM
   if command -v perl &>/dev/null; then
     MEGAVIBE_ROUTER_PROVIDER="$1" perl -e 'alarm 3; exec @ARGV' bash "$UR" pace >"$f" 2>/dev/null </dev/null
   fi
   IFS='|' read -r _ u _ lp _ rp _ <"$f" 2>/dev/null
   rm -f "$f"
   num() { case "$1" in ''|*[!0-9.]*|*.*.*|.) return 1 ;; esac; }
-  if num "$rp"; then v=$rp; basis=recent; elif num "$lp"; then v=$lp; basis=linear; elif num "$u"; then v=$u; basis=used; fi
+  if num "$lp"; then v=$lp; basis=linear; elif num "$u"; then v=$u; basis=used; elif num "$rp"; then v=$rp; basis=recent; fi
   [ -n "$v" ] || { echo unknown; return; }
-  echo "$(awk -v v="$v" 'BEGIN { printf "%d", v + 0.5 }')|$basis"
+  if [ "$basis" != recent ] && num "$rp"; then extra="; recent $(awk -v v="$rp" 'BEGIN { printf "%d", v }')"; fi
+  echo "$(awk -v v="$v" 'BEGIN { printf "%d", v }')|$basis$extra"
 }
-bucket() { case "$1" in unknown) echo u ;; *) echo $(( ${1%%|*} / 10 )) ;; esac; }
+# 10-point buckets, everything at 100 or more in one (it is over either way), so a projection that
+# falls hour by hour early in the week does not re-speak every hour.
+bucket() { case "$1" in unknown) echo u ;; *) local b=$(( ${1%%|*} / 10 )); [ "$b" -gt 10 ] && b=10; echo "$b" ;; esac; }
 fmt() { case "$1" in unknown) echo unknown ;; *) echo "${1%%|*} (${1#*|})" ;; esac; }
 if [ -n "$BAND" ]; then
   CP=$(proj claude); XP=$(proj codex)

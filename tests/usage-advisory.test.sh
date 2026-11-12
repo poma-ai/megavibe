@@ -8,7 +8,8 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/usage-advisory.XXXXXX") || exit 2
 trap 'rm -rf "$T"' EXIT
 PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
-P="$T/proj"; mkdir -p "$P/.agent/LOGS" "$T/mv/scripts" "$T/home"
+P="$T/proj"; mkdir -p "$P/.agent/LOGS" "$T/mv/scripts" "$T/home" "$T/tmpdir"
+export TMPDIR="$T/tmpdir"
 export HOME="$T/home" MEGAVIBE_HOME="$T/mv"
 unset MEGAVIBE_ROUTER
 cat > "$T/mv/scripts/usage-route.sh" <<'STUB'
@@ -40,7 +41,13 @@ check 'SessionStart, known: exact line with both basis words' '[[ "$o" == *"usag
 
 reset; claude_pace 50 40 147 90 120; codex_pace 60 30 222 '' ''
 o=$(ev SessionStart | run | ctx)
-check 'recent preferred over linear' '[[ "$o" == *"claude 120 (recent)"* ]] && [[ "$o" == *"codex 222 (linear)"* ]]'
+check 'linear headline, recent shown beside it (the band and balance decide on linear)' '[[ "$o" == *"claude 147 (linear; recent 120)"* ]] && [[ "$o" == *"codex 222 (linear)"* ]]'
+reset; claude_pace 50 40 '' 90 120; codex_pace 60 30 222 '' ''
+o=$(ev SessionStart | run | ctx)
+check 'recent alone still shows' '[[ "$o" == *"claude 50 (used; recent 120)"* ]]'
+reset; claude_pace 50 40 147.9 '' ''; codex_pace 60 30 222 '' ''
+o=$(ev SessionStart | run | ctx)
+check 'truncated like the balance sentence (147.9 -> 147)' '[[ "$o" == *"claude 147 (linear)"* ]]'
 reset; claude_pace 50 40 '' '' ''; codex_pace 61 30 '' '' ''
 o=$(ev SessionStart | run | ctx)
 check 'used when no projection' '[[ "$o" == *"claude 50 (used)"* ]] && [[ "$o" == *"codex 61 (used)"* ]]'
@@ -66,8 +73,11 @@ codex_pace 60 30 228 '' ''
 o=$(ev PreToolUse | run)
 check 'move inside the same 10-point bucket: silent' '[ -z "$o" ]'
 codex_pace 60 30 131 '' ''
+o=$(ev PreToolUse | run)
+check 'every projection at 100 or more is one bucket: silent' '[ -z "$o" ]'
+codex_pace 60 30 95 '' ''
 o=$(ev PreToolUse | run | ctx)
-check 'move to another bucket: speaks again' '[[ "$o" == *"codex 131 (linear)"* ]]'
+check 'move to another bucket: speaks again' '[[ "$o" == *"codex 95 (linear)"* ]]'
 printf 'normal:-' > "$FLAG"
 o=$(ev PreToolUse | run | ctx)
 check 'legacy two-field flag: speaks' '[[ "$o" == *"projections claude 147"* ]]'
@@ -92,7 +102,7 @@ reset; claude_pace 50 40 147 '' ''; codex_pace 60 30 222 '' ''
 mkdir -p "$T/nobin"; for c in bash jq cat cut mkdir rm mktemp tr awk sed head printf; do p=$(command -v "$c") && [ -x "$p" ] && ln -sf "$p" "$T/nobin/$c"; done
 o=$(ev SessionStart | (cd "$P" && PATH="$T/nobin" /bin/bash "$HOOK"); echo "rc=$?")
 check 'no perl on PATH: exit 0, unknown, silent' '[ "$o" = "rc=0" ]'
-check 'no temp files left behind' '[ -z "$(ls "$T"/proj/.agent/LOGS | grep -v usage-band)" ]'
+check 'no temp files left behind' '[ -z "$(ls "$TMPDIR" | grep usage-pace)" ]'
 
 # existing behaviour unchanged when projections are unknown (needs the old hook)
 if [ -n "$OLD_HOOK" ] && [ -f "$OLD_HOOK" ]; then
