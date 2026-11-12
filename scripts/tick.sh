@@ -139,19 +139,25 @@ fi
 # --- usage ------------------------------------------------------------------
 UR="$SELF_DIR/usage-route.sh"; [ -f "$UR" ] || UR="$MV/scripts/usage-route.sh"
 if [ -f "$UR" ]; then
-  fmt_status() {   # $1 label, $2 status line band|used|proj|rem|stale|reason
-    local b u p r s _ ; IFS='|' read -r b u p r s _ <<<"$2"
+  fmt_status() {   # $1 label, $2 status line, $3 pace line (display only)
+    local b u p r s _ lp rp; IFS='|' read -r b u p r s _ <<<"$2"
+    IFS='|' read -r _ _ _ lp _ rp _ <<<"$3"
     [ -n "$u" ] || { printf '%s: no reading' "$1"; return; }
     printf '%s %s%% used' "$1" "$u"
-    [ -n "$p" ] && printf ' (~%s%% by week end)' "$p"
+    if [ -n "$p" ]; then printf ' (linear estimate ~%s%% by week end)' "$p"
+    elif [ -n "$lp" ]; then printf ' [linear estimate ~%s%%]' "${lp%%.*}"
+    else printf ' [linear estimate unavailable]'; fi
+    [ -n "$rp" ] && printf ' (recent estimate ~%s%%)' "${rp%%.*}"
     case "$r" in ''|*[!0-9]*) ;; *) printf ', resets in %s' "$(human "$r")" ;; esac
     [ "$s" = 1 ] && printf ' [stale reading]'
     case "$b" in over|under) printf ' [%s]' "$b" ;; esac
   }
   cl=$(MEGAVIBE_ROUTER_PROVIDER=claude bash "$UR" status --peek 2>/dev/null)
   cx=$(MEGAVIBE_ROUTER_PROVIDER=codex bash "$UR" status --peek 2>/dev/null)
+  cl_pace=$(MEGAVIBE_ROUTER_PROVIDER=claude bash "$UR" pace 2>/dev/null)
+  cx_pace=$(MEGAVIBE_ROUTER_PROVIDER=codex bash "$UR" pace 2>/dev/null)
   bal=$(bash "$UR" balance --peek 2>/dev/null); pref="${bal%%|*}"
-  line="usage: $(fmt_status Claude "$cl") | $(fmt_status Codex "$cx")"
+  line="usage: $(fmt_status Claude "$cl" "$cl_pace") | $(fmt_status Codex "$cx" "$cx_pace")"
   case "$pref" in claude|codex) line="$line | lean optional work on $pref" ;; esac
   say "$line"
 fi

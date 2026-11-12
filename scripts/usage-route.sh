@@ -9,6 +9,8 @@
 #   usage-route.sh balance    one line: prefer|sentence — which subscription optional work (digests, exploration,
 #                             second opinions) should lean on; prefer is claude, codex or - (no preference)
 #   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
+#   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
+#                             display only; linear from 5% elapsed, recent from samples within the last 6h
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
 # statusline's account-wide rate_limits (five_hour / seven_day used_percentage and
@@ -88,11 +90,59 @@ codex_row() {
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
-  case "$MODE" in advisory) ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
+  case "$MODE" in advisory) ;; pace) printf '%s||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
   exit 0
 }
+# Pace has no routing fallback: without jq it is silent, and never blocks a caller.
+[ "$MODE" != pace ] || command -v jq >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
+
+if [ "$MODE" = pace ]; then
+  # Independent of DECISION and its remembered maxima: a display estimate needs dated
+  # observations, never a state-file floor. Match the retained history bound, not status's
+  # 50-row slice (a busy statusline can write that many rows in minutes).
+  export LC_ALL=C
+  ROW=""
+  if [ "$PROVIDER" = codex ]; then ROW=$(codex_row)
+  elif [ -r "$FILE" ] && [ -f "$FILE" ]; then
+    ROW=$(tail -n 5000 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc '.' 2>/dev/null)
+  fi
+  [ -n "$ROW" ] || none
+  PACE=$(jq -r --arg provider "$PROVIDER" --argjson now "$NOW" --argjson stale "$STALE" '
+    def sec: if . > 100000000000 then . / 1000 else . end;
+    def rounded: . * 1000 | round / 1000;
+    def blank: [$provider, "", "", "", "", "", ""];
+    [ .[] | select(type == "object")
+      | select((.t | type) == "number" and (.sd.p? | type) == "number" and (.sd.r? | type) == "number")
+      | {t, p: .sd.p, r: (.sd.r | sec)}
+      | select(.t > 0 and .t <= $now and .p >= 0 and .p <= 1000) ]
+    # Keep duplicate timestamps through boundary detection: collapsing them first could
+    # hide a reset or a drop. The last reading at the baseline timestamp replaces it;
+    # the rate below still requires two distinct times.
+    | sort_by(.t)
+    | reduce .[] as $x ({first: null, last: null};
+        if .last != null and ($x.r != .last.r or $x.p < .last.p) then .first = null else . end
+        | if (.first == null or .first.t == $x.t) and $x.t >= $now - 21600 then .first = $x else . end
+        | .last = $x)
+    | .first as $first | .last as $last
+    | if $last == null then blank
+      elif $now - $last.t > $stale or $last.r <= $now or $last.r > $now + 604800
+           or $last.t < $last.r - 604800 then blank
+      else ($last.r - $now) as $rem | (604800 - $rem) as $elapsed
+        | (if $first != null and $first.t >= $last.r - 604800 and $last.t > $first.t
+           then ($last.p - $first.p) * 86400 / ($last.t - $first.t) else null end) as $rate
+        | [$provider, $last.p, ($elapsed / 6048 | rounded),
+           (if $elapsed >= 30240 then ($last.p * 604800 / $elapsed | rounded) else "" end),
+           (if $rate != null then ($rate | rounded) else "" end),
+           (if $rate != null then ($last.p + $rate * $rem / 86400 | rounded) else "" end),
+           ($rem / 86400 | rounded)]
+      end | map(tostring) | join("|")
+  ' <<<"$ROW" 2>/dev/null)
+  [ -n "$PACE" ] || none
+  printf '%s\n' "$PACE"
+  exit 0
+fi
 
 if [ "$MODE" = balance ]; then
   # Where should OPTIONAL work (digests, exploration, second opinions) lean? Each subscription's weekly
@@ -102,7 +152,20 @@ if [ "$MODE" = balance ]; then
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
   IFS='|' read -r cb cu cp _ cs _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status $pk 2>/dev/null) || true
   IFS='|' read -r xb xu xp _ xs _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status $pk 2>/dev/null) || true
-  awk -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" 'BEGIN {
+  IFS='|' read -r _ _ _ clp _ crp _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" pace 2>/dev/null) || true
+  IFS='|' read -r _ _ _ xlp _ xrp _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" pace 2>/dev/null) || true
+  LC_ALL=C awk -v clp="${clp:-}" -v crp="${crp:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" \
+    -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" '
+  function estimate(label, used, proj, linear, recent, stale, text) {
+    text = sprintf("%s %d%% used", label, used)
+    if (proj != "") text = text sprintf(" (linear estimate ~%d%% by week end)", proj)
+    else if (linear != "") text = text sprintf(" [linear estimate ~%d%%]", linear)
+    else text = text " [linear estimate unavailable]"
+    if (recent != "") text = text sprintf(" (recent estimate ~%d%%)", recent)
+    if (stale == 1) text = text " [stale reading]"
+    return text
+  }
+  BEGIN {
     if (cu == "" || xu == "") { print "-|"; exit }
     cj = (cp == "" ? cu : cp) + 0; xj = (xp == "" ? xu : xp) + 0; known = (cp != "" && xp != "")
     pref = "-"
@@ -117,7 +180,7 @@ if [ "$MODE" = balance ]; then
     # whose figure is stale, only away from one.
     if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"
     if (pref == "-") { print "-|"; exit }
-    st = (cp == "" ? sprintf("Claude %d%% used", cu) : sprintf("Claude projects ~%d%%", cj)) " of its week, " (xp == "" ? sprintf("Codex %d%% used", xu) : sprintf("Codex ~%d%%", xj))
+    st = estimate("Claude", cu, cp, clp, crp, cs) "; " estimate("Codex", xu, xp, xlp, xrp, xs)
     hot = (cb == "over" || xb == "over") ? " (one is running hot)" : ""
     to = (pref == "codex" ? "Codex" : "the Claude subagents")
     printf "%s|usage balance: %s%s. Lean optional work (digests, exploration, second opinions) on %s; the review floor does not move.\n", pref, st, hot, to
