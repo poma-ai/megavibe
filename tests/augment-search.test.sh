@@ -315,6 +315,11 @@ fresh; hit "$FRESH" 'Obsolete vector parser guidance.'
 N=$((N - 1)); run Grep 'vector parser'
 check 'changed delivered head is recalled in same session' '[[ "$CTX" == *"Obsolete vector parser guidance."* ]]'
 
+echo '== The live task register'
+touch .agent/TASKS.md
+fresh; hit .agent/TASKS.md 'vector parser behavior'; run Grep 'vector parser'
+check 'TASKS.md (live register) is not injected' '[ -z "$CTX" ] && [ "$(hit_reason)" = excluded-path ]'
+
 echo '== Round 3 actual search semantics and explicit scope'
 mkdir -p src/nested
 printf 'vector parser\n' > src/parser.py

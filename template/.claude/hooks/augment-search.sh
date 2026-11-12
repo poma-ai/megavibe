@@ -414,7 +414,7 @@ def main():
         reason = 'kept'
         if not contained:
             reason = 'outside-root'
-        elif path.name in {'FULL_CONTEXT.md', 'snapshot.md', 'WORKING_CONTEXT.md'} or any(part in {'LOGS', 'sessions'} for part in path.relative_to(target_root).parts):
+        elif path.name in {'FULL_CONTEXT.md', 'snapshot.md', 'WORKING_CONTEXT.md', 'TASKS.md'} or any(part in {'LOGS', 'sessions'} for part in path.relative_to(target_root).parts):
             reason = 'excluded-path'
         elif not exists:
             reason = 'missing-file'
