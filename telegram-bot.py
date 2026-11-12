@@ -563,6 +563,14 @@ def kill_plugin_groups():
 
 
 STOPPING = False
+SPAWNING = [0]          # plugins between fork and registration in PLUGIN_GROUPS
+PENDING_STOP = [None]   # a stop signal held while SPAWNING
+
+
+def _deliver_pending_stop():
+    if SPAWNING[0] == 0 and PENDING_STOP[0] is not None:
+        s, PENDING_STOP[0] = PENDING_STOP[0], None
+        signal.raise_signal(s)
 
 
 def on_stop_signal(signum, frame):
@@ -572,6 +580,9 @@ def on_stop_signal(signum, frame):
     180 s limit. A press still queued when the signal arrives starts no plugin."""
     global STOPPING
     STOPPING = True
+    if SPAWNING[0]:
+        PENDING_STOP[0] = PENDING_STOP[0] or signum
+        return
     kill_plugin_groups()
     raise KeyboardInterrupt
 
@@ -582,6 +593,9 @@ def on_sighup(signum, frame):
     SIGHUP: a graceful stop would wait for an in-flight question (up to 10
     minutes) while holding the bot's lock, so a restart right after
     `megavibe remote --stop` would fail."""
+    if SPAWNING[0]:
+        PENDING_STOP[0] = signal.SIGHUP
+        return
     kill_plugin_groups()
     signal.signal(signal.SIGHUP, signal.SIG_DFL)
     signal.raise_signal(signal.SIGHUP)
@@ -624,16 +638,24 @@ async def _run_plugin(path, mode, arg, ctx, answer) -> dict:
     deadline = loop.time() + PLUGIN_TIMEOUT
     try:
         stdin_data = json.dumps(ctx).encode()
-        proc = await asyncio.create_subprocess_exec(
-            str(path), mode, arg, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            start_new_session=True)
+        # A stop signal during the spawn is held by the handlers and re-raised
+        # once the new group is registered, so the kill still finds it. (Not a
+        # blocked signal mask: the plugin would inherit it and ignore TERM.)
+        SPAWNING[0] += 1
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(path), mode, arg, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True)
+            PLUGIN_GROUPS.add(proc.pid)
+        finally:
+            SPAWNING[0] -= 1
+            _deliver_pending_stop()
     except (OSError, ValueError, RecursionError, TypeError) as e:
         log.warning("plugin %s could not start: %s", path.name, e)
         return {"toast": f"\u274c {path.name} could not start", "_answered": False}
 
     pgid = proc.pid
-    PLUGIN_GROUPS.add(pgid)
     out_buf = bytearray()
     err_buf = bytearray()
     state = {"overflow": False}
@@ -736,6 +758,16 @@ async def _run_plugin(path, mode, arg, ctx, answer) -> dict:
     return res
 
 
+def _plain_html(text: str) -> str:
+    """Tags out, entities decoded; a crafted numeric entity too long to decode
+    (Python's int-digit limit) leaves the text undecoded instead of raising."""
+    text = re.sub(r"<[^<>]*>", "", text)
+    try:
+        return html.unescape(text)
+    except ValueError:
+        return text
+
+
 def fit(text, parse_mode):
     """Telegram's 4096-character limit, without cutting formatting in half: an
     over-long formatted text is sent as plain text instead (a slice can end
@@ -748,7 +780,7 @@ def fit(text, parse_mode):
     if len(text) <= 4096:
         return text, parse_mode
     if parse_mode and parse_mode.upper() == "HTML":
-        text = html.unescape(re.sub(r"<[^<>]*>", "", text))
+        text = _plain_html(text)
     elif parse_mode:
         text = re.sub(r"[*_`\\[\]]", "", text)
     return (text if len(text) <= 4096 else text[:4095] + "\u2026"), None
@@ -783,7 +815,7 @@ async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
                 # The card is gone or refused: deliver its text as a message instead.
                 plain = str(res["edit_text"])[:PLUGIN_TEXT_MAX]
                 if isinstance(res.get("parse_mode"), str) and res["parse_mode"].upper() == "HTML":
-                    plain = html.unescape(re.sub(r"<[^<>]*>", "", plain))
+                    plain = _plain_html(plain)
                 lost_text.append(plain)
             log.info("plugin edit skipped: %s", e)
     if res.get("reply_text") and message:

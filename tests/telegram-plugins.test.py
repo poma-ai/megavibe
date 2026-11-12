@@ -235,6 +235,60 @@ class TestLostEdit(Base):  # round 2 P2
         self.assertTrue(ok)
 
 
+class TestRound4(Base):
+    def test_huge_numeric_entity_in_fit(self):
+        text, mode = bot.fit("&#" + "9" * 5000 + ";", "HTML")
+        self.assertIsNone(mode)
+        self.assertTrue(text)
+
+    async def test_huge_numeric_entity_in_refused_edit(self):
+        sent = []
+
+        class Msg:
+            chat_id = 1
+            message_id = 2
+            async def edit_text(self, text, **k): raise Exception("Message to edit not found")
+
+        class B:
+            async def send_message(self, *a, **k): sent.append(a[1])
+
+        res = {"edit_text": "card &#" + "9" * 5000 + ";", "parse_mode": "HTML", "_answered": True}
+        await bot.apply_plugin_result(res, Msg(), B())
+        self.assertTrue(any("card" in s for s in sent), sent)
+
+    async def test_sighup_in_spawn_window_is_deferred_until_registered(self):
+        # A SIGHUP arriving while a plugin is being spawned is held and re-raised
+        # once its group is registered, so the kill finds it.
+        kills, raised = [], []
+        orig = (bot.kill_plugin_groups, signal.raise_signal, signal.signal, asyncio.create_subprocess_exec)
+
+        def fake_raise(s):
+            raised.append(s)
+            if len(raised) == 1:            # the deferred delivery: run the handler now
+                bot.on_sighup(s, None)
+
+        async def spawn_with_signal(*a, **k):
+            bot.on_sighup(signal.SIGHUP, None)    # arrives inside the window
+            return await orig[3](*a, **k)
+
+        bot.kill_plugin_groups = lambda: kills.append(set(bot.PLUGIN_GROUPS))
+        signal.raise_signal = fake_raise
+        signal.signal = lambda *a: None
+        asyncio.create_subprocess_exec = spawn_with_signal
+        try:
+            p = self.plugin("echo '{\"toast\":\"ok\"}'\n")
+            await self.run_p(p)
+        finally:
+            bot.kill_plugin_groups, signal.raise_signal, signal.signal, asyncio.create_subprocess_exec = orig
+            bot.PENDING_STOP[0] = None
+        self.assertTrue(kills and kills[0], (kills, raised))
+
+    async def test_plugin_starts_with_no_blocked_signals(self):
+        p = self.plugin("exec %s -c 'import signal, json; print(json.dumps({\"toast\": str(sorted(int(s) for s in signal.pthread_sigmask(signal.SIG_BLOCK, [])))}))'\n" % sys.executable)
+        res = await self.run_p(p)
+        self.assertEqual(res.get("toast"), "[]", res)
+
+
 class TestShutdown(Base):  # F5
     async def test_kill_plugin_groups_stops_running_plugin(self):
         p = self.plugin("sleep 300 &\necho $! > %s/pid\nwait\n" % self.dir)
