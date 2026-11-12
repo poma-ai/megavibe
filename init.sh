@@ -40,24 +40,30 @@ fi
 # A checkout older than the installed megavibe must not install over it: a working
 # copy left on an old branch silently replaced a project's newer hooks and rules.
 # Offline: refuse only when SCRIPT_DIR is itself a git work tree, the installed
-# commit ($MEGAVIBE_HOME/version) is a full id that this repo knows, and HEAD is a
+# commit ($MEGAVIBE_HOME/version) is a full id of a commit this repo knows, and HEAD is a
 # strict ancestor of it. Anything else (not git, version "3", unknown, equal,
 # newer, diverged) installs as before. The same test guards the launcher's repo sync.
-if [ "${MEGAVIBE_INIT_ALLOW_STALE:-}" != 1 ] \
-   && [ "$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)" = "$(cd "$SCRIPT_DIR" && pwd -P)" ]; then
-  _inst="$(tr -d '[:space:]' < "${MEGAVIBE_HOME:-$HOME/.megavibe}/version" 2>/dev/null || true)"
-  _head="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+_stale_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+      -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@"
+}
+_top="$(_stale_git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ "${MEGAVIBE_INIT_ALLOW_STALE:-}" != 1 ] && [ -n "$_top" ] && [ "$_top" -ef "$SCRIPT_DIR" ]; then
+  _mvh="${MEGAVIBE_HOME:-$HOME/.megavibe}"
+  _inst=""
+  [ -r "$_mvh/version" ] && _inst="$(tr -d '[:space:]' < "$_mvh/version" 2>/dev/null || true)"
+  _head="$(_stale_git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
   if [[ "$_inst" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [ -n "$_head" ] && [ "$_head" != "$_inst" ] \
-     && git -C "$SCRIPT_DIR" cat-file -e "${_inst}^{commit}" 2>/dev/null \
-     && git -C "$SCRIPT_DIR" merge-base --is-ancestor "$_head" "$_inst" 2>/dev/null; then
+     && [ "$(_stale_git -C "$SCRIPT_DIR" cat-file -t "$_inst" 2>/dev/null || true)" = commit ] \
+     && _stale_git -C "$SCRIPT_DIR" merge-base --is-ancestor "$_head" "$_inst" 2>/dev/null; then
     {
       echo "Refusing to install: this megavibe checkout is older than the installed megavibe."
       echo "  checkout:  $SCRIPT_DIR at $_head"
       echo "  installed: $_inst"
       echo "Installing from it would overwrite newer hooks and rules with older ones. Either:"
-      echo "  1. run ~/.megavibe/init.sh $PROJECT (the installed copy);"
-      echo "  2. update this checkout (git -C $SCRIPT_DIR pull, or switch to a newer branch);"
-      echo "  3. MEGAVIBE_INIT_ALLOW_STALE=1 bash $0 $PROJECT to install from it anyway."
+      printf '  1. run %q %q (the installed copy);\n' "$_mvh/init.sh" "$PROJECT"
+      printf '  2. update this checkout (git -C %q switch main && git -C %q pull; works from a detached HEAD too);\n' "$SCRIPT_DIR" "$SCRIPT_DIR"
+      printf '  3. MEGAVIBE_INIT_ALLOW_STALE=1 bash %q %q to install from it anyway.\n' "$0" "$PROJECT"
     } >&2
     exit 1
   fi

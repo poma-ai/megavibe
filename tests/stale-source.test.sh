@@ -49,7 +49,7 @@ check "older checkout: exit 1" '[ "$LAST_RC" = 1 ]'
 check "older checkout: project untouched" '! installed && [ "$(ls "$LAST_PROJ/.claude/hooks")" = pre-existing.sh ]'
 check "refusal names checkout" 'grep -q "$T/wtA" "$T/err"'
 check "refusal names both commits" 'grep -q "$A" "$T/err" && grep -q "$B" "$T/err"'
-check "refusal lists the three ways out" 'grep -q "~/.megavibe/init.sh" "$T/err" && grep -q MEGAVIBE_INIT_ALLOW_STALE=1 "$T/err" && grep -qi "update this checkout" "$T/err"'
+check "refusal lists the three ways out" 'grep -q "$H/.megavibe/init.sh" "$T/err" && grep -q MEGAVIBE_INIT_ALLOW_STALE=1 "$T/err" && grep -qi "update this checkout" "$T/err"'
 check "refusal goes to stderr only" '! grep -q MEGAVIBE_INIT_ALLOW_STALE "$T/out"'
 
 run_init "$T/wtA" "$B" MEGAVIBE_INIT_ALLOW_STALE=1
@@ -93,6 +93,37 @@ check "launcher: missing version not stale" '! lau "$T/wtA" -missing-'
 check "launcher: unknown commit not stale" '! lau "$T/wtA" ffffffffffffffffffffffffffffffffffffffff'
 check "launcher: non-git dir not stale" '! lau "$T/plain" "$B"'
 check "launcher: guard runs before the first sync and clears REPO_DIR" 'g=$(grep -n "&& repo_older_than_installed \"\$REPO_DIR\"" "$REPO/megavibe" | head -1 | cut -d: -f1); w=$(grep -n "# Sync CLI wrapper" "$REPO/megavibe" | head -1 | cut -d: -f1); [ -n "$g" ] && [ -n "$w" ] && [ "$g" -lt "$w" ] && sed -n "$((g+1)),$((g+2))p" "$REPO/megavibe" | grep -q "REPO_DIR=\"\""'
+
+# Review fixes.
+run_init "$T/wtA" -missing-
+check "missing version file: stderr empty" '[ ! -s "$T/err" ]'
+ln -sfn "$T/wtA" "$T/linkA"
+run_init "$T/linkA" "$B"
+check "symlinked checkout path still refused" '[ "$LAST_RC" = 1 ] && ! installed'
+UP=$(printf '%s' "$T/wtA" | tr 'a-z' 'A-Z')
+if [ -d "$UP" ] && [ "$UP" != "$T/wtA" ]; then
+  run_init "$UP" "$B"
+  check "differently-cased path still refused" '[ "$LAST_RC" = 1 ] && ! installed'
+fi
+run_init "$T/wtA" "$B" GIT_DIR="$T/wtB/.git" GIT_WORK_TREE="$T/wtB"
+check "inherited GIT_DIR does not hide the stale checkout" '[ "$LAST_RC" = 1 ] && ! installed'
+BG=$(git -C "$SRC" rev-parse --git-dir); BG=$(cd "$SRC" && cd "$BG" && pwd -P)
+run_init "$T/wtB" "$B" GIT_DIR="$BG/worktrees/wtA"
+check "inherited GIT_DIR to another repo does not refuse a current checkout" '[ "$LAST_RC" = 0 ] && installed'
+git -C "$SRC" tag -a -m tagB vB "$B"
+TAGB=$(git -C "$SRC" rev-parse vB)
+run_init "$T/wtB" "$TAGB"
+check "annotated tag id as version: proceeds" '[ "$LAST_RC" = 0 ] && installed'
+run_init "$T/wtA" "$TAGB"
+check "annotated tag id as version, older checkout: proceeds (unknown)" '[ "$LAST_RC" = 0 ] && installed'
+git clone -q "$SRC" "$T/sp ace" && git -C "$T/sp ace" checkout -q "$A"
+run_init "$T/sp ace" "$B"
+check "refusal quotes a path with spaces" 'grep -q "sp\\ ace" "$T/err"'
+check "refusal says how to update from a detached HEAD" 'grep -q "switch main" "$T/err"'
+check "launcher: symlinked repo is stale" 'lau "$T/linkA" "$B"'
+check "launcher: missing version file is silent" '[ -z "$( ( MEGAVIBE_HOME="$T/nolh"; VERSION_FILE="$MEGAVIBE_HOME/version"; eval "$FN"; repo_older_than_installed "$T/wtA" ) 2>&1 )" ]'
+check "launcher: inherited GIT_DIR ignored" '( export GIT_DIR="$T/wtB/.git"; lau "$T/wtA" "$B" )'
+check "launcher: annotated tag id not stale" '! lau "$T/wtA" "$TAGB"'
 
 printf 'stale-source: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
