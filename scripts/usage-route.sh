@@ -160,7 +160,11 @@ if [ "$MODE" = balance ]; then
   }
   BEGIN {
     if (cu == "" || xu == "") { print "-|"; exit }
-    cj = (cp == "" ? cu : cp) + 0; xj = (xp == "" ? xu : xp) + 0; known = (cp != "" && xp != "")
+    # Effective projection: the router projection, else the straight-line estimate (from 5 percent of the
+    # window), else the used percent. The straight-line estimate matters early in a window, where the router
+    # has no projection yet: used percent alone made a subscription 0.6 days into its week look like headroom.
+    cj = (cp != "" ? cp : (clp != "" ? clp : cu)) + 0; xj = (xp != "" ? xp : (xlp != "" ? xlp : xu)) + 0
+    known = ((cp != "" || clp != "") && (xp != "" || xlp != ""))
     pref = "-"
     if (cb == "over" && xb == "over") { print "-|"; exit }          # nowhere to lean
     if (cb == "over" && xb != "over") pref = "codex"
