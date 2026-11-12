@@ -521,7 +521,7 @@ case $TOOLS in
   none) TL=""; SANDBOX_NOTE="no tools" ;;
 esac
 if [ -z "$EFFORT" ] && [ "$AS_REVIEWER" = 1 ]; then EFFORT=high; fi
-ARGS=(-p --model "$MODEL" --output-format json --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
+ARGS=(-p --model "$MODEL" --output-format stream-json --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
 [ -z "$TL" ] || ARGS+=(--allowedTools "$TL")
 [ -z "$EFFORT" ] || ARGS+=(--effort "$EFFORT")
 PRE=(); SBX=()
@@ -554,7 +554,17 @@ DUR=$(( $(date +%s) - START ))
 INSPECT_LOST=0; NORESULT=0; RESCUE=0
 if [ "$RC" = 3 ] && grep -q '^inspection unavailable' "$CTL/sup.err" 2>/dev/null && grep -q '^worker-ok$' "$CTL/sup.err" 2>/dev/null; then RESCUE=1; fi
 if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
-  if jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then
+  # stream-json keeps the assistant messages that preceded a terse final follow-up.
+  # The fixture and older CLIs may still return one JSON array, so normalize both forms.
+  if jq -e -s -r '
+    ((if length == 1 and (.[0] | type) == "array" then .[0] else . end) as $events
+    | ($events | map(select(type == "object" and .type == "assistant")
+        | .message.content[]? | select(type == "object" and .type == "text") | .text) | join("\n\n")) as $assistant
+    | ($events | map(select(type == "object" and .type == "result" and .is_error == false and (.result | type) == "string")) | last) as $result
+    | select($result != null)
+    | if ($assistant | length) > 0 then $assistant
+      else $result.result end)
+  ' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then
     if [ "$RESCUE" = 1 ]; then RC=0; INSPECT_LOST=1; fi
   else
     NORESULT=1

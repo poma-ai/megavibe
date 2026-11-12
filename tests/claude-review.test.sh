@@ -55,6 +55,11 @@ if [ -n "${FAKE_PLANT:-}" ]; then
   ln -sf "$FAKE_OUTSIDE/victim" settings.json 2>/dev/null; ln -sf "$FAKE_OUTSIDE/victim" request.txt 2>/dev/null
 fi
 case "${FAKE_MODE:-ok}" in
+  followup)
+    jq -cn --arg long "FULL REVIEW: this is the substantive report with findings, evidence, and the ship recommendation. It must survive a short final follow-up." \
+      --arg short "that notification was only a background job finishing; my verdict stands: ship" \
+      '[{"type":"system"},{"type":"assistant","message":{"content":[{"type":"text","text":$long}]}},{"type":"assistant","message":{"content":[{"type":"text","text":$short}]}},{"type":"result","is_error":false,"result":$short,"total_cost_usd":0.005,"num_turns":3}]'
+    exit 0 ;;
   detached_timeout|detached_normal|detached_watchdog)
     # This child leaves the worker process group/session, as Claude Bash does.
     perl -MPOSIX=setsid -e '
@@ -142,6 +147,10 @@ check "bash -n" '/bin/bash -n "$CR"'
 SUP=$(sed -n "/^SUP='$/,/^'$/p" "$CR" | sed '1d;$d')
 check "supervisor compiles" 'perl -c -e "$SUP" >/dev/null 2>&1'
 check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\$\{[A-Za-z_]+,,\}" "$CR"'
+
+fk FAKE_MODE=followup -- "$CR" --prompt p --tools none --out "$T/followup.out" "$T/a.txt" >/dev/null 2>"$T/followup.err"; rc=$?
+if [ "$rc" -ne 0 ]; then cat "$T/followup.err" >&2; fi
+check "a short final follow-up does not discard the substantive review" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: this is the substantive report" "$T/followup.out" && grep -q "my verdict stands: ship" "$T/followup.out"'
 
 # Exercise exactly the policy used by the wrapper without needing sandbox-exec
 # or process inspection. This also permits useful checks inside nested seatbelt.

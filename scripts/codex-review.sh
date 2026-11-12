@@ -68,6 +68,7 @@
 
 set -euo pipefail
 
+PROG=${0##*/}
 MODEL=""; EFFORT=""; TIMEOUT=300; OUT=""; PROMPT=""; PROMPT_FILE=""
 # The project is never writable: that is the contract. There is deliberately no
 # flag to raise it beyond the scratch dir: a caller-supplied sandbox is how the
@@ -142,6 +143,33 @@ command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1
 [ -n "$(printf '%s' "$PROMPT" | tr -d '[:space:]')" ] || { echo "error: the prompt is empty" >&2; exit 2; }
 [ "${#FILES[@]}" -gt 0 ] || echo "note: no files given — sending the prompt alone" >&2
 
+# Keep the user's model and effort settings, but never let a saved endpoint redirect
+# review material. Only inspect the key names; values must not enter diagnostics.
+CODEX_CONFIG=${CODEX_HOME:-$HOME/.codex}/config.toml
+CODEX_PROFILE=''
+if [ -r "$CODEX_CONFIG" ]; then
+  CODEX_PROFILE=$(awk '
+    /^[[:space:]]*profile[[:space:]]*=/ && $0 !~ /^[[:space:]]*\[/ {
+      v=$0; sub(/^[^=]*=[[:space:]]*/, "", v); gsub(/[\"[:space:]]/, "", v); print v; exit
+    }
+  ' "$CODEX_CONFIG")
+fi
+if [ "${MEGAVIBE_CODEX_ALLOW_ENDPOINT:-0}" != 1 ] && [ -r "$CODEX_CONFIG" ]; then
+  for CODEX_ENDPOINT_KEY in openai_base_url chatgpt_base_url; do
+    if awk -v profile="$CODEX_PROFILE" -v wanted="$CODEX_ENDPOINT_KEY" '
+      BEGIN { section="" }
+      /^[[:space:]]*\[/ { section=$0; next }
+      $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
+        if (section == "" || section == "[profiles." profile "]") found=1
+      }
+      END { exit(found ? 0 : 1) }
+    ' "$CODEX_CONFIG"; then
+      echo "$PROG: refusing configured $CODEX_ENDPOINT_KEY (set MEGAVIBE_CODEX_ALLOW_ENDPOINT=1 to allow it)" >&2
+      exit 2
+    fi
+  done
+fi
+
 # The prompt goes in via STDIN, not argv: a review of several files is far past
 # any safe argv length, and `codex exec -` reads instructions from stdin.
 REQ=$(mktemp -t codex-req)
@@ -169,12 +197,12 @@ fi
 # dirs that are not repos. -o writes ONLY the final message, so the answer never
 # has to be scraped out of the run's progress chrome.
 # approval_policy is pinned too: a user's on-request / auto-review setting must not approve an escalation.
-ARGS=(exec --sandbox "$SANDBOX" -c 'approval_policy="never"' --skip-git-repo-check --color never -o "$ANS")
+ARGS=(exec -c 'model_provider="openai"' --sandbox "$SANDBOX" -c 'approval_policy="never"' --skip-git-repo-check --color never -o "$ANS")
 # A user's exec-policy rules ($CODEX_HOME/rules/*.rules, which codex itself writes when
 # someone answers "always allow" in the TUI) run an allowed command OUTSIDE the sandbox,
 # which re-opens the project, $HOME, /tmp and the network in BOTH modes. Never load them.
 # Older codex builds without the flag are run as before (the flag is probed, not assumed).
-if codex exec --help 2>/dev/null | grep -q -e '--ignore-rules'; then ARGS+=(--ignore-rules); fi
+if codex exec -c 'model_provider="openai"' --help 2>/dev/null | grep -q -e '--ignore-rules'; then ARGS+=(--ignore-rules); fi
 if [ -n "$SCRATCH" ]; then
   # workspace-write is the cwd (the scratch dir) only: /tmp and $TMPDIR excluded, network off.
   ARGS+=(-C "$SCRATCH" -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_slash_tmp=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c 'sandbox_workspace_write.writable_roots=[]')

@@ -263,6 +263,16 @@ unset MEGAVIBE_TRASH_REVIEW_COUNT
 
 # 5. Real-delete guard.
 bd() { printf '%s' "$1" | jq -Rs '{tool_input:{command:.}}' | env "${@:2}" bash "$HOOKS/block-dangerous-bash.sh" 2>/dev/null; echo $?; }
+
+# A pipeline's formatter status must not be the condition that permits a
+# destructive command. The guard is intentionally tested before the Python net.
+check "tail followed by git push is blocked without pipefail" '[ "$(bd "check | tail -1 && git push")" = 2 ]'
+check "head followed by git commit is blocked after a semicolon" '[ "$(bd "check | head -1; git commit -m ship")" = 2 ]'
+check "grep followed by gh pr merge is blocked" '[ "$(bd "check | grep ok && gh pr merge 1")" = 2 ]'
+check "pipefail permits the same push" '[ "$(bd "set -o pipefail; check | tail -1 && git push")" = 0 ]'
+check "git log head followed by echo is allowed" '[ "$(bd "git log | head -1; echo done")" = 0 ]'
+check "grep followed by git status is allowed" '[ "$(bd "grep x f && git status")" = 0 ]'
+check "a commit message mentioning the pattern is allowed" '[ "$(bd "git commit -m '\''check | tail -1 && git push'\''")" = 0 ]'
 check "python heredoc rmtree blocked" '[ "$(bd "python3 - <<EOF
 import shutil
 shutil.rmtree(\"/tmp/x\")
