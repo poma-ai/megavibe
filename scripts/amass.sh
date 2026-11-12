@@ -51,7 +51,7 @@ done
 die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
 usage() {
-  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 P1/P2 labels are the model's, not a measurement: historical precision was about
@@ -129,7 +129,7 @@ CLAUDE_MODEL=haiku; CODEX_MODEL=gpt-5.6-luna
 # Lens enumeration does not need deliberation: at the user config's high effort luna took
 # minutes per call and often hit the timeout; low answers in seconds. --codex-effort overrides.
 CODEX_EFFORT=low
-CX_WORK=''; SUP_PID=''; WORKERS=(); CX_DRY=''; DD_LOCK=''; SCR=''; CX_IGNORE=0
+CX_WORK=''; SUP_PID=''; WORKERS=(); CX_DRY=''; DD_LOCK=''; SCR=''; CX_IGNORE=0; CX_IUC=0
 CX_CLEAN=(env -i)
 for _v in HOME PATH CODEX_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY ALL_PROXY https_proxy http_proxy no_proxy all_proxy NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
   if [ -n "${!_v+x}" ]; then CX_CLEAN+=("$_v=${!_v}"); fi
@@ -190,8 +190,13 @@ finalize_models() { # --model names one model, so it only fits a single provider
   [ "$MODEL_SET" = 1 ] || return 0
   case $PROVS in
     *' '*) die "--model cannot name both models of a mixed run: use --claude-model and --codex-model" ;;
-    codex) CODEX_MODEL=$MODEL ;;
-    *) CLAUDE_MODEL=$MODEL ;;
+    codex)
+      # auto may have dropped the provider the model was meant for: never hand a Claude model to Codex
+      case $MODEL in haiku|sonnet|opus|fable|claude-*) [ "${REQ:-}" != auto ] || die "--model $MODEL is a Claude model, but only Codex is usable; pass --codex-model or --provider" ;; esac
+      CODEX_MODEL=$MODEL ;;
+    *)
+      case $MODEL in gpt-*|o[0-9]*) [ "${REQ:-}" != auto ] || die "--model $MODEL is a Codex model, but only Claude is usable; pass --claude-model or --provider" ;; esac
+      CLAUDE_MODEL=$MODEL ;;
   esac
 }
 
@@ -242,6 +247,9 @@ call_model() { # provider model timeout prompt_file out_json out_err
   # provider (its own base_url or token) must not receive the inlined files; -c beats config and profiles.
   local cxa=(exec --model "$1" -c "model_reasoning_effort=\"$CODEX_EFFORT\"" -c 'model_provider="openai"' --sandbox read-only -c 'approval_policy="never"')
   [ "$CX_IGNORE" != 1 ] || cxa+=(--ignore-rules)   # older builds without the flag run as before
+  # Saved config can redirect the endpoint (openai_base_url, chatgpt_base_url) and with it the
+  # login token and the inlined files; auth still comes from CODEX_HOME without it.
+  [ "$CX_IUC" != 1 ] || cxa+=(--ignore-user-config)
   cxa+=(--skip-git-repo-check --ephemeral --json --output-last-message "$answer" -)
   supervise "$CX_WORK" "$2" codex "$CODEX_BIN" "${cxa[@]}" < "$3" > "$events" 2> "$5" || rc=$?
   # JSONL turn.completed usage is machine-readable. Cached input is already in
@@ -316,6 +324,7 @@ avail_codex() {
   supervise "$CX_WORK" 30 codex "$CODEX_BIN" exec --help </dev/null > "$CX_WORK/help" 2>&1 \
     || { AV_ERR='codex exec --help failed; refusing to send anything'; return 1; }
   if grep -q -e '--ignore-rules' "$CX_WORK/help"; then CX_IGNORE=1; else CX_IGNORE=0; fi
+  if grep -q -e '--ignore-user-config' "$CX_WORK/help"; then CX_IUC=1; else CX_IUC=0; fi
   supervise "$CX_WORK" 30 codex "$CODEX_BIN" login status </dev/null > "$CX_WORK/login" 2>&1 \
     || { AV_ERR='cannot verify the Codex login; a ChatGPT-account login is required'; return 1; }
   grep -qx 'Logged in using ChatGPT' "$CX_WORK/login" \

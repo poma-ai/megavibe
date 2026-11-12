@@ -431,6 +431,7 @@ if [ "${2:-}" = --help ]; then
   pwd > "$FAKE_LOG/help_cwd"
   echo '      --skip-git-repo-check'
   [ "${FAKE_CX:-}" = noignore ] || echo '      --ignore-rules'
+  [ "${FAKE_CX:-}" = noignore ] || echo '      --ignore-user-config'
   [ "${FAKE_CX:-}" != helpfail ]; exit $?
 fi
 if [ "${1:-}" = login ]; then
@@ -817,6 +818,20 @@ check "--ignore-rules is passed when codex exec --help lists it" 'cxargv | grep 
 newlog f6b
 out=$(fk FAKE_CX=noignore -- cxrun noign 2>&1); rc=$?
 check "--ignore-rules is left off for a codex whose help lacks it, and the call still runs" '[ $rc -eq 0 ] && [ "$(calls)" = 1 ] && ! cxargv | grep -qx -- --ignore-rules'
+# R2: the user's codex config (base URLs, providers, MCP, notify) is not loaded where codex supports it
+newlog r2a
+out=$(cxrun iuc 2>&1)
+check "--ignore-user-config is passed when codex exec --help lists it" 'cxargv | grep -qx -- --ignore-user-config'
+newlog r2b
+out=$(fk FAKE_CX=noignore -- cxrun noiuc 2>&1); rc=$?
+check "--ignore-user-config is left off for a codex whose help lacks it, and the call still runs" '[ $rc -eq 0 ] && [ "$(calls)" = 1 ] && ! cxargv | grep -qx -- --ignore-user-config'
+# R2: --model under auto must name a model of the provider that remains
+newlog r2c
+out=$(fk FAKE_AUTH=apikey -- "$AM" run --model sonnet --out "$T/r2c" --no-lens --whole 2 "$T/a.txt" 2>&1); rc=$?
+check "auto falling back to codex refuses a Claude --model instead of passing it to codex" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q -- "--model sonnet"'
+# R2: --help ends with the usage block, not a dangling heading
+out=$("$AM" --help 2>&1)
+check "--help does not end on a dangling heading" '! echo "$out" | tail -1 | grep -q "Why it is built"'
 # F7: docs say Codex workers are sandboxed, not tool-less
 for doc in "$REPO/README-amass.md" "$REPO/README.md" "$REPO/template/.claude/rules/delegation.md"; do
   check "$(basename "$doc") says Codex workers run in a read-only sandbox and can read local files" 'grep -i "amass" "$doc" | grep -qi "read-only sandbox" && grep -i "amass\|codex worker" "$doc" | grep -qi "read local files\|read files"'
