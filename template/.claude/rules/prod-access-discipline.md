@@ -72,7 +72,7 @@ that disguises itself.
 
 ## Consent comes from the user, not the agent
 
-Consent for a destructive step is the user's own answer, given in the conversation or at a harness prompt. A flag, environment variable or command the agent supplies is not consent by itself, however it is spelled.
+Consent for a destructive step is the user's own answer, given in the conversation or at a harness prompt. An escape hatch the human set (such as `MEGAVIBE_ALLOW_PROD_EXEC=1`) is that answer; a flag the agent sets itself to get past a guard is not.
 
 ## Changing a Deployment restarts it
 
