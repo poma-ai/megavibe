@@ -101,11 +101,14 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 - Check `.agent/LESSONS.md` before planning — don't repeat past mistakes.
 - **Search project memory before planning:** if poma-memory MCP is available, call `poma_search` with key terms from the task to surface relevant decisions, context, and patterns. The Grep hook does this automatically during code search, but planning benefits from a deliberate memory check.
 - **Think critically.** Question the user's assumptions, identify overlooked risks, and flag when the approach seems wrong — even if the user sounds certain. Substance over agreement.
+- If a value the user gave (email, name, URL) would make the action fail or reach the wrong party, say so and ask before using a different one.
+- When the user calls a feature new or just announced, look it up in the vendor's own docs or announcement before drafting the plan, unless they supplied the source or the vendor is unreachable (say so).
 
 **Implement**
 - Follow the plan. Small diffs. No unrelated refactors.
 - When the plan has parallel tasks: spin them out (see `.claude/rules/spinouts.md`).
 - **If implementation diverges significantly from the plan, STOP.** Re-assess, update the plan in TASKS.md, and get alignment before continuing. Pushing through a broken plan wastes more than pausing to fix it.
+- When changing a rule or default, fix every current restatement of the old value that would now be false (in the project's docs, comments, tests and config; never event logs or dated records).
 
 **Verify**
 - Run verification commands. For UI: Playwright screenshots + Gemini description.
@@ -114,6 +117,8 @@ You do NOT need to run `/catchup` separately after compaction — the orientatio
 **Commit**
 - Descriptive message. Include what was verified.
 - After committing: record a summary with `.claude/hooks/agent-log.sh append`.
+- Run ad-hoc harnesses that write scratch files from a scratch directory, not from inside the worktree you will commit from (the project's own test commands, and tests that need project-local fixtures, still run as documented). Stage explicit paths (never `git add -A`), then check `git status` for any new file you meant to include.
+- After merging a rules or protocol change, name the changed files, offer `/megavibe-restart` for open sessions, and say which sessions you could not check; do not message other sessions unless the user asks.
 - **PR bodies have a required shape.** A feature or change needs a `## Summary` section (what and why, 2–3 sentences). A bug fix needs `## Bug` (what broke, observed behaviour, repro) **and** `## Fix` (what changed, why it is correct) — one without the other is rejected. Something that is both gets `## Summary`, then `## Bug`, then `## Fix`. Headings must be exactly level 2. `enforce-pr-format.sh` blocks `gh pr create`/`gh pr edit` that miss this, and blocks `--fill` (a body built from commit messages cannot satisfy it). The footgun: an example invocation inside a doc, heredoc or commit message reads as a real command unless you **indent it** — one leading space is the escape hatch.
 
 **Learn**
