@@ -61,7 +61,7 @@ and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
 by default, so every wait past 5 minutes re-writes the whole context at 1.25x
 instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
 tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
-subagent's `.output` symlink whole: it is the full JSONL transcript.
+subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while its own background work still runs: stop that work once the result is used, and list running tasks before declaring done.
 
 ## Bind dev servers to localhost by default
 
@@ -113,3 +113,11 @@ ps -axo pid,ppid,etime,command | awk '$2==1 && /\/(bash|zsh|sh|python|node|ruby|
 ```
 
 Match against the expected set (ssh-agent, gpg-agent / keyboxd, colima/lima/orbstack, intentional tmux sessions, named dev servers). Anything left over is a candidate for `kill`. Walk parent chains with `ps -p <pid> -o ppid=` if you need to know what spawned a polling kubectl or gcloud process — the polling parent is usually a forgotten `/tmp/*.sh` watchdog.
+
+## Editing a file a live process reads
+
+Never copy over or edit a script that a running process or a review is reading. Install it through a temp file in the same directory and `mv -f` it into place; review a frozen detached copy, not the live file; and deploy artifacts that must agree together in one step.
+
+## Discarding output
+
+Discard output (`>/dev/null`, `2>&1 | tail -1`) only from read-only commands; a mutating command's failure must stay visible. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
