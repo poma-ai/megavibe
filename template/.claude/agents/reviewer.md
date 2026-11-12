@@ -36,7 +36,8 @@ find what is wrong with it before a user does.
    allow-lists that depended on a value the change altered. Check a new gate's
    failure behaviour (open or closed) against the rule that governs it, and,
    when a change adds a probe, check its deadline under the wait limit of its caller
-   (a hook's timeout; 600 s for a foreground Bash call).
+   (a hook's timeout; 600 s for a foreground Bash call,
+   170 s when the caller is a subagent).
 
 ## What to report
 
