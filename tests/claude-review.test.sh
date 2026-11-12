@@ -412,12 +412,18 @@ echo pre_fail > "$T/outside/ps.mode"
 "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
 check "pre-start ps failure refuses to launch and cleans directories" '[ $rc -ne 0 ] && [ ! -e "$T/outside/worker.pid" ] && [ -z "$(kept)" ] && [ -z "$(ctl)" ]'
 
-# a ps that is slow but works (1.2 s per table, a loaded machine) is not an inspection loss
+# a ps that works but is slower than the supervisor allows (1.2 s per table, a loaded machine)
 rm -f "$T/outside/worker.pid"
 echo slow > "$T/outside/ps.mode"
 fk FAKE_MODE=inspect_fail -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/slow.out" 2>"$T/slow.err"; rc=$?
-check "a slow but working ps is not an inspection loss: exit 0, answer kept, no warning" '[ $rc -eq 0 ] && grep -q "F1 | P2" "$T/slow.out" && ! grep -q "inspection unavailable" "$T/slow.err"'
+check "a ps too slow for the supervisor (1.2 s) loses inspection but the finished answer is kept with a note" '[ $rc -eq 0 ] && grep -q "F1 | P2" "$T/slow.out" && grep -q "process inspection was unavailable" "$T/slow.err"'
 if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+
+# inspection lost AND no valid result: still a failure (nothing to keep)
+rm -f "$T/outside/worker.pid"
+echo fail > "$T/outside/ps.mode"
+fk FAKE_MODE=garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/nores.out" 2>"$T/nores.err"; rc=$?
+check "inspection lost and the worker output is not a valid result: exit 3, nothing delivered" '[ $rc -eq 3 ] && [ ! -s "$T/nores.out" ]'
 
 for fault in fail block; do
   rm -f "$T/outside/worker.pid" "$T/outside/inspection.pid" "$T/outside/inspection-child.pid"
