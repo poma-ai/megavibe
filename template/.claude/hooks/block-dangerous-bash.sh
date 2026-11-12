@@ -875,7 +875,7 @@ _rd_gate() {
   local c="${COMMAND//"$bsnl"/}"
   # a continuation inside a word (r\<newline>m) joins into an rm rm-to-trash.sh never sees
   [ "$c" != "$COMMAND" ] && printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$)' && return 0
-  printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
+  printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|worktree[[:space:]]+remove|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
   printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_])(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|awk|gawk|mawk|sh|bash|zsh|dash|ksh|tcsh|csh|fish|eval|trap|env|xargs|parallel|source)([^[:alnum:]_]|$)' \
     && printf '%s' "$c" | grep -Eiq 'rm|remove|unlink|delete|empty'     # every pattern below contains one of these
 }
@@ -1081,7 +1081,16 @@ def shell_text_reasons(t):
     for m in re.finditer(r"\bgit\s+(?:-[Cc]\s+\S+\s+|--?\S+\s+)*clean\b([^;&|\n]*)", t):
         if git_clean_forced(m.group(1)):
             return "git clean (anything but a dry run -n deletes)"
+    for m in re.finditer(r"\bgit\s+(?:-[Cc]\s+\S+\s+|--?\S+\s+)*worktree\s+remove\b([^;&|\n]*)", t):
+        if worktree_remove_forced(m.group(1)):
+            return ("git worktree remove --force (it deletes the worktree's uncommitted and untracked files for good; "
+                    "run git status --porcelain --ignored there, commit or move what matters, then remove without --force)")
     return None
+
+
+def worktree_remove_forced(args):
+    """--force or -f (alone or clustered) before or after the path."""
+    return any(x == "--force" or re.match(r"^-[A-Za-z]*f", x) for x in args.split() if x.startswith("-") and x != "--")
 
 
 def interp_runs_deleter(raw):
@@ -1095,6 +1104,9 @@ def interp_runs_deleter(raw):
     m = re.search(r"\bgit\s+clean\b([^\n;]*)", norm)
     if m and git_clean_forced(m.group(1)):
         return "git clean -f"
+    m = re.search(r"\bgit\s+worktree\s+remove\b([^\n;]*)", norm)
+    if m and worktree_remove_forced(m.group(1)):
+        return "git worktree remove --force"
     return None
 
 
