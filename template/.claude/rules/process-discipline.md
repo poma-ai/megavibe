@@ -113,11 +113,3 @@ ps -axo pid,ppid,etime,command | awk '$2==1 && /\/(bash|zsh|sh|python|node|ruby|
 ```
 
 Match against the expected set (ssh-agent, gpg-agent / keyboxd, colima/lima/orbstack, intentional tmux sessions, named dev servers). Anything left over is a candidate for `kill`. Walk parent chains with `ps -p <pid> -o ppid=` if you need to know what spawned a polling kubectl or gcloud process — the polling parent is usually a forgotten `/tmp/*.sh` watchdog.
-
-## Editing a file a live process reads
-
-Do not edit in place a script that a running process or a review is reading, since the reader then sees a mix of two versions. Reviews read a frozen copy, and files that must agree with each other change in one commit or one step. An urgent hotfix to a live script follows `CLAUDE.md`.
-
-## Discarding output
-
-Discard output (`>/dev/null`) only from a command that writes no files, repo state or remote state. For a mutating command, keep the tail the Bash output discipline in `CLAUDE.md` allows, but capture the command's own exit status (`set -o pipefail`, or `$?` before the pipe), not the pipeline's. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.

@@ -31,12 +31,12 @@ find what is wrong with it before a user does.
    loss (`rm -rf` before the replacement is known to exist, backups that are
    not verified, folders repointed); anything user-visible that is now false,
    stale or contradicts the standard — strings *and* comments.
-5. **Check what a change newly reaches.** A fix that adds the first caller on
+5. **Check what a change newly reaches.** A code fix that adds the first caller on
    a path re-opens every hazard deferred on that path. Re-read comments and
    allow-lists that depended on a value the change altered. Check a new gate's
    failure behaviour (open or closed) against the rule that governs it, and,
-   when a change adds a probe, check that it has its own deadline under the
-   applicable wait rule (`process-discipline.md`).
+   when a change adds a probe, check its deadline under the process wait limit
+   (`process-discipline.md`).
 
 ## What to report
 
