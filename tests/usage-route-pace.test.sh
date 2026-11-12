@@ -114,6 +114,24 @@ codex "$NOW" 4 "$((NOW + 556416))" > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(route balance --peek)
 check 'Codex early in its window with a low straight line (~49%): still leans on Codex, estimate shown' '[[ "$o" == codex\|* ]] && [[ "$o" == *"[linear estimate ~49%]"* ]]'
 codex "$NOW" 9 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
+# Claude side of the same rule: Codex over, Claude early in its window on a high straight line: no lean on Claude
+row "$NOW" 33 "$((NOW + 556416))" > "$MEGAVIBE_USAGE_FILE"
+codex "$NOW" 95 "$((NOW + WEEK / 2))" > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(route balance --peek)
+check 'Claude 8 percent in and 33 percent used, Codex over: no advice to lean on Claude' '[ "$o" = "-|" ]'
+# both early, nobody hot, a gap of 30 points between the straight lines: the lower line gets the work
+row "$NOW" 5 "$((NOW + WEEK * 90 / 100))" > "$MEGAVIBE_USAGE_FILE"
+codex "$NOW" 2 "$((NOW + WEEK * 90 / 100))" > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(route balance --peek)
+check 'both early and nobody hot: the preference follows the straight lines (50 against 20)' '[[ "$o" == codex\|* ]]'
+# under 5 percent of the window on both sides there is no projection and no straight line: a gap in used percent alone is no basis
+row "$NOW" 30 "$((NOW + WEEK * 97 / 100))" > "$MEGAVIBE_USAGE_FILE"
+codex "$NOW" 2 "$((NOW + WEEK * 97 / 100))" > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(route balance --peek)
+check 'both under 5 percent elapsed, a 28-point gap in used percent only: no preference' '[ "$o" = "-|" ]'
+# restore the fixtures the following checks expect
+{ row "$((NOW - 21600))" 94 "$((NOW + WEEK / 2))"; for i in $(seq 59 -1 0); do row "$((NOW - i))" 95 "$((NOW + WEEK / 2))"; done; } > "$MEGAVIBE_USAGE_FILE"
+codex "$NOW" 9 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
 check 'pace and peek leave routing state untouched' '[ ! -e "$MEGAVIBE_USAGE_STATE" ] && [ ! -e "$MEGAVIBE_CODEX_STATE" ]'
 
 # Run the real tick with fake auth/GitHub and no network.

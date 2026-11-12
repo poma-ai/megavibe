@@ -8,6 +8,8 @@
 #   usage-route.sh codex-band just the Codex band name
 #   usage-route.sh balance    one line: prefer|sentence — which subscription optional work (digests, exploration,
 #                             second opinions) should lean on; prefer is claude, codex or - (no preference)
+#                             decided on each side's effective projection: the router projection, else the straight-line
+#                             estimate (from 5% of the window), else the used percent; a side at 85 or more is never leaned on
 #   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
 #   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
 #                             display only; linear from 5% elapsed, recent from samples within the last 6h that span at least 2h
@@ -163,6 +165,7 @@ if [ "$MODE" = balance ]; then
     # Effective projection: the router projection, else the straight-line estimate (from 5 percent of the
     # window), else the used percent. The straight-line estimate matters early in a window, where the router
     # has no projection yet: used percent alone made a subscription 0.6 days into its week look like headroom.
+    if (clp !~ /^[0-9]+([.][0-9]+)?$/) clp = ""; if (xlp !~ /^[0-9]+([.][0-9]+)?$/) xlp = ""   # numbers only
     cj = (cp != "" ? cp : (clp != "" ? clp : cu)) + 0; xj = (xp != "" ? xp : (xlp != "" ? xlp : xu)) + 0
     known = ((cp != "" || clp != "") && (xp != "" || xlp != ""))
     pref = "-"
