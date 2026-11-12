@@ -22,7 +22,8 @@
 # entry "Claude Code-credentials", else ~/.claude/.credentials.json (Linux; on a Mac that
 # file can be an old copy). A stored record can be stale: an expiry of 0 or before 2001
 # is "unknown", never "expired". Nothing is printed but hours from now.
-# Test seams: MEGAVIBE_CLAUDE_AUTH_STATUS=<json file> stands in for `claude auth status`;
+# Test seams: MEGAVIBE_CLAUDE_AUTH_STATUS=<json file> stands in for `claude auth status`
+# (MEGAVIBE_CLAUDE_STATUS_TIMEOUT, default 10 s, bounds the real call);
 # MEGAVIBE_CLAUDE_CREDENTIALS=<json file> reads that file instead of either stored source
 # (and, without the status seam, skips `claude auth status`); MEGAVIBE_NOW pins the clock.
 set -uo pipefail
@@ -53,10 +54,25 @@ status=""; STATUS_TRIED=0
 if [ -n "${MEGAVIBE_CLAUDE_AUTH_STATUS:-}" ]; then
   STATUS_TRIED=1
   [ -f "$MEGAVIBE_CLAUDE_AUTH_STATUS" ] && status=$(cat "$MEGAVIBE_CLAUDE_AUTH_STATUS" 2>/dev/null)
-elif [ -z "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ] && command -v claude >/dev/null 2>&1 && command -v perl >/dev/null 2>&1; then
-  # Logged out, the CLI prints valid JSON and exits 1: keep the output, let jq judge it.
-  status=$(perl -e 'alarm 10; exec @ARGV' claude auth status 2>/dev/null </dev/null) || true
-  STATUS_TRIED=1
+elif [ -z "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ] && command -v perl >/dev/null 2>&1; then
+  CLAUDE_BIN=$(command -v claude 2>/dev/null) || CLAUDE_BIN=""
+  [ -n "$CLAUDE_BIN" ] || { [ -x "$HOME/.local/bin/claude" ] && CLAUDE_BIN="$HOME/.local/bin/claude"; }
+  if [ -n "$CLAUDE_BIN" ]; then
+    STATUS_TRIED=1
+    # Bounded: the call runs in its own process group, which is killed at the deadline, and its
+    # output goes to a file, so a child that outlives it cannot hold a pipe open. Logged out,
+    # the CLI prints valid JSON and exits 1: keep the output, let jq judge it.
+    st_file=$(mktemp "${TMPDIR:-/tmp}/claude-auth-status.XXXXXX" 2>/dev/null) || st_file=""
+    if [ -n "$st_file" ]; then
+      perl -e '
+        my $t = shift; my $pid = fork; die unless defined $pid;
+        if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+        local $SIG{ALRM} = sub { kill "KILL", -$pid; exit 142 };
+        alarm $t; waitpid($pid, 0); exit($? >> 8)' "${MEGAVIBE_CLAUDE_STATUS_TIMEOUT:-10}" \
+        "$CLAUDE_BIN" auth status >"$st_file" 2>/dev/null </dev/null || true
+      status=$(cat "$st_file" 2>/dev/null); rm -f "$st_file"
+    fi
+  fi
 fi
 if [ -n "$status" ]; then
   # "in <hours>" when the expiry parses, "out" when not logged in, "other" (an API key or
@@ -148,6 +164,11 @@ if [ "$REF" = n/a ]; then
   echo "$msg -> no refresh token recorded and the access token does not outlast $HOURS h: $ADVICE"; exit 1
 fi
 if awk -v r="$REF" 'BEGIN { exit !(r <= 0) }'; then
+  # A record with no usable access expiry and a past refresh expiry was seen on a working login:
+  # stale, not proof of expiry. A genuinely expired login also carries a real access expiry.
+  if [ "$ACC" = n/a ]; then
+    echo "$msg -> login lifetime unknown (the stored record looks stale)"; exit 2
+  fi
   echo "$msg -> REFRESH TOKEN EXPIRED: this session fails on its next request; $ADVICE"; exit 1
 fi
 if awk -v r="$REF" -v h="$HOURS" 'BEGIN { exit !(r < h) }'; then

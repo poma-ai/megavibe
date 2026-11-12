@@ -145,6 +145,17 @@ check "a +02:00 offset is applied ($o)" '[ "$RC" = 0 ] && [[ "$o" == *"login 400
 printf '{"loggedIn":true,"authMethod":"claude.ai","loginExpiresAt":%s}\n' "$(( (NOW + 400 * 3600) * 1000 ))" > "$T/st-num.json"
 runs "$T/st-num.json" "$T/stale.json"
 check "a numeric epoch in milliseconds is read" '[ "$RC" = 0 ] && [[ "$o" == *"login 400.0 h left"* ]]'
+# A status call whose child keeps running is cut off at the deadline (its own process group).
+printf '#!/bin/sh\nsleep 30\nprintf "%%s\\n" "{\\"loggedIn\\":true,\\"authMethod\\":\\"claude.ai\\"}"\n' > "$FB/claude"; chmod +x "$FB/claude"
+t0=$(date +%s)
+o=$(PATH="$FB:$PATH" HOME="$T/home" MEGAVIBE_NOW=$NOW MEGAVIBE_CLAUDE_STATUS_TIMEOUT=1 bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
+t1=$(date +%s)
+check "hanging status (child holds output) is bounded and falls back ($((t1 - t0)) s, $o)" '[ $((t1 - t0)) -lt 6 ] && [[ "$o" == *"refresh token 600.0 h"* ]]'
+# The reported record with the status unavailable: stale, unknown, never EXPIRED.
+printf '#!/bin/sh\nexit 1\n' > "$FB/claude"
+printf '#!/bin/sh\ncat "%s"\n' "$T/stale.json" > "$FB/security"
+o=$(PATH="$FB:$PATH" HOME="$T/home" MEGAVIBE_NOW=$NOW bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
+check "reported stale record without a status: unknown, never EXPIRED ($o)" '[ "$RC" = 2 ] && [[ "$o" == *"looks stale"* ]] && [[ "$o" != *EXPIRED* ]]'
 o=$(bash "$REPO/scripts/claude-auth-check.sh" -h 2>&1)
 check "help shows the whole header" '[[ "$o" == *"MEGAVIBE_NOW pins the clock"* ]]'
 # Without a usable status, a zero or pre-2001 expiry is unknown, never expired.
