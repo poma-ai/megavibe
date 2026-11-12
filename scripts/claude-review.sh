@@ -524,7 +524,7 @@ if [ -z "$EFFORT" ] && [ "$AS_REVIEWER" = 1 ]; then EFFORT=high; fi
 ARGS=(-p --model "$MODEL" --output-format json --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
 [ -z "$TL" ] || ARGS+=(--allowedTools "$TL")
 [ -z "$EFFORT" ] || ARGS+=(--effort "$EFFORT")
-PRE=()
+PRE=(); SBX=()
 if [ "$TOOLS" = exec ]; then
   # guard hooks only, registered here: no CLAUDE.md, rules or other hooks are loaded
   # the command string is run by a shell: each path is quoted (@sh), so a directory with spaces still works
@@ -533,12 +533,15 @@ if [ "$TOOLS" = exec ]; then
       {matcher:"Write|Edit",hooks:[{type:"command",command:(($d+"/block-permission-hooks.sh")|@sh)}]}]}}' > "$CTL/settings.json"
   ARGS+=(--settings "$CTL/settings.json")
   PRE=(sandbox-exec -f "$CTL/profile.sb")
+  # Commands the worker runs can tell they are sandboxed, and skip what cannot work there
+  # (a GUI app that registers with the window server aborts and shows a crash dialog).
+  SBX=(MEGAVIBE_SANDBOX=1)
 fi
 
 printf '[claude-review: tools=%s (%s) model=%s timeout=%ss request=%sKB]\n' "$TOOLS" "$SANDBOX_NOTE" "$MODEL" "$TIMEOUT" "$KB" >&2
 START=$(date +%s)
 RC=0
-( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" CLAUDE_REVIEW_DIAG="$CTL/sup.err" \
+( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" CLAUDE_REVIEW_DIAG="$CTL/sup.err" ${SBX[@]+"${SBX[@]}"} \
     perl -e "$SUP" "$TIMEOUT" "$PS_BIN" "$CTL/descendants" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
 SUP_PID=$!
 wait "$SUP_PID" || RC=$?
