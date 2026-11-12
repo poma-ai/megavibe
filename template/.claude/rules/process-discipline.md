@@ -116,8 +116,8 @@ Match against the expected set (ssh-agent, gpg-agent / keyboxd, colima/lima/orbs
 
 ## Editing a file a live process reads
 
-Never copy over or edit a script that a running process or a review is reading. Install it through a temp file in the same directory and `mv -f` it over the real target (resolve a symlink first; back up a file git does not track); review a frozen detached copy, not the live file; and deploy artifacts that must agree together in one step.
+Never edit in place a script that a running process or a review is reading: a reader then reviews, or a process runs, a mix of two versions. Give reviews a frozen copy, and deploy files that must agree with each other together.
 
 ## Discarding output
 
-Discard output (`>/dev/null`, `2>&1 | tail -1`) only from read-only commands. A mutating command keeps its full output in a log file and shows its exit status and tail. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
+Discard output (`>/dev/null`, `2>&1 | tail -1`) only from read-only commands. For a mutating command, keep its output and report the command's own exit status, not a pipeline's. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
