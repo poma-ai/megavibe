@@ -16,13 +16,16 @@ Env vars:
   MEGAVIBE_TELEGRAM_TOKEN   — Bot token from @BotFather (required)
   MEGAVIBE_TELEGRAM_USER_ID — Your Telegram user ID for auth (required)
   OPENAI_API_KEY            — For voice STT (gpt-4o-transcribe)
+  MEGAVIBE_TG_PLUGIN_DIR    — Button plugins (default ~/.megavibe/tg-plugins; README-remote.md)
 """
 
 import asyncio
 import fcntl
+import html
 import json
 import logging
 import os
+import signal
 import re
 import shlex
 import subprocess
@@ -56,7 +59,7 @@ try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
     from telegram.error import Conflict, NetworkError, TimedOut
     from telegram.ext import (
-        ApplicationBuilder, CommandHandler,
+        ApplicationBuilder, CallbackQueryHandler, CommandHandler,
         ContextTypes, MessageHandler, filters,
     )
 except ImportError:
@@ -465,6 +468,443 @@ def auth(func):
     return wrapper
 
 
+# ─── Button plugins ──────────────────────────────────────────────────
+# Telegram delivers button presses only to the process polling the token, so a
+# tool that sends its own messages with inline buttons (a mail digest, say)
+# cannot receive the presses itself while this bot runs. Instead it names a
+# plugin: callback_data "<name>:<payload>" runs the executable
+# $MEGAVIBE_TG_PLUGIN_DIR/<name> (default ~/.megavibe/tg-plugins/<name>) as
+#     <plugin> callback <payload>          (a button was pressed)
+#     <plugin> reply <text>                (you replied to one of its messages)
+# with a JSON context on stdin, and applies the JSON it prints:
+#     {"toast": str, "edit_text": str, "parse_mode": "HTML", "buttons": [[{"text","data"|"url"}]],
+#      "reply_text": str}
+# No shell is involved, the name is restricted to [a-z0-9_-], and only the
+# allowed user reaches this code (the @auth decorator). No plugin dir, no change.
+
+PLUGIN_DIR = Path(os.environ.get("MEGAVIBE_TG_PLUGIN_DIR", MEGAVIBE_HOME / "tg-plugins")).expanduser()
+PLUGIN_NAME_RE = re.compile(r"^[a-z0-9_-]{1,24}$")
+PLUGIN_TIMEOUT = 180
+
+
+def plugin_for(data: str | None):
+    """(path, payload) for callback data naming an installed plugin, else None."""
+    if not data or ":" not in data:
+        return None
+    name, payload = data.split(":", 1)
+    if not PLUGIN_NAME_RE.fullmatch(name):
+        return None
+    path = PLUGIN_DIR / name
+    if not (path.is_file() and os.access(path, os.X_OK)):
+        return None
+    return path, payload
+
+
+def markup_from(rows):
+    try:
+        return _markup_from(rows)
+    except Exception as e:             # a malformed "buttons" value must not lose the result
+        log.info("plugin buttons ignored: %s", e)
+        return None
+
+
+def _markup_from(rows):
+    out = []
+    for row in rows or []:
+        btns = []
+        for b in row:
+            if b.get("url"):
+                btns.append(InlineKeyboardButton(str(b["text"])[:64], url=str(b["url"])))
+            elif b.get("data"):
+                data = str(b["data"])
+                if len(data.encode()) > 64:        # Telegram's limit is 64 BYTES
+                    log.warning("button data over 64 bytes dropped: %r", data[:40])
+                    continue
+                btns.append(InlineKeyboardButton(str(b["text"])[:64], callback_data=data))
+        if btns:
+            out.append(btns)
+    return InlineKeyboardMarkup(out) if out else None
+
+
+async def _safe_answer(answer, text="") -> bool:
+    """Acknowledge a button press; a failed acknowledgement must never abort the
+    plugin run or leave its process behind. True if Telegram took it."""
+    if not answer:
+        return False
+    try:
+        await answer(str(text or "")[:200])
+        return True
+    except Exception as e:
+        log.info("callback answer failed: %s", e)
+        return False
+
+
+PLUGIN_OUT_MAX = 1 << 20          # stdout beyond this kills the plugin
+PLUGIN_ERR_KEEP = 8 << 10         # only the tail of stderr is kept (for the log)
+PLUGIN_DRAIN = 1.0                # after the leader exits, wait this long for output
+PLUGIN_TEXT_MAX = 16 << 10        # any text from a plugin is cut to this BEFORE processing
+PLUGIN_GROUPS: set[int] = set()   # process groups of plugins that are running now
+
+
+def _killpg(pgid: int, sig) -> bool:
+    """Signal a group; False when it no longer exists."""
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def kill_plugin_groups():
+    """Kill every live plugin group (shutdown, SIGHUP). Synchronous and safe in a
+    signal handler."""
+    for pgid in list(PLUGIN_GROUPS):
+        _killpg(pgid, signal.SIGKILL)
+
+
+STOPPING = False
+SPAWNING = [0]          # plugins between fork and registration in PLUGIN_GROUPS
+PENDING_STOP = [None]   # a stop signal held while SPAWNING
+
+
+def _deliver_pending_stop():
+    if SPAWNING[0] == 0 and PENDING_STOP[0] is not None:
+        s, PENDING_STOP[0] = PENDING_STOP[0], None
+        signal.raise_signal(s)
+
+
+def on_stop_signal(signum, frame):
+    """SIGTERM/SIGINT: kill the plugin groups FIRST, then stop through PTB's
+    KeyboardInterrupt path. PTB's own stop waits for running handler tasks before
+    post_stop, so a running plugin would otherwise hold shutdown for up to its
+    180 s limit. A press still queued when the signal arrives starts no plugin."""
+    global STOPPING
+    STOPPING = True
+    if SPAWNING[0]:
+        PENDING_STOP[0] = PENDING_STOP[0] or signum
+        return
+    kill_plugin_groups()
+    raise KeyboardInterrupt
+
+
+def on_sighup(signum, frame):
+    """tmux kill-session sends SIGHUP: plugins have their own sessions, so they
+    would survive it. Kill them, then die at once as the bot always did on
+    SIGHUP: a graceful stop would wait for an in-flight question (up to 10
+    minutes) while holding the bot's lock, so a restart right after
+    `megavibe remote --stop` would fail."""
+    if SPAWNING[0]:
+        PENDING_STOP[0] = signal.SIGHUP
+        return
+    kill_plugin_groups()
+    signal.signal(signal.SIGHUP, signal.SIG_DFL)
+    signal.raise_signal(signal.SIGHUP)
+
+
+async def _reap_group(pgid: int):
+    """Whatever is left in the plugin's group: TERM, then KILL after 1 s."""
+    if not _killpg(pgid, signal.SIGTERM):
+        return
+    for _ in range(20):
+        await asyncio.sleep(0.05)
+        if not _killpg(pgid, 0):
+            return
+    _killpg(pgid, signal.SIGKILL)
+
+
+async def run_plugin(path: Path, mode: str, arg: str, ctx: dict, answer=None) -> dict:
+    """Run a plugin under ONE deadline (PLUGIN_TIMEOUT). If it outlives
+    Telegram's ~15 s callback window, acknowledge the press first so the button
+    stops spinning. The plugin gets its own process group; whatever is left in
+    it is killed on EVERY way out (result, failure, timeout, cancellation).
+    Output is read with caps, never buffered whole. Never raises (except
+    cancellation); failures come back as a toast, and `_answered` says whether
+    the press was already acknowledged."""
+    if STOPPING:
+        return {"toast": "The bot is shutting down; try again in a moment."}
+    try:
+        return await _run_plugin(path, mode, arg, ctx, answer)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        # RecursionError, ValueError and friends: still answer the press.
+        log.warning("plugin %s runner failed: %r", path.name, e)
+        return {"toast": f"\u274c {path.name} failed", "_answered": False}
+
+
+async def _run_plugin(path, mode, arg, ctx, answer) -> dict:
+    answered = False
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PLUGIN_TIMEOUT
+    try:
+        stdin_data = json.dumps(ctx).encode()
+        # A stop signal during the spawn is held by the handlers and re-raised
+        # once the new group is registered, so the kill still finds it. (Not a
+        # blocked signal mask: the plugin would inherit it and ignore TERM.)
+        SPAWNING[0] += 1
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(path), mode, arg, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True)
+            PLUGIN_GROUPS.add(proc.pid)
+        finally:
+            SPAWNING[0] -= 1
+            _deliver_pending_stop()
+    except (OSError, ValueError, RecursionError, TypeError) as e:
+        log.warning("plugin %s could not start: %s", path.name, e)
+        return {"toast": f"\u274c {path.name} could not start", "_answered": False}
+
+    pgid = proc.pid
+    out_buf = bytearray()
+    err_buf = bytearray()
+    state = {"overflow": False}
+
+    async def feed():
+        try:
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+        except Exception:
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    async def read_out():
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                return
+            out_buf.extend(chunk)
+            if len(out_buf) > PLUGIN_OUT_MAX:
+                state["overflow"] = True
+                _killpg(pgid, signal.SIGKILL)
+                return
+
+    async def read_err():
+        while True:
+            chunk = await proc.stderr.read(65536)
+            if not chunk:
+                return
+            err_buf.extend(chunk)
+            if len(err_buf) > 2 * PLUGIN_ERR_KEEP:
+                del err_buf[:-PLUGIN_ERR_KEEP]
+
+    async def collect():
+        readers = [asyncio.ensure_future(read_out()), asyncio.ensure_future(read_err()),
+                   asyncio.ensure_future(feed())]
+        try:
+            # The leader only. proc.wait() also waits for the pipes to close, which a
+            # backgrounded child holding them would delay until it exits.
+            while proc.returncode is None:
+                await asyncio.sleep(0.05)
+            await asyncio.wait(readers, timeout=PLUGIN_DRAIN)
+        finally:
+            for r in readers:
+                if not r.done():
+                    r.cancel()
+
+    work = asyncio.ensure_future(collect())
+    hard = False
+    try:
+        done, _ = await asyncio.wait({work}, timeout=8)
+        if not done:
+            answered = await _safe_answer(answer, "\u23f3 working\u2026")
+            done, _ = await asyncio.wait({work}, timeout=max(1.0, deadline - loop.time()))
+        if not done:
+            hard = True
+            _killpg(pgid, signal.SIGKILL)
+            return {"toast": f"\u274c {path.name} timed out", "_answered": answered}
+        work.result()
+    except BaseException:
+        hard = True
+        _killpg(pgid, signal.SIGKILL)      # cancelled or crashed: leave nothing running
+        raise
+    finally:
+        if not work.done():
+            work.cancel()
+        try:
+            if proc.returncode is None:
+                _killpg(pgid, signal.SIGKILL)
+            for _ in range(100):                       # the leader is reaped by asyncio
+                if proc.returncode is not None:
+                    break
+                await asyncio.sleep(0.05)
+        except BaseException:
+            pass
+        try:
+            if not hard:
+                await _reap_group(pgid)
+        except BaseException:
+            _killpg(pgid, signal.SIGKILL)
+        PLUGIN_GROUPS.discard(pgid)
+
+    if state["overflow"]:
+        log.warning("plugin %s output over %d bytes; killed", path.name, PLUGIN_OUT_MAX)
+        return {"toast": f"\u274c {path.name}: output too large", "_answered": answered}
+    if proc.returncode != 0:
+        log.warning("plugin %s exited %s: %s", path.name, proc.returncode,
+                    bytes(err_buf[-300:]).decode(errors="replace"))
+        return {"toast": f"\u274c {path.name} failed", "_answered": answered}
+    try:
+        res = json.loads(bytes(out_buf).decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        res = None
+    if not isinstance(res, dict):
+        return {"toast": f"\u274c {path.name} returned no JSON object", "_answered": answered}
+    res["_answered"] = answered
+    return res
+
+
+def _plain_html(text: str) -> str:
+    """Tags out, entities decoded; a crafted numeric entity too long to decode
+    (Python's int-digit limit) leaves the text undecoded instead of raising."""
+    text = re.sub(r"<[^<>]*>", "", text)
+    try:
+        return html.unescape(text)
+    except ValueError:
+        return text
+
+
+def fit(text, parse_mode):
+    """Telegram's 4096-character limit, without cutting formatting in half: an
+    over-long formatted text is sent as plain text instead (a slice can end
+    inside a tag, and then the whole message is rejected). The input is cut to
+    PLUGIN_TEXT_MAX first and stripped in one linear pass, so a hostile text
+    costs the event loop microseconds."""
+    text = str(text)[:PLUGIN_TEXT_MAX]
+    if not isinstance(parse_mode, str):
+        parse_mode = None
+    if len(text) <= 4096:
+        return text, parse_mode
+    if parse_mode and parse_mode.upper() == "HTML":
+        text = _plain_html(text)
+    elif parse_mode:
+        text = re.sub(r"[*_`\\[\]]", "", text)
+    return (text if len(text) <= 4096 else text[:4095] + "\u2026"), None
+
+
+async def apply_plugin_result(res: dict, message, bot, query=None) -> bool:
+    """Apply a plugin's result. Returns True when its outcome reached the user.
+
+    The toast is the outcome ("done", "refused: …"). It travels as the press's
+    toast when it can; otherwise (reply mode, an early "working…"
+    acknowledgement, a rejected answer) it is sent as a chat message, even when
+    an edit also succeeded — the edit may not say what the toast says. A failed
+    edit (other than "not modified") or a failed reply always produces a
+    warning, so a lost card never looks like success."""
+    toast = str(res.get("toast") or "")[:PLUGIN_TEXT_MAX].strip()
+    toast_done = False
+    if query and not res.get("_answered"):
+        ok = await _safe_answer(query.answer, toast)
+        # A press toast holds 200 characters; a longer outcome is ALSO sent whole.
+        toast_done = ok and bool(toast) and len(toast) <= 200
+    failed = reply_failed = False
+    lost_text = []
+    if res.get("edit_text") and message:
+        text, mode = fit(res["edit_text"], res.get("parse_mode"))
+        try:
+            await message.edit_text(text, parse_mode=mode,
+                                    reply_markup=markup_from(res.get("buttons")),
+                                    disable_web_page_preview=True)
+        except Exception as e:
+            if "not modified" not in str(e).lower():
+                failed = True
+                # The card is gone or refused: deliver its text as a message instead.
+                plain = str(res["edit_text"])[:PLUGIN_TEXT_MAX]
+                if isinstance(res.get("parse_mode"), str) and res["parse_mode"].upper() == "HTML":
+                    plain = _plain_html(plain)
+                lost_text.append(plain)
+            log.info("plugin edit skipped: %s", e)
+    if res.get("reply_text") and message:
+        text, mode = fit(res["reply_text"], res.get("parse_mode"))
+        try:
+            await bot.send_message(message.chat_id, text, parse_mode=mode,
+                                   reply_markup=markup_from(res.get("reply_buttons")),
+                                   reply_to_message_id=message.message_id,
+                                   disable_web_page_preview=True)
+        except Exception:
+            failed = reply_failed = True
+            log.exception("plugin reply failed")
+    notes = []
+    if toast and not toast_done:
+        notes.append(toast)
+    if lost_text:
+        notes.append("\u26a0\ufe0f The card could not be updated; its new text:\n" + lost_text[0])
+    elif failed:
+        notes.append("\u26a0\ufe0f The result could not be shown.")
+    if not notes:
+        return True
+    if not message:
+        return False
+    try:
+        # Not tied to the source message: it may have been deleted meanwhile.
+        await bot.send_message(message.chat_id, "\n".join(notes)[:4096],
+                               reply_to_message_id=message.message_id,
+                               allow_sending_without_reply=True)
+        # A refused edit whose text arrived here as a message still reached the user.
+        return not reply_failed
+    except Exception as e:
+        log.info("plugin toast message failed: %s", e)
+        return False
+
+
+def own_private_message(message, bot) -> bool:
+    """Plugins act only on messages THIS bot sent, in a private chat. Otherwise
+    another bot's keyboard in a group could route an ordinary reply into a local
+    plugin (review 2026-11-03)."""
+    chat = getattr(message, "chat", None)
+    sender = getattr(message, "from_user", None)    # absent on InaccessibleMessage
+    return bool(chat and getattr(chat, "type", None) == "private"
+                and sender and sender.id == bot.id)
+
+
+@auth
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Registered non-blocking (block=False): a slow plugin must not hold up the
+    next press or an ordinary message."""
+    q = update.callback_query
+    hit = plugin_for(q.data)
+    msg = q.message
+    if not hit:
+        await _safe_answer(q.answer)
+        return
+    if not own_private_message(msg, context.bot):
+        # Telegram hides messages older than 48 h (InaccessibleMessage, which has
+        # no sender); anything else here is a message this bot does not serve.
+        old = getattr(msg, "from_user", None) is None
+        await _safe_answer(q.answer, "This message is too old to act on." if old
+                           else "These buttons are not handled here.")
+        return
+    path, payload = hit
+    ctx = {"chat_id": msg.chat_id, "message_id": msg.message_id, "text": msg.text, "data": q.data}
+    res = await run_plugin(path, "callback", payload, ctx, answer=q.answer)
+    await apply_plugin_result(res, msg, context.bot, query=q)
+
+
+def plugin_of_message(message):
+    """The plugin whose buttons sit on `message`, if any — how a text reply to a
+    plugin's card finds its way back to that plugin."""
+    kb = getattr(message, "reply_markup", None)
+    for row in (kb.inline_keyboard if kb else []):
+        for b in row:
+            hit = plugin_for(b.callback_data)
+            if hit:
+                return hit[0]
+    return None
+
+
+async def _reply_to_plugin(plugin, replied, update, context, text):
+    ctx = {"chat_id": replied.chat_id, "message_id": replied.message_id,
+           "text": replied.text, "reply_text": text}
+    res = await run_plugin(plugin, "reply", text, ctx)
+    # No press to toast on here: apply_plugin_result sends the toast (or a
+    # warning, when an edit/reply failed) as a message itself.
+    await apply_plugin_result(res, replied, context.bot)
+
+
 # ─── Handlers ────────────────────────────────────────────────────────
 
 
@@ -472,6 +912,13 @@ def auth(func):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Route: project name → remote-control session, else → personal Claude."""
     text = update.message.text.strip()
+    replied = update.message.reply_to_message
+    plugin = plugin_of_message(replied) if own_private_message(replied, context.bot) else None
+    if plugin:
+        # In the background, so the text handler (and the next update) is not
+        # held for up to PLUGIN_TIMEOUT.
+        context.application.create_task(_reply_to_plugin(plugin, replied, update, context, text))
+        return
     proj_name, proj_dir = find_project(text)
 
     if proj_name and proj_dir:
@@ -732,6 +1179,10 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         log.error("Unhandled error in update %s", update, exc_info=err)
 
 
+async def _post_stop(app):
+    kill_plugin_groups()
+
+
 def main():
     # Ensure personal session is running
     if subprocess.run(["which", "tmux"], capture_output=True).returncode != 0:
@@ -741,19 +1192,25 @@ def main():
     acquire_single_instance_lock()
     start_personal_session()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (ApplicationBuilder().token(TOKEN)
+           .post_stop(_post_stop).post_shutdown(_post_stop).build())
+    signal.signal(signal.SIGHUP, on_sighup)
+    signal.signal(signal.SIGTERM, on_stop_signal)
+    signal.signal(signal.SIGINT, on_stop_signal)
 
     app.add_handler(CommandHandler("register", cmd_register))
     app.add_handler(CommandHandler("projects", cmd_projects))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CallbackQueryHandler(handle_callback, block=False))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_error_handler(on_error)
 
     log.info("Megavibe Remote v4 — personal (tmux:%s) + project launcher", TMUX_SESSION)
-    app.run_polling(drop_pending_updates=True)
+    # Signals are ours (on_stop_signal kills plugin groups before PTB waits for tasks).
+    app.run_polling(drop_pending_updates=True, stop_signals=None)
 
 
 if __name__ == "__main__":
