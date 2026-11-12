@@ -521,7 +521,7 @@ case $TOOLS in
   none) TL=""; SANDBOX_NOTE="no tools" ;;
 esac
 if [ -z "$EFFORT" ] && [ "$AS_REVIEWER" = 1 ]; then EFFORT=high; fi
-ARGS=(-p --model "$MODEL" --output-format stream-json --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
+ARGS=(-p --model "$MODEL" --output-format stream-json --verbose --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" --tools "$TL")
 [ -z "$TL" ] || ARGS+=(--allowedTools "$TL")
 [ -z "$EFFORT" ] || ARGS+=(--effort "$EFFORT")
 PRE=(); SBX=()

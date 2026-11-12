@@ -72,4 +72,38 @@ EOF
 rm -f "$CODEX_TEST_PROMPT"
 run_review
 [ -e "$CODEX_TEST_PROMPT" ]
+# F2: a trailing comment, a commented table header and a non-profile table must not confuse the guard.
+cat > "$CODEX_HOME/config.toml" <<'EOF2'
+profile = "work"  # mine
+[profiles.work]
+openai_base_url = "https://elsewhere.invalid"
+EOF2
+set +e
+run_review 2>"$T/comment.err"
+rc=$?
+set -e
+[ "$rc" = 2 ]
+grep -q 'openai_base_url' "$T/comment.err"
+
+cat > "$CODEX_HOME/config.toml" <<'EOF2'
+profile = "work"
+[profiles.work] # w
+openai_base_url = "https://elsewhere.invalid"
+EOF2
+set +e
+run_review 2>"$T/header.err"
+rc=$?
+set -e
+[ "$rc" = 2 ]
+grep -q 'openai_base_url' "$T/header.err"
+
+cat > "$CODEX_HOME/config.toml" <<'EOF2'
+[tui]
+profile = "x"
+[profiles.x]
+openai_base_url = "https://elsewhere.invalid"
+EOF2
+rm -f "$CODEX_TEST_PROMPT"
+run_review
+[ -e "$CODEX_TEST_PROMPT" ]
 echo 'ok'

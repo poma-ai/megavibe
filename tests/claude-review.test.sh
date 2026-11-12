@@ -38,6 +38,8 @@ if [ "${1:-}" = auth ]; then
 fi
 # the worker call: log into the cwd (the scratch dir), the only place a sandboxed worker may write
 printf '%s\n' "$@" > fake.argv
+# the real CLI rejects stream-json in -p mode unless --verbose is also given
+case " $* " in *" --output-format stream-json "*) case " $* " in *" --verbose "*) ;; *) echo "When using --print, --output-format=stream-json requires --verbose" >&2; exit 1 ;; esac ;; esac
 printf '%s' "${ANTHROPIC_API_KEY:-<unset>}" > fake.apikey
 printf '%s' "${TMPDIR:-<unset>}" > fake.tmpdir
 pwd > fake.cwd
@@ -167,20 +169,6 @@ SUP=$(sed -n "/^SUP='$/,/^'$/p" "$CR" | sed '1d;$d')
 check "supervisor compiles" 'perl -c -e "$SUP" >/dev/null 2>&1'
 check "no bashisms past 3.2" '! grep -nE "mapfile|readarray|declare -A|wait -n|\$\{[A-Za-z_]+,,\}" "$CR"'
 
-fk FAKE_MODE=followup -- "$CR" --prompt p --tools none --out "$T/followup.out" "$T/a.txt" >/dev/null 2>"$T/followup.err"; rc=$?
-if [ "$rc" -ne 0 ]; then cat "$T/followup.err" >&2; fi
-check "a short final follow-up does not discard the substantive review" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: this is the substantive report" "$T/followup.out" && grep -q "my verdict stands: ship" "$T/followup.out"'
-fk FAKE_MODE=narrated -- "$CR" --prompt p --tools none --out "$T/narr.out" "$T/a.txt" >/dev/null 2>"$T/narr.err"; rc=$?
-check "A7 narration dropped: longest block plus the terse final kept" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: findings" "$T/narr.out" && grep -q "verdict stands: ship" "$T/narr.out" && ! grep -q "Let me look at the file" "$T/narr.out" && grep -qx -- "---" "$T/narr.out"'
-fk FAKE_MODE=differs -- "$CR" --prompt p --tools none --out "$T/differs.out" "$T/a.txt" >/dev/null 2>"$T/differs.err"; rc=$?
-check "A7 assistant text and a different result are both kept, assistant first" '[ $rc -eq 0 ] && [ "$(grep -n "ASSISTANT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" -lt "$(grep -n "RESULT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" ]'
-fk FAKE_MODE=resultonly -- "$CR" --prompt p --tools none --out "$T/ronly.out" "$T/a.txt" >/dev/null 2>"$T/ronly.err"; rc=$?
-check "A7 no non-blank assistant text: the result is the answer" '[ $rc -eq 0 ] && grep -q "ONLY RESULT" "$T/ronly.out" && ! grep -qx -- "---" "$T/ronly.out"'
-fk FAKE_MODE=splittool -- "$CR" --prompt p --tools none --out "$T/split.out" "$T/a.txt" >/dev/null 2>"$T/split.err"; rc=$?
-check "A7a narration in a message that also called a tool is excluded" '[ $rc -eq 0 ] && grep -q "PART ONE" "$T/split.out" && ! grep -q "Let me read every hook" "$T/split.out"'
-check "A7b a report split into two text blocks after the last tool call keeps both, in order, no trailing separator" '[ $rc -eq 0 ] && [ "$(grep -n "PART ONE" "$T/split.out" | cut -d: -f1)" -lt "$(grep -n "PART TWO" "$T/split.out" | cut -d: -f1)" ] && ! grep -qx -- "---" "$T/split.out"'
-fk FAKE_MODE=stream -- "$CR" --prompt p --tools none --out "$T/stream.out" "$T/a.txt" >/dev/null 2>"$T/stream.err"; rc=$?
-check "newline-delimited stream-json output: answer kept, turns and cost reported" '[ $rc -eq 0 ] && grep -q "STREAMED REPORT F1" "$T/stream.out" && grep -q "3 turn(s), cost \$0.005" "$T/stream.err"'
 
 # Exercise exactly the policy used by the wrapper without needing sandbox-exec
 # or process inspection. This also permits useful checks inside nested seatbelt.
@@ -311,6 +299,21 @@ if [ "$REAL_PS" = 0 ]; then
 else
   touch "$T/outside/use-real-ps"
 fi
+
+fk FAKE_MODE=followup -- "$CR" --prompt p --tools none --out "$T/followup.out" "$T/a.txt" >/dev/null 2>"$T/followup.err"; rc=$?
+if [ "$rc" -ne 0 ]; then cat "$T/followup.err" >&2; fi
+check "a short final follow-up does not discard the substantive review" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: this is the substantive report" "$T/followup.out" && grep -q "my verdict stands: ship" "$T/followup.out"'
+fk FAKE_MODE=narrated -- "$CR" --prompt p --tools none --out "$T/narr.out" "$T/a.txt" >/dev/null 2>"$T/narr.err"; rc=$?
+check "A7 narration dropped: longest block plus the terse final kept" '[ $rc -eq 0 ] && grep -q "FULL REVIEW: findings" "$T/narr.out" && grep -q "verdict stands: ship" "$T/narr.out" && ! grep -q "Let me look at the file" "$T/narr.out" && grep -qx -- "---" "$T/narr.out"'
+fk FAKE_MODE=differs -- "$CR" --prompt p --tools none --out "$T/differs.out" "$T/a.txt" >/dev/null 2>"$T/differs.err"; rc=$?
+check "A7 assistant text and a different result are both kept, assistant first" '[ $rc -eq 0 ] && [ "$(grep -n "ASSISTANT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" -lt "$(grep -n "RESULT SIDE TEXT" "$T/differs.out" | cut -d: -f1)" ]'
+fk FAKE_MODE=resultonly -- "$CR" --prompt p --tools none --out "$T/ronly.out" "$T/a.txt" >/dev/null 2>"$T/ronly.err"; rc=$?
+check "A7 no non-blank assistant text: the result is the answer" '[ $rc -eq 0 ] && grep -q "ONLY RESULT" "$T/ronly.out" && ! grep -qx -- "---" "$T/ronly.out"'
+fk FAKE_MODE=splittool -- "$CR" --prompt p --tools none --out "$T/split.out" "$T/a.txt" >/dev/null 2>"$T/split.err"; rc=$?
+check "A7a narration in a message that also called a tool is excluded" '[ $rc -eq 0 ] && grep -q "PART ONE" "$T/split.out" && ! grep -q "Let me read every hook" "$T/split.out"'
+check "A7b a report split into two text blocks after the last tool call keeps both, in order, no trailing separator" '[ $rc -eq 0 ] && [ "$(grep -n "PART ONE" "$T/split.out" | cut -d: -f1)" -lt "$(grep -n "PART TWO" "$T/split.out" | cut -d: -f1)" ] && ! grep -qx -- "---" "$T/split.out"'
+fk FAKE_MODE=stream -- "$CR" --prompt p --tools none --out "$T/stream.out" "$T/a.txt" >/dev/null 2>"$T/stream.err"; rc=$?
+check "newline-delimited stream-json output: answer kept, turns and cost reported" '[ $rc -eq 0 ] && grep -q "STREAMED REPORT F1" "$T/stream.out" && grep -q "3 turn(s), cost \$0.005" "$T/stream.err"'
 fk FAKE_AUTH=apikey -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
 check "an API-key login is refused" '[ $rc -eq 2 ] && [ -z "$(kept)" ]'
 fk FAKE_AUTH=broken -- "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
@@ -327,6 +330,7 @@ check "tools none exits 0 and prints the answer" '[ $rc -eq 0 ] && echo "$out" |
 check "--out got the answer, mode 600" 'grep -q "F1 | P2" "$T/ans.txt" && [ "$(stat -f %Lp "$T/ans.txt" 2>/dev/null || stat -c %a "$T/ans.txt")" = 600 ]'
 check "tools none: empty tool list, no allowedTools, no settings" 'sed -n "/^--tools\$/{n;p;}" "$S0/fake.argv" | grep -qx "" && ! grep -qx -- "--allowedTools" "$S0/fake.argv" && ! grep -qx -- "--settings" "$S0/fake.argv"'
 check "the flags that isolate the call are all present" 'grep -qx -- "--no-session-persistence" "$S0/fake.argv" && grep -qx -- "--strict-mcp-config" "$S0/fake.argv" && grep -qx -- "--disable-slash-commands" "$S0/fake.argv" && sed -n "/^--setting-sources\$/{n;p;}" "$S0/fake.argv" | grep -qx ""'
+check "F1 stream-json is passed with --verbose (the CLI requires it in -p mode)" 'grep -qx -- "--verbose" "$S0/fake.argv"'
 check "model defaults to sonnet" 'sed -n "/^--model\$/{n;p;}" "$S0/fake.argv" | grep -qx sonnet'
 check "files are appended as ===== path ===== blocks, harness note first" 'grep -q "===== $T/a.txt =====" "$S0/fake.prompt" && grep -q "alpha" "$S0/fake.prompt" && grep -q "gamma" "$S0/fake.prompt" && head -c 40 "$S0/fake.prompt" | grep -q "NOTE FROM THE HARNESS"'
 check "the caller dir is named as read-only project" 'grep -q "which is the project: treat it as READ-ONLY" "$S0/fake.prompt"'

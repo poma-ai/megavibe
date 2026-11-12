@@ -24,18 +24,29 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # Most commands fail the fork-free prefilter; only candidates pay one perl call.
 _PIPE_TEXT=''
 if [[ "$COMMAND" == *'|'* && ( "$COMMAND" == *push* || "$COMMAND" == *commit* || "$COMMAND" == *merge* ) ]] && command -v perl >/dev/null 2>&1; then
-  _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\.|'"'"'[^'"'"']*'"'"'|"(?:\\.|[^"\\])*"/" " x length($&)/gse' 2>/dev/null) || _PIPE_TEXT=''
+  # A backslash-newline continuation becomes two spaces (same length, so offsets map back to COMMAND);
+  # quoted text becomes Q, not spaces, so a quoted path such as "$PWD" still leaves a token for the pattern.
+  _PIPE_TEXT=$(printf '%s' "$COMMAND" | perl -0777 -pe 's/\\\n/  /g; s/\\.|'"'"'[^'"'"']*'"'"'|"(?:\\.|[^"\\])*"/"Q" x length($&)/gse' 2>/dev/null) || _PIPE_TEXT=''
+  # A newline ends a command, as ';' does.
+  _PIPE_TEXT=${_PIPE_TEXT//$'\n'/;}
 fi
 # Only an && after the formatter counts: after ; the destructive command does not depend on the pipeline.
-_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*\|&?[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee|jq|rg|tr|cat)([[:space:]][^;|]*)?[[:space:]]*\&\&[[:space:]]*(cd[[:space:]]+[^;&|]*\&\&[[:space:]]*)*(git[[:space:]]+(-C[[:space:]]+[^[:space:];&|]+[[:space:]]+)?(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:];&|]|$)'
-_PIPEFAIL='(^|[;&])[[:space:]]*set[[:space:]]+[^;|&]*-[a-zA-Z]*o[[:space:]]*pipefail'
+# The pipe is a single | (not ||): the character before it must not be a pipe.
+_PIPE_DANGER='(^|[;])[[:space:]]*[^;]*[^|]\|&?[[:space:]]*(tail|head|grep|sed|awk|cut|sort|uniq|wc|tee|jq|rg|tr|cat)([[:space:]][^;|]*)?[[:space:]]*\&\&[[:space:]]*(cd[[:space:]]+[^;&|]*\&\&[[:space:]]*)*(git[[:space:]]+(-C[[:space:]]+[^[:space:];&|]+[[:space:]]+)?(push|commit)|gh[[:space:]]+pr[[:space:]]+merge)([[:space:];&|]|$)'
+# A pipefail set in the same segment or an earlier one; a newline, { or ( may start that segment too.
+_PIPEFAIL='(^|[;&{(])[[:space:]]*set[[:space:]]+[^;|&]*-[a-zA-Z]*o[[:space:]]*pipefail'
 if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then
   _m=${BASH_REMATCH[0]}
   # Only a pipefail set before the pipeline counts (same segment or earlier).
   _pre="${_PIPE_TEXT%%"$_m"*}${_m%%|*}"
   if [[ ! "$_pre" =~ $_PIPEFAIL ]]; then
-    echo 'Blocked: capture the status first (check; rc=$?), or set -o pipefail;' >&2
-    exit 2
+    # An explicit PIPESTATUS check between the formatter and git is the status check itself.
+    _mpipe=${_m%%|*}
+    _between=${COMMAND:${#_pre}:$(( ${#_m} - ${#_mpipe} ))}
+    if [[ "$_between" != *PIPESTATUS* ]]; then
+      echo 'Blocked: capture the status first (check; rc=$?), or set -o pipefail;' >&2
+      exit 2
+    fi
   fi
 fi
 

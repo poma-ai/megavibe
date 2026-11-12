@@ -149,16 +149,40 @@ CODEX_CONFIG=${CODEX_HOME:-$HOME/.codex}/config.toml
 CODEX_PROFILE=''
 if [ -r "$CODEX_CONFIG" ]; then
   CODEX_PROFILE=$(awk '
-    /^[[:space:]]*profile[[:space:]]*=/ && $0 !~ /^[[:space:]]*\[/ {
-      v=$0; sub(/^[^=]*=[[:space:]]*/, "", v); gsub(/[\"[:space:]]/, "", v); print v; exit
+    # strip a # comment that is outside double quotes, then surrounding space
+    function strip(s,   i, c, q, out) {
+      q = 0; out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\"") q = !q
+        else if (c == "#" && !q) break
+        out = out c
+      }
+      sub(/^[[:space:]]+/, "", out); sub(/[[:space:]]+$/, "", out)
+      return out
+    }
+    /^[[:space:]]*\[/ { exit }   # profile is a top-level key: a table header ends the top level
+    /^[[:space:]]*profile[[:space:]]*=/ {
+      v=strip($0); sub(/^[^=]*=/, "", v); gsub(/[\"[:space:]]/, "", v); print v; exit
     }
   ' "$CODEX_CONFIG")
 fi
 if [ "${MEGAVIBE_CODEX_ALLOW_ENDPOINT:-0}" != 1 ] && [ -r "$CODEX_CONFIG" ]; then
   for CODEX_ENDPOINT_KEY in openai_base_url chatgpt_base_url; do
     if awk -v profile="$CODEX_PROFILE" -v wanted="$CODEX_ENDPOINT_KEY" '
+      function strip(s,   i, c, q, out) {
+        q = 0; out = ""
+        for (i = 1; i <= length(s); i++) {
+          c = substr(s, i, 1)
+          if (c == "\"") q = !q
+          else if (c == "#" && !q) break
+          out = out c
+        }
+        sub(/^[[:space:]]+/, "", out); sub(/[[:space:]]+$/, "", out)
+        return out
+      }
       BEGIN { section="" }
-      /^[[:space:]]*\[/ { section=$0; next }
+      /^[[:space:]]*\[/ { section=strip($0); gsub(/^\[[[:space:]]*/, "[", section); gsub(/[[:space:]]*\]$/, "]", section); next }
       $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
         if (section == "" || section == "[profiles." profile "]") found=1
       }
