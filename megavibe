@@ -1749,6 +1749,24 @@ if [ ! -f "$MEGAVIBE_HOME/init.sh" ] || ! grep -q "megavibe-v3" "$HOME/.claude/C
   fi
 fi
 
+# repo_older_than_installed <repo>: succeed when <repo> is a git work tree whose HEAD
+# is a strict ancestor of the full commit id in $VERSION_FILE (and known to that repo).
+# Offline; every other case (not git, version "3", unknown, equal, newer, diverged) fails.
+# init.sh carries the same test inline.
+repo_older_than_installed() {
+  local r=$1 inst head top
+  _g() { env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+             -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@"; }
+  top="$(_g -C "$r" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] && [ "$top" -ef "$r" ] || return 1
+  [ -r "$VERSION_FILE" ] || return 1
+  inst="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || true)"
+  head="$(_g -C "$r" rev-parse HEAD 2>/dev/null || true)"
+  [[ "$inst" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [ -n "$head" ] && [ "$head" != "$inst" ] || return 1
+  [ "$(_g -C "$r" cat-file -t "$inst" 2>/dev/null || true)" = commit ] || return 1
+  _g -C "$r" merge-base --is-ancestor "$head" "$inst" 2>/dev/null
+}
+
 # ─── Sync everything from repo source (always) ───────────────────────
 
 # Find the source repo. Priority:
@@ -1798,6 +1816,11 @@ if [ -z "$REPO_DIR" ] && [ -f "$MEGAVIBE_HOME/source-repo" ]; then
 fi
 if [ -z "$REPO_DIR" ] && [ "$SCRIPT_DIR" != "$MEGAVIBE_HOME" ] && [ -f "$SCRIPT_DIR/setup.sh" ] && [ -d "$SCRIPT_DIR/template" ]; then
   REPO_DIR="$SCRIPT_DIR"
+fi
+
+if [ -n "$REPO_DIR" ] && [ "${MEGAVIBE_INIT_ALLOW_STALE:-}" != 1 ] && repo_older_than_installed "$REPO_DIR"; then
+  echo "megavibe: $REPO_DIR is older than the installed megavibe; skipping the repo sync this launch (update it, or MEGAVIBE_INIT_ALLOW_STALE=1)." >&2
+  REPO_DIR=""
 fi
 
 if [ -n "$REPO_DIR" ]; then
