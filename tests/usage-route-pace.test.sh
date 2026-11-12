@@ -100,11 +100,20 @@ check 'Codex empty file list under bash 3.2: no crash' '[ "$o" = "codex||||||" ]
 
 # A busy statusline can append more than the status reader's 50-row slice in six hours.
 { row "$((NOW - 21600))" 94 "$((NOW + WEEK / 2))"; for i in $(seq 59 -1 0); do row "$((NOW - i))" 95 "$((NOW + WEEK / 2))"; done; } > "$MEGAVIBE_USAGE_FILE"
-codex "$NOW" 19 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
+codex "$NOW" 9 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(pace)
 check 'pace sees six-hour baseline beyond last 50 samples' 'near "$(field 5)" 4 && near "$(field 6)" 109'
 o=$(route balance --peek)
-check 'balance preference unchanged, both absolute estimates beside advice' '[[ "$o" == codex\|* ]] && [[ "$o" == *"Claude"*"~190%"*"recent estimate ~109%"*"Codex"*"[linear estimate ~135%]"*"Lean optional work"* ]]'
+check 'balance preference unchanged, both absolute estimates beside advice' '[[ "$o" == codex\|* ]] && [[ "$o" == *"Claude"*"~190%"*"recent estimate ~109%"*"Codex"*"[linear estimate ~64%]"*"Lean optional work"* ]]'
+# The effective projection (router projection, else straight-line estimate, else used) decides the preference:
+# a subscription that is early in its window but already on a high straight line is no place to send work.
+codex "$NOW" 33 "$((NOW + 556416))" > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(route balance --peek)
+check 'Codex 8 percent into its window and already 33 percent used (linear estimate ~383%): no advice to lean on Codex' '[ "$o" = "-|" ]'
+codex "$NOW" 4 "$((NOW + 556416))" > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(route balance --peek)
+check 'Codex early in its window with a low straight line (~49%): still leans on Codex, estimate shown' '[[ "$o" == codex\|* ]] && [[ "$o" == *"[linear estimate ~49%]"* ]]'
+codex "$NOW" 9 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
 check 'pace and peek leave routing state untouched' '[ ! -e "$MEGAVIBE_USAGE_STATE" ] && [ ! -e "$MEGAVIBE_CODEX_STATE" ]'
 
 # Run the real tick with fake auth/GitHub and no network.
@@ -113,7 +122,7 @@ chmod +x "$T/bin/gh"
 printf '{"claudeAiOauth":{"expiresAt":%s,"refreshTokenExpiresAt":%s}}\n' "$(((NOW + 86400) * 1000))" "$(((NOW + WEEK) * 1000))" > "$T/credentials.json"
 o=$(MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/credentials.json" TICK_LINEAR=0 /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo)
 usage=$(printf '%s\n' "$o" | grep '^usage:')
-check 'tick keeps first-line and one usage-line format with both projections' '[[ "$o" == "tick default: quiet | window "* ]] && [[ "$usage" == "usage: Claude 95% used"*"~190%"*"recent estimate ~109%"*" | Codex 19% used"*"[linear estimate ~135%]"*" | lean optional work on codex" ]] && [ "$(printf "%s\n" "$usage" | wc -l | tr -d " ")" = 1 ]'
+check 'tick keeps first-line and one usage-line format with both projections' '[[ "$o" == "tick default: quiet | window "* ]] && [[ "$usage" == "usage: Claude 95% used"*"~190%"*"recent estimate ~109%"*" | Codex 9% used"*"[linear estimate ~64%]"*" | lean optional work on codex" ]] && [ "$(printf "%s\n" "$usage" | wc -l | tr -d " ")" = 1 ]'
 
 # Exact display contract: a recent projection always includes its non-negative rate.
 tick_usage() {
@@ -121,10 +130,10 @@ tick_usage() {
     /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo | grep '^usage:'
 }
 expected_balance() {
-  printf 'codex|usage balance: Claude 95%% used (linear estimate ~190%% by week end)%s; Codex 19%% used [linear estimate ~135%%] (one is running hot). Lean optional work (digests, exploration, second opinions) on Codex; the review floor does not move.' "$1"
+  printf 'codex|usage balance: Claude 95%% used (linear estimate ~190%% by week end)%s; Codex 9%% used [linear estimate ~64%%] (one is running hot). Lean optional work (digests, exploration, second opinions) on Codex; the review floor does not move.' "$1"
 }
 expected_tick() {
-  printf 'usage: Claude 95%% used (linear estimate ~190%% by week end)%s, resets in 3d [over] | Codex 19%% used [linear estimate ~135%%], resets in 6d | lean optional work on codex' "$1"
+  printf 'usage: Claude 95%% used (linear estimate ~190%% by week end)%s, resets in 3d [over] | Codex 9%% used [linear estimate ~64%%], resets in 6d | lean optional work on codex' "$1"
 }
 o=$(pace)
 check 'exact high linear, low recent pace record' '[ "$o" = "claude|95|50|190|4|109|3.5" ]'
@@ -186,14 +195,14 @@ for stage in raw status band reason decision history row stream; do
     o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault route balance --peek)
     check "$stage $fault: balance gives no advice" '[ "$o" = "-|" ]'
     o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault tick_usage)
-    check "$stage $fault: tick no reading, no false reset or lean advice" '[ "$o" = "usage: Claude: no reading | Codex 19% used [linear estimate ~135%], resets in 6d" ]'
+    check "$stage $fault: tick no reading, no false reset or lean advice" '[ "$o" = "usage: Claude: no reading | Codex 9% used [linear estimate ~64%], resets in 6d" ]'
   done
 done
 # With Codex hot, a shifted Claude record used to invent spare Claude capacity.
 codex "$NOW" 95 "$((NOW + WEEK / 2))" > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(PACE_FAULT_STAGE=status route balance --peek)
 check 'failed Claude status cannot recommend Claude when Codex is hot' '[ "$o" = "-|" ]'
-codex "$NOW" 19 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
+codex "$NOW" 9 "$RESET" > "$T/codex/sessions/x/rollout-1.jsonl"
 for fault in fail empty partial; do
   o=$(PACE_FAULT_STAGE=status PACE_FAULT_MODE=$fault route status --peek); rc=$?
   check "status $fault: legacy no-data shape, exit zero" '[ "$rc" = 0 ] && [ "$o" = "normal|||||" ]'
