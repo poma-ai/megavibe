@@ -110,12 +110,12 @@ valid_model() { case $1 in ''|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; 
 need() { command -v "$1" >/dev/null 2>&1 || die "needs $1"; }
 isnum() { case $1 in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 
-# one bounded, tool-less, settings-less call: prompt file in, raw json out
+# one bounded, tool-less, settings-less call: prompt file in, raw json out. It runs under the same
+# process-group supervisor as every other call, so a timeout or a cancelled run kills its children too.
 call_claude() { # model timeout prompt_file out_json out_err ; returns the exit status
-  ( cd "$WORK" && "${CLEAN[@]}" \
-      perl -e 'alarm shift; exec @ARGV' "$2" "$CLAUDE_BIN" -p --model "$1" --output-format json \
-      --tools "" --no-session-persistence --disable-slash-commands --strict-mcp-config \
-      --setting-sources "" < "$3" > "$4" 2> "$5" )
+  supervise "$WORK" "$2" claude "$CLAUDE_BIN" -p --model "$1" --output-format json \
+    --tools "" --no-session-persistence --disable-slash-commands --strict-mcp-config \
+    --setting-sources "" < "$3" > "$4" 2> "$5"
 }
 
 # Codex keeps its own environment: in particular no OPENAI/CODEX credential,
@@ -129,36 +129,42 @@ CLAUDE_MODEL=haiku; CODEX_MODEL=gpt-5.6-luna
 # Lens enumeration does not need deliberation: at the user config's high effort luna took
 # minutes per call and often hit the timeout; low answers in seconds. --codex-effort overrides.
 CODEX_EFFORT=low
-CX_WORK=''; CX_PID=''; CX_WORKERS=(); CX_DRY=''; CX_LOCK=''
+CX_WORK=''; SUP_PID=''; WORKERS=(); CX_DRY=''; DD_LOCK=''; SCR=''; CX_IGNORE=0
 CX_CLEAN=(env -i)
 for _v in HOME PATH CODEX_HOME HTTPS_PROXY HTTP_PROXY NO_PROXY ALL_PROXY https_proxy http_proxy no_proxy all_proxy NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
   if [ -n "${!_v+x}" ]; then CX_CLEAN+=("$_v=${!_v}"); fi
 done
 
-codex_stop() {
-  if [ -n "$CX_PID" ]; then
-    kill -TERM "$CX_PID" 2>/dev/null || true
-    wait "$CX_PID" 2>/dev/null || true
-    CX_PID=''
+sup_stop() {
+  if [ -n "$SUP_PID" ]; then
+    kill -TERM "$SUP_PID" 2>/dev/null || true
+    wait "$SUP_PID" 2>/dev/null || true
+    SUP_PID=''
   fi
 }
-codex_cleanup() {
+# Every launched worker is tracked, whatever its provider; each one's own EXIT trap stops its supervisor.
+cleanup() {
   local pid
-  for pid in ${CX_WORKERS[@]+"${CX_WORKERS[@]}"}; do kill -TERM "$pid" 2>/dev/null || true; done
-  for pid in ${CX_WORKERS[@]+"${CX_WORKERS[@]}"}; do wait "$pid" 2>/dev/null || true; done
-  codex_stop
+  for pid in ${WORKERS[@]+"${WORKERS[@]}"}; do kill -TERM "$pid" 2>/dev/null || true; done
+  for pid in ${WORKERS[@]+"${WORKERS[@]}"}; do wait "$pid" 2>/dev/null || true; done
+  sup_stop
   if [ -n "$CX_WORK" ]; then rm -rf "$CX_WORK" || true; fi
   if [ -n "$CX_DRY" ]; then rm -rf "$CX_DRY" || true; fi
-  if [ -n "$CX_LOCK" ]; then rmdir "$CX_LOCK" 2>/dev/null || true; fi
+  if [ -n "$SCR" ]; then rm -rf "$SCR" || true; fi
+  if [ -n "$DD_LOCK" ]; then rmdir "$DD_LOCK" 2>/dev/null || true; fi
+}
+mk_sc() { # scratch directory for probe output, kept out of pipes and out of the run directory
+  if [ -z "$SCR" ]; then
+    SCR=$(mktemp -d "${TMPDIR:-/tmp}/amass-sc.XXXXXX") || { SCR=''; die "cannot create a scratch directory"; }
+    SCR=$(cd "$SCR" && pwd -P)
+  fi
 }
 model_of() { if [ "$1" = codex ]; then printf '%s' "$CODEX_MODEL"; else printf '%s' "$CLAUDE_MODEL"; fi; }
 
-# Everything that can involve Codex (any request but plain claude) cleans up after itself and
-# forwards cancellation.
+# Every provider mode cleans up after itself and forwards cancellation.
 setup_provider() {
   case $REQ in claude|codex|mix|auto) ;; *) die '--provider must be auto, mix, claude or codex' ;; esac
-  [ "$REQ" != claude ] || return 0
-  trap codex_cleanup EXIT
+  trap cleanup EXIT
   trap 'exit 143' TERM HUP
   trap 'exit 130' INT
   if [ -n "${MEGAVIBE_AMASS_CODEX_PRICE+x}" ]; then
@@ -189,11 +195,16 @@ finalize_models() { # --model names one model, so it only fits a single provider
   esac
 }
 
-# A supervisor owns the process group, forwards cancellation, and reaps it on
-# timeout. Unlike alarm+exec, this also kills Codex subprocesses (macOS has no timeout).
-codex_command() { # timeout argv...; callers redirect stdin/stdout/stderr
-  local rc=0
-  ( cd "$CX_WORK" && exec "${CX_CLEAN[@]}" perl -e '
+# A supervisor owns the process group, forwards cancellation, and reaps it on timeout, on
+# cancellation and after a normal exit (leftover ordinary children die with it). Unlike
+# alarm+exec this also kills subprocesses (macOS has no timeout). kind picks the environment:
+# claude and codex use their allow-lists, anything else runs in the caller's environment.
+# stdin, stdout and stderr come from the caller's redirections; exit code 124 means timeout.
+supervise() { # cwd timeout kind argv...
+  local cwd=$1 t=$2 kind=$3 rc=0 pre
+  shift 3
+  case $kind in claude) pre=("${CLEAN[@]}") ;; codex) pre=("${CX_CLEAN[@]}") ;; *) pre=(env) ;; esac
+  ( cd "$cwd" && exec "${pre[@]}" perl -e '
     my $t = shift;
     my $pid = fork(); die "fork: $!" unless defined $pid;
     if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127; }
@@ -211,11 +222,13 @@ codex_command() { # timeout argv...; callers redirect stdin/stdout/stderr
     $SIG{INT} = $SIG{TERM} = $SIG{HUP} = sub { $stop->(143) };
     alarm $t;
     waitpid($pid, 0); my $st = $?; alarm 0;
+    $SIG{ALRM} = $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "IGNORE";
+    kill "KILL", -$pid;
     exit(($st & 127) ? 128 + ($st & 127) : $st >> 8);
-  ' "$@" ) <&0 &   # explicit stdin: background commands otherwise receive /dev/null
-  CX_PID=$!
-  wait "$CX_PID" || rc=$?
-  CX_PID=''
+  ' "$t" "$@" ) <&0 &   # explicit stdin: background commands otherwise receive /dev/null
+  SUP_PID=$!
+  wait "$SUP_PID" || rc=$?
+  SUP_PID=''
   return "$rc"
 }
 
@@ -225,10 +238,12 @@ call_model() { # provider model timeout prompt_file out_json out_err
   local rc=0 tokens answer="$4.answer" events="$4.events"
   # Dedupe can be repeated: never accept a previous attempt's final answer.
   rm -f "$answer" "$4"
-  codex_command "$2" "$CODEX_BIN" exec --model "$1" -c "model_reasoning_effort=\"$CODEX_EFFORT\"" --sandbox read-only \
-    -c 'approval_policy="never"' --ignore-rules --skip-git-repo-check \
-    --ephemeral --json --output-last-message "$answer" - \
-    < "$3" > "$events" 2> "$5" || rc=$?
+  # model_provider is pinned to the built-in id on every call: a saved config or profile naming a custom
+  # provider (its own base_url or token) must not receive the inlined files; -c beats config and profiles.
+  local cxa=(exec --model "$1" -c "model_reasoning_effort=\"$CODEX_EFFORT\"" -c 'model_provider="openai"' --sandbox read-only -c 'approval_policy="never"')
+  [ "$CX_IGNORE" != 1 ] || cxa+=(--ignore-rules)   # older builds without the flag run as before
+  cxa+=(--skip-git-repo-check --ephemeral --json --output-last-message "$answer" -)
+  supervise "$CX_WORK" "$2" codex "$CODEX_BIN" "${cxa[@]}" < "$3" > "$events" 2> "$5" || rc=$?
   # JSONL turn.completed usage is machine-readable. Cached input is already in
   # input_tokens. No complete usage event means unknown, including failed calls.
   tokens=$(jq -Rn '[inputs | fromjson? | select(.type == "turn.completed") | .usage] |
@@ -281,9 +296,10 @@ extract() { # raw_json text_out
 AV_ERR=''
 avail_claude() {
   local j m
-  j=$("${CLEAN[@]}" \
-        perl -e 'alarm shift; exec @ARGV' 30 "$CLAUDE_BIN" auth status 2>/dev/null) \
+  mk_sc
+  supervise . 30 claude "$CLAUDE_BIN" auth status </dev/null > "$SCR/auth.json" 2>/dev/null \
     || { AV_ERR="cannot verify the login ('$CLAUDE_BIN auth status' failed); refusing to send anything"; return 1; }
+  j=$(cat "$SCR/auth.json" 2>/dev/null) || j=''
   m=$(printf '%s' "$j" | jq -r '.authMethod // empty' 2>/dev/null) || m=''
   [ "$m" = "claude.ai" ] \
     || { AV_ERR="the login is not a claude.ai subscription login (authMethod='${m:-unknown}'); refusing, because such calls could bill an API key"; return 1; }
@@ -297,9 +313,10 @@ avail_codex() {
     resolved=$(cd "$CX_WORK" && pwd -P) || { AV_ERR='cannot resolve Codex scratch directory'; return 1; }
     CX_WORK=$resolved
   fi
-  codex_command 30 "$CODEX_BIN" exec --help </dev/null > "$CX_WORK/help" 2>&1 \
+  supervise "$CX_WORK" 30 codex "$CODEX_BIN" exec --help </dev/null > "$CX_WORK/help" 2>&1 \
     || { AV_ERR='codex exec --help failed; refusing to send anything'; return 1; }
-  codex_command 30 "$CODEX_BIN" login status </dev/null > "$CX_WORK/login" 2>&1 \
+  if grep -q -e '--ignore-rules' "$CX_WORK/help"; then CX_IGNORE=1; else CX_IGNORE=0; fi
+  supervise "$CX_WORK" 30 codex "$CODEX_BIN" login status </dev/null > "$CX_WORK/login" 2>&1 \
     || { AV_ERR='cannot verify the Codex login; a ChatGPT-account login is required'; return 1; }
   grep -qx 'Logged in using ChatGPT' "$CX_WORK/login" \
     || { AV_ERR='Codex login is not a ChatGPT-account login; refusing to send anything'; return 1; }
@@ -349,7 +366,15 @@ pace_proj() { # provider
     [ -f "$ur" ] || ur="$HOME/.megavibe/scripts/usage-route.sh"
   fi
   [ -f "$ur" ] || return 0
-  out=$(MEGAVIBE_ROUTER_PROVIDER=$1 perl -e 'alarm shift; exec @ARGV' 20 bash "$ur" pace 2>/dev/null) || out=''
+  # supervised, output to a file: a child that outlives the probe cannot hold a pipe open, and the
+  # whole process group dies at the deadline. A timeout or failure means unknown.
+  local pt=${AMASS_PROBE_TIMEOUT:-20}
+  isnum "$pt" && [ "$pt" -ge 1 ] || pt=20
+  mk_sc
+  : > "$SCR/pace.out"
+  if supervise . "$pt" bare env "MEGAVIBE_ROUTER_PROVIDER=$1" bash "$ur" pace </dev/null > "$SCR/pace.out" 2>/dev/null; then
+    out=$(cat "$SCR/pace.out" 2>/dev/null) || out=''
+  else out=''; fi
   line=${out%%$'\n'*}
   used=''; lin=''; rec=''
   IFS='|' read -r _ used _ lin _ rec _ <<< "$line" || true
@@ -403,9 +428,8 @@ ledger() { # cmd model calls ok cost input_kb unknown_costs tokens provider   (c
     '{ts:$ts,cmd:$cmd,model:$model,provider:$provider,tokens:($tokens|tonumber? // null),project:$proj,calls:$calls,ok:$ok,cost:(if $unk > 0 then null else ($cost|tonumber? // null) end),cost_known:(if $provider == "codex" and $unk == $calls then null else ($cost|tonumber? // null) end),cost_unknown_calls:$unk,input_kb:$kb} + (if $provider == "codex" then {cost_estimated:($unk < $calls)} else {} end)' >> "$f" 2>/dev/null || true
 }
 
-codex_summary() {
-  local worker=claude
-  [ ! -f "$OUT/provider" ] || worker=$(cat "$OUT/provider")
+codex_summary() { # worker provider of the run's calls: claude or codex
+  local worker=$1
   LC_ALL=C awk -F'\t' -v worker="$worker" '
     function usage(label, n, tok, unknown, cost, cu, estimated) {
       printf "%s %d, ", label, n
@@ -490,9 +514,12 @@ cmd_summary() {
   local SUMMARY_DEDUPE='' provs
   [ ! -s "$OUT/dedupe_cost.tsv" ] || SUMMARY_DEDUPE="$OUT/dedupe_cost.tsv"
   provs=$(LC_ALL=C awk -F'\t' 'NF >= 7 {print $7}' "$OUT/runs.tsv" | sort -u | tr '\n' ' ')
+  # the summary follows the providers that actually ran (runs.tsv), not the requested mode
   case $provs in *claude*codex*) mix_summary; return ;; esac
-  if [ -f "$OUT/provider" ] || { [ -n "$SUMMARY_DEDUPE" ] && grep -q "$(printf '\tcodex\t')" "$SUMMARY_DEDUPE"; }; then
-    codex_summary; return
+  case $provs in *codex*) codex_summary codex; return ;; esac
+  case $provs in *claude*) ;; *) if [ -f "$OUT/provider" ]; then codex_summary codex; return; fi ;; esac   # runs.tsv from before the provider column
+  if [ -n "$SUMMARY_DEDUPE" ] && grep -q "$(printf '\tcodex\t')" "$SUMMARY_DEDUPE"; then
+    codex_summary claude; return
   fi
   local dc=0 dn=0 du=0
   if [ -s "$OUT/dedupe_cost.tsv" ]; then
@@ -614,7 +641,7 @@ cmd_run() {
   # anything (a directory, a file, a symlink) already has that name, so two runs cannot share one
   local DRYDIR=''
   if [ "$DRY" = 1 ]; then
-    OUT=$(mktemp -d "${TMPDIR:-/tmp}/amass-dry.XXXXXX") || die "cannot create a scratch directory"; DRYDIR=$OUT; CX_DRY=$OUT; trap codex_cleanup EXIT   # a refusal after this point must not leave the scratch directory
+    OUT=$(mktemp -d "${TMPDIR:-/tmp}/amass-dry.XXXXXX") || die "cannot create a scratch directory"; DRYDIR=$OUT; CX_DRY=$OUT   # a refusal after this point must not leave the scratch directory
   else
     case $OUT in */) OUT=${OUT%/} ;; esac
     [ -n "$OUT" ] || die "bad --out"
@@ -683,6 +710,7 @@ cmd_run() {
     return 0
   fi
   if [ "$PROVS" = codex ]; then printf 'codex\n' > "$OUT/provider"; fi
+  printf '%s\n' "$REQ" > "$OUT/requested"
 
   # Assign a provider to every call. The walk is copy-major (copy 1 of every prompt, then copy 2, ...) and
   # snakes: odd copies in prompt order, even copies reversed, so an even number of prompts cannot lock one
@@ -720,16 +748,14 @@ cmd_run() {
     mdl=$(model_of "$pv")
     throttle
     printf '%s\n' "$pv" > "$OUT/raw/${nm}_${kk}.provider"
-    ( if [ "$pv" = codex ]; then
-        trap codex_stop EXIT
-        trap 'exit 143' TERM HUP
-        trap 'exit 130' INT
-      fi
+    ( trap sup_stop EXIT
+      trap 'exit 143' TERM HUP
+      trap 'exit 130' INT
       rc=0; call_model "$pv" "$mdl" "$TIMEOUT" "$OUT/prompts/$nm.txt" "$OUT/raw/${nm}_${kk}.json" "$OUT/raw/${nm}_${kk}.err" || rc=$?
       echo "$rc" > "$OUT/raw/${nm}_${kk}.rc" ) &
     pid=$!
     PIDS+=("$pid")
-    if [ "$pv" = codex ]; then CX_WORKERS+=("$pid"); fi
+    WORKERS+=("$pid")
   }
   # phase 1: the first call of every prompt on each provider it uses writes that provider's cache;
   # phase 2: the rest read it
@@ -754,7 +780,7 @@ cmd_run() {
     done
   fi
   wait
-  CX_WORKERS=()
+  WORKERS=()
 
   : > "$OUT/runs.tsv"
   local cost nf st rc nl nu tk
@@ -795,11 +821,11 @@ cmd_run() {
 }
 
 cmd_dedupe() {
-  local MODEL='' MODEL_SET=0 MAXKB_SET=0 TIMEOUT=280 MAXKB=150 DRY=0 DP
+  local MODEL='' MODEL_SET=0 MAXKB_SET=0 TIMEOUT=280 MAXKB=150 DRY=0 DP REQ_SET=0 rq
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=${2:-}; shift 2 ;;
-      --provider) [ $# -ge 2 ] || die "--provider needs auto, claude or codex"; REQ=$2; shift 2 ;;
+      --provider) [ $# -ge 2 ] || die "--provider needs auto, claude or codex"; REQ=$2; REQ_SET=1; shift 2 ;;
       --model) MODEL=${2:-}; MODEL_SET=1; shift 2 ;;
       --claude-model) CLAUDE_MODEL=${2:-}; shift 2 ;;
       --codex-model) CODEX_MODEL=${2:-}; shift 2 ;;
@@ -811,11 +837,16 @@ cmd_dedupe() {
     esac
   done
   [ "$REQ" != mix ] || REQ=auto
+  [ -n "${OUT:-}" ] && [ -d "$OUT/lists" ] || die "--out must be a finished run directory"
+  [ -e "$OUT/.complete" ] || die "$OUT is not a finished run (no .complete marker): wait for amass.sh run to return before dedupe"
+  # a run that the user forced onto one provider is deduped on that provider unless --provider says otherwise
+  if [ "$REQ_SET" = 0 ] && [ -s "$OUT/requested" ]; then
+    rq=$(head -n1 "$OUT/requested")
+    case $rq in claude|codex) REQ=$rq ;; esac
+  fi
   setup_provider
   case $REQ in claude|codex) PROVS=$REQ ;; *) PROVS='claude codex' ;; esac
   apply_caps
-  [ -n "${OUT:-}" ] && [ -d "$OUT/lists" ] || die "--out must be a finished run directory"
-  [ -e "$OUT/.complete" ] || die "$OUT is not a finished run (no .complete marker): wait for amass.sh run to return before dedupe"
   [ "$MODEL_SET" = 0 ] || valid_model "$MODEL" || die "bad --model"
   valid_model "$CLAUDE_MODEL" || die "bad --claude-model"
   valid_model "$CODEX_MODEL" || die "bad --codex-model"
@@ -825,6 +856,9 @@ cmd_dedupe() {
   need jq; need perl
   OUT=$(cd "$OUT" && pwd -P); WORK="$OUT/work"; mkdir -p "$WORK"
   resolve_providers
+  case $PROVS in
+    *' '*) [ "$MODEL_SET" = 0 ] || die "--model cannot name both models of a mixed run: use --claude-model and --codex-model" ;;
+  esac
   if [ "$PROVS" = 'claude codex' ]; then
     # the provider with the LOWER projected usage has the headroom; ties go to claude
     both_proj
@@ -835,8 +869,7 @@ cmd_dedupe() {
   MODEL=$(model_of "$DP")
   # two dedupes on one run directory would overwrite each other's files and costs
   mkdir "$OUT/.dedupe.lock" 2>/dev/null || die "another dedupe seems to be running on $OUT (remove $OUT/.dedupe.lock if it is stale)"
-  if [ "$REQ" != claude ]; then CX_LOCK="$OUT/.dedupe.lock"
-  else trap 'rmdir "$OUT/.dedupe.lock" 2>/dev/null || true' EXIT; fi
+  DD_LOCK="$OUT/.dedupe.lock"
   local f n line num
   : > "$OUT/dedupe_in.txt"; : > "$OUT/dedupe_unparsed.txt"
   for f in "$OUT"/lists/*.md; do

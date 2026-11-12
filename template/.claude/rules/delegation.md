@@ -58,7 +58,7 @@ When a Fable/Opus session or subtask is stuck on a problem that is well posed (y
 
 - Spend copies on one lens prompt (identical prompts share a cache write), not on many lens texts; escalate what Haiku cannot reach to a few Sonnet one-shots (`--model sonnet`); verify clusters by execution, not by a static call (static verifiers rejected the real defects or passed the noise).
 - Haiku bills the whole request 5x past 100K tokens and an Agent-tool subagent starts at about 93K here, which is why bounded read-only work goes headless; use the Agent tool only when the task needs this project's rules or hooks, writes, or a conversation.
-- The workers have no tools and no user, project or local settings, hooks or rules (an administrator's managed policy, if the machine has one, still applies); the login must be a claude.ai subscription (`claude auth status`), else the script refuses.
+- The Claude workers have no tools and no user, project or local settings, hooks or rules (an administrator's managed policy, if the machine has one, still applies); the login must be a claude.ai subscription (`claude auth status`), else the script refuses. The Codex workers of `amass.sh` are not tool-less: they run in Codex's read-only sandbox (no writes, no network), but they can read local files, so text injected into untrusted inlined code could steer them to read files on the machine; do not amass code you do not trust with secrets on the same disk.
 
 Measurements, prices, cliffs and limits: **`README-amass.md`**.
 

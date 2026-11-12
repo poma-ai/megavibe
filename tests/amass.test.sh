@@ -43,6 +43,7 @@ case "${FAKE_MODE:-ok}" in
   nul) jq -n '[{"type":"result","is_error":false,"result":"F1 | P1 | a:1 | before\u0000after | why\nF2 | P2 | a:2 | ok | why","total_cost_usd":0.005}]'; exit 0 ;;
   fail) echo "boom" >&2; exit 1 ;;
   slow) sleep 6 ;;
+  hang) echo $$ > "$d/pid"; sleep 30 & echo $! > "$d/child"; wait; exit 0 ;;
   garbled) echo "not json"; exit 0 ;;
   iserror) printf '[{"type":"result","is_error":true,"result":"x","total_cost_usd":0.1}]'; exit 0 ;;
   markdown) jq -n '[{"type":"result","is_error":false,"result":"F1 | P2 | a.sh:1 | plain | because\n- **F2** | P1 | a.sh:9 | bold bullet | because\na stray continuation line","total_cost_usd":0.005}]'; exit 0 ;;
@@ -428,6 +429,8 @@ names=$(env | cut -d= -f1 | sort)
 if [ "${2:-}" = --help ]; then
   printf '%s\n' "$names" > "$FAKE_LOG/help_envnames"
   pwd > "$FAKE_LOG/help_cwd"
+  echo '      --skip-git-repo-check'
+  [ "${FAKE_CX:-}" = noignore ] || echo '      --ignore-rules'
   [ "${FAKE_CX:-}" != helpfail ]; exit $?
 fi
 if [ "${1:-}" = login ]; then
@@ -717,6 +720,107 @@ for doc in help readme; do
   check "$doc documents mixed runs: auto, the split rule, the override and the two model flags" 'grep -q -- "--provider auto" "$T/doc" && grep -q -- "--split" "$T/doc" && grep -q "MEGAVIBE_AMASS_SPLIT" "$T/doc" && grep -q -- "--claude-model" "$T/doc" && grep -q -- "--codex-model" "$T/doc" && grep -q "150 KB" "$T/doc"'
 done
 check "the delegation rule says amass mixes Claude and Codex calls" 'grep -q "mixes Claude (Haiku) and Codex (luna) calls" "$REPO/template/.claude/rules/delegation.md"'
+
+# 13. Review fixes: provider pin, supervised and reaped Claude workers, bounded pace probe, summaries, dedupe provider.
+cxargv() { cat $(ls -d "$FAKE_LOG"/call_*/output 2>/dev/null | sed 's|/output$|/argv|'); }
+wait_children() { # count
+  local tries=0 c
+  while [ "$tries" -lt 200 ]; do
+    c=$(ls "$FAKE_LOG"/call_*/child 2>/dev/null | wc -l | tr -d ' ')
+    [ "$c" -ge "$1" ] && return 0
+    sleep 0.05; tries=$((tries + 1))
+  done
+  return 1
+}
+nalive() { # counts live pids named in pid/child files of the current log
+  local f n=0
+  for f in "$FAKE_LOG"/call_*/pid "$FAKE_LOG"/call_*/child; do
+    [ -f "$f" ] || continue
+    if kill -0 "$(cat "$f")" 2>/dev/null; then n=$((n + 1)); fi
+  done
+  echo "$n"
+}
+# F1: the built-in Codex provider is pinned on every call, worker and dedupe
+newlog f1
+out=$(PACE_CLAUDE=$PC150 PACE_CODEX=$PX225 "$AM" run --out "$T/f1" --no-lens --whole 4 "$T/a.txt" 2>&1)
+"$AM" dedupe --provider codex --out "$T/f1" >/dev/null 2>&1
+nx=$(ls -d "$FAKE_LOG"/call_*/output | wc -l | tr -d ' ')
+check "every Codex worker and dedupe call pins the built-in provider" '[ "$nx" -ge 3 ] && [ "$(cxargv | grep -cx "model_provider=\"openai\"")" = "$nx" ]'
+# F2: cancelling reaps Claude workers and their children too
+newlog f2
+defconf; printf 'export FAKE_MODE=hang\n' >> "$T/conf.sh"
+"$AM" run --provider claude --out "$T/f2" --no-lens --whole 2 "$T/a.txt" > "$T/f2.log" 2>&1 & cancel_pid=$!
+wait_children 1
+kill -TERM "$cancel_pid" 2>/dev/null; wait "$cancel_pid"; rc=$?
+defconf
+check "cancelling a claude-only run exits 143 and leaves no claude worker or child alive" '[ $rc -eq 143 ] && ls "$FAKE_LOG"/call_*/child >/dev/null 2>&1 && [ "$(nalive)" = 0 ]'
+newlog f2b
+defconf; printf 'export FAKE_MODE=hang\n' >> "$T/conf.sh"
+# a background job starts with SIGINT ignored; restore the default the way a terminal's foreground job has it
+perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' "$AM" run --provider claude --out "$T/f2b" --no-lens --whole 1 "$T/a.txt" > "$T/f2b.log" 2>&1 & cancel_pid=$!
+wait_children 1
+kill -INT "$cancel_pid" 2>/dev/null; wait "$cancel_pid"; rc=$?
+defconf
+check "INT on a claude-only run exits 130 and reaps the worker" '[ $rc -eq 130 ] && [ "$(nalive)" = 0 ]'
+newlog f2c
+defconf; printf 'export FAKE_MODE=hang\n' >> "$T/conf.sh"
+start=$(date +%s)
+out=$("$AM" run --provider claude --out "$T/f2c" --no-lens --whole 1 --timeout 1 "$T/a.txt" 2>&1); rc=$?
+dur=$(( $(date +%s) - start ))
+defconf
+check "a claude timeout is rc 124 and kills the worker's child" '[ $rc -eq 3 ] && [ $dur -lt 6 ] && grep -q "fail(rc=124)" "$T/f2c/runs.tsv" && [ "$(nalive)" = 0 ]'
+newlog f2d
+defconf; printf 'export FAKE_MODE=hang\nexport FAKE_CX=slow\n' >> "$T/conf.sh"
+"$AM" run --out "$T/f2d" --no-lens --whole 4 "$T/a.txt" > "$T/f2d.log" 2>&1 & cancel_pid=$!
+wait_children 2
+kill -TERM "$cancel_pid" 2>/dev/null; wait "$cancel_pid"; rc=$?
+defconf
+ncpid=$(ls -d "$FAKE_LOG"/call_*/apikey 2>/dev/null | sed 's|/apikey$|/pid|' | while read -r f; do [ -f "$f" ] && echo x; done | wc -l | tr -d ' ')
+check "cancelling a mixed run reaps claude and codex workers alike" '[ $rc -eq 143 ] && [ "$ncpid" -ge 1 ] && [ "$(nalive)" = 0 ] && clean_scratch'
+# F3: a blocked pace probe is bounded and its leftovers are killed
+cat > "$T/usage-block" <<'STUB'
+#!/bin/bash
+sleep 90 & echo $! >> "$PROBE_PIDS"
+wait
+STUB
+chmod +x "$T/usage-block"
+export PROBE_PIDS="$T/probe.pids"; : > "$PROBE_PIDS"
+start=$(date +%s)
+out=$(AMASS_PROBE_TIMEOUT=2 MEGAVIBE_AMASS_USAGE_ROUTE="$T/usage-block" "$AM" run --out "$T/f3" --no-lens --whole 2 --dry-run "$T/a.txt" 2>&1); rc=$?
+dur=$(( $(date +%s) - start ))
+lv=0; for p in $(cat "$PROBE_PIDS"); do kill -0 "$p" 2>/dev/null && lv=$((lv + 1)); done
+check "a blocked pace probe is cut at its timeout, projections are unknown, nothing is left running" '[ $rc -eq 0 ] && [ $dur -lt 12 ] && echo "$out" | grep -q "projections claude ? (unknown), codex ? (unknown)" && [ "$lv" = 0 ] && clean_scratch'
+# F4: the summary follows the providers actually used
+newlog f4
+out=$("$AM" run --out "$T/f4a" --no-lens --whole 1 --split 0:1 "$T/a.txt" 2>&1)
+check "a mixed-mode run whose calls all went to codex prints the codex summary" 'echo "$out" | grep -q "tokens 1234" && ! echo "$out" | grep -q "worker cost"'
+out=$(PACE_CLAUDE=$(pace "" 400 10) PACE_CODEX=$(pace "" 100 10) "$AM" run --out "$T/f4b" --no-lens --whole 1 "$T/a.txt" 2>&1)
+check "one call on the lower-projection codex prints the codex summary, not a zero claude cost" 'echo "$out" | grep -q "tokens 1234" && ! echo "$out" | grep -q "worker cost"'
+check "the summary subcommand agrees" '"$AM" summary --out "$T/f4b" | grep -q "tokens 1234"'
+# F5: dedupe follows a forced provider, and --model needs a single provider
+newlog f5
+"$AM" run --provider claude --out "$T/f5a" --no-lens --whole 2 "$T/a.txt" >/dev/null 2>&1
+out=$(PACE_CLAUDE=$(pace "" 300 10) PACE_CODEX=$(pace "" 100 10) "$AM" dedupe --out "$T/f5a" 2>&1)
+check "plain dedupe after a --provider claude run stays on claude although codex has the lower projection" 'tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .provider == \"claude\"" >/dev/null'
+"$AM" run --provider codex --out "$T/f5b" --no-lens --whole 2 "$T/a.txt" >/dev/null 2>&1
+out=$(PACE_CLAUDE=$(pace "" 100 10) PACE_CODEX=$(pace "" 300 10) "$AM" dedupe --out "$T/f5b" 2>&1)
+check "plain dedupe after a --provider codex run stays on codex" 'tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .provider == \"codex\"" >/dev/null'
+out=$("$AM" dedupe --provider claude --out "$T/f5b" 2>&1)
+check "an explicit dedupe --provider still overrides the recorded one" 'tail -1 "$AMASS_LEDGER" | jq -e ".cmd == \"dedupe\" and .provider == \"claude\"" >/dev/null'
+newlog f5c
+out=$("$AM" dedupe --model sonnet --out "$T/mx1" 2>&1); rc=$?
+check "dedupe --model with two usable providers dies and points to the two flags" '[ $rc -eq 2 ] && [ "$(calls)" = 0 ] && echo "$out" | grep -q -- "--claude-model and --codex-model"'
+# F6: --ignore-rules only where this codex has it
+newlog f6
+out=$(cxrun ign 2>&1)
+check "--ignore-rules is passed when codex exec --help lists it" 'cxargv | grep -qx -- --ignore-rules'
+newlog f6b
+out=$(fk FAKE_CX=noignore -- cxrun noign 2>&1); rc=$?
+check "--ignore-rules is left off for a codex whose help lacks it, and the call still runs" '[ $rc -eq 0 ] && [ "$(calls)" = 1 ] && ! cxargv | grep -qx -- --ignore-rules'
+# F7: docs say Codex workers are sandboxed, not tool-less
+for doc in "$REPO/README-amass.md" "$REPO/README.md" "$REPO/template/.claude/rules/delegation.md"; do
+  check "$(basename "$doc") says Codex workers run in a read-only sandbox and can read local files" 'grep -i "amass" "$doc" | grep -qi "read-only sandbox" && grep -i "amass\|codex worker" "$doc" | grep -qi "read local files\|read files"'
+done
 
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
