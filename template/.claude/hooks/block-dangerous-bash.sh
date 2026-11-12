@@ -875,7 +875,9 @@ _rd_gate() {
   local c="${COMMAND//"$bsnl"/}"
   # a continuation inside a word (r\<newline>m) joins into an rm rm-to-trash.sh never sees
   [ "$c" != "$COMMAND" ] && printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$)' && return 0
-  printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|worktree[[:space:]]+remove|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
+  # worktree + remove in any quoting (git "worktree" remove): a bash pattern, no fork
+  [[ $c == *worktree* && $c == *remove* ]] && return 0
+  printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
   printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_])(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|awk|gawk|mawk|sh|bash|zsh|dash|ksh|tcsh|csh|fish|eval|trap|env|xargs|parallel|source)([^[:alnum:]_]|$)' \
     && printf '%s' "$c" | grep -Eiq 'rm|remove|unlink|delete|empty'     # every pattern below contains one of these
 }
@@ -884,7 +886,7 @@ _rd_gate() {
 _rd_trash_ready() { command -v rmtrash &>/dev/null; }      # the same condition rm-to-trash.sh uses
 if [ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && command -v python3 &>/dev/null && _rd_trash_ready && _rd_gate; then
   read -r -d '' _RD_PY <<'PY' || true
-import re, signal, sys
+import os, re, shlex, signal, sys
 
 # Coarse on purpose. Six review rounds of finer checks here each found new spellings, so
 # this reads the command TEXT and blocks on co-occurrence. Heredoc bodies count only when a
@@ -1028,13 +1030,14 @@ CMDPOS = (r"(?:^|[;&|(`\n{!\x27\"]|\$\(|\b(?:if|elif|while|until|then|do|else|xa
 
 def git_clean_forced(args):
     """True unless a dry run: `git -c clean.requireForce=false clean -d` deletes without -f."""
-    w, force, dry, i = args.split(), False, False, 0
+    w, force, dry, i = (args.split() if isinstance(args, str) else list(args)), False, False, 0
     while i < len(w):
         x = w[i]
         if x == "--": break
-        if x in ("-e", "--exclude"): i += 2; continue
-        if x.startswith("--"):
-            force |= x == "--force"; dry |= x == "--dry-run"; i += 1; continue
+        if x == "-e" or (len(x) > 2 and "--exclude".startswith(x)): i += 2; continue
+        if x.startswith("--"):                       # git accepts any unambiguous prefix: --f, --for
+            force |= len(x) > 2 and "--force".startswith(x); dry |= len(x) > 2 and "--dry-run".startswith(x)
+            i += 1; continue
         if x.startswith("-"):
             step = 1
             for k, ch in enumerate(x[1:]):          # a short cluster, left to right
@@ -1045,6 +1048,125 @@ def git_clean_forced(args):
             i += step; continue
         i += 1
     return not dry
+
+
+WT_MSG = ("git worktree remove --force (it deletes the worktree's uncommitted, untracked and ignored files for good, "
+          "outside the Trash; run git status --porcelain --ignored there, commit or move what matters, then "
+          "rm -r <worktree>, which goes to the Trash, and git worktree prune)")
+# git's global options that take a separate value; the other leading -x/--x words are flags or --opt=value.
+GIT_VAL = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--exec-path"}
+SUDO_VAL = {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t",
+            "--user", "--group", "--host", "--prompt", "--chdir", "--chroot"}
+XARGS_VAL = {"-n", "-I", "-d", "-E", "-L", "-P", "-s", "-a", "-J", "-R", "-S"}
+KEYWORDS = {"!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"}
+PUNCT = set("();&|<>")
+
+
+def force_flag(args):
+    """--force, any prefix of it from --f (git takes abbreviations), or a short cluster with f,
+    before a `--`: after that every word is a path."""
+    for x in args:
+        if x == "--": return False
+        if x.startswith("--"):
+            if "--force".startswith(x.split("=")[0]): return True
+        elif x.startswith("-") and "f" in x[1:]:
+            return True
+    return False
+
+
+def git_reason(w):
+    """Why the words after `git` delete for good, or None: skip the global options, then
+    worktree remove / clean / rm."""
+    i = 0
+    while i < len(w):
+        if w[i] in GIT_VAL: i += 2; continue
+        if w[i].startswith("-"): i += 1; continue
+        break
+    if i >= len(w): return None
+    sub, rest = w[i], w[i + 1:]
+    if sub == "worktree":
+        j = 0
+        while j < len(rest) and rest[j].startswith("-") and rest[j] != "--": j += 1
+        if j < len(rest) and rest[j] == "remove" and force_flag(rest[j + 1:]):
+            return WT_MSG
+    elif sub == "clean" and git_clean_forced(rest):
+        return "git clean (anything but a dry run -n deletes)"
+    elif sub == "rm" and force_flag(rest) and not any(len(x) > 2 and "--cached".startswith(x) for x in rest):
+        return "git rm -f (drops uncommitted changes; plain git rm or git rm --cached is fine)"
+    return None
+
+
+def cmd_words(text):
+    """The simple commands of a shell text as word lists. posix shlex, like the guards above:
+    quotes and backslashes are resolved, so "git", \\git and 'worktree' are the words they spell.
+    Separators end a command; redirection operators and their targets (and a bare fd number
+    before them) are dropped."""
+    t = text.replace("\n", " ; ").replace("`", " ( ")
+    try:
+        lx = shlex.shlex(t, posix=True, punctuation_chars=True)
+        lx.whitespace_split = True; lx.commenters = ""
+        toks = list(lx)
+    except ValueError:
+        return []
+    cmds, cur, skip = [], [], False
+    for tok in toks:
+        if skip: skip = False; continue
+        if tok and set(tok) <= PUNCT:
+            if ("<" in tok or ">" in tok) and not tok.endswith("("):
+                if cur and cur[-1].isdigit(): cur.pop()
+                skip = True
+            else:
+                cmds.append(cur); cur = []
+            continue
+        cur.append(tok)
+    cmds.append(cur)
+    return [c for c in cmds if c]
+
+
+def command_start(w):
+    """Index of the command word after VAR=value, keywords and the wrappers command, builtin,
+    exec, env, sudo, nice, nohup, time and xargs (with their options); None if none."""
+    i, n = 0, len(w)
+    while i < n:
+        x = w[i]; b = os.path.basename(x)
+        if re.match(r"[A-Za-z_]\w*\+?=", x) or x in KEYWORDS: i += 1; continue
+        if b in ("command", "builtin", "exec", "nohup", "time"):
+            i += 1
+            while i < n and w[i].startswith("-"):
+                if b == "command" and re.match(r"-[A-Za-z]*[vV]", w[i]): return None    # a lookup, not a run
+                i += 1
+            continue
+        if b == "env":
+            i += 1
+            while i < n:
+                if w[i] in ("-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"): i += 2
+                elif w[i].startswith("-") or re.match(r"[A-Za-z_]\w*=", w[i]): i += 1
+                else: break
+            continue
+        if b in ("sudo", "doas", "nice", "xargs"):
+            vals = {"nice": {"-n", "--adjustment"}, "xargs": XARGS_VAL}.get(b, SUDO_VAL)
+            i += 1
+            while i < n and w[i].startswith("-"):
+                i += 2 if w[i] in vals else 1
+            continue
+        return i
+    return None
+
+
+def walk_reason(text, shell=False, depth=0):
+    """git worktree remove --force, git clean, git rm -f in command position of `text`.
+    With a shell in the call, a quoted word that holds a command line is walked too."""
+    for w in cmd_words(text):
+        i = command_start(w)
+        if i is not None and os.path.basename(w[i]) == "git":
+            r = git_reason(w[i + 1:])
+            if r: return r
+        if shell and depth < 3:
+            for x in w:
+                if " " in x and "git" in x:
+                    r = walk_reason(x, True, depth + 1)
+                    if r: return r
+    return None
 
 
 # xargs and the options before the command it runs (some take a value: -n 1, -I {}, -d ';').
@@ -1081,16 +1203,7 @@ def shell_text_reasons(t):
     for m in re.finditer(r"\bgit\s+(?:-[Cc]\s+\S+\s+|--?\S+\s+)*clean\b([^;&|\n]*)", t):
         if git_clean_forced(m.group(1)):
             return "git clean (anything but a dry run -n deletes)"
-    for m in re.finditer(r"\bgit\s+(?:-[Cc]\s+\S+\s+|--?\S+\s+)*worktree\s+remove\b([^;&|\n]*)", t):
-        if worktree_remove_forced(m.group(1)):
-            return ("git worktree remove --force (it deletes the worktree's uncommitted and untracked files for good; "
-                    "run git status --porcelain --ignored there, commit or move what matters, then remove without --force)")
     return None
-
-
-def worktree_remove_forced(args):
-    """--force or -f (alone or clustered) before or after the path."""
-    return any(x == "--force" or re.match(r"^-[A-Za-z]*f", x) for x in args.split() if x.startswith("-") and x != "--")
 
 
 def interp_runs_deleter(raw):
@@ -1101,12 +1214,15 @@ def interp_runs_deleter(raw):
     m = re.search(r"\b(unlink|shred|srm)\s+[-\w./~$]", norm)
     if m:
         return m.group(1)
-    m = re.search(r"\bgit\s+clean\b([^\n;]*)", norm)
-    if m and git_clean_forced(m.group(1)):
-        return "git clean -f"
-    m = re.search(r"\bgit\s+worktree\s+remove\b([^\n;]*)", norm)
-    if m and worktree_remove_forced(m.group(1)):
-        return "git worktree remove --force"
+    toks = re.sub(r"[;|&<>]+", " ; ", norm.replace("\n", " ; ")).split()
+    for k, t in enumerate(toks):                 # every git, not the first: a plain removal hides nothing
+        if os.path.basename(t) == "git":
+            args = []
+            for y in toks[k + 1:]:
+                if y == ";": break
+                args.append(y)
+            r = git_reason(args)
+            if r: return r
     return None
 
 
@@ -1165,6 +1281,10 @@ def reasons(raw, depth=0):
     m = re.search(XARGS_CMD + r"[\\\x27\"]+(?:\S*/)?(unlink|shred|srm)[\x27\"]*(?![\w.-])", lines)
     if m:                              # a quoted deleter as the command xargs runs
         return "xargs " + m.group(1) + " (its operands arrive on stdin)"
+    for t in (lines, exe):
+        r = walk_reason(t, bool(shell))
+        if r:
+            return r
     for t in [outer, exe] + ([lines] if shell else []):
         r = shell_text_reasons(t)
         if r:

@@ -388,6 +388,66 @@ check "python subprocess git worktree remove --force blocked" '[ "$(bd "python3 
 check "git worktree remove without --force allowed" '[ "$(bd "git worktree remove ../wt")" = 0 ]'
 check "git worktree list and prune allowed" '[ "$(bd "git worktree list; git worktree prune")" = 0 ]'
 check "git worktree add -f allowed (it creates, never deletes)" '[ "$(bd "git worktree add -f ../wt main")" = 0 ]'
+# Token walk for git worktree remove / clean / rm: one case per line, B| blocked, A| allowed.
+while IFS= read -r _wl; do
+  [ -n "$_wl" ] || continue
+  _we=2; [ "${_wl%%|*}" = A ] && _we=0
+  _wc=${_wl#*|}
+  check "wt walk ${_wl%%|*}: $_wc" '[ "$(bd "$_wc")" = "$_we" ]'
+done <<'WTCASES'
+B|git worktree remove --for ../wt
+B|git worktree remove --f ../wt
+B|git worktree remove ../wt --force>/dev/null
+B|git worktree remove ../wt 2>&1 --force
+B|git worktree remove --force 2>&1
+B|git "worktree" remove --force ../wt
+B|git worktree "remove" -f ../wt
+B|"git" worktree remove -f ../wt
+B|\git worktree remove -f ../wt
+B|/usr/bin/git worktree remove -f ../wt
+B|git --git-dir x worktree remove --force ../wt
+B|git --work-tree x worktree remove --force ../wt
+B|git --namespace foo -C main worktree remove --force ../wt
+B|git --config-env a=B worktree remove --force ../wt
+B|git -c core.x=1 worktree remove -qf ../wt
+B|git -C a --git-dir x worktree remove ../wt -f
+B|git --no-pager --bare worktree remove -ff ../wt
+B|GIT_X=1 git worktree remove -f ../wt
+B|sudo -u bob git worktree remove -f ../wt
+B|env -i FOO=1 git worktree remove -f ../wt
+B|nice -n 5 git worktree remove -f ../wt
+B|command git worktree remove -f ../wt
+B|ls && (git worktree remove -f ../wt)
+B|echo hi | xargs git worktree remove -f
+B|echo $(git worktree remove -f ../wt)
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','--force','wt'])"
+B|node -e "require('child_process').execFileSync('git',['-C','x','worktree','remove','-f','wt'])"
+B|python3 -c "import subprocess; subprocess.run(['git','worktree','remove','wt']); subprocess.run(['git','worktree','remove','--force','wt2'])"
+B|bash -c "git worktree remove --force ../wt"
+B|git --git-dir x clean -fd
+B|git --work-tree x clean --f
+B|git --git-dir x rm -f a.txt
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','clean','-f'])"
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','rm','-f','a'])"
+A|echo git worktree remove --force x
+A|git worktree remove -- --force
+A|git worktree remove ./wt -- -f
+A|git worktree remove ../wt
+A|git worktree remove --help
+A|git worktree list
+A|git worktree prune
+A|git worktree add -f ../wt main
+A|git worktree move -f ../wt ../wt2
+A|git worktree lock ../wt
+A|git -C x worktree remove ../wt 2>&1
+A|git --git-dir x clean -n
+A|git --git-dir x rm --cached -f a.txt
+A|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','wt'])"
+WTCASES
+check "commit message naming the forced removal allowed" '[ "$(bd "git commit -m \"never git worktree remove --force\"")" = 0 ]'
+check "heredoc to cat naming the forced removal allowed" '[ "$(bd "cat <<'\''EOF'\''
+git worktree remove --force x
+EOF")" = 0 ]'
 check "commit message heredoc through cat allowed" '[ "$(bd "git commit -m \"\$(cat <<'\''EOF'\''
 use rm -rf, find -delete and git clean -f in bash scripts
 EOF
