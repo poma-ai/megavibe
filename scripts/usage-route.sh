@@ -9,6 +9,9 @@
 #   usage-route.sh balance    one line: prefer|sentence — which subscription optional work (digests, exploration,
 #                             second opinions) should lean on; prefer is claude, codex or - (no preference)
 #   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
+#   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
+#                             display only; linear from 5% elapsed, recent from samples within the last 6h
+#   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
 # statusline's account-wide rate_limits (five_hour / seven_day used_percentage and
@@ -42,6 +45,7 @@ NOW="${MEGAVIBE_NOW:-$(date +%s 2>/dev/null)}"
 SETTINGS="${MEGAVIBE_USER_SETTINGS:-$HOME/.claude/settings.json}"
 UP="${MEGAVIBE_ROUTER_UP:-opus}"
 MODE="${1:-claude}"; PEEK=0; [ "${2:-}" = "--peek" ] && PEEK=1   # --peek: report, never advance the hysteresis state
+[ "$MODE" != pace ] || PEEK=1   # display must never update routing state or trim history
 PROVIDER="${MEGAVIBE_ROUTER_PROVIDER:-claude}"; STALE=21600
 case "$MODE" in codex|codex-band) PROVIDER=codex ;; esac
 if [ "$PROVIDER" = codex ]; then
@@ -88,11 +92,52 @@ codex_row() {
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
-  case "$MODE" in advisory) ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
+  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
   exit 0
 }
+# Pace has no routing fallback: without jq it is silent, and never blocks a caller.
+[ "$MODE" != pace ] || command -v jq >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
+
+# The decision engine selects the window exactly as status always has. Only then
+# sort its observations for a display rate; never pick a second window by timestamp.
+emit_pace() {
+  LC_ALL=C jq -r --arg provider "$PROVIDER" --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" '
+    def sec: if . > 100000000000 then . / 1000 else . end;
+    def rounded: . * 1000 | round / 1000;
+    def blank: [$provider, "", "", "", "", "", ""];
+    $decision.wk as $w | ($decision.mx.sd.r // 0) as $reset
+    | [ .[] | select(type == "object")
+        | select((.t | type) == "number" and (.sd.p? | type) == "number" and (.sd.r? | type) == "number")
+        | {t, p: .sd.p, r: (.sd.r | sec)}
+        # Compare to the selected epoch, not the previous sample: jitter cannot chain
+        # unrelated windows together. Three minutes accommodates second/minute rounding.
+        | select((.r - $reset | fabs) <= 180)
+        | select(.t > 0 and .t <= $now and .t >= $reset - 604800 and .p >= 0 and .p <= 1000) ]
+    | sort_by(.t)
+    # Keep duplicate timestamps until after checking for drops. A drop anywhere in
+    # the retained window makes its recent trend unreliable, even after a recovery.
+    | reduce .[] as $x ({first: null, last: null, reliable: true};
+        if .last != null and $x.p < .last.p then .reliable = false else . end
+        | if (.first == null or .first.t == $x.t) and $x.t >= $now - 21600 then .first = $x else . end
+        | .last = $x)
+    | .first as $first | .last as $last | .reliable as $reliable
+    | if $w == null or $last == null then blank
+      elif $w.stale or $now - $last.t > $stale or $reset <= $now or $reset > $now + 604800 then blank
+      else ($reset - $now) as $rem | (604800 - $rem) as $elapsed
+        # A remembered maximum or a differing jitter sample is not a dated anchor
+        # for the selected usage. Suppress the recent estimate if it cannot agree.
+        | (if $reliable and $first != null and $last.t > $first.t and $last.p == $w.used
+           then ($last.p - $first.p) * 86400 / ($last.t - $first.t) else null end) as $rate
+        | [$provider, $w.used, ($elapsed / 6048 | rounded),
+           (if $elapsed >= 30240 then ($w.used * 604800 / $elapsed | rounded) else "" end),
+           (if $rate != null then ($rate | rounded) else "" end),
+           (if $rate != null then ($last.p + $rate * ($reset - $last.t) / 86400 | rounded) else "" end),
+           ($rem / 86400 | rounded)]
+      end | map(tostring) | join("|")
+  ' <<<"$HISTORY" 2>/dev/null
+}
 
 if [ "$MODE" = balance ]; then
   # Where should OPTIONAL work (digests, exploration, second opinions) lean? Each subscription's weekly
@@ -100,9 +145,20 @@ if [ "$MODE" = balance ]; then
   # Hysteresis: a preference is entered at a 20-point gap and kept until the gap falls under 10. The caller (the
   # advisory hook) passes its last preference in MEGAVIBE_BALANCE_PREV; without it the rule is a plain 20.
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
-  IFS='|' read -r cb cu cp _ cs _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status $pk 2>/dev/null) || true
-  IFS='|' read -r xb xu xp _ xs _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status $pk 2>/dev/null) || true
-  awk -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" 'BEGIN {
+  IFS='|' read -r cb cu cp _ cs _ _ _ _ clp crate crp _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status-pace $pk 2>/dev/null) || true
+  IFS='|' read -r xb xu xp _ xs _ _ _ _ xlp xrate xrp _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status-pace $pk 2>/dev/null) || true
+  LC_ALL=C awk -v clp="${clp:-}" -v crp="${crp:-}" -v crate="${crate:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" -v xrate="${xrate:-}" \
+    -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" '
+  function estimate(label, used, proj, linear, recent, rate, stale, text) {
+    text = sprintf("%s %d%% used", label, used)
+    if (proj != "") text = text sprintf(" (linear estimate ~%d%% by week end)", proj)
+    else if (linear != "") text = text sprintf(" [linear estimate ~%d%%]", linear)
+    else text = text " [linear estimate unavailable]"
+    if (recent != "" && rate ~ /^[0-9]+([.][0-9]+)?$/) text = text sprintf(" (recent estimate ~%d%% at %s pts/day)", recent, rate)
+    if (stale == 1) text = text " [stale reading]"
+    return text
+  }
+  BEGIN {
     if (cu == "" || xu == "") { print "-|"; exit }
     cj = (cp == "" ? cu : cp) + 0; xj = (xp == "" ? xu : xp) + 0; known = (cp != "" && xp != "")
     pref = "-"
@@ -117,7 +173,7 @@ if [ "$MODE" = balance ]; then
     # whose figure is stale, only away from one.
     if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"
     if (pref == "-") { print "-|"; exit }
-    st = (cp == "" ? sprintf("Claude %d%% used", cu) : sprintf("Claude projects ~%d%%", cj)) " of its week, " (xp == "" ? sprintf("Codex %d%% used", xu) : sprintf("Codex ~%d%%", xj))
+    st = estimate("Claude", cu, cp, clp, crp, crate, cs) "; " estimate("Codex", xu, xp, xlp, xrp, xrate, xs)
     hot = (cb == "over" || xb == "over") ? " (one is running hot)" : ""
     to = (pref == "codex" ? "Codex" : "the Claude subagents")
     printf "%s|usage balance: %s%s. Lean optional work (digests, exploration, second opinions) on %s; the review floor does not move.\n", pref, st, hot, to
@@ -125,9 +181,22 @@ if [ "$MODE" = balance ]; then
   exit 0
 fi
 
-ROW=""
-if [ "$PROVIDER" = codex ]; then ROW=$(codex_row)
-elif [ -f "$FILE" ] && [ -r "$FILE" ]; then ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null); fi
+ROW=""; HISTORY="[]"
+if [ "$PROVIDER" = codex ]; then
+  ROW=$(codex_row); HISTORY="${ROW:-[]}"
+elif [ -f "$FILE" ] && [ -r "$FILE" ]; then
+  if [ "$MODE" = pace ] || [ "$MODE" = status-pace ]; then
+    # One read for both outputs. Slice raw lines before parsing, exactly as status
+    # does, so malformed rows cannot change which 50 lines the router considers.
+    RAW=$(tail -n 5000 "$FILE" 2>/dev/null && printf 'x') || none
+    RAW=${RAW%x}   # preserve trailing blank lines stripped by command substitution
+    HISTORY=$(printf '%s' "$RAW" | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc '.' 2>/dev/null) || none
+    [ -n "$HISTORY" ] || none
+    ROW=$(printf '%s' "$RAW" | tail -n 50 | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null) || none
+  else
+    ROW=$(tail -n 50 "$FILE" 2>/dev/null | jq -cR 'fromjson? | select(type == "object")' 2>/dev/null | jq -sc 'select(length > 0)' 2>/dev/null)
+  fi
+fi
 PREV=$( [ -f "$STATE" ] && cat "$STATE" 2>/dev/null | jq -sc 'map(select(type == "object")) | last // empty' 2>/dev/null)
 [ -n "$ROW" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 [ -n "$PREV" ] || PREV='{}'
@@ -197,10 +266,12 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
      mx: {fh: ($fh | if . == null then null else {r: .r, p: .used} end), sd: ($sd | if . == null then null else {r: .r, p: .used} end)},
      wk: ($sd | if . == null then null else {used, proj, rem, stale} end),
      reason: (if $pair[1] == null then "" else "\($pair[0]) \($pair[1].used | floor)% used, resets in \(human($pair[1].rem))" end)}
-' <<<"$ROW" 2>/dev/null)
+' <<<"$ROW" 2>/dev/null) || none
 [ -n "$DECISION" ] || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 
-BAND=$(jq -r '.band' <<<"$DECISION"); REASON=$(jq -r '.reason' <<<"$DECISION")
+BAND=$(jq -r '.band' <<<"$DECISION" 2>/dev/null) || none
+[ -n "$BAND" ] || none
+REASON=$(jq -r '.reason' <<<"$DECISION" 2>/dev/null) || none
 NEWSTATE=$(jq -c '{band, since, pend, calm, mx}' <<<"$DECISION")
 # keep the history bounded: past 2 MB, keep the newest 5000 rows
 if [ "$PEEK" = 0 ] && [ -f "$FILE" ] && [ "$(wc -c < "$FILE" 2>/dev/null | tr -d ' ')" -gt 2097152 ] 2>/dev/null; then
@@ -212,8 +283,21 @@ if [ "$PEEK" = 0 ] && { [ ! -e "$STATE" ] || [ -f "$STATE" ]; } && [ "$NEWSTATE"
   fi
 fi
 
-if [ "$MODE" = status ]; then
-  jq -r --arg b "$BAND" --arg r "$REASON" '[$b, (.wk.used // "" | if type == "number" then floor else . end), (.wk.proj // "" | if type == "number" then floor else . end), (.wk.rem // "" | if type == "number" then floor else . end), (.wk.stale // false | if . then 1 else 0 end), $r] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null
+if [ "$MODE" = pace ]; then
+  PACE=$(emit_pace) || none
+  [ -n "$PACE" ] || none
+  printf '%s\n' "$PACE"
+  exit 0
+fi
+if [ "$MODE" = status ] || [ "$MODE" = status-pace ]; then
+  STATUS=$(jq -r --arg b "$BAND" --arg r "$REASON" '[$b, (.wk.used // "" | if type == "number" then floor else . end), (.wk.proj // "" | if type == "number" then floor else . end), (.wk.rem // "" | if type == "number" then floor else . end), (.wk.stale // false | if . then 1 else 0 end), $r] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || none
+  # Never append pace to a missing status prefix: it would shift every column.
+  [ -n "$STATUS" ] || none
+  if [ "$MODE" = status-pace ]; then
+    PACE=$(emit_pace) || PACE=""
+    [ -n "$PACE" ] || PACE="$PROVIDER||||||"
+    printf '%s|%s\n' "$STATUS" "$PACE"
+  else printf '%s\n' "$STATUS"; fi
   exit 0
 fi
 if [ "$MODE" = codex-band ]; then printf '%s\n' "$BAND"; exit 0; fi
