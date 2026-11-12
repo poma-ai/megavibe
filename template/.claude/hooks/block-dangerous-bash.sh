@@ -43,9 +43,22 @@ if [[ "$_PIPE_TEXT" == *'|'* && "$_PIPE_TEXT" =~ $_PIPE_DANGER ]]; then
     # An explicit PIPESTATUS check between the formatter and git is the status check itself.
     _mpipe=${_m%%|*}
     _between=${COMMAND:${#_pre}:$(( ${#_m} - ${#_mpipe} ))}
-    # The rest of the matched git command: a --dry-run there changes nothing.
-    _rest=${_PIPE_TEXT#*"$_m"}; _rest=${_rest%%[;&|]*}
-    if [[ "$_between" != *PIPESTATUS* && " $_m$_rest " != *" --dry-run "* ]]; then
+    # Every push, commit or merge in the && chain after the formatter must be a dry run to pass
+    # (--dry-run; for push also -n, alone or in a short-option cluster; commit -n skips hooks).
+    _chain=${_PIPE_TEXT#*"$_mpipe"}; _chain=${_chain#*|}; _chain=${_chain%%;*}
+    _live=0; _cmd=''
+    while [ -n "$_chain" ]; do
+      _cmd=${_chain%%&&*}
+      if [ "$_cmd" = "$_chain" ]; then _chain=''; else _chain=${_chain#*&&}; fi
+      if [[ " $_cmd " =~ [[:space:]]gh[[:space:]]+pr[[:space:]]+merge[[:space:]] ]]; then _live=1; break; fi
+      if [[ " $_cmd " =~ [[:space:]]git([[:space:]].*)?[[:space:]](push|commit)[[:space:]] ]]; then
+        _verb=${BASH_REMATCH[2]}
+        if [[ " $_cmd " == *" --dry-run "* ]]; then continue; fi
+        if [ "$_verb" = push ] && [[ " $_cmd " =~ [[:space:]]-[a-zA-Z]*n[a-zA-Z]*[[:space:]] ]]; then continue; fi
+        _live=1; break
+      fi
+    done
+    if [[ "$_between" != *PIPESTATUS* && $_live = 1 ]]; then
       echo 'Blocked: capture the status first (check; rc=$?), or set -o pipefail;' >&2
       exit 2
     fi

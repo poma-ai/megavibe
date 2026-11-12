@@ -304,6 +304,9 @@ check "F7 an explicit PIPESTATUS check between the formatter and git push is all
 check "R2 a --dry-run commit after a formatter is allowed" '[ "$(bd "git status --short | head -20 && git commit --dry-run")" = 0 ]'
 check "R2 a --dry-run push after a formatter is allowed" '[ "$(bd "make | tail -1 && git push --dry-run origin x")" = 0 ]'
 check "R2 --dry-run inside a quoted message does not exempt the commit" '[ "$(bd "make | tail -1 && git commit -m \"x --dry-run\"")" = 2 ]'
+check "R3 git push -n after a formatter is allowed" '[ "$(bd "git diff --stat | head -20 && git push -n origin HEAD")" = 0 ]'
+check "R3 a dry-run push followed by a real push is blocked" '[ "$(bd "make test | tail -20 && git push --dry-run && git push")" = 2 ]'
+check "R3 git commit -n (skips hooks) is not a dry run" '[ "$(bd "make | tail -1 && git commit -n -m x")" = 2 ]'
 check "python heredoc rmtree blocked" '[ "$(bd "python3 - <<EOF
 import shutil
 shutil.rmtree(\"/tmp/x\")

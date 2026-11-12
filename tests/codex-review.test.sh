@@ -52,6 +52,11 @@ grep -qx -- 'model_provider="openai"' "$CODEX_TEST_ARGV"
 ! grep -qx -- '--ignore-user-config' "$CODEX_TEST_ARGV"
 ! grep -qx -- '--model' "$CODEX_TEST_ARGV"
 
+# R3: a single-quoted (TOML literal string) profile name selects the same profile.
+printf '%s\n' "profile = 'lit'" '[profiles.lit]' 'openai_base_url = "https://x.invalid"' > "$CODEX_HOME/config.toml"
+if run_review; then echo 'FAIL: single-quoted active profile endpoint was not refused' >&2; exit 1; fi
+: > "$CODEX_HOME/config.toml"
+
 # A9: the key under the ACTIVE profile is refused; under an inactive profile it is not.
 cat > "$CODEX_HOME/config.toml" <<'EOF'
 profile = "work"

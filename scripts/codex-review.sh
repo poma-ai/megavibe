@@ -163,7 +163,7 @@ if [ -r "$CODEX_CONFIG" ]; then
     }
     /^[[:space:]]*\[/ { exit }   # profile is a top-level key: a table header ends the top level
     /^[[:space:]]*profile[[:space:]]*=/ {
-      v=strip($0); sub(/^[^=]*=/, "", v); gsub(/[\"[:space:]]/, "", v); print v; exit
+      v=strip($0); sub(/^[^=]*=/, "", v); gsub(/[\"[:space:]]/, "", v); gsub(sprintf("%c", 39), "", v); print v; exit
     }
   ' "$CODEX_CONFIG")
 fi
