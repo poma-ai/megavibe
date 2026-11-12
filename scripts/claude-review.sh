@@ -67,6 +67,12 @@ use Time::HiRes qw(time sleep);
 my ($t, $ps_command, $state) = (shift, shift, shift);
 my ($cancel, $pid, $status, $inspection_failed, $cleaning) = (0, undef, undef, 0, 0);
 my ($guard, $pulse, $inspector);
+my $diag = \*STDERR;
+if (defined $ENV{CLAUDE_REVIEW_DIAG} && length $ENV{CLAUDE_REVIEW_DIAG}) {
+    my $dh;
+    if (open($dh, ">>", $ENV{CLAUDE_REVIEW_DIAG})) { $diag = $dh; }
+}
+delete $ENV{CLAUDE_REVIEW_DIAG}; # no child, the worker included, inherits the name
 $SIG{INT} = sub { $cancel ||= 130 };
 $SIG{TERM} = sub { $cancel ||= 143 };
 $SIG{HUP} = sub { $cancel ||= 129 };
@@ -122,7 +128,7 @@ sub snapshot {
     }
     if (!$done || !defined($rc) || $rc != 0) {
         $inspection_failed = 1;
-        warn "inspection unavailable: cannot inspect worker descendants with ps\n";
+        print {$diag} "inspection unavailable: cannot inspect worker descendants with ps\n";
         return;
     }
     my %rows;
@@ -529,16 +535,18 @@ fi
 printf '[claude-review: tools=%s (%s) model=%s timeout=%ss request=%sKB]\n' "$TOOLS" "$SANDBOX_NOTE" "$MODEL" "$TIMEOUT" "$KB" >&2
 START=$(date +%s)
 RC=0
-( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" \
+( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" CLAUDE_REVIEW_DIAG="$CTL/sup.err" \
     perl -e "$SUP" "$TIMEOUT" "$PS_BIN" "$CTL/descendants" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
 SUP_PID=$!
 wait "$SUP_PID" || RC=$?
 SUP_PID=''
 DUR=$(( $(date +%s) - START ))
 # A supervisor that lost process inspection (a slow ps on a loaded machine) exits 3 even when the worker
-# finished; the answer is judged on its own validity below, so a paid answer is not thrown away.
+# finished; the saved result must be a complete, valid, non-error result (the supervisor's own channel
+# says why it exited 3; the worker cannot write that file), then a paid answer is not thrown away.
 INSPECT_LOST=0
-if [ "$RC" = 3 ] && grep -q 'inspection unavailable' "$CTL/raw.err" 2>/dev/null; then RC=0; INSPECT_LOST=1; fi
+if [ "$RC" = 3 ] && grep -q 'inspection unavailable' "$CTL/sup.err" 2>/dev/null \
+   && jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then RC=0; INSPECT_LOST=1; fi
 
 COST=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$CTL/raw.json" 2>/dev/null) || COST=''
 [ -n "$COST" ] || COST='?'
@@ -550,9 +558,9 @@ if mkdir -p "$(dirname "$LED")" 2>/dev/null; then
     '{ts:$ts,cmd:$cmd,model:$model,project:$proj,tools:$tools,calls:1,ok:$ok,cost:($cost|tonumber? // null),input_kb:$kb,seconds:$dur}' >> "$LED" 2>/dev/null || true
 fi
 if [ "$RC" = 124 ]; then echo "$PROG: timed out after ${TIMEOUT}s (cost $COST)" >&2; exit 124; fi
-if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; head -c 400 "$CTL/raw.err" >&2; exit 3; fi
+if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2; exit 3; fi
 jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null \
-  || { echo "$PROG: the call returned no usable result (cost $COST)" >&2; head -c 400 "$CTL/raw.err" >&2; exit 3; }
+  || { echo "$PROG: the call returned no usable result (cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2; exit 3; }
 printf '[claude-review: done in %ss, %s turn(s), cost $%s]\n' "$DUR" "${TURNS:-?}" "$COST" >&2
 if [ "$INSPECT_LOST" = 1 ]; then
   echo "$PROG: note: process inspection was unavailable during the run, so cleanup used the process group only" >&2

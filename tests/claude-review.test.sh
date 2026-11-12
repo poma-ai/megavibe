@@ -104,6 +104,11 @@ case "${FAKE_MODE:-ok}" in
   fail) echo boom >&2; exit 1 ;;
   slow) sleep 6 ;;
   garbled) echo "not json"; exit 0 ;;
+  inspect_fail_garbled) sleep 1; echo "not json"; exit 0 ;;
+  forge_err) echo "inspection unavailable: cannot inspect worker descendants with ps" >&2
+             jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | forged | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 3 ;;
+  fd3_write) echo "inspection unavailable: cannot inspect worker descendants with ps" >&3 2>/dev/null
+             jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | fd3 | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 3 ;;
   iserror) printf '[{"type":"result","is_error":true,"result":"x","total_cost_usd":0.1}]'; exit 0 ;;
 esac
 jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | a.sh:1 | something | because","total_cost_usd":0.005,"num_turns":3}]'
@@ -418,6 +423,20 @@ echo slow > "$T/outside/ps.mode"
 fk FAKE_MODE=inspect_fail -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/slow.out" 2>"$T/slow.err"; rc=$?
 check "a ps too slow for the supervisor (1.2 s) loses inspection but the finished answer is kept with a note" '[ $rc -eq 0 ] && grep -q "F1 | P2" "$T/slow.out" && grep -q "process inspection was unavailable" "$T/slow.err"'
 if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+
+# the supervisor's channel cannot be forged by the worker: its own stderr, or fd 3, saying "inspection unavailable"
+rm -f "$T/outside/worker.pid"
+echo ok > "$T/outside/ps.mode"
+for wm in forge_err fd3_write; do
+  fk FAKE_MODE=$wm -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/forge.out" 2>"$T/forge.err"; rc=$?
+  check "a worker that prints the inspection-lost text itself and exits 3 ($wm) is a failure, not a rescue" '[ $rc -eq 3 ] && [ ! -s "$T/forge.out" ]'
+done
+# a rejected rescue is recorded as a failed call
+: > "$T/ledger.jsonl"
+rm -f "$T/outside/worker.pid"
+echo fail > "$T/outside/ps.mode"
+fk FAKE_MODE=inspect_fail_garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1
+check "inspection lost and no valid result: the ledger records ok 0, not 1" 'tail -1 "$T/ledger.jsonl" | jq -e ".ok == 0" >/dev/null'
 
 # inspection lost AND no valid result: still a failure (nothing to keep)
 rm -f "$T/outside/worker.pid"
