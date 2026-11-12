@@ -67,6 +67,12 @@ use Time::HiRes qw(time sleep);
 my ($t, $ps_command, $state) = (shift, shift, shift);
 my ($cancel, $pid, $status, $inspection_failed, $cleaning) = (0, undef, undef, 0, 0);
 my ($guard, $pulse, $inspector);
+my $diag = \*STDERR;
+if (defined $ENV{CLAUDE_REVIEW_DIAG} && length $ENV{CLAUDE_REVIEW_DIAG}) {
+    my $dh;
+    if (open($dh, ">>", $ENV{CLAUDE_REVIEW_DIAG})) { $diag = $dh; }
+}
+delete $ENV{CLAUDE_REVIEW_DIAG}; # no child, the worker included, inherits the name
 $SIG{INT} = sub { $cancel ||= 130 };
 $SIG{TERM} = sub { $cancel ||= 143 };
 $SIG{HUP} = sub { $cancel ||= 129 };
@@ -122,7 +128,7 @@ sub snapshot {
     }
     if (!$done || !defined($rc) || $rc != 0) {
         $inspection_failed = 1;
-        warn "inspection unavailable: cannot inspect worker descendants with ps\n";
+        print {$diag} "inspection unavailable: cannot inspect worker descendants with ps\n";
         return;
     }
     my %rows;
@@ -303,6 +309,9 @@ if (!defined $status) { waitpid($pid, 0); $status = $?; }
 if ($pulse) { print {$pulse} "done\n"; close $pulse; }
 waitpid($guard, 0) if $guard;
 warn $error if $error;
+# Rescue eligibility, on the private channel only: inspection was lost, and nothing else went wrong.
+print {$diag} "worker-ok\n" if $inspection_failed && !$cancel && !$error && defined($status) && $status == 0;
+close $diag if $diag != \*STDERR;
 exit($cancel || ($error || $inspection_failed ? 3 : ($status & 127 ? 128 + ($status & 127) : $status >> 8)));
 '
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
@@ -529,12 +538,25 @@ fi
 printf '[claude-review: tools=%s (%s) model=%s timeout=%ss request=%sKB]\n' "$TOOLS" "$SANDBOX_NOTE" "$MODEL" "$TIMEOUT" "$KB" >&2
 START=$(date +%s)
 RC=0
-( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" \
+( cd "$SC" && exec "${CLEAN[@]}" TMPDIR="$SC/tmp" CLAUDE_REVIEW_DIAG="$CTL/sup.err" \
     perl -e "$SUP" "$TIMEOUT" "$PS_BIN" "$CTL/descendants" ${PRE[@]+"${PRE[@]}"} "$CLAUDE_BIN" "${ARGS[@]}" < "$CTL/request.txt" > "$CTL/raw.json" 2> "$CTL/raw.err" ) &
 SUP_PID=$!
 wait "$SUP_PID" || RC=$?
 SUP_PID=''
 DUR=$(( $(date +%s) - START ))
+# A supervisor that lost process inspection (a slow ps on a loaded machine) exits 3 even when the worker
+# finished. It says so on its private channel (a file the worker cannot write) and adds worker-ok only when
+# the worker itself exited 0 and nothing else failed; then the saved result is judged on its own validity.
+# The result is validated once, here, before the ledger, so the ledger sees the real outcome.
+INSPECT_LOST=0; NORESULT=0; RESCUE=0
+if [ "$RC" = 3 ] && grep -q '^inspection unavailable' "$CTL/sup.err" 2>/dev/null && grep -q '^worker-ok$' "$CTL/sup.err" 2>/dev/null; then RESCUE=1; fi
+if [ "$RC" = 0 ] || [ "$RESCUE" = 1 ]; then
+  if jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null; then
+    if [ "$RESCUE" = 1 ]; then RC=0; INSPECT_LOST=1; fi
+  else
+    NORESULT=1
+  fi
+fi
 
 COST=$(jq -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object") | (.total_cost_usd | select(type == "number")) end' "$CTL/raw.json" 2>/dev/null) || COST=''
 [ -n "$COST" ] || COST='?'
@@ -542,13 +564,15 @@ TURNS=$(jq -s -r '.[0] | (if type == "array" then (map(select(type == "object" a
 LED=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
 if mkdir -p "$(dirname "$LED")" 2>/dev/null; then
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd review --arg model "$MODEL" --arg proj "$(basename "$PWD")" --arg tools "$TOOLS" \
-    --argjson ok "$([ "$RC" = 0 ] && echo 1 || echo 0)" --arg cost "$COST" --argjson kb "$KB" --argjson dur "$DUR" \
+    --argjson ok "$([ "$RC" = 0 ] && [ "$NORESULT" = 0 ] && echo 1 || echo 0)" --arg cost "$COST" --argjson kb "$KB" --argjson dur "$DUR" \
     '{ts:$ts,cmd:$cmd,model:$model,project:$proj,tools:$tools,calls:1,ok:$ok,cost:($cost|tonumber? // null),input_kb:$kb,seconds:$dur}' >> "$LED" 2>/dev/null || true
 fi
 if [ "$RC" = 124 ]; then echo "$PROG: timed out after ${TIMEOUT}s (cost $COST)" >&2; exit 124; fi
-if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; head -c 400 "$CTL/raw.err" >&2; exit 3; fi
-jq -e -s -r 'if length != 1 then empty else .[0] | (if type == "array" then (map(select(type == "object" and .type == "result")) | last) else . end) | select(type == "object" and .is_error == false and (.result | type) == "string") | .result end' "$CTL/raw.json" > "$CTL/answer.txt" 2>/dev/null \
-  || { echo "$PROG: the call returned no usable result (cost $COST)" >&2; head -c 400 "$CTL/raw.err" >&2; exit 3; }
+if [ "$RC" != 0 ]; then echo "$PROG: the call failed (rc=$RC, cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2 || true; exit 3; fi
+if [ "$NORESULT" = 1 ]; then echo "$PROG: the call returned no usable result (cost $COST)" >&2; { cat "$CTL/sup.err" "$CTL/raw.err" 2>/dev/null; } | head -c 400 >&2 || true; exit 3; fi
 printf '[claude-review: done in %ss, %s turn(s), cost $%s]\n' "$DUR" "${TURNS:-?}" "$COST" >&2
+if [ "$INSPECT_LOST" = 1 ]; then
+  echo "$PROG: note: process inspection was unavailable during the run, so cleanup used the process group only" >&2
+fi
 if [ -n "$OUT" ]; then ( umask 077; cp -- "$CTL/answer.txt" "$OUT" ) || die "cannot write $OUT"; fi
 cat "$CTL/answer.txt"

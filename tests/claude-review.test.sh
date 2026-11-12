@@ -104,6 +104,14 @@ case "${FAKE_MODE:-ok}" in
   fail) echo boom >&2; exit 1 ;;
   slow) sleep 6 ;;
   garbled) echo "not json"; exit 0 ;;
+  inspect_fail_garbled) sleep 1; echo "not json"; exit 0 ;;
+  inspect_exit1) sleep 1; jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | exit1 | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 1 ;;
+  inspect_selfterm) sleep 1; jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | selfterm | x | y","total_cost_usd":0.005,"num_turns":3}]'; kill -TERM $$ ;;
+  bigerr) head -c 1000000 /dev/zero | tr '\0' x >&2; exit 1 ;;
+  forge_err) echo "inspection unavailable: cannot inspect worker descendants with ps" >&2
+             jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | forged | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 3 ;;
+  fd3_write) echo "inspection unavailable: cannot inspect worker descendants with ps" >&3 2>/dev/null
+             jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | fd3 | x | y","total_cost_usd":0.005,"num_turns":3}]'; exit 3 ;;
   iserror) printf '[{"type":"result","is_error":true,"result":"x","total_cost_usd":0.1}]'; exit 0 ;;
 esac
 jq -n '[{"type":"system"},{"type":"result","is_error":false,"result":"F1 | P2 | a.sh:1 | something | because","total_cost_usd":0.005,"num_turns":3}]'
@@ -227,6 +235,7 @@ if ($mode eq "observed" && -s "$dir/child.pid") {
     print $f "snapshot\n"; close $f;
 }
 if (-s "$dir/worker.pid") {
+    if ($mode eq "slow") { select(undef, undef, undef, 1.2); }
     if ($mode eq "fail") { exit 1; }
     if ($mode eq "block") {
         open my $f, ">", "$dir/inspection.pid" or die $!;
@@ -411,15 +420,62 @@ echo pre_fail > "$T/outside/ps.mode"
 "$CR" --prompt p --tools none "$T/a.txt" >/dev/null 2>&1; rc=$?
 check "pre-start ps failure refuses to launch and cleans directories" '[ $rc -ne 0 ] && [ ! -e "$T/outside/worker.pid" ] && [ -z "$(kept)" ] && [ -z "$(ctl)" ]'
 
+# a ps that works but is slower than the supervisor allows (1.2 s per table, a loaded machine)
+rm -f "$T/outside/worker.pid"
+echo slow > "$T/outside/ps.mode"
+fk FAKE_MODE=inspect_fail -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/slow.out" 2>"$T/slow.err"; rc=$?
+check "a ps too slow for the supervisor (1.2 s) loses inspection but the finished answer is kept with a note" '[ $rc -eq 0 ] && grep -q "F1 | P2" "$T/slow.out" && grep -q "process inspection was unavailable" "$T/slow.err"'
+if [ -s "$T/outside/worker.pid" ]; then kill -KILL "$(cat "$T/outside/worker.pid")" 2>/dev/null || true; fi
+
+# the supervisor's channel cannot be forged by the worker: its own stderr, or fd 3, saying "inspection unavailable"
+rm -f "$T/outside/worker.pid"
+echo ok > "$T/outside/ps.mode"
+for wm in forge_err fd3_write; do
+  fk FAKE_MODE=$wm -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/forge.out" 2>"$T/forge.err"; rc=$?
+  check "a worker that prints the inspection-lost text itself and exits 3 ($wm) is a failure, not a rescue" '[ $rc -eq 3 ] && [ ! -s "$T/forge.out" ]'
+done
+# a rejected rescue is recorded as a failed call
+: > "$T/ledger.jsonl"
+rm -f "$T/outside/worker.pid"
+echo fail > "$T/outside/ps.mode"
+fk FAKE_MODE=inspect_fail_garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1
+check "inspection lost and no valid result: the ledger records ok 0, not 1" 'tail -1 "$T/ledger.jsonl" | jq -e ".ok == 0" >/dev/null'
+
+# the rescue needs the WORKER to have exited 0: a worker that failed or killed itself after printing a result is not rescued
+for wm in inspect_exit1 inspect_selfterm; do
+  rm -f "$T/outside/worker.pid"
+  echo fail > "$T/outside/ps.mode"
+  fk FAKE_MODE=$wm -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/wfail.out" 2>"$T/wfail.err"; rc=$?
+  check "inspection lost and the worker failed after printing a result ($wm): exit 3, nothing delivered" '[ $rc -eq 3 ] && [ ! -s "$T/wfail.out" ]'
+done
+# diagnostics never change the failure exit code (SIGPIPE under pipefail turned exit 3 into 141)
+rm -f "$T/outside/worker.pid"
+echo ok > "$T/outside/ps.mode"
+fk FAKE_MODE=bigerr -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1; rc=$?
+check "a worker that writes 1 MB to stderr and fails still exits 3, not 141" '[ $rc -eq 3 ]'
+# a normally rejected result is not recorded as a success either
+: > "$T/ledger.jsonl"
+fk FAKE_MODE=garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >/dev/null 2>&1
+check "healthy inspection, worker exits 0 with malformed JSON: ledger ok 0" 'tail -1 "$T/ledger.jsonl" | jq -e ".ok == 0" >/dev/null'
+
+# inspection lost AND no valid result: still a failure (nothing to keep)
+rm -f "$T/outside/worker.pid"
+echo fail > "$T/outside/ps.mode"
+fk FAKE_MODE=garbled -- "$CR" --prompt p --tools none --timeout 20 "$T/a.txt" >"$T/nores.out" 2>"$T/nores.err"; rc=$?
+check "inspection lost and the worker output is not a valid result: exit 3, nothing delivered" '[ $rc -eq 3 ] && [ ! -s "$T/nores.out" ]'
+
 for fault in fail block; do
   rm -f "$T/outside/worker.pid" "$T/outside/inspection.pid" "$T/outside/inspection-child.pid"
   echo "$fault" > "$T/outside/ps.mode"
-  mode=inspect_fail; limit=5; expected=3
+  mode=inspect_fail; limit=5; expected=0   # a lost ps only narrows cleanup; the finished worker's answer is kept
   if [ "$fault" = block ]; then mode=stubborn; limit=1; expected=124; fi
   start=$(date +%s)
   fk FAKE_MODE="$mode" -- "$CR" --prompt p --tools none --timeout "$limit" "$T/a.txt" >"$T/fault.out" 2>"$T/fault.err"; rc=$?
   dur=$(( $(date +%s) - start ))
-  check "ps $fault after start: bounded nonzero exit and dead worker" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+  check "ps $fault after start: bounded exit with the worker's own status and a dead worker" '[ $rc -eq $expected ] && [ $dur -lt 8 ] && [ -s "$T/outside/worker.pid" ] && ! kill -0 "$(cat "$T/outside/worker.pid")" 2>/dev/null'
+  if [ "$fault" = fail ]; then
+    check "ps fail after start: the finished worker's answer is delivered and the loss is warned" 'grep -q "F1 | P2" "$T/fault.out" && grep -q "process inspection was unavailable" "$T/fault.err"'
+  fi
   check "ps $fault after start: scratch and control directories cleaned" '[ -z "$(kept)" ] && [ -z "$(ctl)" ]'
   if [ "$fault" = block ]; then
     check "blocked inspection subprocess and its child are killed" '[ -s "$T/outside/inspection.pid" ] && ! kill -0 "$(cat "$T/outside/inspection.pid")" 2>/dev/null && [ -s "$T/outside/inspection-child.pid" ] && ! kill -0 "$(cat "$T/outside/inspection-child.pid")" 2>/dev/null'
