@@ -619,5 +619,68 @@ check 'sanctioned uv command' grep -q 'uv cache prune' "$T/caches"
 check 'cache preserved' test -d "$HOME/.cache/uv"
 run --help > "$T/help"
 check 'help explains immediate deletion' grep -q 'does NOT go through the Trash' "$T/help"
+# --- grafts, replace refs and inherited Git overrides (fresh fixtures) ---
+SAVED_HOME=$HOME SAVED_MAIN=$MAIN SAVED_WT=$WT
+reason_is() { [[ $(field "$1" 10) == "$2" ]]; }
+fresh grafts
+git -C "$MAIN" worktree add -q -b g1 "$WT/g1" main
+git -C "$MAIN" worktree add -q -b lw "$WT/lw" main
+printf 'local\n' > "$WT/lw/l"; git -C "$WT/lw" add l; git -C "$WT/lw" commit -qm local-only
+run audit > "$T/audit"
+check 'control: clean pushed tree is SAFE' verdict "$WT/g1" SAFE
+check 'control: local-only commit is unpushed' reason "$WT/lw" unpushed
+mkdir -p "$MAIN/.git/info"
+printf '%s %s\n' "$(git -C "$MAIN" rev-parse origin/main)" "$(git -C "$WT/lw" rev-parse HEAD)" > "$MAIN/.git/info/grafts"
+run audit > "$T/audit"
+check 'grafted local commit is KEEP' verdict "$WT/lw" KEEP
+check 'grafts make a clean tree KEEP' verdict "$WT/g1" KEEP
+check 'grafts reason' reason_is "$WT/g1" grafts
+: > "$MAIN/.git/info/grafts"
+run audit > "$T/audit"
+check 'empty grafts file is still KEEP' reason_is "$WT/g1" grafts
+run remove-safe > "$T/removed"
+check 'grafts: remove-safe removes nothing' test -d "$WT/g1"
+mv "$MAIN/.git/info/grafts" "$T/grafts-off"
+run audit > "$T/audit"
+check 'grafts file gone: SAFE again' verdict "$WT/g1" SAFE
+ZERO=$(git -C "$MAIN" commit-tree "$(git -C "$MAIN" rev-parse 'main^{tree}')" -m replacement)
+git -C "$MAIN" replace "$(git -C "$MAIN" rev-parse main)" "$ZERO"
+run audit > "$T/audit"
+check 'replace ref makes a clean tree KEEP' reason_is "$WT/g1" replace-refs
+run remove-safe > "$T/removed"
+check 'replace ref: remove-safe removes nothing' test -d "$WT/g1"
+git -C "$MAIN" replace -d "$(git -C "$MAIN" rev-parse main)" >/dev/null
+run audit > "$T/audit"
+check 'replace ref deleted: SAFE again' verdict "$WT/g1" SAFE
+
+# An external graft file must not fake reachability, detached or named.
+fresh ext-graft
+git -C "$MAIN" worktree add -q --detach "$WT/dg" main
+printf 'local\n' > "$WT/dg/l"; git -C "$WT/dg" add l; git -C "$WT/dg" commit -qm local-only
+git -C "$MAIN" worktree add -q -b ng "$WT/ng" main
+printf 'local\n' > "$WT/ng/l"; git -C "$WT/ng" add l; git -C "$WT/ng" commit -qm local-only
+printf '%s %s\n' "$(git -C "$MAIN" rev-parse origin/main)" "$(git -C "$WT/dg" rev-parse HEAD)" > "$T/ext-grafts"
+GIT_GRAFT_FILE="$T/ext-grafts" run audit > "$T/audit"
+check 'external GIT_GRAFT_FILE: detached local commit stays KEEP' reason "$WT/dg" detached-not-on-remote
+GIT_GRAFT_FILE="$T/ext-grafts" run remove-safe > "$T/removed"
+check 'external GIT_GRAFT_FILE: detached worktree not removed' test -d "$WT/dg"
+printf '%s %s\n' "$(git -C "$MAIN" rev-parse origin/main)" "$(git -C "$WT/ng" rev-parse HEAD)" > "$T/ext-grafts"
+GIT_GRAFT_FILE="$T/ext-grafts" run audit > "$T/audit"
+check 'external GIT_GRAFT_FILE: named local commit stays unpushed' reason "$WT/ng" unpushed
+
+# Injected configuration must not redirect origin to a remote that has the commit.
+fresh ext-config
+git -C "$MAIN" worktree add -q -b lc "$WT/lc" main
+printf 'local\n' > "$WT/lc/l"; git -C "$WT/lc" add l; git -C "$WT/lc" commit -qm local-only
+git clone -q --bare "$SERVER" "$T/decoy.git"
+git -C "$WT/lc" push -q "$T/decoy.git" lc:main
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0="$T/decoy.git" run audit > "$T/audit"
+check 'GIT_CONFIG_COUNT cannot redirect origin' verdict "$WT/lc" KEEP
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.url GIT_CONFIG_VALUE_0="$T/decoy.git" run remove-safe > "$T/removed"
+check 'GIT_CONFIG_COUNT: worktree not removed' test -d "$WT/lc"
+GIT_CONFIG_PARAMETERS="'remote.origin.url'='$T/decoy.git'" run audit > "$T/audit"
+check 'GIT_CONFIG_PARAMETERS cannot redirect origin' verdict "$WT/lc" KEEP
+HOME=$SAVED_HOME MAIN=$SAVED_MAIN WT=$SAVED_WT
+
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [[ $FAIL == 0 ]]
