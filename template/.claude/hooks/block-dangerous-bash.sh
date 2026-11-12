@@ -876,7 +876,8 @@ _rd_gate() {
   # a continuation inside a word (r\<newline>m) joins into an rm rm-to-trash.sh never sees
   [ "$c" != "$COMMAND" ] && printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$)' && return 0
   # worktree + remove in any quoting (git "worktree" remove): a bash pattern, no fork
-  [[ $c == *worktree* && $c == *remove* ]] && return 0
+  local cq="${c//[\"\'\\]/}"     # quotes and backslashes out: wor"ktree" spells worktree too
+  [[ $cq == *worktree* && $cq == *remove* ]] && return 0
   printf '%s' "$c" | grep -Eq -- '-delete|unlink|clean|shred|srm|rimraf|(^|[[:space:]])-[[:alnum:]]*P|=["'\'']?[^[:space:]]*rm|[\\"'\'']rm|r[\\"'\'']+m|[\"'\''][^[:space:]]*/rm[\"'\'']|which rm|(command|type)[[:space:]]+-[[:alpha:]]*[vVpP][[:alpha:]]*[[:space:]]+rm|git[^;|&]* rm|[[:space:]]-([[:alpha:]]*[xX]|-exec|-exec-batch)[[:space:]]' && return 0
   printf '%s' "$c" | grep -Eq '(^|[^[:alnum:]_])(python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|lua|osascript|awk|gawk|mawk|sh|bash|zsh|dash|ksh|tcsh|csh|fish|eval|trap|env|xargs|parallel|source)([^[:alnum:]_]|$)' \
     && printf '%s' "$c" | grep -Eiq 'rm|remove|unlink|delete|empty'     # every pattern below contains one of these
@@ -1054,7 +1055,7 @@ WT_MSG = ("git worktree remove --force (it deletes the worktree's uncommitted, u
           "outside the Trash; run git status --porcelain --ignored there, commit or move what matters, then "
           "rm -r <worktree>, which goes to the Trash, and git worktree prune)")
 # git's global options that take a separate value; the other leading -x/--x words are flags or --opt=value.
-GIT_VAL = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--exec-path"}
+GIT_VAL = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--exec-path", "--attr-source"}
 SUDO_VAL = {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t",
             "--user", "--group", "--host", "--prompt", "--chdir", "--chroot"}
 XARGS_VAL = {"-n", "-I", "-d", "-E", "-L", "-P", "-s", "-a", "-J", "-R", "-S"}
@@ -1130,8 +1131,19 @@ def command_start(w):
     while i < n:
         x = w[i]; b = os.path.basename(x)
         if re.match(r"[A-Za-z_]\w*\+?=", x) or x in KEYWORDS: i += 1; continue
+        if b in ("timeout", "gtimeout"):
+            i += 1
+            while i < n and w[i].startswith("-"):
+                i += 2 if w[i] in ("-s", "--signal", "-k", "--kill-after") else 1
+            i += 1                                  # the duration
+            continue
+        if b in ("stdbuf", "caffeinate"):
+            i += 1
+            while i < n and w[i].startswith("-"): i += 1
+            continue
         if b in ("command", "builtin", "exec", "nohup", "time"):
             i += 1
+            if b == "exec" and i < n and w[i] == "-a": i += 2       # exec -a NAME
             while i < n and w[i].startswith("-"):
                 if b == "command" and re.match(r"-[A-Za-z]*[vV]", w[i]): return None    # a lookup, not a run
                 i += 1
@@ -1227,6 +1239,14 @@ def interp_runs_deleter(raw):
     m = re.search(r"\b(unlink|shred|srm)\s+[-\w./~$]", norm)
     if m:
         return m.group(1)
+    # Argument lists as string literals, one element each (a value may hold spaces, the list
+    # may span lines, Black-style): ["git", "-C", "my dir", "worktree", "remove", "--force", "x"]
+    for m in re.finditer(r"(?:(?:\"[^\"\n]*\"|\x27[^\x27\n]*\x27)\s*,\s*)+(?:\"[^\"\n]*\"|\x27[^\x27\n]*\x27)", raw.replace("\\\"", "\"").replace("\\\x27", "\x27")):
+        lits = [a if a else b for a, b in re.findall(r"\"([^\"\n]*)\"|\x27([^\x27\n]*)\x27", m.group(0))]
+        for k, x in enumerate(lits):
+            if os.path.basename(x) == "git":
+                r = git_reason(lits[k + 1:])
+                if r: return r
     toks = re.sub(r"[;|&<>]+", " ; ", norm.replace("\n", " ; ")).split()
     for k, t in enumerate(toks):                 # every git, not the first: a plain removal hides nothing
         if os.path.basename(t) == "git":

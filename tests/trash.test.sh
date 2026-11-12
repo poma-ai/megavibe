@@ -387,6 +387,22 @@ check "git --git-dir=x worktree remove --force blocked" '[ "$(bd "git --git-dir=
 check "python subprocess git worktree remove --force blocked" '[ "$(bd "python3 -c \"import subprocess; subprocess.run(['\''git'\'','\''worktree'\'','\''remove'\'','\''--force'\'','\''wt'\''])\"")" = 2 ]'
 check "find -exec git worktree remove --force blocked" '[ "$(bd "find . -maxdepth 0 -exec git worktree remove --force ../wt \\;")" = 2 ]'
 check "find -execdir git worktree remove -f blocked" '[ "$(bd "find . -maxdepth 0 -execdir git worktree remove -f ../wt +")" = 2 ]'
+check "Black-style multi-line python list blocked" '[ "$(bd "python3 -c \"import subprocess
+subprocess.run([
+    \\\"git\\\",
+    \\\"worktree\\\",
+    \\\"remove\\\",
+    \\\"--force\\\",
+    \\\"x\\\",
+])\"")" = 2 ]'
+check "python list with a -C path containing a space blocked" '[ "$(bd "python3 -c '\''import subprocess; subprocess.run([\"git\",\"-C\",\"my dir\",\"worktree\",\"remove\",\"-f\",\"x\"])'\''")" = 2 ]'
+check "timeout 5 git worktree remove -f blocked" '[ "$(bd "timeout 5 git worktree remove -f x")" = 2 ]'
+check "gtimeout -s KILL 5 git worktree remove -f blocked" '[ "$(bd "gtimeout -s KILL 5 git worktree remove -f x")" = 2 ]'
+check "stdbuf -o0 git worktree remove -f blocked" '[ "$(bd "stdbuf -o0 git worktree remove -f x")" = 2 ]'
+check "exec -a name git worktree remove -f blocked" '[ "$(bd "exec -a foo git worktree remove -f x")" = 2 ]'
+check "partly quoted worktree word blocked" '[ "$(bd "git wor\"ktree\" remove -f x")" = 2 ]'
+check "git --attr-source HEAD worktree remove -f blocked" '[ "$(bd "git --attr-source HEAD worktree remove -f z")" = 2 ]'
+check "timeout 5 git status allowed" '[ "$(bd "timeout 5 git status")" = 0 ]'
 check "find -exec git status allowed" '[ "$(bd "find . -maxdepth 0 -exec git status \\;")" = 0 ]'
 check "unparsable command with a forced worktree remove blocked (fails closed)" '[ "$(bd "git worktree remove --force ../wt; : \\")" = 2 ]'
 check "git worktree remove without --force allowed" '[ "$(bd "git worktree remove ../wt")" = 0 ]'
