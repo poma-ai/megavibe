@@ -562,20 +562,29 @@ def kill_plugin_groups():
         _killpg(pgid, signal.SIGKILL)
 
 
+STOPPING = False
+
+
 def on_stop_signal(signum, frame):
     """SIGTERM/SIGINT: kill the plugin groups FIRST, then stop through PTB's
     KeyboardInterrupt path. PTB's own stop waits for running handler tasks before
     post_stop, so a running plugin would otherwise hold shutdown for up to its
-    180 s limit."""
+    180 s limit. A press still queued when the signal arrives starts no plugin."""
+    global STOPPING
+    STOPPING = True
     kill_plugin_groups()
     raise KeyboardInterrupt
 
 
 def on_sighup(signum, frame):
     """tmux kill-session sends SIGHUP: plugins have their own sessions, so they
-    would survive it. Kill them, then take the normal SIGTERM shutdown."""
+    would survive it. Kill them, then die at once as the bot always did on
+    SIGHUP: a graceful stop would wait for an in-flight question (up to 10
+    minutes) while holding the bot's lock, so a restart right after
+    `megavibe remote --stop` would fail."""
     kill_plugin_groups()
-    signal.raise_signal(signal.SIGTERM)
+    signal.signal(signal.SIGHUP, signal.SIG_DFL)
+    signal.raise_signal(signal.SIGHUP)
 
 
 async def _reap_group(pgid: int):
@@ -597,6 +606,8 @@ async def run_plugin(path: Path, mode: str, arg: str, ctx: dict, answer=None) ->
     Output is read with caps, never buffered whole. Never raises (except
     cancellation); failures come back as a toast, and `_answered` says whether
     the press was already acknowledged."""
+    if STOPPING:
+        return {"toast": "The bot is shutting down; try again in a moment."}
     try:
         return await _run_plugin(path, mode, arg, ctx, answer)
     except asyncio.CancelledError:

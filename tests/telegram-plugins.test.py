@@ -255,16 +255,29 @@ class TestShutdown(Base):  # F5
         await self.run_p(p)
         self.assertFalse(bot.PLUGIN_GROUPS)
 
-    def test_sighup_handler_kills_groups_then_terminates_cleanly(self):
+    def test_sighup_kills_groups_then_dies_as_before(self):
+        # `megavibe remote --stop` (tmux kill-session) must not wait for a graceful
+        # stop: the old process would keep the bot's lock while a question is in flight.
         calls = []
-        orig_kill, orig_raise = bot.kill_plugin_groups, signal.raise_signal
+        orig_kill, orig_raise, orig_sig = bot.kill_plugin_groups, signal.raise_signal, signal.signal
         bot.kill_plugin_groups = lambda: calls.append("kill")
-        signal.raise_signal = lambda s: calls.append(s)
+        signal.raise_signal = lambda s: calls.append(("raise", s))
+        signal.signal = lambda s, h: calls.append(("handler", s, h))
         try:
             bot.on_sighup(signal.SIGHUP, None)
         finally:
-            bot.kill_plugin_groups, signal.raise_signal = orig_kill, orig_raise
-        self.assertEqual(calls, ["kill", signal.SIGTERM])
+            bot.kill_plugin_groups, signal.raise_signal, signal.signal = orig_kill, orig_raise, orig_sig
+        self.assertEqual(calls, ["kill", ("handler", signal.SIGHUP, signal.SIG_DFL), ("raise", signal.SIGHUP)])
+
+    async def test_no_plugin_starts_once_stopping(self):
+        p = self.plugin("touch %s/started\necho '{\"toast\":\"ok\"}'\n" % self.dir)
+        bot.STOPPING = True
+        try:
+            res = await self.run_p(p)
+        finally:
+            bot.STOPPING = False
+        self.assertFalse((self.dir / "started").exists())
+        self.assertIn("shutting down", res.get("toast", ""))
 
     def test_stop_signal_kills_groups_before_shutdown_waits(self):
         calls = []
