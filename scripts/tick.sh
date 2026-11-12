@@ -7,7 +7,7 @@
 #
 # Report (plain text, first line first):
 #   tick NAME: NEEDS ACTION (n) | window <from>..<to>        or   tick NAME: quiet | window ...
-#   auth:   scripts/claude-auth-check.sh at TICK_AUTH_HOURS (default 12): the refresh token
+#   auth:   scripts/claude-auth-check.sh at TICK_AUTH_HOURS (default 12): the login lifetime
 #           is what keeps an unattended session alive; a warning here goes to the user NOW
 #   usage:  both subscriptions' weekly windows (N% used, the projection for the end of
 #           the window, time to reset) and `usage-route.sh balance` when it has a preference
