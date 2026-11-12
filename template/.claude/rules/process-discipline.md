@@ -61,7 +61,7 @@ and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
 by default, so every wait past 5 minutes re-writes the whole context at 1.25x
 instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
 tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
-subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while its own background work still runs: stop the disposable work it started with `TaskStop` once its result is used (never by name or pattern), but keep any server or harness you still need for verification; list running tasks before declaring done.
+subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while background work it launched still runs: once its result is used, stop that work (a test server or watcher its own task started, not one another session or the user relies on) with `TaskStop` by task id, as the kill rules in `delegation.md` say; keep any server a remaining verification step needs, and list running tasks before declaring done.
 
 ## Bind dev servers to localhost by default
 
@@ -116,8 +116,8 @@ Match against the expected set (ssh-agent, gpg-agent / keyboxd, colima/lima/orbs
 
 ## Editing a file a live process reads
 
-Never edit in place a script that a running process or a review is reading: a reader then reviews, or a process runs, a mix of two versions. Give reviews a frozen copy, and deploy files that must agree with each other together.
+Do not edit in place a script that a running process or a review is reading, since the reader then sees a mix of two versions. Reviews read a frozen copy, and files that must agree with each other change in one commit or one step. An urgent hotfix to a live script ships first and is reviewed at once (the review exceptions in `CLAUDE.md`).
 
 ## Discarding output
 
-Discard output (`>/dev/null`, `2>&1 | tail -1`) only from read-only commands. For a mutating command, keep its output and report the command's own exit status, not a pipeline's. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.
+Discard output (`>/dev/null`, `2>&1 | tail -1`) only from a command that writes no files, repo state or remote state. For a mutating command, keep the tail the Bash output discipline in `CLAUDE.md` allows, but capture the command's own exit status (`set -o pipefail`, or `$?` before the pipe), not the pipeline's. When something breaks after a dependency or auto-update change, compare the process start time with the change time before blaming the change.

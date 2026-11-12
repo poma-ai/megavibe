@@ -34,8 +34,9 @@ find what is wrong with it before a user does.
 5. **Check what a change newly reaches.** A fix that adds the first caller on
    a path re-opens every hazard deferred on that path. Re-read comments and
    allow-lists that depended on a value the change altered. Check a new gate's
-   failure behaviour (open or closed) against the rule that governs it, and
-   give every probe in front of a review its own deadline.
+   failure behaviour (open or closed) against the rule that governs it, and,
+   when a change adds a probe, check that it has its own deadline, no longer
+   than a 170 s wait slice (`process-discipline.md`).
 
 ## What to report
 
