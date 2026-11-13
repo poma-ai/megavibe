@@ -13,6 +13,7 @@ export MEGAVIBE_USAGE_FILE="$T/mv/usage/claude.jsonl" MEGAVIBE_USAGE_STATE="$T/m
 export MEGAVIBE_CODEX_HOME="$T/codex" MEGAVIBE_CODEX_STATE="$T/mv/usage/codex-state.json"
 export MEGAVIBE_USER_SETTINGS="$T/settings.json"
 export MEGAVIBE_ROUTER_PROVIDER=claude
+unset MEGAVIBE_WORK_DAYS   # calendar time: the session's setting must not leak in
 row() { printf '{"t":%s,"sd":{"p":%s,"r":%s}}\n' "$1" "$2" "$3"; }
 route() { /bin/bash "$REPO/scripts/usage-route.sh" "$@"; }
 pace() { route pace; }

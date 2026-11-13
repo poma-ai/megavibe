@@ -37,7 +37,8 @@
 # counts toward `over` (usage only grows inside a window) but never toward `under`. Exit status is always 0.
 #
 # Test seams: MEGAVIBE_USAGE_FILE, MEGAVIBE_USAGE_STATE, MEGAVIBE_NOW,
-# MEGAVIBE_USER_SETTINGS, MEGAVIBE_CODEX_HOME, MEGAVIBE_CODEX_STATE. Tuning: MEGAVIBE_ROUTER_UP (model for `under`, default opus).
+# MEGAVIBE_USER_SETTINGS, MEGAVIBE_CODEX_HOME, MEGAVIBE_CODEX_STATE. Tuning: MEGAVIBE_ROUTER_UP (model for `under`, default opus),
+# MEGAVIBE_WORK_DAYS (which weekdays the weekly projection counts, default all seven; see work_days below).
 set -uo pipefail
 
 MV="${MEGAVIBE_HOME:-$HOME/.megavibe}"
@@ -53,6 +54,60 @@ case "$MODE" in codex|codex-band) PROVIDER=codex ;; esac
 if [ "$PROVIDER" = codex ]; then
   FILE=""; STATE="${MEGAVIBE_CODEX_STATE:-$MV/usage/codex-route-state.json}"; STALE=86400
 fi
+
+# Working days. Someone who uses the subscriptions on five days a week spends nothing on the other two, so a
+# straight line over calendar time overstates the week before a weekend and understates it after. With
+# MEGAVIBE_WORK_DAYS set (the variable, else the env block of ~/.claude/settings.json, which the launcher and a
+# plain terminal also read), the weekly window's elapsed share, its projections and the time left for `under`
+# count only the hours of those local weekdays. Values: day names or 3+ letter prefixes, ranges, commas or
+# spaces: "mon-fri", "mon,tue,thu", "sun-thu", "all". Unset, empty or unreadable means all seven days, the
+# behaviour before this setting existed. The 5-hour window is never affected.
+# SHORTCUT: the local UTC offset at "now" is applied to the whole window, so a DST change inside it moves the
+# day boundaries before it by one hour; upgrade to per-day offsets if that ever matters.
+work_days() {   # prints a JSON array of weekday numbers (0 = Sunday), or nothing when the value is invalid
+  local raw t a b i n out="" seen=",,,,,,," names="sunday monday tuesday wednesday thursday friday saturday"
+  raw=$(printf '%s' "$1" | tr 'A-Z,' 'a-z ')
+  dayno() { local j=0 nm; for nm in $names; do [ "${#1}" -ge 3 ] && case "$nm" in "$1"*) echo "$j"; return 0 ;; esac; j=$((j + 1)); done; return 1; }
+  for t in $raw; do
+    case "$t" in
+      all|every|everyday) a=0; b=6 ;;
+      *-*) a=$(dayno "${t%%-*}") && b=$(dayno "${t#*-}") || return 0 ;;
+      *) a=$(dayno "$t") || return 0; b=$a ;;
+    esac
+    i=$a; n=0
+    while :; do
+      case "$seen" in *",$i,"*) ;; *) seen="$seen$i,"; out="$out${out:+,}$i" ;; esac
+      [ "$i" -eq "$b" ] && break
+      i=$(( (i + 1) % 7 )); n=$((n + 1)); [ "$n" -le 7 ] || return 0
+    done
+  done
+  [ -n "$out" ] && printf '[%s]' "$out"
+  return 0
+}
+WD_RAW="${MEGAVIBE_WORK_DAYS-}"
+if [ -z "$WD_RAW" ] && [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  WD_RAW=$(jq -r '.env.MEGAVIBE_WORK_DAYS? // empty | strings' "$SETTINGS" 2>/dev/null)
+fi
+WD=$(work_days "${WD_RAW:-all}"); [ -n "$WD" ] || WD='[0,1,2,3,4,5,6]'
+# The local UTC offset at NOW in seconds (BSD date -r, else GNU date -d @), 0 when neither answers.
+TZOFF=$(date -r "${NOW:-0}" +%z 2>/dev/null || date -d "@${NOW:-0}" +%z 2>/dev/null)
+case "$TZOFF" in [+-][0-9][0-9][0-9][0-9]) TZOFF=$(( (${TZOFF:0:1}1) * (10#${TZOFF:1:2} * 3600 + 10#${TZOFF:3:2} * 60) )) ;; *) TZOFF=0 ;; esac
+# jq helpers shared by the decision engine and the pace display. worksecs: seconds of [a, b) that fall on a
+# working day (all of them with seven days, so the arithmetic is unchanged there). workel: the elapsed share
+# of a window of length len ending at r, in working time.
+# shellcheck disable=SC2016
+WORKJQ='
+  def worksecs($a; $b):
+    if $b <= $a then 0
+    elif ($wd | length) == 7 then $b - $a
+    else [range((($a + $off) / 86400 | floor); (($b + $off) / 86400 | floor) + 1)
+          | . as $d | select(any($wd[]; . == (($d + 4) % 7)))
+          | ($d * 86400 - $off) as $s | ([$s + 86400, $b] | min) - ([$s, $a] | max) | select(. > 0)] | add // 0
+    end;
+  def workel($r; $len):
+    if ($wd | length) == 7 then 1 - ($r - $now) / $len
+    else worksecs($r - $len; $r) as $tot | if $tot <= 0 then 1 - ($r - $now) / $len else worksecs($r - $len; $now) / $tot end
+    end;'
 
 # Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six most recently written rollout files
 # of the last 8 days (by mtime, sorted over the whole list: a resumed session keeps appending to an old file).
@@ -105,7 +160,8 @@ case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band
 # The decision engine selects the window exactly as status always has. Only then
 # sort its observations for a display rate; never pick a second window by timestamp.
 emit_pace() {
-  LC_ALL=C jq -r --arg provider "$PROVIDER" --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" '
+  LC_ALL=C jq -r --arg provider "$PROVIDER" --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" \
+    --argjson wd "$WD" --argjson off "$TZOFF" "$WORKJQ"'
     def sec: if . > 100000000000 then . / 1000 else . end;
     def rounded: . * 1000 | round / 1000;
     def blank: [$provider, "", "", "", "", "", ""];
@@ -127,7 +183,9 @@ emit_pace() {
     | .first as $first | .last as $last | .reliable as $reliable
     | if $w == null or $last == null then blank
       elif $w.stale or $now - $last.t > $stale or $reset <= $now or $reset > $now + 604800 then blank
-      else ($reset - $now) as $rem | (604800 - $rem) as $elapsed
+      else ($reset - $now) as $rem
+        # Elapsed in working time, scaled to the week (exactly 604800 - $rem with seven working days).
+        | (if ($wd | length) == 7 then 604800 - $rem else workel($reset; 604800) * 604800 end) as $elapsed
         # A remembered maximum or a differing jitter sample is not a dated anchor
         # for the selected usage. Suppress the recent estimate if it cannot agree.
         | (if $reliable and $first != null and $last.t - $first.t >= 7200 and $last.p == $w.used
@@ -135,7 +193,7 @@ emit_pace() {
         | [$provider, $w.used, ($elapsed / 6048 | rounded),
            (if $elapsed >= 30240 then ($w.used * 604800 / $elapsed | rounded) else "" end),
            (if $rate != null then ($rate | rounded) else "" end),
-           (if $rate != null then ($last.p + $rate * ($reset - $last.t) / 86400 | rounded) else "" end),
+           (if $rate != null then ($last.p + $rate * worksecs($last.t; $reset) / 86400 | rounded) else "" end),
            ($rem / 86400 | rounded)]
       end | map(tostring) | join("|")
   ' <<<"$HISTORY" 2>/dev/null
@@ -209,7 +267,7 @@ PREV=$( [ -f "$STATE" ] && cat "$STATE" 2>/dev/null | jq -sc 'map(select(type ==
 [ -n "$PREV" ] || PREV='{}'
 
 # shellcheck disable=SC2016
-DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$PREV" '
+DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$PREV" --argjson wd "$WD" --argjson off "$TZOFF" "$WORKJQ"'
   def sec: if . > 100000000000 then . / 1000 else . end;      # a resets_at in milliseconds
   # A window is live while its resets_at is ahead. Rows from idle sessions can be logged late
   # and carry an old window, so liveness (not append order) picks the window: the newest live
@@ -230,8 +288,11 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
   def win($w; $len):
     if ($w | type) != "object" or ($w.p | type) != "number" or ($w.r | type) != "number" then null
     else (($w.r | sec) - $now) as $rem
-      | ((1 - $rem / $len) | if . < 0 then 0 elif . > 1 then 1 else . end) as $el
-      | {r: ($w.r | sec), used: $w.p, rem: $rem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end),
+      # The weekly window counts working time (MEGAVIBE_WORK_DAYS); the 5-hour window stays calendar time.
+      # wrem: working seconds left, which is $rem with seven working days.
+      | (if $len == 604800 then workel(($w.r | sec); $len) else 1 - $rem / $len end | if . < 0 then 0 elif . > 1 then 1 else . end) as $el
+      | (if $len == 604800 then worksecs($now; ($w.r | sec)) else $rem end) as $wrem
+      | {r: ($w.r | sec), used: $w.p, rem: $rem, wrem: $wrem, el: $el, proj: (if $el >= 0.25 then $w.p / $el else null end),
          stale: (($now - ($w.t | tonumber? // 0)) > $stale)}      # old reading in a live window: still a floor for `over`, no basis for `under`
     end;
   def human($s): if $s >= 172800 then "\($s / 86400 | floor)d"
@@ -252,7 +313,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
      and ($fh == null or $fh.used < 70)) as $over_out
   | ($sd != null and ($sd.used >= 75 or ($sd.proj != null and $sd.proj > 85)
                       or ($sd.el < 0.25 and $sd.used > 100 * $sd.el + 15))) as $under_out   # early week: no projection yet, so compare with a straight-line pace
-  | (($sd != null and ($sd.stale | not) and (($sd.proj != null and $sd.proj < 70) or ($sd.rem <= 129600 and $sd.used < 60)))
+  | (($sd != null and ($sd.stale | not) and (($sd.proj != null and $sd.proj < 70) or ($sd.wrem <= 129600 and $sd.used < 60)))
      or ($fh != null and ($fh.stale | not) and $fh.rem <= 3600 and $fh.used < 50)) as $under_cand
   | ($under_cand and ($under_out | not)) as $under_in
   # c = when `over` first qualified to leave (readings below the leave thresholds); it resets whenever they stop qualifying
@@ -266,7 +327,7 @@ DECISION=$(jq -c --argjson now "$NOW" --argjson stale "$STALE" --argjson prev "$
         else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: (if $pend > 0 then $pend else $now end), c: 0} end)
      else {b: "normal", s: ($since | if $cur == "normal" then . else $now end), p: 0, c: 0} end) as $n
   | (if $n.b == "over" then (if $fh != null and $fh.used >= 85 then "5h" else "7d" end)
-     elif ($sd != null and $sd.rem <= 129600 and $sd.used < 60) or ($sd != null and $sd.proj != null and $sd.proj < 70) then "7d" else "5h" end) as $which
+     elif ($sd != null and $sd.wrem <= 129600 and $sd.used < 60) or ($sd != null and $sd.proj != null and $sd.proj < 70) then "7d" else "5h" end) as $which
   | (if $which == "5h" then $fh else $sd end) as $w0
   | (if $w0 != null then [$which, $w0] elif $which == "5h" then ["7d", $sd] else ["5h", $fh] end) as $pair   # a held band may have lost its own window to a reset
   | {band: $n.b, since: $n.s, pend: $n.p, calm: $n.c,
