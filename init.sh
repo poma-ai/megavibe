@@ -37,6 +37,38 @@ if [ -n "${HOME:-}" ] && [ "$PROJECT" -ef "$HOME" ]; then
   exit 0
 fi
 
+# A checkout older than the installed megavibe must not install over it: a working
+# copy left on an old branch silently replaced a project's newer hooks and rules.
+# Offline: refuse only when SCRIPT_DIR is itself a git work tree, the installed
+# commit ($MEGAVIBE_HOME/version) is a full id of a commit this repo knows, and HEAD is a
+# strict ancestor of it. Anything else (not git, version "3", unknown, equal,
+# newer, diverged) installs as before. The same test guards the launcher's repo sync.
+_stale_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+      -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@"
+}
+_top="$(_stale_git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ "${MEGAVIBE_INIT_ALLOW_STALE:-}" != 1 ] && [ -n "$_top" ] && [ "$_top" -ef "$SCRIPT_DIR" ]; then
+  _mvh="${MEGAVIBE_HOME:-$HOME/.megavibe}"
+  _inst=""
+  [ -r "$_mvh/version" ] && _inst="$(tr -d '[:space:]' < "$_mvh/version" 2>/dev/null || true)"
+  _head="$(_stale_git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$_inst" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [ -n "$_head" ] && [ "$_head" != "$_inst" ] \
+     && [ "$(_stale_git -C "$SCRIPT_DIR" cat-file -t "$_inst" 2>/dev/null || true)" = commit ] \
+     && _stale_git -C "$SCRIPT_DIR" merge-base --is-ancestor "$_head" "$_inst" 2>/dev/null; then
+    {
+      echo "Refusing to install: this megavibe checkout is older than the installed megavibe."
+      echo "  checkout:  $SCRIPT_DIR at $_head"
+      echo "  installed: $_inst"
+      echo "Installing from it would overwrite newer hooks and rules with older ones. Either:"
+      printf '  1. run %q %q (the installed copy);\n' "$_mvh/init.sh" "$PROJECT"
+      printf '  2. update this checkout (git -C %q switch main && git -C %q pull; works from a detached HEAD too);\n' "$SCRIPT_DIR" "$SCRIPT_DIR"
+      printf '  3. MEGAVIBE_INIT_ALLOW_STALE=1 bash %q %q to install from it anyway.\n' "$0" "$PROJECT"
+    } >&2
+    exit 1
+  fi
+fi
+
 # --- Check prerequisites ---
 if ! command -v jq &>/dev/null; then
   echo "Warning: jq is not installed. Hooks require jq to function."
@@ -76,7 +108,16 @@ mkdir -p "$PROJECT/.claude/rules"
 
 # Mode of a file, portably: BSD stat and GNU stat disagree on the flag.
 stat_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null
+  # BSD and GNU stat are probed SEPARATELY and each answer validated. Chained
+  # with ||, GNU stat reads `-f` as --file-system and takes both arguments as
+  # operands: it prints filesystem info for the file, fails on the format
+  # string, and the fallback then appends its number to that text, which
+  # chmod rejects (the launcher's lock code hit the same trap).
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=""
+  case "$m" in ''|*[!0-7]*) m=$(stat -c '%a' "$1" 2>/dev/null) || m="" ;; esac
+  case "$m" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s\n' "$m"
 }
 
 # Resolve a path through its symlink chain. POSIX only: BSD readlink has no -f.
@@ -581,8 +622,15 @@ if [ -d "$HOME/.gemini" ] && command -v jq &>/dev/null; then
   else
     tmp="$(mktemp)"
     jq --arg p "$ABS_TARGET" '. + {($p): "TRUST_FOLDER"}' "$GEMINI_TRUST" > "$tmp"
-    mv "$tmp" "$GEMINI_TRUST"
-    echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+    # atomic_install, not a bare mv: onto a read-only trustedFolders.json mv
+    # asks "override ...?" on a terminal, and "n" kept the file while this
+    # said "trusted".
+    if atomic_install "$tmp" "$GEMINI_TRUST"; then
+      echo "  trusted: $ABS_TARGET in ~/.gemini/trustedFolders.json"
+    else
+      echo "  warn: could not write $GEMINI_TRUST (read-only?) — Gemini CLI does not trust $ABS_TARGET yet"
+    fi
+    rm -f "$tmp"
   fi
 fi
 

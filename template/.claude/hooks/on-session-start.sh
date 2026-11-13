@@ -270,7 +270,7 @@ fi
 # Claude login lifetime. The access token renews itself; the REFRESH token is what
 # keeps an unattended session alive, and when it lapses the session dies with "Login
 # expired" with no way to /login over Remote Control (measured 2026-10-31: a fix agent
-# killed mid-edit, twenty scheduled ticks lost). One keychain read, no secrets printed.
+# killed mid-edit, twenty scheduled ticks lost). One bounded `claude auth status` call (stored record as fallback), no secrets printed.
 AUTH_ROW=""; AUTH_LINE=""
 _AC="$HOME/.megavibe/scripts/claude-auth-check.sh"
 if [ -f "$_AC" ]; then
@@ -279,8 +279,9 @@ if [ -f "$_AC" ]; then
   _arc=0; _auth=$(bash "$_AC" 24 2>/dev/null </dev/null) || _arc=$?
   _auth="${_auth#claude-auth: }"
   case "$_arc" in
-    0) AUTH_ROW="
-| Claude login | ${_auth} |" ;;
+    # 2: no credentials found or the lifetime is unknown; a plain row, nothing to tell the user.
+    0|2) AUTH_ROW="
+| Claude login | ${_auth:-login lifetime unknown} |" ;;
     1) AUTH_ROW="
 | Claude login | ${_auth} |"; AUTH_LINE="
 

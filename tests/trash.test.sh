@@ -263,6 +263,50 @@ unset MEGAVIBE_TRASH_REVIEW_COUNT
 
 # 5. Real-delete guard.
 bd() { printf '%s' "$1" | jq -Rs '{tool_input:{command:.}}' | env "${@:2}" bash "$HOOKS/block-dangerous-bash.sh" 2>/dev/null; echo $?; }
+
+# A pipeline's formatter status must not be the condition that permits a
+# destructive command. The guard is intentionally tested before the Python net.
+check "tail followed by git push is blocked without pipefail" '[ "$(bd "check | tail -1 && git push")" = 2 ]'
+check "head followed by git commit after a semicolon is allowed (the commit does not depend on the pipeline)" '[ "$(bd "check | head -1; git commit -m ship")" = 0 ]'
+check "git diff piped to head, then ; git commit is allowed" '[ "$(bd "git diff | head -5; git commit -am wip")" = 0 ]'
+check "head followed by && cd dir && git commit is blocked" '[ "$(bd "check | head -1 && cd sub && git commit -m ship")" = 2 ]'
+check "grep followed by gh pr merge is blocked" '[ "$(bd "check | grep ok && gh pr merge 1")" = 2 ]'
+check "pipefail permits the same push" '[ "$(bd "set -o pipefail; check | tail -1 && git push")" = 0 ]'
+check "git log head followed by echo is allowed" '[ "$(bd "git log | head -1; echo done")" = 0 ]'
+check "grep followed by git status is allowed" '[ "$(bd "grep x f && git status")" = 0 ]'
+check "a commit message mentioning the pattern is allowed" '[ "$(bd "git commit -m '\''check | tail -1 && git push'\''")" = 0 ]'
+PG_A1="echo \"it's\" | tail -1 && git push && echo \"don't\""
+check "A1 apostrophe inside double quotes does not break masking" '[ "$(bd "$PG_A1")" = 2 ]'
+check "A2 git -C dir push after a formatter is blocked" '[ "$(bd "check | tail -1 && git -C sub push")" = 2 ]'
+check "A2 git -C dir commit after a formatter is blocked" '[ "$(bd "check | tail -1 && git -C sub commit -m x")" = 2 ]'
+check "A3 |& into a formatter is blocked" '[ "$(bd "check |& tail -1 && git push")" = 2 ]'
+check "A4 set -euo pipefail before the pipeline permits it" '[ "$(bd "set -euo pipefail; check | tail -1 && git push")" = 0 ]'
+check "A4 pipefail set after the pipeline stays blocked" '[ "$(bd "check | tail -1 && git push; set -o pipefail")" = 2 ]'
+check "A5 jq formatter is blocked" '[ "$(bd "check | jq . && git push")" = 2 ]'
+check "A5 rg formatter is blocked" '[ "$(bd "check | rg x && git push")" = 2 ]'
+check "A5 tr formatter is blocked" '[ "$(bd "check | tr a b && git push")" = 2 ]'
+check "A5 cat formatter is blocked" '[ "$(bd "check | cat && git push")" = 2 ]'
+check "A6 an intervening cd is still caught" '[ "$(bd "check | tail -1 && cd .. && git push")" = 2 ]'
+F3A=$'cd /x\nset -euo pipefail\nmake test | tail -5 && git push'
+check "F3 set -euo pipefail on its own line before the pipeline permits it" '[ "$(bd "$F3A")" = 0 ]'
+check "F3 pipefail inside a brace group permits it" '[ "$(bd "{ set -o pipefail; npm test | tail -20 && git push; }")" = 0 ]'
+F4A=$'npm test 2>&1 | tail -5\ngit add -A && git commit -m x'
+check "F4 a newline ends the command: formatter on one line, git commit on the next" '[ "$(bd "$F4A")" = 0 ]'
+F4B=$'ls | head\ngit add . && git commit -m x'
+check "F4 a newline after a head pipe does not reach the next line's git commit" '[ "$(bd "$F4B")" = 0 ]'
+F4C=$'make | tail \\\n && git push'
+check "F4 a backslash-newline continuation still joins the formatter to git push" '[ "$(bd "$F4C")" = 2 ]'
+check "F5 || is not a pipe" '[ "$(bd "make || cat log && git push")" = 0 ]'
+F6A='npm test | tail -20 && git -C "$PWD" push'
+check "F6 a quoted -C path does not hide the git command" '[ "$(bd "$F6A")" = 2 ]'
+F7A='npm test | tee test.log && test "${PIPESTATUS[0]}" -eq 0 && git push'
+check "F7 an explicit PIPESTATUS check between the formatter and git push is allowed" '[ "$(bd "$F7A")" = 0 ]'
+check "R2 a --dry-run commit after a formatter is allowed" '[ "$(bd "git status --short | head -20 && git commit --dry-run")" = 0 ]'
+check "R2 a --dry-run push after a formatter is allowed" '[ "$(bd "make | tail -1 && git push --dry-run origin x")" = 0 ]'
+check "R2 --dry-run inside a quoted message does not exempt the commit" '[ "$(bd "make | tail -1 && git commit -m \"x --dry-run\"")" = 2 ]'
+check "R3 git push -n after a formatter is allowed" '[ "$(bd "git diff --stat | head -20 && git push -n origin HEAD")" = 0 ]'
+check "R3 a dry-run push followed by a real push is blocked" '[ "$(bd "make test | tail -20 && git push --dry-run && git push")" = 2 ]'
+check "R3 git commit -n (skips hooks) is not a dry run" '[ "$(bd "make | tail -1 && git commit -n -m x")" = 2 ]'
 check "python heredoc rmtree blocked" '[ "$(bd "python3 - <<EOF
 import shutil
 shutil.rmtree(\"/tmp/x\")
@@ -379,6 +423,144 @@ check "\$(which rm) blocked" '[ "$(bd "\$(which rm) x")" = 2 ]'
 check "git rm -f blocked" '[ "$(bd "git rm -f notes.md")" = 2 ]'
 check "__import__ os remove blocked" '[ "$(bd "python3 -c \"__import__('\''os'\'').remove('\''x'\'')\"")" = 2 ]'
 check "git rm without -f allowed" '[ "$(bd "git rm notes.md")" = 0 ]'
+check "git worktree remove --force blocked" '[ "$(bd "git worktree remove --force ../wt")" = 2 ]'
+check "git worktree remove -f blocked" '[ "$(bd "git worktree remove -f ../wt")" = 2 ]'
+check "git worktree remove -f -f (locked) blocked" '[ "$(bd "git worktree remove -f -f ../wt")" = 2 ]'
+check "git -C repo worktree remove --force blocked" '[ "$(bd "git -C repo worktree remove --force ../wt")" = 2 ]'
+check "git --git-dir=x worktree remove --force blocked" '[ "$(bd "git --git-dir=x worktree remove --force -- ../wt")" = 2 ]'
+check "python subprocess git worktree remove --force blocked" '[ "$(bd "python3 -c \"import subprocess; subprocess.run(['\''git'\'','\''worktree'\'','\''remove'\'','\''--force'\'','\''wt'\''])\"")" = 2 ]'
+check "find -exec git worktree remove --force blocked" '[ "$(bd "find . -maxdepth 0 -exec git worktree remove --force ../wt \\;")" = 2 ]'
+check "find -execdir git worktree remove -f blocked" '[ "$(bd "find . -maxdepth 0 -execdir git worktree remove -f ../wt +")" = 2 ]'
+check "Black-style multi-line python list blocked" '[ "$(bd "python3 -c \"import subprocess
+subprocess.run([
+    \\\"git\\\",
+    \\\"worktree\\\",
+    \\\"remove\\\",
+    \\\"--force\\\",
+    \\\"x\\\",
+])\"")" = 2 ]'
+check "python list with a -C path containing a space blocked" '[ "$(bd "python3 -c '\''import subprocess; subprocess.run([\"git\",\"-C\",\"my dir\",\"worktree\",\"remove\",\"-f\",\"x\"])'\''")" = 2 ]'
+check "timeout 5 git worktree remove -f blocked" '[ "$(bd "timeout 5 git worktree remove -f x")" = 2 ]'
+check "gtimeout -s KILL 5 git worktree remove -f blocked" '[ "$(bd "gtimeout -s KILL 5 git worktree remove -f x")" = 2 ]'
+check "stdbuf -o0 git worktree remove -f blocked" '[ "$(bd "stdbuf -o0 git worktree remove -f x")" = 2 ]'
+check "exec -a name git worktree remove -f blocked" '[ "$(bd "exec -a foo git worktree remove -f x")" = 2 ]'
+check "partly quoted worktree word blocked" '[ "$(bd "git wor\"ktree\" remove -f x")" = 2 ]'
+check "git --attr-source HEAD worktree remove -f blocked" '[ "$(bd "git --attr-source HEAD worktree remove -f z")" = 2 ]'
+check "timeout 5 git status allowed" '[ "$(bd "timeout 5 git status")" = 0 ]'
+check "xcrun git -C repo worktree remove --force blocked" '[ "$(bd "xcrun git -C repo worktree remove --force ../wt")" = 2 ]'
+check "arch -arm64 git worktree remove -f blocked" '[ "$(bd "arch -arm64 git worktree remove -f ../wt")" = 2 ]'
+check "node template literal git worktree remove --force blocked" '[ "$(bd "node -e '\''require(\"child_process\").execSync(\`git worktree remove --force x\`)'\''")" = 2 ]'
+check "node template literal git clean -fd blocked (as on main before)" '[ "$(bd "node -e '\''execSync(\`git clean -fd\`)'\''")" = 2 ]'
+check "xcrun --find git allowed" '[ "$(bd "xcrun --find git")" = 0 ]'
+check "find -exec git status allowed" '[ "$(bd "find . -maxdepth 0 -exec git status \\;")" = 0 ]'
+check "unparsable command with a forced worktree remove blocked (fails closed)" '[ "$(bd "git worktree remove --force ../wt; : \\")" = 2 ]'
+check "git worktree remove without --force allowed" '[ "$(bd "git worktree remove ../wt")" = 0 ]'
+check "git worktree list and prune allowed" '[ "$(bd "git worktree list; git worktree prune")" = 0 ]'
+check "git worktree add -f allowed (it creates, never deletes)" '[ "$(bd "git worktree add -f ../wt main")" = 0 ]'
+# Token walk for git worktree remove / clean / rm: one case per line, B| blocked, A| allowed.
+while IFS= read -r _wl; do
+  [ -n "$_wl" ] || continue
+  _we=2; [ "${_wl%%|*}" = A ] && _we=0
+  _wc=${_wl#*|}
+  check "wt walk ${_wl%%|*}: $_wc" '[ "$(bd "$_wc")" = "$_we" ]'
+done <<'WTCASES'
+B|git worktree remove --for ../wt
+B|git worktree remove --f ../wt
+B|git worktree remove ../wt --force>/dev/null
+B|git worktree remove ../wt 2>&1 --force
+B|git worktree remove --force 2>&1
+B|git "worktree" remove --force ../wt
+B|git worktree "remove" -f ../wt
+B|"git" worktree remove -f ../wt
+B|\git worktree remove -f ../wt
+B|/usr/bin/git worktree remove -f ../wt
+B|git --git-dir x worktree remove --force ../wt
+B|git --work-tree x worktree remove --force ../wt
+B|git --namespace foo -C main worktree remove --force ../wt
+B|git --config-env a=B worktree remove --force ../wt
+B|git -c core.x=1 worktree remove -qf ../wt
+B|git -C a --git-dir x worktree remove ../wt -f
+B|git --no-pager --bare worktree remove -ff ../wt
+B|GIT_X=1 git worktree remove -f ../wt
+B|sudo -u bob git worktree remove -f ../wt
+B|env -i FOO=1 git worktree remove -f ../wt
+B|nice -n 5 git worktree remove -f ../wt
+B|command git worktree remove -f ../wt
+B|ls && (git worktree remove -f ../wt)
+B|echo hi | xargs git worktree remove -f
+B|echo $(git worktree remove -f ../wt)
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','--force','wt'])"
+B|node -e "require('child_process').execFileSync('git',['-C','x','worktree','remove','-f','wt'])"
+B|python3 -c "import subprocess; subprocess.run(['git','worktree','remove','wt']); subprocess.run(['git','worktree','remove','--force','wt2'])"
+B|bash -c "git worktree remove --force ../wt"
+B|git --git-dir x clean -fd
+B|git --work-tree x clean --f
+B|git --git-dir x rm -f a.txt
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','clean','-f'])"
+B|python3 -c "import subprocess; subprocess.run(['git','-C','x','rm','-f','a'])"
+A|echo git worktree remove --force x
+A|git worktree remove -- --force
+A|git worktree remove ./wt -- -f
+A|git worktree remove ../wt
+A|git worktree remove --help
+A|git worktree list
+A|git worktree prune
+A|git worktree add -f ../wt main
+A|git worktree move -f ../wt ../wt2
+A|git worktree lock ../wt
+A|git -C x worktree remove ../wt 2>&1
+A|git --git-dir x clean -n
+A|git --git-dir x rm --cached -f a.txt
+A|python3 -c "import subprocess; subprocess.run(['git','-C','x','worktree','remove','wt'])"
+WTCASES
+# Review round 2 findings: comments in argument lists, find -exec operands, wrapper option
+# values, here-strings to a shell, and a pre-filter that stays fast on large text.
+check "python list with a # comment line inside blocked" '[ "$(bd "python3 - <<'\''PY'\''
+import subprocess
+subprocess.run([
+    '\''git'\'',
+    # why we do this
+    '\''worktree'\'',
+    '\''remove'\'',
+    '\''--force'\'',
+    '\''../wt'\'',
+])
+PY")" = 2 ]'
+while IFS= read -r _wl; do
+  [ -n "$_wl" ] || continue
+  _we=2; [ "${_wl%%|*}" = A ] && _we=0
+  _wc=${_wl#*|}
+  check "wt walk2 ${_wl%%|*}: $_wc" '[ "$(bd "$_wc")" = "$_we" ]'
+done <<'WTCASES2'
+B|find . -maxdepth 0 -exec git -C {} worktree remove --force ../wt \;
+B|find . -maxdepth 0 -exec env X=1 git worktree remove --force ../wt \;
+B|find . -maxdepth 0 -execdir git -C {} worktree remove -f ../wt +
+B|caffeinate -t 60 git worktree remove --force x
+B|caffeinate -w 123 git worktree remove --force x
+B|stdbuf -o L git worktree remove --force x
+B|stdbuf -i 0 -o L -e 0 git worktree remove --force x
+B|time -o out.txt git worktree remove --force x
+B|time -f %e git worktree remove --force x
+B|bash <<< 'git worktree remove --force ../wt'
+B|sh <<< "git worktree remove --force ../wt"
+B|zsh <<<'git worktree remove -f ../wt'
+B|bash -s <<< 'git worktree remove --force ../wt'
+A|find . -maxdepth 0 -exec git -C {} status \;
+A|find . -exec env X=1 git status \;
+A|caffeinate -t 60 git status
+A|stdbuf -o L git status
+A|time -o out.txt git status
+A|cat <<< 'git worktree remove --force ../wt'
+A|grep x <<< 'git worktree remove --force ../wt'
+A|bash <<< 'echo hi'
+WTCASES2
+_big=$(python3 -c 'print("cat <<'"'"'EOF'"'"'\n" + "a row of plain documentation and a quoted \"word\"\n" * 100 + "EOF")')
+_t0=$(python3 -c 'import time; print(time.time())'); _r=$(bd "$_big"); _t1=$(python3 -c 'import time; print(time.time())')
+check "100-row quoted heredoc allowed in under 1 s" '[ "$_r" = 0 ] && python3 -c "import sys; sys.exit(0 if $_t1 - $_t0 < 1.0 else 1)"'
+check "commit message naming the forced removal allowed" '[ "$(bd "git commit -m \"never git worktree remove --force\"")" = 0 ]'
+check "heredoc to cat naming the forced removal allowed" '[ "$(bd "cat <<'\''EOF'\''
+git worktree remove --force x
+EOF")" = 0 ]'
 check "commit message heredoc through cat allowed" '[ "$(bd "git commit -m \"\$(cat <<'\''EOF'\''
 use rm -rf, find -delete and git clean -f in bash scripts
 EOF
