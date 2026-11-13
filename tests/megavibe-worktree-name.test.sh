@@ -27,4 +27,11 @@ set -e
 [ "$rc" = 2 ]
 grep -q 'usage: megavibe worktree <name>' <<< "$out"
 [ ! -s "$GIT_CALLS" ]
+
+# A valid name passes the check and reaches git (the stub fails, so the command fails after it).
+set +e
+out=$(bash "$REPO/megavibe" worktree valid-name 2>&1)
+set -e
+[ -s "$GIT_CALLS" ]
+! grep -q 'usage: megavibe worktree <name>' <<< "$out"
 echo 'ok'
