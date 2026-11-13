@@ -156,6 +156,14 @@ printf '#!/bin/sh\nexit 1\n' > "$FB/claude"
 printf '#!/bin/sh\ncat "%s"\n' "$T/stale.json" > "$FB/security"
 o=$(PATH="$FB:$PATH" HOME="$T/home" MEGAVIBE_NOW=$NOW bash "$REPO/scripts/claude-auth-check.sh" 2>&1); RC=$?
 check "reported stale record without a status: unknown, never EXPIRED ($o)" '[ "$RC" = 2 ] && [[ "$o" == *"looks stale"* ]] && [[ "$o" != *EXPIRED* ]]'
+# Killed while the status call runs, the script still removes its temp file.
+mkdir -p "$T/tmpk"
+mkdir -p "$T/fbk"
+printf '#!/bin/sh\nsleep 20\n' > "$T/fbk/claude"; chmod +x "$T/fbk/claude"
+PATH="$T/fbk:$PATH" HOME="$T/home" TMPDIR="$T/tmpk" MEGAVIBE_CLAUDE_STATUS_TIMEOUT=3 bash "$REPO/scripts/claude-auth-check.sh" >/dev/null 2>&1 &
+kp=$!; for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do [ -n "$(ls "$T/tmpk")" ] && break; sleep 0.2; done
+kname=$(ls "$T/tmpk"); before=$(ls "$T/tmpk" | wc -l | tr -d ' '); kill -TERM "$kp"; wait "$kp" 2>/dev/null; krc=$?
+check "killed mid-call: temp file removed (before $before, rc $krc)" '[ "$before" = 1 ] && [ "$krc" = 143 ] && [ ! -e "$T/tmpk/$kname" ] && [ -z "$(ls "$T/tmpk")" ]'
 o=$(bash "$REPO/scripts/claude-auth-check.sh" -h 2>&1)
 check "help shows the whole header" '[[ "$o" == *"MEGAVIBE_NOW pins the clock"* ]]'
 # Without a usable status, a zero or pre-2001 expiry is unknown, never expired.

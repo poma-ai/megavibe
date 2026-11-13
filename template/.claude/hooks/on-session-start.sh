@@ -279,8 +279,9 @@ if [ -f "$_AC" ]; then
   _arc=0; _auth=$(bash "$_AC" 24 2>/dev/null </dev/null) || _arc=$?
   _auth="${_auth#claude-auth: }"
   case "$_arc" in
-    0) AUTH_ROW="
-| Claude login | ${_auth} |" ;;
+    # 2: no credentials found or the lifetime is unknown; a plain row, nothing to tell the user.
+    0|2) AUTH_ROW="
+| Claude login | ${_auth:-login lifetime unknown} |" ;;
     1) AUTH_ROW="
 | Claude login | ${_auth} |"; AUTH_LINE="
 
