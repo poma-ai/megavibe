@@ -281,7 +281,7 @@ if [ -f "$_AC" ]; then
   case "$_arc" in
     # 2: no credentials found or the lifetime is unknown; a plain row, nothing to tell the user.
     0|2) AUTH_ROW="
-| Claude login | ${_auth} |" ;;
+| Claude login | ${_auth:-login lifetime unknown} |" ;;
     1) AUTH_ROW="
 | Claude login | ${_auth} |"; AUTH_LINE="
 

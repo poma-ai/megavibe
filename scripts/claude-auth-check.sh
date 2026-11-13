@@ -62,10 +62,11 @@ elif [ -z "${MEGAVIBE_CLAUDE_CREDENTIALS:-}" ] && command -v perl >/dev/null 2>&
     # Bounded: the call runs in its own process group, which is killed at the deadline, and its
     # output goes to a file, so a child that outlives it cannot hold a pipe open. Logged out,
     # the CLI prints valid JSON and exits 1: keep the output, let jq judge it.
+    st_file=""
+    # Killed between here and the rm below (HUP, INT, TERM), the file still goes.
+    trap 'rm -f "$st_file"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
     st_file=$(mktemp "${TMPDIR:-/tmp}/claude-auth-status.XXXXXX" 2>/dev/null) || st_file=""
     if [ -n "$st_file" ]; then
-      # Killed between here and the rm below (HUP, INT, TERM), the file still goes.
-      trap 'rm -f "$st_file"' EXIT; trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
       perl -e '
         my $t = shift; my $pid = fork; die unless defined $pid;
         if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
