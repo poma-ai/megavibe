@@ -34,10 +34,10 @@ Stated plainly, because you should decide before pasting:
   A Codex review runs with the project read-only and a throwaway scratch directory
   writable (no network), so it can run the harnesses a review needs; `--strict` or
   `MEGAVIBE_CODEX_SCRATCH=0` makes it fully read-only. It refuses to run while
-  `~/.codex/config.toml` sets `openai_base_url` or `chatgpt_base_url` at the top
-  level or in the active profile (`MEGAVIBE_CODEX_ALLOW_ENDPOINT=1` allows it).
-  That check reads the file line by line: quoted table keys, dotted keys, inline
-  tables and multi-line strings are not parsed.
+  `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) sets `openai_base_url` or
+  `chatgpt_base_url` at the top level or in the active profile
+  (`MEGAVIBE_CODEX_ALLOW_ENDPOINT=1` allows it). That check reads the file line by
+  line: quoted keys, dotted keys, inline tables and multi-line strings are not parsed.
 - **Hooks run on every tool call** in projects you initialise — they write context
   files under `.agent/` and never send anything off your machine on their own.
 - **Backends see your content.** Delegating to Gemini or Codex sends the material
