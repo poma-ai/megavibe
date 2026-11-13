@@ -1059,6 +1059,103 @@ if [ "${1:-}" = "trash-greenlight" ]; then
   exec bash "$MEGAVIBE_HOME/setup.sh" --trash-greenlight-managed "$@"
 fi
 
+# Writes KEY (default MEGAVIBE_REVIEWERS) into a settings.json `env` block, or
+# removes it when the value is empty. Atomic and
+# non-destructive: jq builds the new document, a temp file in the same
+# directory takes it, and only a clean jq run gets moved over the original —
+# so an interrupted write cannot leave a truncated settings.json behind, and
+# invalid JSON already in the file stops the write instead of being replaced.
+rv_write() {
+  local file="$1" value="$2" key="${3:-MEGAVIBE_REVIEWERS}" dir tmp _mode hops=0 link
+  # Resolve a SYMLINKED settings.json to the file it points at, and rename
+  # onto that. Without this the atomic mv below replaces the link with a
+  # regular file: a settings.json symlinked into a dotfiles repo silently
+  # stops being the source of truth, the pin never reaches the repo, and
+  # every later edit there has no effect. Resolving keeps both properties —
+  # the link survives AND the write is still a rename, not a truncating
+  # copy. (setup.sh hit the same thing from the other side; see the
+  # "cp, not mv" note in its legacy-hook cleanup.)
+  while [ -L "$file" ] && [ "$hops" -lt 20 ]; do
+    link=$(readlink "$file") || break
+    case "$link" in
+      /*) file="$link" ;;
+      *)  file="$(dirname "$file")/$link" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  # Still a link at the cap: the rename below would replace THIS link and
+  # strand the rest of the chain. Refuse instead of resolving half-way.
+  if [ -L "$file" ]; then
+    echo "Could not resolve $1 — symlink chain deeper than $hops levels."; exit 1
+  fi
+  dir=$(dirname "$file")
+  mkdir -p "$dir" || { echo "Could not create $dir"; exit 1; }
+  # Read-modify-write, so serialise it. `mkdir` because macOS ships no
+  # flock(1); the directory create is atomic on every POSIX filesystem. A lock
+  # older than 30s is a crashed run, not a live one.
+  #
+  # Staleness via stat, NOT `find -mmin`: the fraction of a minute this needs
+  # is not expressible there — BSD/bfs find rejects `-mmin -0.5` outright, and
+  # with its error swallowed the emptiness test read as "stale" and deleted
+  # the lock on every single check, which is no lock at all.
+  local lock="$dir/.settings.json.lock" waited=0 lock_mtime now
+  while ! mkdir "$lock" 2>/dev/null; do
+    # BSD and GNU stat are probed SEPARATELY. Chained with ||, GNU stat reads
+    # `-f` as --file-system and takes both arguments as operands: it prints
+    # filesystem info for the lock, fails on the format string, and the
+    # fallback then appends its number to that. The arithmetic below got
+    # multiline text.
+    lock_mtime=$(stat -f '%m' "$lock" 2>/dev/null || true)
+    case "$lock_mtime" in ''|*[!0-9]*) lock_mtime=$(stat -c '%Y' "$lock" 2>/dev/null || true) ;; esac
+    case "$lock_mtime" in ''|*[!0-9]*) lock_mtime="" ;; esac
+    now=$(date +%s)
+    # Counted BEFORE the stale branch. `continue` used to skip the counter
+    # and the sleep both, so a stale lock that rmdir cannot remove (a stray
+    # file inside it) span this loop forever at full CPU.
+    waited=$((waited + 1))
+    [ "$waited" -gt 50 ] && { echo "Could not lock $file (another write is in progress)"; exit 1; }
+    if [ -n "$lock_mtime" ] && [ "$((now - lock_mtime))" -gt 30 ]; then
+      rmdir "$lock" 2>/dev/null || true
+    fi
+    sleep 0.1
+  done
+  # A RETURN trap does not fire on `exit`, so every error path below releases
+  # the lock explicitly as well.
+  trap 'rmdir "$lock" 2>/dev/null || true' RETURN
+  # Guarded: an unwritable path (a symlink cycle, a read-only mount) makes
+  # the redirect fail, and set -e would then leave the lock directory behind.
+  [ -f "$file" ] || echo '{}' > "$file" 2>/dev/null || {
+    rmdir "$lock" 2>/dev/null || true
+    echo "Could not create $file"; exit 1; }
+  jq -e . "$file" >/dev/null 2>&1 || {
+    rmdir "$lock" 2>/dev/null || true
+    echo "$file is not valid JSON — fix it first, refusing to overwrite."; exit 1; }
+  tmp=$(mktemp "$dir/.settings.json.XXXXXX") || { rmdir "$lock" 2>/dev/null || true; exit 1; }
+  # mktemp is 0600 and `mv` carries the mode across, silently tightening a
+  # 0644 settings.json.
+  _mode=$(stat -f '%Lp' "$file" 2>/dev/null || true)
+  case "$_mode" in ''|*[!0-7]*) _mode=$(stat -c '%a' "$file" 2>/dev/null || true) ;; esac
+  case "$_mode" in ''|*[!0-7]*) _mode="" ;; esac
+  [ -n "$_mode" ] && chmod "$_mode" "$tmp" 2>/dev/null || true
+  if [ -n "$value" ]; then
+    jq --arg k "$key" --arg v "$value" '.env = ((.env // {}) + {($k): $v})' "$file" > "$tmp"
+  else
+    jq --arg k "$key" 'if .env then .env |= del(.[$k]) else . end
+        | if (.env // {}) == {} then del(.env) else . end' "$file" > "$tmp"
+  fi || { rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; echo "Could not update $file"; exit 1; }
+  # Guarded. A RETURN trap does not fire on `exit`, so an unguarded mv that
+  # fails (read-only ~/.claude, an ACL, a full disk) left BOTH the temp file
+  # and the lock directory behind — and the lock then blocked every later
+  # write for 30 seconds at a time.
+  if ! mv "$tmp" "$file" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    rmdir "$lock" 2>/dev/null || true
+    echo "Could not write $file"; exit 1
+  fi
+  rmdir "$lock" 2>/dev/null || true
+  trap - RETURN
+}
+
 if [ "${1:-}" = "reviewers" ]; then
   shift
   RV="$MEGAVIBE_HOME/scripts/reviewers.sh"
@@ -1068,101 +1165,6 @@ if [ "${1:-}" = "reviewers" ]; then
   [ -f "$RV" ] || { echo "reviewers.sh is not installed yet. Run 'megavibe' once in any project (a launch syncs it), or 'bash setup.sh'."; exit 1; }
   KNOWN_RV="reviewer gemini codex"
 
-  # Writes the key into a settings.json `env` block, or removes it. Atomic and
-  # non-destructive: jq builds the new document, a temp file in the same
-  # directory takes it, and only a clean jq run gets moved over the original —
-  # so an interrupted write cannot leave a truncated settings.json behind, and
-  # invalid JSON already in the file stops the write instead of being replaced.
-  rv_write() {
-    local file="$1" value="$2" dir tmp _mode hops=0 link
-    # Resolve a SYMLINKED settings.json to the file it points at, and rename
-    # onto that. Without this the atomic mv below replaces the link with a
-    # regular file: a settings.json symlinked into a dotfiles repo silently
-    # stops being the source of truth, the pin never reaches the repo, and
-    # every later edit there has no effect. Resolving keeps both properties —
-    # the link survives AND the write is still a rename, not a truncating
-    # copy. (setup.sh hit the same thing from the other side; see the
-    # "cp, not mv" note in its legacy-hook cleanup.)
-    while [ -L "$file" ] && [ "$hops" -lt 20 ]; do
-      link=$(readlink "$file") || break
-      case "$link" in
-        /*) file="$link" ;;
-        *)  file="$(dirname "$file")/$link" ;;
-      esac
-      hops=$((hops + 1))
-    done
-    # Still a link at the cap: the rename below would replace THIS link and
-    # strand the rest of the chain. Refuse instead of resolving half-way.
-    if [ -L "$file" ]; then
-      echo "Could not resolve $1 — symlink chain deeper than $hops levels."; exit 1
-    fi
-    dir=$(dirname "$file")
-    mkdir -p "$dir" || { echo "Could not create $dir"; exit 1; }
-    # Read-modify-write, so serialise it. `mkdir` because macOS ships no
-    # flock(1); the directory create is atomic on every POSIX filesystem. A lock
-    # older than 30s is a crashed run, not a live one.
-    #
-    # Staleness via stat, NOT `find -mmin`: the fraction of a minute this needs
-    # is not expressible there — BSD/bfs find rejects `-mmin -0.5` outright, and
-    # with its error swallowed the emptiness test read as "stale" and deleted
-    # the lock on every single check, which is no lock at all.
-    local lock="$dir/.settings.json.lock" waited=0 lock_mtime now
-    while ! mkdir "$lock" 2>/dev/null; do
-      # BSD and GNU stat are probed SEPARATELY. Chained with ||, GNU stat reads
-      # `-f` as --file-system and takes both arguments as operands: it prints
-      # filesystem info for the lock, fails on the format string, and the
-      # fallback then appends its number to that. The arithmetic below got
-      # multiline text.
-      lock_mtime=$(stat -f '%m' "$lock" 2>/dev/null || true)
-      case "$lock_mtime" in ''|*[!0-9]*) lock_mtime=$(stat -c '%Y' "$lock" 2>/dev/null || true) ;; esac
-      case "$lock_mtime" in ''|*[!0-9]*) lock_mtime="" ;; esac
-      now=$(date +%s)
-      # Counted BEFORE the stale branch. `continue` used to skip the counter
-      # and the sleep both, so a stale lock that rmdir cannot remove (a stray
-      # file inside it) span this loop forever at full CPU.
-      waited=$((waited + 1))
-      [ "$waited" -gt 50 ] && { echo "Could not lock $file (another write is in progress)"; exit 1; }
-      if [ -n "$lock_mtime" ] && [ "$((now - lock_mtime))" -gt 30 ]; then
-        rmdir "$lock" 2>/dev/null || true
-      fi
-      sleep 0.1
-    done
-    # A RETURN trap does not fire on `exit`, so every error path below releases
-    # the lock explicitly as well.
-    trap 'rmdir "$lock" 2>/dev/null || true' RETURN
-    # Guarded: an unwritable path (a symlink cycle, a read-only mount) makes
-    # the redirect fail, and set -e would then leave the lock directory behind.
-    [ -f "$file" ] || echo '{}' > "$file" 2>/dev/null || {
-      rmdir "$lock" 2>/dev/null || true
-      echo "Could not create $file"; exit 1; }
-    jq -e . "$file" >/dev/null 2>&1 || {
-      rmdir "$lock" 2>/dev/null || true
-      echo "$file is not valid JSON — fix it first, refusing to overwrite."; exit 1; }
-    tmp=$(mktemp "$dir/.settings.json.XXXXXX") || { rmdir "$lock" 2>/dev/null || true; exit 1; }
-    # mktemp is 0600 and `mv` carries the mode across, silently tightening a
-    # 0644 settings.json.
-    _mode=$(stat -f '%Lp' "$file" 2>/dev/null || true)
-    case "$_mode" in ''|*[!0-7]*) _mode=$(stat -c '%a' "$file" 2>/dev/null || true) ;; esac
-    case "$_mode" in ''|*[!0-7]*) _mode="" ;; esac
-    [ -n "$_mode" ] && chmod "$_mode" "$tmp" 2>/dev/null || true
-    if [ -n "$value" ]; then
-      jq --arg v "$value" '.env = ((.env // {}) + {MEGAVIBE_REVIEWERS: $v})' "$file" > "$tmp"
-    else
-      jq 'if .env then .env |= del(.MEGAVIBE_REVIEWERS) else . end
-          | if (.env // {}) == {} then del(.env) else . end' "$file" > "$tmp"
-    fi || { rm -f "$tmp"; rmdir "$lock" 2>/dev/null || true; echo "Could not update $file"; exit 1; }
-    # Guarded. A RETURN trap does not fire on `exit`, so an unguarded mv that
-    # fails (read-only ~/.claude, an ACL, a full disk) left BOTH the temp file
-    # and the lock directory behind — and the lock then blocked every later
-    # write for 30 seconds at a time.
-    if ! mv "$tmp" "$file" 2>/dev/null; then
-      rm -f "$tmp" 2>/dev/null || true
-      rmdir "$lock" 2>/dev/null || true
-      echo "Could not write $file"; exit 1
-    fi
-    rmdir "$lock" 2>/dev/null || true
-    trap - RETURN
-  }
 
   case "${1:-list}" in
     list|"")
@@ -1301,6 +1303,70 @@ if [ "${1:-}" = "reviewers" ]; then
 
     *)
       echo "usage: megavibe reviewers [list | set [--project] <reviewer...|all|auto>]"
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+
+# megavibe memory: show or change the MEGAVIBE_MEMORY_* settings that switch on
+# shared-memory routing. User-level only, on purpose: memory-config.sh reads
+# nothing else, so a project-level write would be displayed and then ignored.
+# Values go in as JSON strings (a bare 0 or 1 would be INVALID) and must be the
+# plain tokens memory-config.sh accepts.
+if [ "${1:-}" = "memory" ]; then
+  shift
+  MC="$MEGAVIBE_HOME/scripts/memory-config.sh"
+  MEM_FILE="$HOME/.claude/settings.json"
+  command -v jq >/dev/null 2>&1 || { echo "jq is required to edit settings.json."; exit 1; }
+  mem_key() {
+    local k
+    k=$(printf '%s' "$1" | tr 'a-z' 'A-Z'); k="${k#MEGAVIBE_MEMORY_}"
+    case "$k" in
+      SERVER|DOCS|DOCS_ASK|GENERAL|COMPANY) printf 'MEGAVIBE_MEMORY_%s' "$k" ;;
+      *) return 1 ;;
+    esac
+  }
+  case "${1:-list}" in
+    list|"")
+      [ -f "$MC" ] || { echo "memory-config.sh is not installed yet. Run 'megavibe' once in any project (a launch syncs it), or 'bash setup.sh'."; exit 1; }
+      OUT=$(bash "$MC" 2>/dev/null || true)
+      echo -e "${BOLD}Shared memory${RESET}  (read from $MEM_FILE only)"
+      echo ""
+      if [ -n "$OUT" ]; then printf '%s\n' "$OUT" | sed 's/^/  /'; else echo "  Not configured: shared-memory routing is off."; fi
+      echo ""
+      echo "  Change it:  megavibe memory set server <mcp-server-name>"
+      echo "              megavibe memory set docs <mcp-server-name>"
+      echo "              megavibe memory set general|company <org/name label>"
+      echo "              megavibe memory set docs_ask 0|1"
+      echo "              megavibe memory unset <server|docs|docs_ask|general|company>"
+      ;;
+    set|unset)
+      ACTION="$1"; shift
+      [ $# -ge 1 ] || { echo "usage: megavibe memory [set <key> <value> | unset <key>]   (keys: server docs docs_ask general company)"; exit 2; }
+      KEY=$(mem_key "$1") || { echo "Unknown setting: $1   (known: server docs docs_ask general company)"; exit 2; }
+      if [ "$ACTION" = set ]; then
+        [ $# -eq 2 ] || { echo "usage: megavibe memory set <server|docs|docs_ask|general|company> <value>"; exit 2; }
+        VAL="$2"
+        [[ $VAL =~ ^[A-Za-z0-9._:/@-]{1,100}$ ]] \
+          || { echo "Refusing '$VAL': a value is a plain token of letters, digits and . _ : / @ - (at most 100)."; exit 2; }
+        if [ "$KEY" = MEGAVIBE_MEMORY_DOCS_ASK ]; then
+          case "$VAL" in 0|1) ;; *) echo "docs_ask is 0 (never offer to store documents) or 1."; exit 2 ;; esac
+        fi
+      else
+        [ $# -eq 1 ] || { echo "usage: megavibe memory unset <server|docs|docs_ask|general|company>"; exit 2; }
+        VAL=""
+      fi
+      rv_write "$MEM_FILE" "$VAL" "$KEY"
+      if [ "$ACTION" = set ]; then
+        echo -e "  ${GREEN}✓${RESET} $KEY=\"$VAL\" in $MEM_FILE"
+      else
+        echo -e "  ${GREEN}✓${RESET} $KEY removed from $MEM_FILE"
+      fi
+      echo "    Open sessions keep the old setting until they restart."
+      ;;
+    *)
+      echo "usage: megavibe memory [list | set <key> <value> | unset <key>]"
       exit 2
       ;;
   esac
@@ -1725,6 +1791,7 @@ if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" 
   echo "                        Telegram bot drives)"
   echo "  remote                Manage the Telegram bot (--stop|--status|--fg)"
   echo "  reviewers             Show or change which reviewers run (list|set)"
+  echo "  memory                Show or change the shared-memory settings (list|set|unset)"
   echo "  tick                  One unattended watch tick: review requests, comments,"
   echo "                        login lifetime, usage (scheduled in a session by /watch)"
   echo "  auth                  How long the Claude login lasts (the refresh token)"
@@ -1859,6 +1926,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/second-opinion.sh" "$REPO_DIR/scripts/deliverables-index.sh" \
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
+              "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
@@ -1979,6 +2047,7 @@ if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.cla
     for _ps_t in "$MEGAVIBE_HOME/template/.claude/hooks/"*.sh \
                  "$MEGAVIBE_HOME/template/.claude/rules/"*.md \
                  "$MEGAVIBE_HOME/template/.claude/agents/"*.md \
+                 "$MEGAVIBE_HOME/template/.claude/shared-memory-full.md" \
                  "$MEGAVIBE_HOME/template/.claude/skills/"*/*; do
       [ -f "$_ps_t" ] || continue
       _ps_rel="${_ps_t#"$MEGAVIBE_HOME/template/"}"
