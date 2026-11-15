@@ -1535,6 +1535,7 @@ def shell_reads_stdin(w):
 def read_local(path, cwd):
     """A local file's text, or None when the guard cannot know it (a variable, a glob, missing, not a
     regular file, too big)."""
+    if path == "/dev/null": return ""
     if re.search(r"[$*?`\[<(]", path): return None
     p = os.path.expanduser(path)
     if not os.path.isabs(p): p = os.path.join(cwd or ".", p)
@@ -1614,6 +1615,12 @@ def script_dels(text, depth=0):
         if i is None: continue
         b, args = os.path.basename(w[i]), w[i + 1:]
         fed = any(os.path.basename(x) in ("xargs", "parallel") for x in w[:i])
+        while b in ("busybox", "ionice", "parallel", "setsid", "chronic"):      # wrappers command_start does not know
+            j = 0
+            while j < len(args) and (args[j].startswith("-") or args[j].isdigit()): j += 1
+            if j >= len(args): break
+            fed = fed or b == "parallel"
+            b, args = os.path.basename(args[j]), args[j + 1:]
         if b in DEL_VERBS:
             paths = operands(args)
             if fed and pre in ("|", "|&") and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
@@ -1719,8 +1726,11 @@ def remote_findings(text, cwd, depth=0):
                 if t is None:
                     out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
                 for line in t.split("\n"):
-                    m = re.match(r"^\s*[-@!]?\s*(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", line)
+                    m = re.match(r"^\s*[-@!]?\s*(?:glob\s+)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", line)
                     if m: out.append((host, b + " " + m.group(1) + " (in " + label + ")", [m.group(2)]))
+                    # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
+                    elif re.match(r"^\s*mirror\b", line) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", line) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", line):
+                        out.append((host, "lftp mirror --reverse --delete removes whatever the local side does not have", [line.strip()]))
         elif b == "rsync":
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue

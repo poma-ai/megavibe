@@ -159,6 +159,16 @@ passes "a plain remote git rm of a tracked file" "ssh host.example 'git rm old.t
 passes "a FIFO as stdin is not read" "ssh host.example 'cat > /tmp/f' < /dev/zero"
 asks "a device as a script for a remote shell is asked about, not read" "ssh host.example bash -s < /dev/zero" "cannot read"
 
+# 6c. From the second lead sweep.
+asks "lftp reverse mirror with --delete" "lftp -e 'mirror -R --delete build/ /srv/app; bye' ftp.example" "mirror"
+asks "lftp glob rm" "lftp -e 'glob rm /upload/*.zip; bye' ftp.example" "/upload/"
+passes "lftp download mirror" "lftp -e 'mirror /srv/app local/; bye' ftp.example"
+asks "busybox rm" "ssh host.example 'busybox rm -rf /srv/a'" "/srv/a"
+asks "ionice rm" "ssh host.example 'ionice -c3 rm -rf /srv/a'" "/srv/a"
+asks "rsync --delete to a bracketed IPv6 host" "rsync -a --delete build/ deploy@[2001:db8::1]:/srv/app/" "/srv/app/"
+passes "stdin from /dev/null" "ssh host.example 'bash -s' < /dev/null"
+passes "a login shell with stdin from /dev/null" "ssh host.example < /dev/null"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
