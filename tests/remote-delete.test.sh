@@ -303,6 +303,11 @@ passes "rsync --list-only deletes nothing" "rsync --list-only --delete user@host
 asks "taskset in front of the delete" "ssh host.example 'taskset -c 0 rm -rf /srv/x'" "/srv/x"
 passes "git rm --cached on the remote side" "ssh host.example 'cd /srv/app && git rm --cached .env'"
 
+LOPTS=$(i=0; while [ $i -lt 40 ]; do printf -- '-x%s ' $i; i=$((i + 1)); done)
+passes "an lftp open with a long option list is parsed at once, not timed out into a block" "lftp -e 'open ${LOPTS}h1 h2 h3; bye' ftp.example"
+asks "lftp -e written as one word with its commands" "lftp -e'rm /upload/old.zip; bye' ftp.example" "/upload/old.zip"
+asks "rsync --log-file-format with its value after the destination" "rsync -a --delete build/ host.example:/srv/app/ --log-file-format %n" "/srv/app/"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done

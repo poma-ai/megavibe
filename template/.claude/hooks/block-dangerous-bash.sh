@@ -1469,7 +1469,8 @@ RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files
              "-B", "--block-size", "--contimeout", "--address", "--sockopts", "--iconv", "--checksum-seed",
              "--modify-window", "--max-alloc", "--stop-after", "--stop-at", "--usermap", "--groupmap",
              "--skip-compress", "--compress-level", "--outbuf", "--write-batch", "--read-batch",
-             "--only-write-batch", "--early-input", "--protocol", "--checksum-choice", "--compress-choice"}
+             "--only-write-batch", "--early-input", "--protocol", "--checksum-choice", "--compress-choice",
+             "--log-file-format", "--max-delete", "--delay-updates-dir", "--files-from", "--from0-file"}
 DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
 HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
 REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
@@ -1791,8 +1792,8 @@ def ftp_dels(tool, host, label, t):
     out = []
     for line in t.split("\n"):
         for c in (re.split(r";|&&|\|\|", line) if tool == "lftp" else [line]):
-            m = re.match(r"^\s*(?:open|connect)\s+(?:-\S+\s+(?:\S+\s+)?)*?(\S+)\s*$", c)
-            if m and tool == "lftp": host = m.group(1); continue
+            cw = c.split()
+            if tool == "lftp" and len(cw) > 1 and cw[0] in ("open", "connect"): host = cw[-1]; continue
             m = re.match(r"^\s*[-@]?\s*(?:glob\s+(?:-\S+\s+)*)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
             if m: out.append((host, tool + " " + m.group(1) + " (in " + label + ")", [m.group(2).strip()]))
             # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
@@ -1873,6 +1874,7 @@ def remote_findings(text, cwd, depth=0):
                 if b == "sftp" and args[j].startswith("-b") and len(args[j]) > 2:      # -bFILE
                     batch.append(("the batch file " + args[j][2:], read_local(args[j][2:], cwd)))
                 if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1]))
+                if b == "lftp" and args[j][:2] in ("-c", "-e") and len(args[j]) > 2: batch.append(("the command text", args[j][2:]))
                 if args[j].startswith("-"): j += 2 if (b == "sftp" and args[j] in SFTP_VAL) or (b == "lftp" and args[j] in ("-c", "-e", "-f", "-u", "-p")) else 1
                 else: pos.append(args[j]); j += 1
             host = pos[0] if pos else "?"
