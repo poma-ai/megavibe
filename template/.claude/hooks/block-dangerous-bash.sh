@@ -1523,11 +1523,14 @@ def segs(text, bodies=None):
     for tok in toks:
         if op:
             if op in ("<<", "<<-") and bodies is not None:
-                b = bodies.get(tok) or [""]
+                b = bodies.get(tok) or bodies.get(tok.lstrip("-")) or [""]      # <<-EOF arrives as << and -EOF
                 red.append(("<<body", b.pop(0) if len(b) > 1 else b[0]))
             else:
                 red.append((op, back(tok)))
-            op = None; continue
+            op = None
+            if tok.endswith("(") and set(tok) <= PUNCT:       # < <(cmd): unreadable input, and cmd is a command of its own
+                out.append((cur, pre, red)); cur, red, pre = [], [], "("
+            continue
         if tok and set(tok) <= PUNCT:
             if ("<" in tok or ">" in tok) and not tok.endswith("("):
                 if cur and cur[-1].isdigit() and len(cur[-1]) == 1: cur.pop()     # 2>file: a descriptor, not an operand
@@ -1848,7 +1851,13 @@ if LOCAL:
     if r:
         print("L\t" + clean(r, 400))
 PY
-  _RD_OUT=$(printf '%s' "$COMMAND" | RD_LOCAL=$_RD_LOCAL RD_REMOTE=$_RD_REMOTE RD_CWD="$_TRASH_CWD" python3 -c "$_RD_PY" 2>/dev/null || true)
+  _RD_RC=0
+  _RD_OUT=$(printf '%s' "$COMMAND" | RD_LOCAL=$_RD_LOCAL RD_REMOTE=$_RD_REMOTE RD_CWD="$_TRASH_CWD" python3 -c "$_RD_PY" 2>/dev/null) || _RD_RC=$?
+  # python3 is there but the check itself died: the same crude ask as without python3
+  if [ "$_RD_RC" != 0 ] && [ "$_RD_REMOTE" = 1 ] \
+     && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
+    _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (the check failed to run, so the command was not parsed)"$'\t'
+  fi
   _RD=""; _RD_R=""
   while IFS= read -r _rd_line; do
     case "$_rd_line" in

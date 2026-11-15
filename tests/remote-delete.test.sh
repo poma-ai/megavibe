@@ -115,7 +115,7 @@ passes "a command with none of the three words" "ls -la"
 # 6. Together with the local real-delete guard.
 blocks "a local interpreter delete next to a remote delete stays blocked" "ssh host.example 'rm /srv/a'; python3 -c 'import shutil; shutil.rmtree(\"build\")'"
 blocks "a local find -delete with a harmless ssh" "ssh host.example ls; find . -name '*.tmp' -delete"
-asks "the local guard switched off by the human does not switch this one off" "ssh host.example 'rm /srv/a'" "/srv/a"
+# the human's switch for the local guard does not open the remote rule
 OUT=$(jq -n --arg c "ssh host.example 'rm /srv/a'" '{tool_input:{command:$c}}' | MEGAVIBE_ALLOW_REAL_DELETE=1 bash "$HOOK" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "ask"' >/dev/null 2>&1; then ok; else bad "MEGAVIBE_ALLOW_REAL_DELETE=1 must not open remote deletes"; fi
 mkdir -p "$T/jqonly"; ln -sf "$(command -v jq)" "$T/jqonly/jq"      # a PATH without rmtrash
@@ -212,6 +212,22 @@ asks "ssh -t after the host" "ssh host.example -t 'sudo rm /srv/a'" "/srv/a"
 asks "operands after a command substitution stay visible" "ssh host.example 'rm /srv/approved \$(cat /srv/list.txt) /srv/unapproved'" "/srv/unapproved" "cat /srv/list.txt"
 passes "a remote shell syntax check runs nothing" "ssh host.example 'bash -n' < del.sh"
 asks "the whole remote command is shown next to the parsed paths" "ssh host.example 'cd /srv && rm -f a b'" "the whole remote command" "cd /srv && rm -f a b"
+
+# 6e. From the third lead sweep.
+TAB=$(printf '\t')
+stops "a <<- heredoc into a remote shell" "ssh host.example bash -s <<-EOF
+${TAB}rm /srv/a
+${TAB}EOF"
+OUT=$(jq -n --arg c "ssh host.example bash -s <<-EOF
+${TAB}rm /srv/a
+${TAB}EOF" '{tool_input:{command:$c}}' | PATH="$T/jqonly:/usr/bin:/bin" /bin/bash "$HOOK" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecisionReason | contains("/srv/a")' >/dev/null 2>&1; then ok; else bad "a <<- heredoc is read (no rmtrash, so the local guard is not what stops it)"; fi
+asks "a process substitution as the script of a remote shell cannot be read" "ssh host.example bash < <(cat del.sh)" "cannot read"
+mkdir -p "$T/badpy"; printf '#!/bin/bash\nexit 3\n' > "$T/badpy/python3"; chmod +x "$T/badpy/python3"
+OUT=$(jq -n --arg c "ssh host.example 'rm /srv/a'" '{tool_input:{command:$c}}' | PATH="$T/badpy:$PATH" /bin/bash "$HOOK" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "ask"' >/dev/null 2>&1; then ok; else bad "a python3 that fails: remote rm is still asked about"; fi
+OUT=$(jq -n --arg c "ssh host.example 'ls'" '{tool_input:{command:$c}}' | PATH="$T/badpy:$PATH" /bin/bash "$HOOK" 2>/dev/null)
+if [ -z "$OUT" ]; then ok; else bad "a python3 that fails: a plain ssh passes"; fi
 
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
