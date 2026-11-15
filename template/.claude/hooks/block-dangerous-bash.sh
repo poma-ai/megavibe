@@ -1466,7 +1466,10 @@ RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files
              "--backup-dir", "--suffix", "-T", "--temp-dir", "--log-file", "--partial-dir", "--compare-dest", "--copy-dest",
              "--link-dest", "--bwlimit", "--port", "--password-file", "--rsync-path", "--chown", "--chmod", "-M",
              "--remote-option", "--max-size", "--min-size", "--timeout", "--out-format", "--info", "--debug", "--max-delete",
-             "-B", "--block-size"}
+             "-B", "--block-size", "--contimeout", "--address", "--sockopts", "--iconv", "--checksum-seed",
+             "--modify-window", "--max-alloc", "--stop-after", "--stop-at", "--usermap", "--groupmap",
+             "--skip-compress", "--compress-level", "--outbuf", "--write-batch", "--read-batch",
+             "--only-write-batch", "--early-input", "--protocol", "--checksum-choice", "--compress-choice"}
 DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
 HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
 REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
@@ -1545,7 +1548,7 @@ def segs(text, bodies=None):
     word carries (a remote script), which is parsed on its own, comments included. An escaped \\; is
     a word (find's terminator), not a separator. Each heredoc redirection gets its own body, in order
     of appearance, as ("<<body", text)."""
-    t, subs = mask_subs(text.replace("\\\n", ""))
+    t, subs = mask_subs(re.sub(r"(?<![\\\w$])\$(?=\x27)", "", text.replace("\\\n", "")))
     inq = quoted_mask(t)
     # both only outside quotes: inside a quoted word they belong to the text that word carries
     def piece(k, c):
@@ -1679,7 +1682,7 @@ def rsync_dels(args):
         if args[j].startswith("-"): j += 2 if args[j] in RSYNC_VAL else 1
         else: pos.append(args[j]); j += 1
     dest = any(re.match(r"^--del(ete(-(before|during|delay|after|excluded|missing-args))?)?$", a) for a in args)
-    src = "--remove-source-files" in args
+    src = "--remove-source-files" in args or "--remove-sent-files" in args
     return dest, src, pos
 
 
@@ -1714,9 +1717,10 @@ def script_dels(text, depth=0):
         if i is None: continue
         b, args = os.path.basename(w[i]), w[i + 1:]
         fed = any(os.path.basename(x) in ("xargs", "parallel") for x in w[:i])
-        while b in ("busybox", "ionice", "parallel", "setsid", "chronic"):      # wrappers command_start does not know
+        while b in ("busybox", "ionice", "parallel", "setsid", "chronic", "flock"):      # wrappers command_start does not know
             j = 0
             while j < len(args) and (args[j].startswith("-") or args[j].isdigit()): j += 1
+            if b == "flock": j += 1               # the lock file
             if j >= len(args): break
             fed = fed or b == "parallel"
             b, args = os.path.basename(args[j]), args[j + 1:]
@@ -1745,6 +1749,10 @@ def script_dels(text, depth=0):
             found.append(("tar --remove-files (deletes what it archived)", [" ".join(w[i:])]))
         elif b == "zip" and any(a == "--move" or re.match(r"^-[A-Za-z0-9]*m[A-Za-z0-9]*$", a) for a in args):
             found.append(("zip -m (deletes what it archived)", [" ".join(w[i:])]))
+        elif b in ("su", "runuser"):
+            for n, a in enumerate(args[:-1]):
+                if a in ("-c", "--command"):
+                    found += script_dels(args[n + 1], depth + 1); break
         elif b == "eval":
             found += script_dels(" ".join(args), depth + 1)
         elif b == "trap" and operands(args):
@@ -1882,6 +1890,14 @@ def remote_findings(text, cwd, depth=0):
             if src and any(remote_end(p) for p in pos[:-1]):
                 rp = [p for p in pos[:-1] if remote_end(p)]
                 out.append((rsync_host(rp[0]), "rsync --remove-source-files deletes the transferred files there", rp))
+        elif b in ("find", "gfind"):
+            for n, a in enumerate(args):
+                if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                    sub = []
+                    for y in args[n + 1:]:
+                        if y in (";", "+"): break
+                        sub.append(y)
+                    out += remote_findings(join(sub), cwd, depth + 1)
         elif b == "eval":
             out += remote_findings(" ".join(args), cwd, depth + 1)
         elif b in SHELL_NAMES:

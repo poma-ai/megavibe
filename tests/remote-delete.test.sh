@@ -287,6 +287,16 @@ passes "backstop: rm as an argument, not a command" "ssh host.example 'ls | grep
 passes "backstop: docker and package managers" "ssh host.example 'docker rm old; docker image rm x; npm rm left-pad; apt-get remove -y pkg'"
 passes "backstop: a word in echoed text" "ssh host.example 'echo \"please rm nothing\"; printf \"%s\\n\" rm'"
 
+# 6h. Cheap sweep cycles after the backstop (each lead fed to the hook before its fix).
+asks "rsync --remove-sent-files, the old name" "rsync -a --remove-sent-files host.example:/srv/out/ ./in/" "/srv/out/"
+asks "an rsync option with a value after the destination" "rsync -az --delete build/ host.example:/srv/app/ --contimeout 10" "/srv/app/"
+asks "su -c on the remote side" "ssh host.example \"su -c 'rm -rf /srv/old' deploy\"" "/srv/old"
+asks "flock in front of the delete" "ssh host.example 'flock /var/lock/clean.lock rm -rf /srv/old'" "/srv/old"
+asks "a local find that runs ssh for each match" "find /srv/old -name '*.log' -exec ssh host.example rm -f {} \\;" "on host.example"
+asks "a dollar-quoted remote command" "ssh host.example \$'rm -rf /srv/old'" "/srv/old"
+passes "git clean dry run on the remote side" "ssh host.example 'cd /srv/app && git clean -nd'"
+passes "flock around a harmless command" "ssh host.example 'flock /var/lock/x.lock ./deploy.sh'"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
