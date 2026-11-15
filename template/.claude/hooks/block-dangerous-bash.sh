@@ -1462,6 +1462,7 @@ RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files
              "-B", "--block-size"}
 DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
 HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
+REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
 
 
 def heredocs(text):
@@ -1481,32 +1482,61 @@ def heredocs(text):
     return "\n".join(out), {k: ["\n".join(b) for b in v] for k, v in bodies.items()}
 
 
-def segs(text):
+def mask_subs(t):
+    """$( ) and backtick spans outside single quotes replaced by placeholders, so that the
+    parentheses inside them do not split the word they belong to: (text, the spans)."""
+    nosq = re.sub(r"\x27[^\x27]*\x27", lambda m: "\x27" + " " * (len(m.group(0)) - 2) + "\x27", t)
+    out, subs, i, last = [], [], 0, 0
+    while True:
+        m = re.search(r"\$\(|`", nosq[i:])
+        if not m: break
+        s = i + m.start()
+        if nosq[s] == "`":
+            e = nosq.find("`", s + 1); e = len(nosq) if e < 0 else e + 1
+        else:
+            d, e = 1, s + 2
+            while e < len(nosq) and d: d += {"(": 1, ")": -1}.get(nosq[e], 0); e += 1
+        out.append(t[last:s]); out.append("\x03%d\x03" % len(subs)); subs.append(t[s:e]); last = i = e
+    out.append(t[last:])
+    return "".join(out), subs
+
+
+def segs(text, bodies=None):
     """The simple commands of a shell text, in order: (words, the operator before it, [(redirection, target)]).
     A newline ends a command only outside quotes: inside a quoted word it belongs to the text that
-    word carries (a remote script), which is parsed on its own, comments included."""
-    t = text.replace("\\\n", "")
+    word carries (a remote script), which is parsed on its own, comments included. An escaped \\; is
+    a word (find's terminator), not a separator. Each heredoc redirection gets its own body, in order
+    of appearance, as ("<<body", text)."""
+    t, subs = mask_subs(text.replace("\\\n", ""))
     inq = quoted_mask(t)
-    t = "".join(" ; " if c == "\n" and not inq[k] else c for k, c in enumerate(t)).replace("`", " ( ")
+    # both only outside quotes: inside a quoted word they belong to the text that word carries
+    t = "".join(" ; " if c == "\n" and not inq[k] else (" \x02 " if c == ";" and k and t[k - 1] == "\\" and not inq[k] else c)
+                for k, c in enumerate(t)).replace("\\ \x02 ", " \x02 ")
     try:
         lx = shlex.shlex(t, posix=True, punctuation_chars=True)
         lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
     except ValueError:
         return None
+    back = lambda x: re.sub("\x03(\\d+)\x03", lambda m: subs[int(m.group(1))], x).replace("\x02", ";")
     out, cur, red, pre, op = [], [], [], "", None
     for tok in toks:
         if op:
-            red.append((op, tok)); op = None; continue
+            if op in ("<<", "<<-") and bodies is not None:
+                b = bodies.get(tok) or [""]
+                red.append(("<<body", b.pop(0) if len(b) > 1 else b[0]))
+            else:
+                red.append((op, back(tok)))
+            op = None; continue
         if tok and set(tok) <= PUNCT:
             if ("<" in tok or ">" in tok) and not tok.endswith("("):
-                if cur and cur[-1].isdigit(): cur.pop()
+                if cur and cur[-1].isdigit() and len(cur[-1]) == 1: cur.pop()     # 2>file: a descriptor, not an operand
                 op = tok
             else:
                 if cur or red: out.append((cur, pre, red))
                 cur, red, pre = [], [], tok
             continue
-        cur.append(tok)
+        cur.append(back(tok))
     if cur or red: out.append((cur, pre, red))
     return out
 
@@ -1524,21 +1554,25 @@ def join(words):
 
 
 def shell_reads_stdin(w):
-    """sh, bash -s, sudo bash: a shell with no script operand and no -c runs what arrives on stdin."""
+    """sh, bash -s, sudo bash: a shell with no script operand and no -c runs what arrives on stdin
+    (not with -n, which only checks the syntax)."""
     i = command_start(w)
     if i is None or os.path.basename(w[i]) not in SHELL_NAMES: return False
     args = w[i + 1:]
-    if any(re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) for a in args): return False
+    if any(re.match(r"^-[A-Za-z]*[cn][A-Za-z]*$", a) for a in args): return False
     return any(re.match(r"^-[A-Za-z]*s[A-Za-z]*$", a) for a in args) or not operands(args)
 
 
 def read_local(path, cwd):
     """A local file's text, or None when the guard cannot know it (a variable, a glob, missing, not a
-    regular file, too big)."""
+    regular file, too big, a relative path after a cd, a path on the other host)."""
+    if cwd is REMOTE_FILE: return None
     if path == "/dev/null": return ""
     if re.search(r"[$*?`\[<(]", path): return None
     p = os.path.expanduser(path)
-    if not os.path.isabs(p): p = os.path.join(cwd or ".", p)
+    if not os.path.isabs(p):
+        if cwd is MOVED: return None
+        p = os.path.join(cwd or ".", p)
     try:
         if not os.path.isfile(p) or os.path.getsize(p) > 1 << 20: return None
         with open(p, errors="replace") as f: return f.read()
@@ -1546,15 +1580,13 @@ def read_local(path, cwd):
         return None
 
 
-def stdin_texts(ss, k, bodies, cwd):
+def stdin_texts(ss, k, cwd):
     """What seg k reads on stdin: [(label, text or None when unreadable)]."""
     out = []
     w, pre, red = ss[k]
     def from_redirs(red):
         for op, tgt in red:
-            if op in ("<<", "<<-"):
-                b = bodies.get(tgt) or [""]
-                out.append(("a heredoc", b.pop(0) if len(b) > 1 else b[0]))
+            if op == "<<body": out.append(("a heredoc", tgt))
             elif op == "<<<": out.append(("a here-string", tgt))
             elif op == "<": out.append(("the file " + tgt, read_local(tgt, cwd)))
     from_redirs(red)
@@ -1562,13 +1594,26 @@ def stdin_texts(ss, k, bodies, cwd):
         pw, _, pred = ss[k - 1]
         i = command_start(pw)
         b = os.path.basename(pw[i]) if i is not None else ""
+        a = pw[i + 1:] if i is not None else []
         if b == "cat":
-            files = operands(pw[i + 1:])
+            files = operands(a)
             for f in files: out.append(("the file " + f, read_local(f, cwd)))
             if not files: from_redirs(pred)
-        elif b in ("echo", "printf"):
-            # every argument as its own line: a printf format, an echo option and the text itself
-            out.append(("text piped in", "\n".join(pw[i + 1:]).replace("\\n", "\n")))
+        elif b == "echo":
+            while a and re.match(r"^-[neE]+$", a[0]): a = a[1:]
+            out.append(("the output of: " + join(pw[i:]), " ".join(a).replace("\\n", "\n")))
+        elif b == "printf":
+            # the format with its arguments filled in when it only uses %s; otherwise every argument
+            # as a line of its own (the label carries the command as written either way)
+            fmt, rest = (a[0], a[1:]) if a else ("", [])
+            n = fmt.count("%s")
+            if n and rest and "%" not in fmt.replace("%s", ""):
+                parts, text = fmt.split("%s"), ""
+                for j in range(0, len(rest), n):         # printf reuses the format until the arguments run out
+                    text += "".join(p + c for p, c in zip(parts, (rest[j:j + n] + [""] * n)[:n] + [""]))
+            else:
+                text = "\n".join(a)
+            out.append(("the output of: " + join(pw[i:]), text.replace("\\n", "\n")))
         else: out.append(("the output of " + (b or "a command"), None))
     return out
 
@@ -1586,14 +1631,15 @@ def rsync_dels(args):
 
 
 def remote_git(args):
-    """Why a git command on the remote side deletes untracked or ignored files, or None."""
-    r = git_reason(args)
-    if r: return r.split(" (")[0]
+    """Why a git command on the remote side deletes files, or None."""
     i = 0
     while i < len(args):
         if args[i] in GIT_VAL: i += 2; continue
         if args[i].startswith("-"): i += 1; continue
         break
+    if args[i:i + 1] == ["rm"] and any(a == "--dry-run" or re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args[i + 1:]): return None
+    r = git_reason(args)
+    if r: return r.split(" (")[0]
     if args[i:i + 2] == ["worktree", "remove"]: return "git worktree remove (it deletes the worktree's untracked and ignored files)"
     return None
 
@@ -1603,7 +1649,7 @@ def script_dels(text, depth=0):
     found = []
     if depth > 3 or not text.strip(): return found
     code, bodies = heredocs(text)
-    ss = segs(code)
+    ss = segs(code, bodies)
     if ss is None:
         if re.search(RM_WORD, text) or shell_text_reasons(text):
             found.append(("a delete in text the guard cannot parse", [text]))
@@ -1649,28 +1695,46 @@ def script_dels(text, depth=0):
         elif b == "trap" and operands(args):
             found += [("trap: " + what, p) for what, p in script_dels(operands(args)[0], depth + 1)]
         elif b in SHELL_NAMES:
+            if any(re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args): continue       # a syntax check runs nothing
             for n, a in enumerate(args[:-1]):
                 if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
                     found += script_dels(args[n + 1], depth + 1); break
-            for _, t in stdin_texts(ss, k, bodies, ""):
+            for _, t in stdin_texts(ss, k, REMOTE_FILE):
                 if t: found += script_dels(t, depth + 1)
         elif INTERP.match(" " + b):
-            code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, bodies, ""))
+            code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
             m = DEL_API.search(code_text)
             r = (b + " code that deletes (" + " ".join(m.group(0).split())[:40] + "); the code") if m else interp_runs_deleter(code_text)
             if r: found.append((r, [code_text]))
         elif b in ("ssh", "autossh"):
-            found += [(what + " (on " + h + ", through this host)", p) for h, what, p in remote_findings(join(w[i:]), "", depth + 1)]
+            found += [(what + " (on " + h + ", through this host)", p) for h, what, p in remote_findings(join(w[i:]), REMOTE_FILE, depth + 1)]
     return found
 
 
 def is_remote(p):
-    return bool(re.match(r"^[^/\s:]+:", p))
+    return bool(re.match(r"^(?:[^/\s:\[]*\[[^\]]+\]|[^/\s:]+):", p))
 
 
 def rsync_host(p):
-    m = re.match(r"^rsync://(?:[^@/]*@)?([^/:]+)", p)
+    m = re.match(r"^rsync://(?:[^@/]*@)?(\[[^\]]+\]|[^/:]+)", p) or re.match(r"^((?:[^@/\s]*@)?\[[^\]]+\]):", p)
     return m.group(1) if m else p.split(":")[0]
+
+
+def ftp_dels(tool, host, label, t):
+    """Deleting commands in sftp or lftp command text: [(host, what, paths)]. lftp separates commands
+    with ; && || too, and `open` changes the host the rest runs on."""
+    out = []
+    for line in t.split("\n"):
+        for c in (re.split(r";|&&|\|\|", line) if tool == "lftp" else [line]):
+            m = re.match(r"^\s*(?:open|connect)\s+(?:-\S+\s+(?:\S+\s+)?)*?(\S+)\s*$", c)
+            if m and tool == "lftp": host = m.group(1); continue
+            m = re.match(r"^\s*[-@!]?\s*(?:glob\s+)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
+            if m: out.append((host, tool + " " + m.group(1) + " (in " + label + ")", [m.group(2).strip()]))
+            # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
+            elif re.match(r"^\s*mirror\b", c) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", c) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", c) \
+                    and not re.search(r"\s--dry-run\b|\s--just-print\b", c):
+                out.append((host, "lftp mirror --reverse --delete removes whatever the local side does not have", [c.strip()]))
+    return out
 
 
 def remote_findings(text, cwd, depth=0):
@@ -1678,10 +1742,10 @@ def remote_findings(text, cwd, depth=0):
     out = []
     if depth > 3: return out
     code, bodies = heredocs(text)
-    ss = segs(code)
+    ss = segs(code, bodies)
     if ss is None:
         if re.search(r"(?<![\w.-])(ssh|sftp|lftp)(?![\w.-])", text) and (re.search(RM_WORD, text) or shell_text_reasons(text)):
-            out.append(("?", "ssh, sftp or lftp next to a delete, in a command the guard cannot parse", []))
+            out.append(("?", "ssh, sftp or lftp next to a delete, in a command the guard cannot parse; the command", [text]))
         return out
     for sub in substitutions(code):          # outside single quotes only: quoted prose is not a command
         out += remote_findings(sub, cwd, depth + 1)
@@ -1689,6 +1753,16 @@ def remote_findings(text, cwd, depth=0):
         i = command_start(w)
         if i is None: continue
         b = os.path.basename(w[i])
+        if b in ("cd", "pushd", "popd") and cwd is not REMOTE_FILE:
+            # a relative script path after this is read from where the shell then is; when that
+            # cannot be known (cd -, a variable, pushd) it is not read at all
+            dest = operands(w[i + 1:])[:1]
+            if b == "cd" and dest and not re.search(r"[$*?`\[]", dest[0]) and dest[0] != "-":
+                d = os.path.expanduser(dest[0])
+                cwd = d if os.path.isabs(d) else (MOVED if cwd is MOVED else os.path.normpath(os.path.join(cwd or ".", d)))
+            else:
+                cwd = MOVED
+            continue
         if b == "sshpass":
             i += 1
             while i < len(w) and w[i].startswith("-"): i += 2 if w[i] in ("-p", "-f", "-d", "-P") else 1
@@ -1701,36 +1775,36 @@ def remote_findings(text, cwd, depth=0):
             while j < len(args) and args[j].startswith("-") and args[j] != "--": j += 2 if args[j] in vals else 1
             if j < len(args) and args[j] == "--": j += 1
             if j >= len(args): continue
-            host, rest = args[j], args[j + 1:]
+            host, j = args[j], j + 1
+            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += 2 if args[j] in vals else 1     # ssh host -p 2222 cmd
+            rest = args[j:]
             if rest[:1] == ["--"]: rest = rest[1:]
             payload = " ".join(rest)                    # ssh itself joins the words with spaces
             got = [(host, what, p) for what, p in script_dels(payload)]
+            if got: got.append((host, "the whole remote command, as written", [payload]))
             ps = segs(heredocs(payload)[0]) or []
             if not payload.strip() or any(shell_reads_stdin(x[0]) for x in ps):
-                for label, t in stdin_texts(ss, k, bodies, cwd):
+                for label, t in stdin_texts(ss, k, cwd):
                     if t is None:
-                        got.append((host, "a script the guard cannot read is sent to a remote shell (" + label + "); pass a literal file path or put the commands in the call", []))
+                        got.append((host, "a script the guard cannot read is sent to a remote shell (" + label + "); pass a literal file path (no cd before it) or put the commands in the call", []))
                         continue
-                    got += [(host, what + " (in " + label + ")", p) for what, p in script_dels(t)]
+                    d = script_dels(t)
+                    got += [(host, what + " (in " + label + ")", p) for what, p in d]
+                    if d: got.append((host, "the whole script (" + label + ")", [t]))
             out += got
         elif b in ("sftp", "lftp"):
             pos, j, batch = [], 0, []
             while j < len(args):
-                if args[j] in ("-b", "-f") and j + 1 < len(args) and args[j + 1] != "-":     # -b -: the batch is stdin
+                if (args[j] == "-b" or (args[j] == "-f" and b == "lftp")) and j + 1 < len(args) and args[j + 1] != "-":     # -b -: the batch is stdin
                     batch.append(("the batch file " + args[j + 1], read_local(args[j + 1], cwd)))
-                if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1].replace(";", "\n")))
-                if args[j].startswith("-"): j += 2 if args[j] in SFTP_VAL or (b == "lftp" and args[j] in ("-c", "-e", "-f", "-u", "-p")) else 1
+                if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1]))
+                if args[j].startswith("-"): j += 2 if (b == "sftp" and args[j] in SFTP_VAL) or (b == "lftp" and args[j] in ("-c", "-e", "-f", "-u", "-p")) else 1
                 else: pos.append(args[j]); j += 1
             host = pos[0] if pos else "?"
-            for label, t in batch + stdin_texts(ss, k, bodies, cwd):
+            for label, t in batch + stdin_texts(ss, k, cwd):
                 if t is None:
                     out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
-                for line in t.split("\n"):
-                    m = re.match(r"^\s*[-@!]?\s*(?:glob\s+)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", line)
-                    if m: out.append((host, b + " " + m.group(1) + " (in " + label + ")", [m.group(2)]))
-                    # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
-                    elif re.match(r"^\s*mirror\b", line) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", line) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", line):
-                        out.append((host, "lftp mirror --reverse --delete removes whatever the local side does not have", [line.strip()]))
+                out += ftp_dels(b, host, label, t)
         elif b == "rsync":
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue
@@ -1746,7 +1820,7 @@ def remote_findings(text, cwd, depth=0):
             for n, a in enumerate(args[:-1]):
                 if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
                     out += remote_findings(args[n + 1], cwd, depth + 1); break
-            for _, t in stdin_texts(ss, k, bodies, cwd):
+            for _, t in stdin_texts(ss, k, cwd):
                 if t: out += remote_findings(t, cwd, depth + 1)
     return out
 

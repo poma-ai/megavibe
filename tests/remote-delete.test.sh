@@ -169,6 +169,50 @@ asks "rsync --delete to a bracketed IPv6 host" "rsync -a --delete build/ deploy@
 passes "stdin from /dev/null" "ssh host.example 'bash -s' < /dev/null"
 passes "a login shell with stdin from /dev/null" "ssh host.example < /dev/null"
 
+# 6d. Ship-round findings (2026-11-15, two readers), each failing before its fix.
+mkdir -p "$T/cwd/deploy"; printf 'rm /srv/approved\nrm /srv/unapproved\n' > "$T/cwd/deploy/script.sh"; printf 'ls /srv\n' > "$T/cwd/script.sh"
+printf 'put report.csv\nbye\n' > "$T/cwd/batch-safe.txt"
+asks "an escaped find terminator does not cut -delete off" "ssh host.example 'find /srv/logs -type f -exec grep -q expired {} \\; -delete'" "find -delete"
+asks "two -exec actions, the second deletes" "ssh host.example 'find /srv/logs -type f -exec grep -q expired {} \\; -exec rm {} \\;'" "find -exec rm"
+asks "a numeric file name before a redirection is an operand" "ssh host.example 'rm /srv/approved 20261115 > /dev/null'" "20261115"
+asks "a reused heredoc delimiter: each redirection has its own body" "cat <<'EOF' > note.txt
+Deployment note
+EOF
+ssh host.example 'bash -s' <<'EOF'
+rm /srv/approved
+rm /srv/unapproved
+EOF" "/srv/approved" "/srv/unapproved"
+passes "a reused heredoc delimiter, harmless remote script" "cat <<'EOF' > cleanup-notes.txt
+to do: rm /srv/old
+EOF
+ssh host.example 'bash -s' <<'EOF'
+ls /srv
+EOF"
+asks "a relative script after cd is read from the new directory" "cd deploy && ssh host.example 'bash -s' < script.sh" "/srv/unapproved"
+asks "the same through cat" "cd deploy && cat script.sh | ssh host.example 'bash -s'" "/srv/unapproved"
+passes "without the cd the harmless script of that name passes" "ssh host.example 'bash -s' < script.sh"
+asks "a relative script after cd into a variable is not read" 'cd "$DIR" && ssh host.example bash -s < script.sh' "cannot read"
+asks "printf with a format shows the real paths" "printf 'rm -f %s\\n' /srv/approved /srv/unapproved | ssh host.example" "/srv/approved" "/srv/unapproved"
+asks "echo with several words shows the real paths" "echo rm -f /srv/approved /srv/unapproved | ssh host.example" "/srv/approved" "/srv/unapproved"
+passes "printf of a line that only prints the word" "printf 'echo %s\\n' 'rm /srv/a' | ssh host.example"
+asks "lftp commands chained with &&" "lftp -e 'cd /upload && rm old.zip; bye' ftp.example" "old.zip"
+asks "lftp stdin with ; on one line" "lftp ftp.example <<'EOF'
+cd /upload; rm old.zip
+bye
+EOF" "old.zip"
+asks "lftp open names the host the delete runs on" "lftp -e 'open other.example; rm /upload/old.zip; bye' ftp.example" "on other.example"
+passes "a remote git rm dry run" "ssh host.example 'git rm -n -f old.txt'"
+passes "a remote git rm --dry-run" "ssh host.example 'git rm -f --dry-run old.txt'"
+passes "an lftp mirror dry run" "lftp -e 'mirror -R --delete --dry-run build/ /srv/app; bye' ftp.example"
+passes "sftp -f is a flag, not a batch file" "sftp -f host.example <<< 'put report.csv'"
+passes "sftp -f before -b with a harmless batch" "sftp -f -b batch-safe.txt host.example"
+asks "a bracketed IPv6 host is named in full" "rsync -a --delete build/ deploy@[2001:db8::1]:/srv/app/" "on deploy@[2001:db8::1]:"
+asks "ssh options after the host" "ssh host.example -p 2222 'rm /srv/a'" "on host.example" "/srv/a"
+asks "ssh -t after the host" "ssh host.example -t 'sudo rm /srv/a'" "/srv/a"
+asks "operands after a command substitution stay visible" "ssh host.example 'rm /srv/approved \$(cat /srv/list.txt) /srv/unapproved'" "/srv/unapproved" "cat /srv/list.txt"
+passes "a remote shell syntax check runs nothing" "ssh host.example 'bash -n' < del.sh"
+asks "the whole remote command is shown next to the parsed paths" "ssh host.example 'cd /srv && rm -f a b'" "the whole remote command" "cd /srv && rm -f a b"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
