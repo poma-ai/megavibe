@@ -933,7 +933,46 @@ _rd_gate() {
 # Only where deletes go to the Trash at all: without rmtrash, rm-to-trash.sh is inert, `rm`
 # deletes for real, and blocking the other forms would only push agents to that rm.
 _rd_trash_ready() { command -v rmtrash &>/dev/null; }      # the same condition rm-to-trash.sh uses
-if [ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && command -v python3 &>/dev/null && _rd_trash_ready && _rd_gate; then
+# ---------------------------------------------------------------------------
+# Deletes on a remote host (ssh, sftp, rsync --delete towards a remote side).
+#
+# There is no Trash on the other side, and both delete guards used to treat the quoted
+# remote command as an opaque argument: on 2026-11-15 an agent ran an approved log purge
+# over ssh and appended an `rm -f` of a neighbouring file nobody had approved; nothing
+# fired and the file was gone for good. A remote delete is therefore sent to the
+# permission prompt (permissionDecision "ask") with the host and every deleted path
+# named, so the human compares them with what they approved. Where no prompt can be
+# shown (dontAsk, headless, measured 2026-11-15 on bypassPermissions/dontAsk/default with
+# Bash allow-listed: the call is denied and the reason reaches the agent) it is a block.
+# No environment escape hatch and no inline acknowledgement: either would be written by
+# the agent this guard exists to stop. Moving files (mv into a dated quarantine folder
+# on that host) is not a delete and passes.
+# Read: the remote command (quoted or not, through sh -c, eval, xargs, find -exec, $( )),
+# a script sent on stdin to a remote shell (heredoc, here-string, `< file`, `cat file |`,
+# `echo ... |`), sftp batch text, rsync --delete/--remove-source-files with a remote side.
+# A stdin script the guard cannot read (a variable path, another command's output) is asked
+# about as well. HACK: a net, not a wall. Not covered: a script that already lives on the
+# remote host, kubectl/docker exec payloads, scp/mv/redirects that overwrite, truncation,
+# database statements, rclone and other clients, a command line assembled at runtime.
+# ---------------------------------------------------------------------------
+_RD_LOCAL=0; _RD_REMOTE=0
+[ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && _rd_trash_ready && _rd_gate && _RD_LOCAL=1
+[[ $_TE == *ssh* || $_TE == *sftp* || $_TE == *rsync* ]] && _RD_REMOTE=1      # _TE: quotes and backslashes out, lower case
+_rd_remote_ask() {    # $1: the lines "host<TAB>what<TAB>paths"; prints the ask decision and ends the hook
+  local why="Remote delete: no Trash on the other side, nothing here can be restored."$'\n' host what paths
+  while IFS=$'\t' read -r host what paths; do
+    [ -n "$what" ] && why+="- on ${host}: ${what}${paths:+: $paths}"$'\n'
+  done <<< "$1"
+  why+="An approval covers the paths named in it and nothing else: approve only if every line above is exactly what was asked for, and none is a file of unknown origin."$'\n'
+  why+="Agent: if this was denied, do not respell it. Either move instead of deleting, which needs no approval (ssh HOST 'mkdir -p ~/.megavibe-quarantine/DATE && mv -n -- PATHS ~/.megavibe-quarantine/DATE/'), or name these exact paths to the user in chat and let them approve the prompt or run the command themselves."
+  jq -n --arg r "$why" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}'
+  exit 0
+}
+if ! command -v python3 &>/dev/null && [ "$_RD_REMOTE" = 1 ] \
+   && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
+  _rd_remote_ask "?"$'\t'"ssh, sftp or rsync next to a deleting word (python3 is missing, so the command was not parsed)"$'\t'
+fi
+if command -v python3 &>/dev/null && [ "$_RD_LOCAL$_RD_REMOTE" != 00 ]; then
   read -r -d '' _RD_PY <<'PY' || true
 import os, re, shlex, signal, sys
 
@@ -942,7 +981,8 @@ import os, re, shlex, signal, sys
 # shell or interpreter consumes them (a commit message written through `cat <<EOF` is
 # prose); quoted text counts only when a shell, eval, trap, env -S, parallel or awk runs it.
 # A pathological input that makes the patterns slow is blocked, never let through.
-signal.signal(signal.SIGALRM, lambda *a: (print("a command too complex to check (guard timed out)"), sys.exit(0)))
+LOCAL, REMOTE = os.environ.get("RD_LOCAL", "1") == "1", os.environ.get("RD_REMOTE") == "1"
+signal.signal(signal.SIGALRM, lambda *a: (print(("L\t" if LOCAL else "R\t?\t") + "a command too complex to check (guard timed out)"), sys.exit(0)))
 signal.alarm(2)
 
 ORIG = sys.stdin.read()
@@ -1409,12 +1449,297 @@ def reasons(raw, depth=0):
     return None
 
 
-r = reasons(ORIG)
-if r:
-    print(r)
+# --- Deletes on a remote host -------------------------------------------------------------
+SSH_VAL = set("-B -b -c -D -E -e -F -I -i -J -L -l -m -M -O -o -P -p -Q -R -S -W -w".split())     # -M: autossh
+SFTP_VAL = set("-B -b -c -D -F -i -J -l -o -P -R -S -s -X".split())
+RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files-from", "--exclude-from", "--include-from",
+             "--backup-dir", "--suffix", "-T", "--temp-dir", "--log-file", "--partial-dir", "--compare-dest", "--copy-dest",
+             "--link-dest", "--bwlimit", "--port", "--password-file", "--rsync-path", "--chown", "--chmod", "-M",
+             "--remote-option", "--max-size", "--min-size", "--timeout", "--out-format", "--info", "--debug", "--max-delete",
+             "-B", "--block-size"}
+DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
+HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
+BLANK = []          # texts that run remotely: taken out before the local check
+
+
+def heredocs(text):
+    """(the command lines without heredoc bodies, {marker: [body, ...]} in order of appearance)."""
+    out, bodies, pending, q = [], {}, [], (None, [])
+    rows = text.split("\n")
+    for n, line in enumerate(rows):
+        if pending:
+            if line.strip() == pending[0]: pending.pop(0)
+            else: bodies[pending[0]][-1].append(line)
+            continue
+        line, q, outside = scan_line(line, q)
+        out.append(line)
+        for m in re.finditer(HD_RE, line):
+            if outside[m.start()] and any(r.strip() == m.group(2) for r in rows[n + 1:]):
+                pending.append(m.group(2)); bodies.setdefault(m.group(2), []).append([])
+    return "\n".join(out), {k: ["\n".join(b) for b in v] for k, v in bodies.items()}
+
+
+def segs(text):
+    """The simple commands of a shell text, in order: (words, the operator before it, [(redirection, target)])."""
+    t = text.replace("\\\n", "").replace("\n", " ; ").replace("`", " ( ")
+    try:
+        lx = shlex.shlex(t, posix=True, punctuation_chars=True)
+        lx.whitespace_split = True; lx.commenters = ""
+        toks = list(lx)
+    except ValueError:
+        return None
+    out, cur, red, pre, op = [], [], [], "", None
+    for tok in toks:
+        if op:
+            red.append((op, tok)); op = None; continue
+        if tok and set(tok) <= PUNCT:
+            if ("<" in tok or ">" in tok) and not tok.endswith("("):
+                if cur and cur[-1].isdigit(): cur.pop()
+                op = tok
+            else:
+                if cur or red: out.append((cur, pre, red))
+                cur, red, pre = [], [], tok
+            continue
+        cur.append(tok)
+    if cur or red: out.append((cur, pre, red))
+    return out
+
+
+def operands(args):
+    out, done = [], False
+    for a in args:
+        if a == "--" and not done: done = True
+        elif done or not a.startswith("-"): out.append(a)
+    return out
+
+
+def shell_reads_stdin(w):
+    """sh, bash -s, sudo bash: a shell with no script operand and no -c runs what arrives on stdin."""
+    i = command_start(w)
+    if i is None or os.path.basename(w[i]) not in SHELL_NAMES: return False
+    args = w[i + 1:]
+    if any(re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) for a in args): return False
+    return any(re.match(r"^-[A-Za-z]*s[A-Za-z]*$", a) for a in args) or not operands(args)
+
+
+def read_local(path, cwd):
+    """A local file's text, or None when the guard cannot know it (a variable, a glob, missing, too big)."""
+    if re.search(r"[$*?`\[]", path): return None
+    p = os.path.expanduser(path)
+    if not os.path.isabs(p): p = os.path.join(cwd or ".", p)
+    try:
+        if os.path.getsize(p) > 1 << 20: return None
+        with open(p, errors="replace") as f: return f.read()
+    except OSError:
+        return None
+
+
+def stdin_texts(ss, k, bodies, cwd):
+    """What seg k reads on stdin: [(label, text or None when unreadable)]."""
+    out = []
+    w, pre, red = ss[k]
+    def from_redirs(red):
+        for op, tgt in red:
+            if op in ("<<", "<<-"):
+                b = bodies.get(tgt) or [""]
+                out.append(("a heredoc", b.pop(0) if len(b) > 1 else b[0]))
+            elif op == "<<<": out.append(("a here-string", tgt))
+            elif op == "<": out.append(("the file " + tgt, read_local(tgt, cwd)))
+    from_redirs(red)
+    if pre in ("|", "|&") and k > 0:
+        pw, _, pred = ss[k - 1]
+        i = command_start(pw)
+        b = os.path.basename(pw[i]) if i is not None else ""
+        if b == "cat":
+            files = operands(pw[i + 1:])
+            for f in files: out.append(("the file " + f, read_local(f, cwd)))
+            if not files: from_redirs(pred)
+        elif b in ("echo", "printf"): out.append(("text piped in", " ".join(pw[i + 1:])))
+        else: out.append(("the output of " + (b or "a command"), None))
+    return out
+
+
+def script_dels(text, depth=0):
+    """Deletes in a shell text that runs on the remote side: [(what, paths)]."""
+    found = []
+    if depth > 3 or not text.strip(): return found
+    code, bodies = heredocs(text)
+    ss = segs(code)
+    if ss is None:
+        if re.search(RM_WORD, text) or shell_text_reasons(text):
+            found.append(("a delete in text the guard cannot parse", []))
+        return found
+    for k, (w, pre, red) in enumerate(ss):
+        for x in w:
+            if "$(" in x or "`" in x:
+                for sub in substitutions(x, heredoc=True): found += script_dels(sub, depth + 1)
+        i = command_start(w)
+        if i is None: continue
+        b, args = os.path.basename(w[i]), w[i + 1:]
+        fed = any(os.path.basename(x) in ("xargs", "parallel") for x in w[:i])
+        if b in DEL_VERBS:
+            paths = operands(args)
+            if fed and pre in ("|", "|&") and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
+            elif fed: paths.append("(names from stdin)")
+            found.append((b, paths))
+        elif b in ("find", "gfind"):
+            if "-delete" in args: found.append(("find -delete", [" ".join(w[i:])]))
+            for n, a in enumerate(args):
+                if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                    sub = []
+                    for y in args[n + 1:]:
+                        if y in (";", "+"): break
+                        sub.append(y)
+                    j = command_start(sub)
+                    if j is None: continue
+                    sb = os.path.basename(sub[j])
+                    if sb in DEL_VERBS: found.append(("find -exec " + sb, [" ".join(w[i:])]))
+                    elif sb in SHELL_NAMES:
+                        for y in sub[j + 1:]: found += script_dels(y, depth + 1) if " " in y else []
+        elif b == "git":
+            r = git_reason(args)
+            if r: found.append((r, []))
+        elif b == "rsync" and any(a.startswith("--del") or a.startswith("--remove-s") for a in args):
+            found.append(("rsync with a deleting option", operands(args)[-1:]))
+        elif b == "eval":
+            found += script_dels(" ".join(args), depth + 1)
+        elif b in SHELL_NAMES:
+            for n, a in enumerate(args[:-1]):
+                if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
+                    found += script_dels(args[n + 1], depth + 1); break
+            for _, t in stdin_texts(ss, k, bodies, ""):
+                if t: found += script_dels(t, depth + 1)
+        elif INTERP.match(" " + b):
+            code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, bodies, ""))
+            m = DEL_API.search(code_text)
+            r = (b + " code that deletes (" + " ".join(m.group(0).split())[:40] + ")") if m else interp_runs_deleter(code_text)
+            if r: found.append((r, []))
+        elif b in ("ssh", "autossh"):
+            found += [(what + " (on " + h + ", through this host)", p) for h, what, p in remote_findings(" ".join(w[i:]), "", depth + 1)]
+    return found
+
+
+def is_remote(p):
+    return bool(re.match(r"^[^/\s:]+:", p)) or p.startswith("rsync://")
+
+
+def remote_findings(text, cwd, depth=0):
+    """Deletes this LOCAL shell text runs on a remote host: [(host, what, paths)]."""
+    out = []
+    if depth > 3: return out
+    code, bodies = heredocs(text)
+    ss = segs(code)
+    if ss is None:
+        if re.search(r"(?<![\w.-])(ssh|sftp)(?![\w.-])", text) and (re.search(RM_WORD, text) or shell_text_reasons(text)):
+            out.append(("?", "ssh or sftp next to a delete, in a command the guard cannot parse", []))
+        return out
+    for k, (w, pre, red) in enumerate(ss):
+        for x in w:
+            if "$(" in x or "`" in x:
+                for sub in substitutions(x, heredoc=True): out += remote_findings(sub, cwd, depth + 1)
+        i = command_start(w)
+        if i is None: continue
+        b = os.path.basename(w[i])
+        if b == "sshpass":
+            i += 1
+            while i < len(w) and w[i].startswith("-"): i += 2 if w[i] in ("-p", "-f", "-d", "-P") else 1
+            if i >= len(w): continue
+            b = os.path.basename(w[i])
+        args = w[i + 1:]
+        if b in ("ssh", "autossh"):
+            j = 0
+            while j < len(args) and args[j].startswith("-"): j += 2 if args[j] in SSH_VAL else 1
+            if j >= len(args): continue
+            host, payload = args[j], " ".join(args[j + 1:])
+            got = [(host, what, p) for what, p in script_dels(payload)]
+            if got: BLANK.append(payload)
+            ps = segs(heredocs(payload)[0]) or []
+            if not payload.strip() or any(shell_reads_stdin(x[0]) for x in ps):
+                for label, t in stdin_texts(ss, k, bodies, cwd):
+                    if t is None:
+                        got.append((host, "a script the guard cannot read is sent to a remote shell (" + label + "); pass a literal file path or put the commands in the call", []))
+                        continue
+                    d = script_dels(t)
+                    if d and not label.startswith("the file"): BLANK.append(t)
+                    got += [(host, what + " (in " + label + ")", p) for what, p in d]
+            out += got
+        elif b in ("sftp", "lftp"):
+            pos, j, batch = [], 0, []
+            while j < len(args):
+                if args[j] in ("-b", "-f") and j + 1 < len(args): batch.append(("the batch file " + args[j + 1], read_local(args[j + 1], cwd)))
+                if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1].replace(";", "\n")))
+                if args[j].startswith("-"): j += 2 if args[j] in SFTP_VAL or (b == "lftp" and args[j] in ("-c", "-e", "-f", "-u", "-p")) else 1
+                else: pos.append(args[j]); j += 1
+            host = pos[0] if pos else "?"
+            for label, t in batch + stdin_texts(ss, k, bodies, cwd):
+                if t is None:
+                    out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
+                for line in t.split("\n"):
+                    m = re.match(r"^\s*[-@!]?\s*(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", line)
+                    if m: out.append((host, b + " " + m.group(1) + " (in " + label + ")", [m.group(2)]))
+        elif b == "rsync":
+            if "--dry-run" in args or any(re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args): continue
+            pos, j = [], 0
+            while j < len(args):
+                if args[j].startswith("-"): j += 2 if args[j] in RSYNC_VAL else 1
+                else: pos.append(args[j]); j += 1
+            if len(pos) < 2: continue
+            if any(a.startswith("--del") for a in args) and is_remote(pos[-1]):
+                out.append((pos[-1].split(":")[0], "rsync with a --delete option removes whatever the source does not have", [pos[-1]]))
+            if any(a.startswith("--remove-s") for a in args) and any(is_remote(p) for p in pos[:-1]):
+                out.append(("the source host", "rsync --remove-source-files deletes the transferred files there", [p for p in pos[:-1] if is_remote(p)]))
+        elif b == "eval":
+            out += remote_findings(" ".join(args), cwd, depth + 1)
+        elif b in SHELL_NAMES:
+            for n, a in enumerate(args[:-1]):
+                if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
+                    out += remote_findings(args[n + 1], cwd, depth + 1); break
+            for _, t in stdin_texts(ss, k, bodies, cwd):
+                if t: out += remote_findings(t, cwd, depth + 1)
+    return out
+
+
+def clean(s):
+    return " ".join(str(s).split())
+
+
+remote = []
+if REMOTE:
+    try:
+        remote = remote_findings(ORIG, os.environ.get("RD_CWD", ""))
+    except Exception:
+        # the guard's own failure must not wave a remote delete through
+        if re.search(RM_WORD, ORIG) or re.search(r"-delete\b|\bunlink\b|--del", ORIG):
+            remote = [("?", "ssh, sftp or rsync next to a deleting word (the guard failed to parse the command)", [])]
+seen = set()
+for host, what, paths in remote:
+    row = "R\t" + clean(host)[:80] + "\t" + clean(what)[:200] + "\t" + clean(" ".join(paths))[:400]
+    if row not in seen:
+        seen.add(row); print(row)
+if LOCAL:
+    # What runs remotely is not a local delete: judge the rest. If a remote text cannot be
+    # located in the command as written, the whole command is judged, as before.
+    local = ORIG
+    for t in BLANK:
+        if t and t in local: local = local.replace(t, "")
+        else: local = ORIG; break
+    r = reasons(local)
+    if r:
+        print("L\t" + clean(r))
 PY
-  _RD=$(printf '%s' "$COMMAND" | python3 -c "$_RD_PY" 2>/dev/null || true)
+  _RD_OUT=$(printf '%s' "$COMMAND" | RD_LOCAL=$_RD_LOCAL RD_REMOTE=$_RD_REMOTE RD_CWD="$_TRASH_CWD" python3 -c "$_RD_PY" 2>/dev/null || true)
+  _RD=""; _RD_R=""
+  while IFS= read -r _rd_line; do
+    case "$_rd_line" in
+      L$'\t'*) [ -z "$_RD" ] && _RD=${_rd_line#L$'\t'} ;;
+      R$'\t'*) _RD_R+="${_rd_line#R$'\t'}"$'\n' ;;
+    esac
+  done <<< "$_RD_OUT"
+  if [ -z "$_RD" ] && [ -n "$_RD_R" ]; then
+    _rd_remote_ask "$_RD_R"
+  fi
   if [ -n "$_RD" ]; then
+    [ -n "$_RD_R" ] && echo "Note: this command also deletes on a remote host, which needs the user's approval of the exact paths." >&2
     echo "Blocked: a real delete that skips the Trash: $_RD." >&2
     echo "Use rm on the command line itself (with rmtrash installed it goes to the Trash and is recorded for review), or call ~/.megavibe/scripts/trash.sh from the code. A glob or rmtree over a scratch directory has destroyed finished work for good before." >&2
     echo "If this is only text (a commit message, a note), run it as its own Bash call, or write it to a file with the Write tool and pass the file (git commit -F, gh pr create --body-file). If a human has decided the delete must be unrecoverable, they set MEGAVIBE_ALLOW_REAL_DELETE=1 in Claude Code's environment." >&2
