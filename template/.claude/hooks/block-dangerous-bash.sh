@@ -971,9 +971,14 @@ _rd_remote_ask() {    # $1: the lines "host<TAB>what<TAB>paths"; prints the ask 
   jq -n --arg r "$why" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}'
   exit 0
 }
+_rd_cmd_text() {      # the command on one line for a fallback reason, capped, and saying so when it is cut
+  local c; c=$(printf '%s' "$COMMAND" | tr '\t\n' '  ')
+  if [ "${#c}" -gt 3000 ]; then c="${c:0:3000} [CUT: $(( ${#c} - 3000 )) more characters not shown, so this is INCOMPLETE; read the command itself]"; fi
+  printf '%s' "the command, as written: $c"
+}
 if ! command -v python3 &>/dev/null && [ "$_RD_REMOTE" = 1 ] \
    && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
-  _rd_remote_ask "?"$'\t'"ssh, sftp or rsync next to a deleting word (python3 is missing, so the command was not parsed)"$'\t'
+  _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (python3 is missing, so the command was not parsed)"$'\t'"$(_rd_cmd_text)"
 fi
 if command -v python3 &>/dev/null && [ "$_RD_LOCAL$_RD_REMOTE" != 00 ]; then
   read -r -d '' _RD_PY <<'PY' || true
@@ -1488,7 +1493,7 @@ def mask_subs(t):
     nosq = re.sub(r"\x27[^\x27]*\x27", lambda m: "\x27" + " " * (len(m.group(0)) - 2) + "\x27", t)
     out, subs, i, last = [], [], 0, 0
     while True:
-        m = re.search(r"\$\(|`", nosq[i:])
+        m = re.search(r"(?<!\\)(?:\$\(|`)", nosq[i:])
         if not m: break
         s = i + m.start()
         if nosq[s] == "`":
@@ -1499,6 +1504,25 @@ def mask_subs(t):
         out.append(t[last:s]); out.append("\x03%d\x03" % len(subs)); subs.append(t[s:e]); last = i = e
     out.append(t[last:])
     return "".join(out), subs
+
+
+def piped(pre):
+    """Whether the operators before a command make it read the previous command's output. A newline
+    after the | (a pipeline continued on the next line) arrives as | followed by ;."""
+    return bool(re.search(r"(?<!\|)\|&?(?!\|)", pre))          # | or |&, also inside a run like )| ; never ||
+
+
+def live_subs(code):
+    """substitutions() without the escaped \\$( forms, which are literal text in a message."""
+    return substitutions(re.sub(r"\\\$\(", "\\$ (", code))
+
+
+def opt_width(a, vals):
+    """How many words an ssh option word takes: -p 2222 is two, -p2222 and -tt one, -tp 2222 two
+    (the first letter in the cluster that takes a value takes the rest of the word, or the next word)."""
+    for n, ch in enumerate(a[1:]):
+        if "-" + ch in vals: return 2 if n == len(a) - 2 else 1
+    return 1
 
 
 def segs(text, bodies=None):
@@ -1536,8 +1560,10 @@ def segs(text, bodies=None):
                 if cur and cur[-1].isdigit() and len(cur[-1]) == 1: cur.pop()     # 2>file: a descriptor, not an operand
                 op = tok
             else:
-                if cur or red: out.append((cur, pre, red))
-                cur, red, pre = [], [], tok
+                if cur or red:
+                    out.append((cur, pre, red)); cur, red, pre = [], [], tok
+                else:
+                    pre = (pre + " " + tok).strip()
             continue
         cur.append(back(tok))
     if cur or red: out.append((cur, pre, red))
@@ -1593,7 +1619,7 @@ def stdin_texts(ss, k, cwd):
             elif op == "<<<": out.append(("a here-string", tgt))
             elif op == "<": out.append(("the file " + tgt, read_local(tgt, cwd)))
     from_redirs(red)
-    if pre in ("|", "|&") and k > 0:
+    if piped(pre) and k > 0:
         pw, _, pred = ss[k - 1]
         i = command_start(pw)
         b = os.path.basename(pw[i]) if i is not None else ""
@@ -1657,7 +1683,7 @@ def script_dels(text, depth=0):
         if re.search(RM_WORD, text) or shell_text_reasons(text):
             found.append(("a delete in text the guard cannot parse", [text]))
         return found
-    for sub in substitutions(code):
+    for sub in live_subs(code):
         found += script_dels(sub, depth + 1)
     for k, (w, pre, red) in enumerate(ss):
         i = command_start(w)
@@ -1672,7 +1698,7 @@ def script_dels(text, depth=0):
             b, args = os.path.basename(args[j]), args[j + 1:]
         if b in DEL_VERBS:
             paths = operands(args)
-            if fed and pre in ("|", "|&") and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
+            if fed and piped(pre) and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
             elif fed: paths.append("(names from stdin)")
             found.append((b, paths))
         elif b in ("find", "gfind"):
@@ -1750,9 +1776,13 @@ def remote_findings(text, cwd, depth=0):
         if re.search(r"(?<![\w.-])(ssh|sftp|lftp)(?![\w.-])", text) and (re.search(RM_WORD, text) or shell_text_reasons(text)):
             out.append(("?", "ssh, sftp or lftp next to a delete, in a command the guard cannot parse; the command", [text]))
         return out
-    for sub in substitutions(code):          # outside single quotes only: quoted prose is not a command
+    for sub in live_subs(code):          # outside single quotes, not escaped: quoted prose is not a command
         out += remote_findings(sub, cwd, depth + 1)
+    scopes = []
     for k, (w, pre, red) in enumerate(ss):
+        for ch in pre:                        # a directory change inside ( ) ends with the subshell
+            if ch == "(": scopes.append(cwd)
+            elif ch == ")" and scopes: cwd = scopes.pop()
         i = command_start(w)
         if i is None: continue
         b = os.path.basename(w[i])
@@ -1775,11 +1805,11 @@ def remote_findings(text, cwd, depth=0):
         if b in ("ssh", "autossh"):
             vals = SSH_VAL | ({"-M"} if b == "autossh" else set())      # ssh -M is a flag, autossh -M takes a port
             j = 0
-            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += 2 if args[j] in vals else 1
+            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += opt_width(args[j], vals)
             if j < len(args) and args[j] == "--": j += 1
             if j >= len(args): continue
             host, j = args[j], j + 1
-            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += 2 if args[j] in vals else 1     # ssh host -p 2222 cmd
+            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += opt_width(args[j], vals)     # ssh host -p 2222 cmd
             rest = args[j:]
             if rest[:1] == ["--"]: rest = rest[1:]
             payload = " ".join(rest)                    # ssh itself joins the words with spaces
@@ -1807,7 +1837,9 @@ def remote_findings(text, cwd, depth=0):
             for label, t in batch + stdin_texts(ss, k, cwd):
                 if t is None:
                     out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
-                out += ftp_dels(b, host, label, t)
+                d = ftp_dels(b, host, label, t)
+                out += d
+                if d: out.append((d[-1][0], "the whole " + b + " command text, as written (" + label + ")", [t]))
         elif b == "rsync":
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue
@@ -1820,6 +1852,7 @@ def remote_findings(text, cwd, depth=0):
         elif b == "eval":
             out += remote_findings(" ".join(args), cwd, depth + 1)
         elif b in SHELL_NAMES:
+            if any(re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args): continue       # a syntax check runs nothing
             for n, a in enumerate(args[:-1]):
                 if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
                     out += remote_findings(args[n + 1], cwd, depth + 1); break
@@ -1856,7 +1889,7 @@ PY
   # python3 is there but the check itself died: the same crude ask as without python3
   if [ "$_RD_RC" != 0 ] && [ "$_RD_REMOTE" = 1 ] \
      && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
-    _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (the check failed to run, so the command was not parsed)"$'\t'
+    _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (the check failed to run, so the command was not parsed)"$'\t'"$(_rd_cmd_text)"
   fi
   _RD=""; _RD_R=""
   while IFS= read -r _rd_line; do

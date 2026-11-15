@@ -229,12 +229,38 @@ if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "ask"' 
 OUT=$(jq -n --arg c "ssh host.example 'ls'" '{tool_input:{command:$c}}' | PATH="$T/badpy:$PATH" /bin/bash "$HOOK" 2>/dev/null)
 if [ -z "$OUT" ]; then ok; else bad "a python3 that fails: a plain ssh passes"; fi
 
+# 6f. Second ship round (2026-11-15, two readers), each failing before its fix.
+mkdir -p "$T/cwd/web" "$T/cwd/frontend"; printf 'ls /srv\n' > "$T/cwd/web/del.sh"
+asks "lftp: a quoted ; in a file name cannot hide the next operand" "lftp -e 'rm \"/upload/report;2026.zip\" /upload/unapproved.zip; bye' ftp.example" "/upload/unapproved.zip" "the whole lftp command text"
+asks "sftp: the batch text as written is in the reason" "sftp user@host.example <<EOF
+rm old.zip
+bye
+EOF" "the whole sftp command text"
+asks "a cd inside a subshell does not move the script path" "(cd web && npm run build) && ssh host.example 'bash -s' < del.sh" "releases/old"
+passes "a cd inside a subshell, harmless script in the start directory" "(cd frontend && npm run build); ssh host.example 'bash -s' < plain.sh"
+passes "an escaped command substitution in a double-quoted commit message" "git commit -m \"Document \\\$(ssh host.example rm /srv/a)\""
+passes "the same in echo" "echo \"Example: \\\$(ssh host.example rm /srv/old)\""
+OUT=$(jq -n --arg c "bash -n <<'EOF'
+ssh host.example 'rm /srv/old'
+EOF" '{tool_input:{command:$c}}' | PATH="$T/jqonly:/usr/bin:/bin" /bin/bash "$HOOK" 2>/dev/null)
+if [ -z "$OUT" ]; then ok; else bad "a local bash -n syntax check runs nothing (no rmtrash)"; fi
+asks "a heredoc piped across a line break into a remote shell" "cat <<'EOF' |
+rm /srv/a
+EOF
+ssh host.example 'bash -s'" "/srv/a"
+asks "a subshell piped into a remote shell" "(cat del.sh) | ssh host.example bash" "releases/old"
+passes "an or-list is not a pipe" "test -f plain.sh || ssh host.example 'bash -s'"
+asks "clustered ssh options ending in one that takes a value" "ssh -tp 2222 host.example 'rm /srv/a'" "on host.example" "/srv/a"
+asks "an attached option value" "ssh -lalice -p2222 host.example 'rm /srv/a'" "on host.example"
+OUT=$(jq -n --arg c "ssh host.example 'rm /srv/approved /srv/unapproved'" '{tool_input:{command:$c}}' | PATH="$T/badpy:$PATH" /bin/bash "$HOOK" 2>/dev/null)
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecisionReason | contains("/srv/unapproved")' >/dev/null 2>&1; then ok; else bad "a failing python3: the fallback reason carries the command text"; fi
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
 ln -sf "$(command -v jq)" "$T/nopy/jq"
 OUT=$(jq -n --arg c "ssh host.example 'rm /srv/a'" '{tool_input:{command:$c}}' | PATH="$T/nopy" /bin/bash "$HOOK" 2>/dev/null)
-if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "ask"' >/dev/null 2>&1; then ok; else bad "no python3: remote rm is still asked about"; fi
+if printf '%s' "$OUT" | jq -e '.hookSpecificOutput | .permissionDecision == "ask" and (.permissionDecisionReason | contains("/srv/a"))' >/dev/null 2>&1; then ok; else bad "no python3: remote rm is still asked about, with the command text"; fi
 OUT=$(jq -n --arg c "ssh host.example 'ls'" '{tool_input:{command:$c}}' | PATH="$T/nopy" /bin/bash "$HOOK" 2>/dev/null)
 if [ -z "$OUT" ]; then ok; else bad "no python3: a plain ssh passes"; fi
 
