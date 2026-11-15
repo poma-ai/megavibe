@@ -15,7 +15,9 @@ ok() { PASS=$((PASS + 1)); }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
 
 # a stand-in rmtrash, so the local real-delete guard is active as on a set-up Mac
-mkdir -p "$T/bin" "$T/cwd"; printf '#!/bin/bash\nexit 0\n' > "$T/bin/rmtrash"; chmod +x "$T/bin/rmtrash"
+mkdir -p "$T/bin" "$T/cwd" "$T/home"; printf '#!/bin/bash\nexit 0\n' > "$T/bin/rmtrash"; chmod +x "$T/bin/rmtrash"
+export HOME="$T/home"
+cd "$T/cwd" || exit 2
 export PATH="$T/bin:$PATH"
 printf 'cd /srv/app\nrm -rf releases/old\n' > "$T/cwd/del.sh"
 printf 'cd /srv/app\ngit pull\nls releases\n' > "$T/cwd/plain.sh"
@@ -387,6 +389,86 @@ done
 passes "rsync filter equals-value on a pull" "rsync -a --filter=': .rsync-filter' --delete host:/srv/app/ mirror"
 passes "rsync dry run before a value-taking clustered option" "rsync -anTdestination --delete dir host:dest"
 asks "rsync daemon push with an option terminator" "rsync -a --delete -- dir rsync://host/module/" "on host" "rsync://host/module/"
+
+# 6l. Sixth ship round: one failing-first regression per finding.
+printf 'rm /srv/approved /srv/unapproved\n' > "$T/cwd/delete-script.sh"
+asks "clustered sudo before a shell reading a script" "ssh host 'sudo -iu deploy bash -s' < delete-script.sh" "/srv/approved" "/srv/unapproved"
+asks "lftp open carries its host from -e into stdin" "lftp -e 'open other.example' ftp.example <<'EOF'
+rm /upload/old.zip
+bye
+EOF" "on other.example" "open other.example" "/upload/old.zip"
+passes "compressed search arguments are data" "ssh host 'zgrep -n rm /var/log/auth.log.*.gz'"
+passes "Python module arguments are data" "ssh host 'python3 -m pytest --collect-only -k unlink'"
+
+# Wrapped stdin shells must resolve exactly like wrapped commands.
+for WRAPPER in 'flock /srv/deploy.lock' 'taskset -c 0'; do
+  asks "$WRAPPER before a shell reading a script" "ssh host '$WRAPPER bash -s' < delete-script.sh" "/srv/approved" "/srv/unapproved"
+done
+passes "clustered sudo reads a harmless deploy script" "ssh host 'sudo -iu deploy bash -s' < plain.sh"
+asks "flock -c executes shell text" "ssh host 'flock /tmp/lock -c \"rm -f /srv/old\"'" "/srv/old" "the whole remote command"
+asks "flock --command before the lock" "ssh host 'flock --command \"rm -f /srv/old\" /tmp/lock'" "/srv/old"
+passes "flock -c harmless shell text" "ssh host 'flock /tmp/lock -c \"grep rm /srv/log\"'"
+
+# Each lftp source continues the connection established by the previous source.
+printf 'open file.example\n' > "$T/cwd/open.lftp"
+asks "lftp -c carries its host into stdin" "lftp -c 'open command.example' ftp.example <<'EOF'
+rm /upload/old.zip
+bye
+EOF" "on command.example" "open command.example" "/upload/old.zip"
+asks "lftp -e carries its host into a script file" "lftp -e 'open  other.example' -f batch.txt ftp.example" "on other.example" "open  other.example" "/upload/old.zip"
+asks "lftp script file carries its host into stdin" "lftp -f open.lftp ftp.example <<'EOF'
+rm /upload/old.zip
+bye
+EOF" "on file.example" "open file.example" "/upload/old.zip"
+asks "lftp carries its host between command options" "lftp -c 'open command.example' -e 'rm /upload/old.zip' ftp.example" "on command.example" "open command.example" "/upload/old.zip"
+asks "lftp later open replaces the earlier connection" "lftp -e 'open other.example' -f open.lftp ftp.example <<'EOF'
+rm /upload/old.zip
+bye
+EOF" "on file.example" "open other.example" "open file.example"
+passes "lftp open followed by harmless stdin" "lftp -e 'open other.example' ftp.example <<'EOF'
+get report.csv
+bye
+EOF"
+
+# Search patterns remain data through the same wrapper resolver.
+for SEARCH in 'zgrep -n rm /var/log/auth.log.*.gz' 'bzgrep -n rm /var/log/x.bz2' \
+              'xzgrep rm /var/log/x.xz' 'zegrep rm /var/log/x.gz' \
+              'fd rm /srv/app' 'rg rm /srv/app' 'ag rm /srv/app' 'ack rm /srv/app'; do
+  for WRAPPER in '' 'sudo -iu deploy' 'env LC_ALL=C' 'xargs -0'; do
+    passes "$WRAPPER $SEARCH is a search" "ssh host '$WRAPPER $SEARCH'"
+  done
+done
+asks "fd --exec still executes rm" "ssh host 'fd --exec rm'" "fd --exec rm"
+asks "fd -x executes rm" "ssh host 'fd -x rm {}'" "fd -x rm"
+asks "wrapped fd --exec still executes rm" "ssh host 'sudo -iu deploy fd --exec rm'" "fd --exec rm"
+
+# Python only executes -c text or stdin, never module/script arguments.
+passes "Python module filter remove is data" "ssh host 'python3 -m pytest -k remove tests/'"
+passes "Python script subcommand is data" "ssh host 'python3 manage.py unlink_accounts'"
+passes "Python module path arguments bypass the shell backstop" "ssh host 'python3 -m pytest -k unlink /srv/tests'"
+passes "Python script API arguments are data" "ssh host 'python3 manage.py os.remove unlink /srv/tests'"
+passes "Python -c trailing arguments are data" "ssh host 'python3 -c \"print(1)\" unlink /srv/tests'"
+passes "wrapped Python module arguments are data" "ssh host 'sudo -iu deploy python3 -m pytest -k unlink'"
+passes "Python attached module option arguments are data" "ssh host 'python3 -Impytest -k unlink'"
+passes "Python module stdin is data" "ssh host \"python3 -m pytest <<'EOF'
+import os; os.remove('/srv/x')
+EOF\""
+passes "Python script stdin is data" "ssh host \"python3 manage.py <<'EOF'
+import os; os.remove('/srv/x')
+EOF\""
+passes "Python -c stdin is data" "ssh host \"python3 -c 'print(1)' <<'EOF'
+import os; os.remove('/srv/x')
+EOF\""
+asks "Python -c deleting API still asks" "ssh host \"python3 -c \\\"import os; os.remove('/srv/x')\\\"\"" "/srv/x"
+asks "Python attached -c after option values" "ssh host \"python3 -W ignore -X dev -Ic\\\"import os; os.remove('/srv/x')\\\"\"" "/srv/x"
+asks "Python remote heredoc code still asks" "ssh host \"python3 - <<'EOF'
+import os; os.remove('/srv/x')
+EOF\"" "/srv/x"
+asks "Python remote here-string code still asks" "ssh host \"python3 - <<< \\\"import os; os.remove('/srv/x')\\\"\"" "/srv/x"
+asks "Python remote piped code still asks" "ssh host \"printf '%s' \\\"import os; os.remove('/srv/x')\\\" | python3 -\"" "/srv/x"
+asks "Python heredoc through ssh is executable code" "ssh host 'sudo -iu deploy python3 -' <<'EOF'
+import os; os.remove('/srv/x')
+EOF" "/srv/x"
 
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"

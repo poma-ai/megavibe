@@ -1485,7 +1485,8 @@ POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|t
 
 
 # Commands whose arguments are words and patterns, not commands to run: a deleting word after them is data.
-NOISE = {"grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker",
+NOISE = {"grep", "egrep", "fgrep", "zgrep", "bzgrep", "xzgrep", "zegrep", "fd", "rg", "ag", "ack",
+         "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker",
          "podman", "nerdctl", "git", "npm", "yarn", "pnpm", "kubectl", "helm", "apt", "apt-get", "yum", "dnf", "brew",
          "pip", "pip3", "cat", "less", "more", "tail", "head", "sed", "awk", "ls", "test", "[", "[[", "find", "gfind",
          "history", "alias", "complete", "logger", "wall", "write", "tee", "cut", "tr", "sort", "wc", "journalctl"}
@@ -1502,6 +1503,7 @@ def coarse(text):
     for w, _, _ in (segs(code) or []):
         i = remote_command_start(w)
         if i is None or os.path.basename(w[i]) in NOISE: continue
+        if re.fullmatch(r"(?:python|pypy)[0-9.]*", os.path.basename(w[i])): continue  # executable code checked by script_dels
         # Resolve wrappers before searching command positions: their option operands and the
         # arguments of grep/git/etc. must never become executable words in the backstop.
         bare = unquoted(join(w[i:]))
@@ -1612,15 +1614,18 @@ def remote_command_start(w):
         x = w[i]; b = os.path.basename(x)
         if re.match(r"[A-Za-z_]\w*\+?=", x) or x in KEYWORDS: i += 1; continue
         if b not in REMOTE_WRAPPER_VAL: return i
+        start = i
         vals = REMOTE_WRAPPER_VAL[b]
         i += 1
         while i < len(w) and w[i].startswith("-"):
             a = w[i]
             if a == "--": i += 1; break
+            if b == "flock" and a in ("-c", "--command"): return start
             if b == "command" and re.match(r"^-[A-Za-z]*[vV]", a): return None
             if b == "xcrun" and a in ("--find", "-f", "--show-sdk-path", "--show-sdk-version"): return None
             i += remote_opt_width(a, vals)
         if b in ("timeout", "gtimeout", "taskset", "chrt", "flock"): i += 1  # duration, CPU mask, priority, lock
+        if b == "flock" and i < len(w) and w[i] in ("-c", "--command"): return start
     return None
 
 
@@ -1687,7 +1692,7 @@ def join(words):
 def shell_reads_stdin(w):
     """sh, bash -s, sudo bash: a shell with no script operand and no -c runs what arrives on stdin
     (not with -n, which only checks the syntax)."""
-    i = command_start(w)
+    i = remote_command_start(w)
     if i is None or os.path.basename(w[i]) not in SHELL_NAMES: return False
     args = w[i + 1:]
     if any(re.match(r"^-[A-Za-z]*[cn][A-Za-z]*$", a) for a in args): return False
@@ -1792,6 +1797,34 @@ def remote_git(args):
     return None
 
 
+def python_source(args):
+    """Executable -c text, None for stdin, or empty text for module/script arguments."""
+    j = 0
+    while j < len(args):
+        a = args[j]
+        if a == "--":
+            return None if j + 1 == len(args) or args[j + 1] == "-" else ""
+        if a == "-": return None
+        if not a.startswith("-") or a in ("-h", "-V") or a.startswith(("--help", "--version")): return ""
+        if a == "--check-hash-based-pycs": j += 2; continue
+        if not a.startswith("--"):
+            for n, ch in enumerate(a[1:], 1):
+                if ch in "cmWX":
+                    value = a[n + 1:] or (args[j + 1] if j + 1 < len(args) else "")
+                    if ch == "c": return value
+                    if ch == "m": return ""
+                    if not a[n + 1:]: j += 1
+                    break
+        j += 1
+    return None
+
+
+def interp_code_dels(b, code_text):
+    m = DEL_API.search(code_text)
+    r = (b + " code that deletes (" + " ".join(m.group(0).split())[:40] + "); the code") if m else interp_runs_deleter(code_text)
+    return [(r, [code_text])] if r else []
+
+
 def script_dels(text, depth=0):
     """Deletes in a shell text that runs on the remote side: [(what, paths)]."""
     found = []
@@ -1824,6 +1857,14 @@ def script_dels(text, depth=0):
                         sub.append(y)
                     for what, _ in script_dels(join(sub), depth + 1):
                         found.append(("find " + a + " " + what, [" ".join(w[i:])]))
+        elif b == "fd":
+            for n, a in enumerate(args):
+                if a in ("-x", "--exec", "-X", "--exec-batch"):
+                    sub = args[n + 1:]
+                    if ";" in sub: sub = sub[:sub.index(";")]
+                    for what, _ in script_dels(join(sub), depth + 1):
+                        found.append(("fd " + a + " " + what, [" ".join(w[i:])]))
+                    break
         elif b == "git":
             r = remote_git(args)
             if r: found.append((r, [" ".join(w[i:])]))
@@ -1834,7 +1875,7 @@ def script_dels(text, depth=0):
             found.append(("tar --remove-files (deletes what it archived)", [" ".join(w[i:])]))
         elif b == "zip" and any(a == "--move" or re.match(r"^-[A-Za-z0-9]*m[A-Za-z0-9]*$", a) for a in args):
             found.append(("zip -m (deletes what it archived)", [" ".join(w[i:])]))
-        elif b in ("su", "runuser"):
+        elif b in ("su", "runuser", "flock"):
             for n, a in enumerate(args[:-1]):
                 if a in ("-c", "--command"):
                     found += script_dels(args[n + 1], depth + 1); break
@@ -1851,10 +1892,12 @@ def script_dels(text, depth=0):
                 for _, t in stdin_texts(ss, k, REMOTE_FILE):
                     if t: found += script_dels(t, depth + 1)
         elif INTERP.match(" " + b):
-            code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
-            m = DEL_API.search(code_text)
-            r = (b + " code that deletes (" + " ".join(m.group(0).split())[:40] + "); the code") if m else interp_runs_deleter(code_text)
-            if r: found.append((r, [code_text]))
+            if re.fullmatch(r"(?:python|pypy)[0-9.]*", b):
+                code_text = python_source(args)
+                if code_text is None: code_text = "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
+            else:
+                code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
+            found += interp_code_dels(b, code_text)
         elif b in ("ssh", "autossh"):
             found += [(what + " (on " + h + ", through this host)", p) for h, what, p in remote_findings(join(w[i:]), REMOTE_FILE, depth + 1)]
     return found
@@ -1870,7 +1913,7 @@ def rsync_host(p):
 
 
 def ftp_dels(tool, host, label, t):
-    """Deleting commands in sftp or lftp command text: [(host, what, paths)]. lftp separates commands
+    """Deleting commands and final host in sftp or lftp command text. lftp separates commands
     with ; && || too, and `open` changes the host the rest runs on."""
     out = []
     for line in t.split("\n"):
@@ -1884,7 +1927,7 @@ def ftp_dels(tool, host, label, t):
             elif re.match(r"^\s*mirror\b", c) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", c) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", c) \
                     and not re.search(r"\s--dry-run\b|\s--just-print\b", c):
                 out.append((host, "lftp mirror --reverse --delete removes whatever the local side does not have", [c.strip()]))
-    return out
+    return out, host
 
 
 def remote_findings(text, cwd, depth=0):
@@ -1940,15 +1983,25 @@ def remote_findings(text, cwd, depth=0):
             if got: got.append((host, "the whole remote command, as written", [payload]))
             elif coarse(payload): got.append((host, coarse(payload), [payload]))
             ps = segs(heredocs(payload)[0]) or []
-            if not payload.strip() or any(shell_reads_stdin(x[0]) for x in ps):
+            readers = []
+            for pw, _, _ in ps:
+                pi = remote_command_start(pw)
+                if pi is None: continue
+                pb = os.path.basename(pw[pi])
+                if shell_reads_stdin(pw) or (re.fullmatch(r"(?:python|pypy)[0-9.]*", pb) and python_source(pw[pi + 1:]) is None):
+                    readers.append(pb)
+            if not payload.strip(): readers.append("sh")
+            if readers:
                 for label, t in stdin_texts(ss, k, cwd, pcwd):
                     if t is None:
                         got.append((host, "a script the guard cannot read is sent to a remote shell (" + label + "); pass a literal file path (no cd before it) or put the commands in the call", []))
                         continue
-                    d = script_dels(t)
+                    d = []
+                    for reader in readers:
+                        d += script_dels(t) if reader in SHELL_NAMES else interp_code_dels(reader, t)
                     got += [(host, what + " (in " + label + ")", p) for what, p in d]
                     if d: got.append((host, "the whole script (" + label + ")", [t]))
-                    elif coarse(t): got.append((host, coarse(t) + " (" + label + ")", [t]))
+                    elif any(reader in SHELL_NAMES for reader in readers) and coarse(t): got.append((host, coarse(t) + " (" + label + ")", [t]))
             out += got
         elif b in ("sftp", "lftp"):
             pos, j, batch = [], 0, []
@@ -1962,12 +2015,14 @@ def remote_findings(text, cwd, depth=0):
                 if args[j].startswith("-"): j += opt_width(args[j], SFTP_VAL) if b == "sftp" else (2 if args[j] in ("-c", "-e", "-f", "-u", "-p") else 1)     # sftp -qP 2222
                 else: pos.append(args[j]); j += 1
             host = pos[0] if pos else "?"
+            context = []
             for label, t in batch + stdin_texts(ss, k, cwd, pcwd):
                 if t is None:
                     out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
-                d = ftp_dels(b, host, label, t)
+                context.append(label + ":\n" + t)
+                d, host = ftp_dels(b, host, label, t)
                 out += d
-                if d: out.append((d[-1][0], "the whole " + b + " command text, as written (" + label + ")", [t]))
+                if d: out.append((d[-1][0], "the whole " + b + " command text, as written", ["\n".join(context)]))
         elif b == "rsync":
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue
