@@ -1474,7 +1474,7 @@ RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files
              "--modify-window", "--max-alloc", "--stop-after", "--stop-at", "--usermap", "--groupmap",
              "--skip-compress", "--compress-level", "--outbuf", "--write-batch", "--read-batch",
              "--only-write-batch", "--early-input", "--protocol", "--checksum-choice", "--compress-choice",
-             "--log-file-format", "--max-delete", "--delay-updates-dir", "--files-from", "--from0-file"}
+             "--log-file-format", "--max-delete", "--delay-updates-dir", "--files-from", "--from0-file", "--copy-as"}
 DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
 HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
 REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
@@ -1498,26 +1498,25 @@ def coarse(text):
     file is data). A deleting word after a command that takes words as data (NOISE) is data, also
     behind sudo, env, xargs and the other wrappers."""
     code = heredocs(text)[0]
-    bare = unquoted(code)          # a quoted string is an argument here (grep -F "sudo rm -rf" log); a quoted
-    r = None                       # program for sh -c, su -c, eval or trap has been read by the parser
-    for m in re.finditer(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", bare):
-        before = bare[:m.start(1)].split()
-        if before and os.path.basename(before[-1]) in NOISE: continue      # xargs -0 grep rm
-        r = m.group(1); break
-    if not r and re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", bare):
-        r = "find -delete"
-    if not r:
+    r = None
+    for w, _, _ in (segs(code) or []):
+        i = remote_command_start(w)
+        if i is None or os.path.basename(w[i]) in NOISE: continue
+        # Resolve wrappers before searching command positions: their option operands and the
+        # arguments of grep/git/etc. must never become executable words in the backstop.
+        bare = unquoted(join(w[i:]))
+        m = re.search(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", bare)
+        if m: r = m.group(1); break
+        if re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", bare):
+            r = "find -delete"; break
         # behind a wrapper nobody listed (chroot DIR rm -rf x, setpriv ... -- rm x): the word, then
         # options and a path-like operand, in a command that is not known to take such words as data
-        for w, _, _ in (segs(code) or []):
-            i = command_start(w)
-            if i is None or os.path.basename(w[i]) in NOISE: continue
-            for n in range(i + 1, len(w) - 1):
-                if w[n] in ("rm", "rmdir", "unlink", "shred", "srm"):
-                    ops = [a for a in w[n + 1:] if a != "--" and not a.startswith("-")]
-                    flagged = any(a.startswith("-") and a != "--" for a in w[n + 1:])
-                    if ops and (flagged or "/" in ops[0] or ops[0][:1] in "~$."): r = w[n]; break
-            if r: break
+        for n in range(i + 1, len(w) - 1):
+            if w[n] in ("rm", "rmdir", "unlink", "shred", "srm"):
+                ops = [a for a in w[n + 1:] if a != "--" and not a.startswith("-")]
+                flagged = any(a.startswith("-") and a != "--" for a in w[n + 1:])
+                if ops and (flagged or "/" in ops[0] or ops[0][:1] in "~$."): r = w[n]; break
+        if r: break
     return ("a deleting command (" + r + ") that the parser could not place; read the text") if r else None
 
 
@@ -1574,6 +1573,55 @@ def opt_width(a, vals):
     for n, ch in enumerate(a[1:]):
         if "-" + ch in vals: return 2 if n == len(a) - 2 else 1
     return 1
+
+
+def remote_opt_width(a, vals):
+    """Separate long-option values, or the first value-taking short option in a cluster."""
+    if a in vals: return 2
+    return 1 if a.startswith("--") else opt_width(a, vals)
+
+
+REMOTE_WRAPPER_VAL = {
+    "sudo": SUDO_VAL | {"--close-from", "--command-timeout", "--other-user", "--role", "--type"},
+    "doas": {"-u", "-C"}, "nice": {"-n", "--adjustment"},
+    "env": {"-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"},
+    "xargs": XARGS_VAL | {"--max-args", "--replace", "--delimiter", "--eof", "--max-lines",
+                           "--max-procs", "--max-chars", "--arg-file"},
+    "command": set(), "builtin": set(), "exec": {"-a"}, "nohup": set(),
+    "time": {"-o", "-f", "--output", "--format"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "gtimeout": {"-s", "-k", "--signal", "--kill-after"},
+    "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
+    "taskset": set(), "chrt": {"-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"},
+    "setsid": set(), "chronic": set(), "unbuffer": set(), "caffeinate": {"-t", "-w"},
+    "flock": {"-w", "-E", "--wait", "--timeout", "--conflict-exit-code"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "xcrun": {"-sdk", "--sdk", "-toolchain", "--toolchain"}, "arch": {"-e"},
+    "busybox": set(), "parallel": XARGS_VAL | {"-j", "--jobs"},
+    "numactl": {"-m", "-p", "-i", "-N", "-C", "--membind", "--preferred", "--interleave",
+                "--cpunodebind", "--physcpubind"},
+    "watch": {"-n", "--interval"}, "strace": {"-e", "-o", "-p", "-s", "-u"},
+    "ltrace": {"-e", "-o", "-p", "-s", "-u"},
+}
+
+
+def remote_command_start(w):
+    """Shared command resolution for remote parsing and its backstop; LOCAL keeps its resolver."""
+    i = 0
+    while i < len(w):
+        x = w[i]; b = os.path.basename(x)
+        if re.match(r"[A-Za-z_]\w*\+?=", x) or x in KEYWORDS: i += 1; continue
+        if b not in REMOTE_WRAPPER_VAL: return i
+        vals = REMOTE_WRAPPER_VAL[b]
+        i += 1
+        while i < len(w) and w[i].startswith("-"):
+            a = w[i]
+            if a == "--": i += 1; break
+            if b == "command" and re.match(r"^-[A-Za-z]*[vV]", a): return None
+            if b == "xcrun" and a in ("--find", "-f", "--show-sdk-path", "--show-sdk-version"): return None
+            i += remote_opt_width(a, vals)
+        if b in ("timeout", "gtimeout", "taskset", "chrt", "flock"): i += 1  # duration, CPU mask, priority, lock
+    return None
 
 
 def segs(text, bodies=None):
@@ -1712,7 +1760,16 @@ def rsync_dels(args):
     """(deletes on the destination side, deletes on the source side, positionals); nothing on a dry run."""
     pos, opts, j = [], [], 0
     while j < len(args):
-        if args[j].startswith("-"): opts.append(args[j]); j += 2 if args[j] in RSYNC_VAL else 1
+        if args[j] == "--": pos.extend(args[j + 1:]); break
+        if args[j].startswith("-"):
+            a = args[j]
+            # Attached option values are data, including an 'n' in -ffilter or -essh.
+            flag = a
+            if not a.startswith("--"):
+                for n, ch in enumerate(a[1:], 1):
+                    if "-" + ch in RSYNC_VAL: flag = a[:n]; break
+            opts.append(flag)
+            j += remote_opt_width(a, RSYNC_VAL)
         else: pos.append(args[j]); j += 1
     if any(a in ("--dry-run", "--list-only") or re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in opts): return False, False, []
     args = opts
@@ -1748,17 +1805,10 @@ def script_dels(text, depth=0):
     for sub in live_subs(code):
         found += script_dels(sub, depth + 1)
     for k, (w, pre, red) in enumerate(ss):
-        i = command_start(w)
+        i = remote_command_start(w)
         if i is None: continue
         b, args = os.path.basename(w[i]), w[i + 1:]
         fed = any(os.path.basename(x) in ("xargs", "parallel") for x in w[:i])
-        while b in ("busybox", "ionice", "parallel", "setsid", "chronic", "flock", "taskset", "chrt", "numactl", "unbuffer", "watch", "strace", "ltrace"):      # wrappers command_start does not know
-            j = 0
-            while j < len(args) and (args[j].startswith("-") or args[j].isdigit()): j += 1
-            if b == "flock": j += 1               # the lock file
-            if j >= len(args): break
-            fed = fed or b == "parallel"
-            b, args = os.path.basename(args[j]), args[j + 1:]
         if b in DEL_VERBS:
             paths = [shlex.quote(x) if re.search(r"\s", x) else x for x in operands(args)]
             if fed and piped(pre) and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
@@ -1856,7 +1906,7 @@ def remote_findings(text, cwd, depth=0):
             elif ch == ")" and scopes: cwd = scopes.pop()
         cwds.append(cwd)
         pcwd = cwds[k - 1] if k else cwd      # the command before a `) |` ran in the subshell's directory
-        i = command_start(w)
+        i = remote_command_start(w)
         if i is None: continue
         b = os.path.basename(w[i])
         if b in ("cd", "pushd", "popd") and cwd is not REMOTE_FILE:
@@ -1875,11 +1925,6 @@ def remote_findings(text, cwd, depth=0):
             if i >= len(w): continue
             b = os.path.basename(w[i])
         args = w[i + 1:]
-        while b in ("ionice", "taskset", "chrt", "setsid", "chronic", "unbuffer", "caffeinate"):
-            j = 0
-            while j < len(args) and (args[j].startswith("-") or args[j].isdigit()): j += 1
-            if j >= len(args): break
-            b, args = os.path.basename(args[j]), args[j + 1:]
         if b in ("ssh", "autossh"):
             vals = SSH_VAL | ({"-M"} if b == "autossh" else set())      # ssh -M is a flag, autossh -M takes a port
             j = 0
@@ -1927,10 +1972,8 @@ def remote_findings(text, cwd, depth=0):
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue
             remote_end = lambda p: is_remote(p) or p.startswith("rsync://")
-            pathlike = lambda x: remote_end(x) or "/" in x or x in (".", "..")
-            rd = [n for n, x in enumerate(pos) if n and remote_end(x) and not any(pathlike(y) for y in pos[n + 1:])]
-            if dest and rd:
-                out.append((rsync_host(pos[rd[0]]), "rsync with a --delete option removes whatever the source does not have", [pos[rd[0]]]))
+            if dest and remote_end(pos[-1]):
+                out.append((rsync_host(pos[-1]), "rsync with a --delete option removes whatever the source does not have", [pos[-1]]))
             if src and any(remote_end(p) for p in pos[:-1]):
                 rp = [p for p in pos[:-1] if remote_end(p)]
                 out.append((rsync_host(rp[0]), "rsync --remove-source-files deletes the transferred files there", rp))

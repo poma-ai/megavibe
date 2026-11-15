@@ -340,12 +340,53 @@ EOF" "on user@host.example"
 # 6j. Sweep cycle after the fourth ship round.
 asks "a local wrapper in front of rsync --delete" "ionice -c3 rsync -a --delete build/ host.example:/srv/app/" "/srv/app/"
 asks "taskset in front of rsync --delete" "taskset -c 0 rsync -a --delete build/ deploy@host.example:/srv/app/" "/srv/app/"
-asks "an unknown rsync option with a value after the destination" "rsync -a --delete build/ host.example:/srv/app/ --copy-as deploy" "/srv/app/"
+asks "rsync --copy-as with a value after the destination" "rsync -a --delete build/ host.example:/srv/app/ --copy-as deploy" "/srv/app/"
 passes "rsync --delete pulling, with an exclude value before the source" "rsync -a --delete --exclude cache user@host.example:/srv/app/ ./mirror/"
 asks "lftp queue rm" "lftp -e 'queue rm /upload/old.zip; bye' ftp.example" "/upload/old.zip"
 asks "lftp commands separated by a single &" "lftp -e 'cd /upload & rm old.zip; bye' ftp.example" "old.zip"
 asks "backstop: a relative operand behind an unlisted wrapper" "ssh host.example 'chroot /srv/jail rm -rf releases/old'" "releases/old"
 passes "backstop: a subcommand named rm with a bare word" "ssh host.example 'mytool rm item42; conda env list'"
+
+# 6k. False prompts reproduced by three independent readers.
+passes "backstop: xargs runs grep with options, not its rm pattern" "ssh host 'find /srv -type f -print0 | xargs -0 grep -n rm'"
+passes "backstop: command -v only looks up rm" "ssh host 'command -v rm'"
+passes "backstop: wrapper names inside grep patterns are data" "ssh host 'grep -e sudo -e rm /var/log/auth.log'"
+passes "clustered sudo options before git rm --cached" "ssh host 'sudo -iu deploy git rm --cached .env'"
+passes "clustered sudo options before grep" "ssh host 'sudo -iu deploy grep rm /srv/app/deploy.log'"
+passes "taskset before grep" "ssh host 'taskset -c 0 grep rm /var/log/app.log'"
+passes "rsync pull with a filter in a short option cluster" "rsync -avf ': .rsync-filter' --delete host:/srv/app/ mirror"
+passes "rsync pull with a clustered filter and --copy-as" "rsync -avf ': .rsync-filter' --copy-as deploy --delete host:/srv/app/ mirror"
+passes "rsync pull with two remote sources and a bare local destination" "rsync -az --delete host:/srv/app/ host:/srv/config/ mirror"
+passes "flock before git rm --cached" "ssh host 'flock /tmp/deploy.lock git rm --cached .env'"
+asks "rsync push with a relative source path" "rsync -a --delete ./dir/ host:/srv/x/" "/srv/x/"
+asks "rsync push with bare source and remote destination" "rsync -a --delete dir host:/srv/x" "/srv/x"
+asks "rsync push with multiple bare sources" "rsync --delete-after a b host:dest" "host:dest"
+
+# The same wrapper must exempt search arguments and still resolve a real deleting command.
+for OPT in '-iu deploy' '-iudeploy' '-ig staff' '-igstaff' '-ih host' '-ip prompt' '-iC 3' '-iD /srv' '-iR /srv' '-iT 10'; do
+  passes "sudo $OPT keeps search arguments as data" "ssh host 'sudo $OPT grep -n rm /srv/log'"
+  asks "sudo $OPT resolves a delete in the parser" "ssh host 'sudo $OPT rm -f /srv/old'" "/srv/old" "the whole remote command"
+done
+for WRAPPER in 'ionice -c 2 -n4' 'taskset -c 0' 'taskset 0x1' 'chrt -f 10' 'setsid -f' 'chronic' 'unbuffer -p' \
+               'caffeinate -t 1' 'flock -w 2 /tmp/deploy.lock' 'flock -w2 9' 'env -u OLD LC_ALL=C' \
+               'nice -n5' 'nohup' 'time -f elapsed -o /tmp/timing' 'timeout -k1 10' 'flock /tmp/lock sudo -iu deploy'; do
+  passes "$WRAPPER keeps search arguments as data" "ssh host '$WRAPPER grep -n rm /srv/log'"
+  asks "$WRAPPER resolves a delete in the parser" "ssh host '$WRAPPER rm -f /srv/old'" "/srv/old" "the whole remote command"
+done
+passes "wrapped command lookups stay exempt" "ssh host 'sudo -iu deploy command -pv rm; flock /tmp/lock type rm; taskset -c 0 which rm'"
+
+# Option values before the source or after the destination are never positional operands.
+for OPT in "-avf ': .rsync-filter'" "-avf': .rsync-filter'" "-ave 'ssh -p 2222'" '-avessh' \
+           '-avT destination' '-avTdestination' '-avB 1024' '-avB1024' \
+           '--copy-as deploy' "--filter ': .rsync-filter'" '--rsh ssh' '--exclude cache' '--exclude-from excludes' \
+           '--include src' '--include-from includes' '--files-from files' '--bwlimit 100' '--chmod D755' \
+           '--chown deploy:staff' '--usermap root:deploy' '--groupmap root:staff'; do
+  passes "rsync pull consumes $OPT" "rsync $OPT --delete host:/srv/app/ mirror"
+  asks "rsync push consumes trailing $OPT" "rsync -a --delete dir host:dest $OPT" "host:dest"
+done
+passes "rsync filter equals-value on a pull" "rsync -a --filter=': .rsync-filter' --delete host:/srv/app/ mirror"
+passes "rsync dry run before a value-taking clustered option" "rsync -anTdestination --delete dir host:dest"
+asks "rsync daemon push with an option terminator" "rsync -a --delete -- dir rsync://host/module/" "on host" "rsync://host/module/"
 
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
