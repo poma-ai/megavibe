@@ -1480,11 +1480,28 @@ POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|t
        r"\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*|\s-(?:exec|execdir|ok|okdir)\s+)[ \t]*(?:\w+=\S*\s+)*(?:\S*/)?")
 
 
+# Commands whose arguments are words and patterns, not commands to run: a deleting word after them is data.
+NOISE = {"grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker",
+         "podman", "nerdctl", "git", "npm", "yarn", "pnpm", "kubectl", "helm", "apt", "apt-get", "yum", "dnf", "brew",
+         "pip", "pip3", "cat", "less", "more", "tail", "head", "sed", "awk", "ls", "test", "[", "[[", "find", "gfind",
+         "history", "alias", "complete", "logger", "wall", "write", "tee", "cut", "tr", "sort", "wc", "journalctl"}
+
+
 def coarse(text):
     """The backstop under the parser: a deleting command in command position anywhere in a text that
     runs remotely, found by pattern. Used only where the parser found nothing in that text."""
     m = re.search(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", text)
     r = m.group(1) if m else ("find -delete" if re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", text) else None)
+    if not r:
+        # behind a wrapper nobody listed (chroot DIR rm -rf x, setpriv ... -- rm x): the word, then
+        # options and something path-like, in a command that is not known to take such words as data
+        for piece in re.split(r"[;&|\n]+", text):
+            w = piece.split()
+            while w and re.match(r"^\w+=", w[0]): w = w[1:]
+            if not w or os.path.basename(w[0]) in NOISE: continue
+            m = re.search(r"(?<![\w./\x27\"=-])(rm|rmdir|unlink|shred|srm)\s+(?:-[A-Za-z-]+\s+)*(?:--\s+)?[\x27\"]?(?:/|~|\.\.?/|\$)", piece)
+            if m and m.start() > 0:
+                r = m.group(1); break
     return ("a deleting command (" + r + ") that the parser could not place; read the text") if r else None
 
 

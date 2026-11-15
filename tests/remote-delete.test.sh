@@ -308,6 +308,12 @@ passes "an lftp open with a long option list is parsed at once, not timed out in
 asks "lftp -e written as one word with its commands" "lftp -e'rm /upload/old.zip; bye' ftp.example" "/upload/old.zip"
 asks "rsync --log-file-format with its value after the destination" "rsync -a --delete build/ host.example:/srv/app/ --log-file-format %n" "/srv/app/"
 
+asks "backstop: chroot in front of the delete" "ssh host.example \"chroot /srv/jail rm -rf /tmp/old\"" "/tmp/old"
+asks "backstop: setpriv in front of the delete" "ssh host.example 'setpriv --reuid=0 -- rm -rf /srv/x'" "/srv/x"
+asks "backstop: an object-store delete" "ssh host.example 'aws s3 rm s3://bucket/key; s3cmd del x; mc rm /data/old'" "/data/old"
+passes "backstop: a deleting word as data for grep, sed, journalctl and docker" "ssh host.example 'grep -c rm /var/log/app.log; sed -n /rm/p /etc/x; journalctl -u rm /dev/null; docker rm -f /web'"
+passes "backstop: a path that only contains the word" "ssh host.example 'ls /srv/rm /tmp/unlink; cat ./rm/readme; stat /usr/bin/rm'"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
