@@ -1599,6 +1599,41 @@ def opt_width(a, vals):
     return 1
 
 
+def ssh_target(args, vals):
+    """Keep explicit connection settings while resolving the host and payload. Never read
+    SSH config or execute ProxyCommand; the same parser also handles SSH inside a payload."""
+    j, hostname, options = 0, None, []
+
+    def scan_options():
+        nonlocal j, hostname
+        while j < len(args) and args[j].startswith("-") and args[j] != "--":
+            a, width = args[j], opt_width(args[j], vals)
+            for n, ch in enumerate(a[1:]):
+                flag = "-" + ch
+                if flag not in vals: continue
+                value = a[n + 2:] or (args[j + 1] if j + 1 < len(args) else "")
+                key, setting = "", ""
+                if flag == "-o":
+                    m = re.match(r"^\s*([^\s=]+)(?:\s*=\s*|\s+)(.*)$", value)
+                    if m: key, setting = m.group(1).lower(), m.group(2).strip()
+                if key == "hostname" and hostname is None: hostname = setting
+                if flag in {"-J", "-p", "-W", "-F", "-l"} or key in {"hostname", "proxyjump", "proxycommand", "port", "user"}:
+                    note = join(args[j:j + width])
+                    if flag == "-F": note += " (config file in use; real destination may come from that file)"
+                    options.append(note)
+                break       # the rest of this option word is its value, not more flags
+            j += width
+
+    scan_options()
+    if j < len(args) and args[j] == "--": j += 1
+    if j >= len(args): return None, [], options
+    host, j = args[j], j + 1
+    scan_options()           # ssh host -p 2222 cmd
+    if j < len(args) and args[j] == "--": j += 1
+    if hostname is not None: host = hostname + " (ssh alias " + host + ")"
+    return host, args[j:], options
+
+
 def remote_opt_width(a, vals):
     """Separate long-option values, or the first value-taking short option in a cluster."""
     if a in vals: return 2
@@ -2188,14 +2223,8 @@ def remote_findings(text, cwd, depth=0):
         args = w[i + 1:]
         if b in ("ssh", "autossh"):
             vals = SSH_VAL | ({"-M"} if b == "autossh" else set())      # ssh -M is a flag, autossh -M takes a port
-            j = 0
-            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += opt_width(args[j], vals)
-            if j < len(args) and args[j] == "--": j += 1
-            if j >= len(args): continue
-            host, j = args[j], j + 1
-            while j < len(args) and args[j].startswith("-") and args[j] != "--": j += opt_width(args[j], vals)     # ssh host -p 2222 cmd
-            rest = args[j:]
-            if rest[:1] == ["--"]: rest = rest[1:]
+            host, rest, connection_options = ssh_target(args, vals)
+            if host is None: continue
             payload = " ".join(rest)                    # ssh itself joins the words with spaces
             got = [(host, what, p) for what, p in script_dels(payload)]
             if got: got.append((host, "the whole remote command, as written", [payload]))
@@ -2220,6 +2249,8 @@ def remote_findings(text, cwd, depth=0):
                     got += [(host, what + " (in " + label + ")", p) for what, p in d]
                     if d: got.append((host, "the whole script (" + label + ")", [t]))
                     elif any(reader in SHELL_NAMES for reader in readers) and coarse(t): got.append((host, coarse(t) + " (" + label + ")", [t]))
+            if got and connection_options:
+                got.append((host, "ssh connection options", [" ".join(connection_options)]))
             out += got
         elif b in ("sftp", "lftp"):
             pos, j, batch = [], 0, []

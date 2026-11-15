@@ -667,6 +667,62 @@ for WRAPPER in 'setpriv --reuid=1000 --regid=1000 --clear-groups --inh-caps=-all
   passes "$WRAPPER resolves search data" "ssh host '$WRAPPER grep -e rm /srv/log'"
 done
 
+# Explicit SSH connection settings must reach the approver, including nested SSH.
+for CLIENT in ssh 'autossh -M 0' 'sshpass -p secret ssh'; do
+  for OPT in '-o HostName=prod.example' '-oHostName=prod.example' \
+             '-o "hOsTnAmE prod.example"' '-o"HOSTNAME prod.example"' \
+             '-o "HostName = prod.example"'; do
+    asks "$CLIENT $OPT names the real host first" "$CLIENT $OPT staging.example 'rm /srv/old'" \
+      "on prod.example (ssh alias staging.example)" "/srv/old"
+    asks "nested $CLIENT $OPT names the real host" "ssh jump '$CLIENT $OPT staging.example rm /srv/old'" \
+      "on prod.example (ssh alias staging.example)" "/srv/old"
+  done
+  for OPT in '-J jump.example' '-Jjump.example' '-oProxyJump=jump.example' '-o ProxyJump=jump.example' \
+             '-p 2222' '-p2222' '-oPort=2222' '-o Port=2222' \
+             '-W prod.example:22' '-Wprod.example:22' '-l deploy' '-ldeploy' \
+             '-oUser=deploy' '-o User=deploy'; do
+    asks "$CLIENT connection option $OPT" "$CLIENT $OPT staging.example 'rm /srv/old'" \
+      "ssh connection options: $OPT" "/srv/old"
+    asks "nested $CLIENT connection option $OPT" "ssh jump '$CLIENT $OPT staging.example rm /srv/old'" \
+      "ssh connection options" "$OPT" "/srv/old"
+  done
+done
+for OPT in '-o "ProxyCommand=nc proxy.example 22"' '-o"ProxyCommand nc proxy.example 22"' \
+           '-o "pRoXyJuMp jump.example"' '-o"pOrT 2222"'; do
+  OPTION_TEXT=${OPT#*\"}; OPTION_TEXT=${OPTION_TEXT%\"}
+  asks "quoted connection option $OPT" "ssh $OPT staging.example 'rm /srv/old'" "ssh connection options" "$OPTION_TEXT" "/srv/old"
+  asks "nested quoted connection option $OPT" "ssh jump 'ssh $OPT staging.example rm /srv/old'" "ssh connection options" "$OPTION_TEXT" "/srv/old"
+done
+for OPT in '-F configfile' '-Fconfigfile'; do
+  asks "explicit config $OPT" "ssh $OPT staging.example 'rm /srv/old'" \
+    "ssh connection options: $OPT" "real destination may come from that file" "/srv/old"
+  asks "nested explicit config $OPT" "ssh jump 'ssh $OPT staging.example rm /srv/old'" \
+    "ssh connection options" "$OPT" "real destination may come from that file"
+done
+asks "options after the host" "ssh staging.example -oHostName=prod.example -p2222 'rm /srv/old'" \
+  "on prod.example (ssh alias staging.example)" "ssh connection options" "-p2222"
+asks "first HostName wins" "ssh -oHostName=prod.example -oHostName=other.example staging.example 'rm /srv/old'" \
+  "on prod.example (ssh alias staging.example)"
+asks "user at alias survives HostName" "ssh -oHostName=prod.example deploy@staging.example 'rm /srv/old'" \
+  "on prod.example (ssh alias deploy@staging.example)"
+asks "user at host remains visible" "ssh deploy@staging.example 'rm /srv/old'" "on deploy@staging.example"
+passes "connection options alone do not ask" "ssh -oHostName=prod.example -J jump.example staging.example 'ls /srv'"
+passes "nested connection options alone do not ask" "ssh jump 'ssh -oHostName=prod.example staging.example grep rm /srv/log'"
+
+# Pin the complete existing reason, including newlines; no generic config warning.
+cat > "$T/expected-reason" <<'EOF'
+Remote delete: no Trash on the other side, nothing here can be restored.
+- on staging.example: the whole remote command, as written: rm /srv/old
+- on staging.example: rm: /srv/old
+An approval covers the paths named in it and nothing else: approve only if every line above is exactly what was asked for, and none is a file of unknown origin.
+Agent: if this was denied, do not respell it. Either move instead of deleting, which needs no approval (ssh HOST 'mkdir -p ~/.megavibe-quarantine/DATE && mv -n -- PATHS ~/.megavibe-quarantine/DATE/'), or name these exact paths to the user in chat and let them approve the prompt or run the command themselves.
+EOF
+for OPT in '' '-o BatchMode=yes -o ConnectTimeout=15'; do
+  run "ssh $OPT staging.example 'rm /srv/old'"
+  printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecisionReason' > "$T/actual-reason"
+  if [ "$RC" = 0 ] && cmp -s "$T/expected-reason" "$T/actual-reason"; then ok; else bad "unchanged SSH reason ($OPT)"; fi
+done
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
