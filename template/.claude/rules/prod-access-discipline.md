@@ -2,8 +2,9 @@
 
 Rules for touching a live production system — a Kubernetes cluster, a managed
 database, a running service. They apply whenever the target is not visibly a
-dev/test/staging environment. A staging copy that uses production data or
-production side-effect channels counts as production (see below).
+dev/test/staging environment. A dev, test or staging label does not exempt code
+that is connected to a live production database or to production side-effect
+channels (see below).
 
 ## The command class that gets mistaken for a read
 
@@ -87,12 +88,10 @@ Two consequences worth holding:
 
 ## A request to an application is whatever its handler does
 
-The `exec` trap again, over HTTP. A request to an application that runs against
-production data is a **write** until you have read the handler it reaches, for
-database writes, mail and queue inserts, payment calls, webhooks and other
-outbound requests. The URL, the page's name, the size of its output and the
-HTTP method prove nothing: a GET does whatever the code behind it does, and
-legacy pages act on load.
+The `exec` trap again, over HTTP. Classify a request to an application that
+runs against production data by what it is established to do, never by its URL,
+the page's name, the size of its output or its HTTP method: a GET does whatever
+the code behind it does, and legacy pages act on load.
 
 On 2026-11-15 a "read-only" comparison of admin pages, run before and after a
 routing change, requested one page that queues a mail to every active customer
@@ -100,62 +99,96 @@ on each plain GET. Six requests queued about 70,000 mails; about 9,300 were
 delivered before anyone looked. The page had been classified by its name and
 the size of its output. Its code was 71 lines.
 
-- Read the handler of every page you are about to request, not a sample. A
-  page you have not read is not requested.
-- Repeating a list of requests "to compare output" multiplies whatever each
-  handler does by the number of runs.
+- **Establish the effects of each route before you request it**, browser
+  navigation included: read the handler and what it calls (middleware, helpers,
+  queued work) for database writes, mail and queue inserts, payment calls,
+  webhooks and other outbound requests. One page read does not vouch for the
+  next one in the list.
+- Evidence you already have counts while it still applies: a documented
+  read-only contract (a health endpoint, a published API), or a route you
+  verified earlier that has not changed.
+- Where the effects stay unknown or the source is not yours to read, do not
+  call the request read-only: use an isolated environment, or get the user's
+  agreement to that specific request and its uncertainty.
+- Repeating a list of requests "to compare output" repeats whatever each
+  handler does.
 
 ## Staging wired to production data is production
 
-A staging copy protects the code and nothing else. If it loads the production
-config or database, it writes production tables and feeds the production
-side-effect channels: the mail queue, payment, webhooks, external APIs. "It
-runs from a staging directory" and "it listens on localhost" say where the code
-is, not what it touches.
+A staging directory or a localhost address isolates the code, not its effects.
+Code connected to the production database or to production integrations can
+change live state and trigger real actions: the mail queue, payment, webhooks,
+external APIs. Establish what the copy is actually connected to (config,
+credentials, enabled senders and consumers) before testing. A separate database
+copy with test-only integrations is not a live connection, though copied
+personal data still needs its protection.
 
-Before a run of that kind:
+Before a run against live production data or channels:
 
-- **List the side-effect channels** of the system: outbound mail and queue
-  tables, payment, webhooks, external APIs, scheduled jobs that pick up rows.
-- **Neutralise them for the test** where you can (a test database, a disabled
-  sender, a sink address). Where you cannot, tell the user before the run, not
-  after.
-- **Record their counts before the run and after every run.** A count that
-  moved and should not have stops the test at once. One look after the first
-  request is the difference between one stray mail and a mass mailing.
+- **Identify the side-effect channels this test can reach**, from the code paths
+  it exercises, the configuration and the background consumers that pick up
+  rows. Record the evidence and what you could not resolve; an incomplete list
+  is not proof of isolation.
+- **Isolate the test's effects through its own configuration**: a separate
+  database, test credentials, a sink address. Do not switch off a shared
+  production sender, redirect production traffic or move production rows to
+  make a test safe; that changes the service for everyone and needs the user's
+  explicit agreement to that action. If isolation is incomplete, name the
+  remaining effects and get agreement to the run first; telling the user is not
+  the same as their agreeing.
+- **Decide what you expect to change and how you will see it, then look after
+  every request or small batch.** Prefer records that can be attributed to the
+  test (rows it enqueued, delivery, payment or webhook events) over a bare
+  queue length: ordinary traffic moves counts, and a queue can fill and drain
+  between two looks. Stop on an effect you did not expect, or when you can no
+  longer see what you need to.
 
-That check is part of verification. Evidence that the change works is one half;
-evidence that the test itself changed nothing it should not is the other.
+A single request can already do bulk harm, so looking afterwards supplements
+isolation and never replaces it. Verification then says which effects were
+checked, on what evidence, and what stays unknown; unchanged counts alone do
+not show a test was clean.
 
 ## Checking production without loading it
 
 - Light statements only: indexed, bounded, a count or a limit. A heavy check
-  query can lock the thing it checks (one held a mail queue for two and a half
-  minutes while verifying that the queue was clean).
+  query can lock the very thing it checks.
 - After anything slow, look at the process list, and cancel only your own
   statement.
 - Never print raw statement text from a process list or a query log: it carries
   personal data. Print ids, states and durations.
 
-## When you find harm you caused, still in progress
+## When you find harm your own work is causing
 
-Halting is the first step, not the response. In this order:
+Halting is the first step, not the response.
 
-1. **Stop it by the most reversible means.** Park, do not purge: move the
-   queued rows aside, disable the route, pause the sender. Do not destroy what
-   you will need to measure the damage or to put things back.
-2. **Measure exactly who and what is affected**, with numbers and how each was
-   established.
-3. **Prepare the remedy at once and bring it to the user ready to execute**:
-   the correction built and checked somewhere it cannot go out by itself, the
-   fix as a reviewed diff. A step that is destructive or reaches other people
-   still needs the user's word, and it should be waiting for that word, not
-   unstarted.
-4. **Then write the report.**
+1. **Stop your own activity**: issue no further test requests, stop your test
+   driver or server.
+2. **Tell the user at once**: what you observed, whether it is still going on,
+   what is uncertain, and which containment you propose. Do not wait for a
+   complete measurement or a finished remedy to raise it. Check the timeline
+   before you state the cause (see the next section).
+3. **Contain further harm within what you are authorised to do.** Changing
+   production state, such as moving queued rows aside, disabling a route or
+   pausing a sender, needs the user's agreement to that action, however
+   reversible it is; have the exact action, its scope and its rollback ready
+   when you ask. The one exception: harm that is still growing while the user
+   does not answer. Then take the single most reversible step that touches only
+   what your own test created (park the rows your requests queued), nothing
+   shared, and report it immediately. Park, never purge: keep what is needed to
+   measure the damage and to put things back.
+4. **Establish who and what is affected** from the evidence available:
+   confirmed counts, estimates and unknowns, each with how it was established.
+5. **Prepare the remedy while you wait** and bring it ready to execute: the
+   correction drafted and checked where it cannot go out by itself, the fix as
+   a reviewed diff. Sending, deploying and every other step that is destructive
+   or reaches other people waits for the user's word; ask for it in chat.
+   Silence is not approval.
+6. **Complete the report** as evidence and preparation progress: what happened,
+   what was done, what remains at risk, which decisions are open.
 
-Stopping, reporting and waiting for instructions leaves the user to design the
-remedy while the damage ages. The session that caused it knows the system state
-best in those minutes and owes the work.
+Stopping, reporting and then waiting for instructions leaves the user to design
+the remedy while the damage ages. Needing approval to execute a step is no
+reason not to have prepared it.
 
 ## When you are blamed for an incident
 
