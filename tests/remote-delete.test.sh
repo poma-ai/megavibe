@@ -586,6 +586,87 @@ passes "nested ssh resolves a search" "ssh jump 'ssh internal grep -n rm /var/lo
 passes "nested ssh resolves interpreter arguments" "ssh jump 'ssh internal node script.js unlink /srv/tests'"
 asks "nested ssh resolves a deleter" "ssh jump 'ssh internal rm /srv/x'" "/srv/x" "internal"
 
+# 6n. Launcher resolution precedes data exemptions; payloads are only text for the hook.
+for WRAPPER in 'pipenv run' 'pipx run' 'poetry run' 'uv run' 'uvx' 'hatch run' 'pdm run' \
+               'rye run' 'conda run' 'conda run -n app' 'tox -e unit --' 'npx' 'bunx' 'pnpx' \
+               'pnpm exec' 'pnpm dlx' 'yarn dlx' 'yarn exec' 'corepack pnpm exec' \
+               'corepack yarn dlx' 'bundle exec' 'env VAR=x nice -n 5 nohup pipenv run' \
+               'time stdbuf -o L npx' 'pipx run --spec pytest' 'npx --package jest' \
+               'hatch -e unit run' 'pdm run --project /srv/app' 'corepack pnpm --dir /srv/app exec'; do
+  passes "$WRAPPER resolves test data" "ssh host '$WRAPPER pytest --collect-only -k unlink ./tests'"
+  passes "$WRAPPER resolves search data" "ssh host '$WRAPPER grep -e rm /srv/log'"
+  asks "$WRAPPER resolves file deletion" "ssh host '$WRAPPER rm /srv/x'" "/srv/x"
+done
+passes "pipenv collect-only filter" "ssh host 'pipenv run pytest --collect-only -k unlink tests/'"
+for TARGET in tests/fs.test.js ./test; do
+  passes "npx jest filter at $TARGET" "ssh host 'npx jest -t unlink $TARGET'"
+done
+for TARGET in spec/fs_spec.rb ./spec; do
+  passes "bundle rspec filter at $TARGET" "ssh host 'bundle exec rspec -e unlink $TARGET'"
+done
+asks "npx rimraf deletes" "ssh host 'npx rimraf /srv/x'" "/srv/x"
+for MANAGER in npm pnpm yarn; do
+  for VERB in rm remove; do
+    passes "corepack $MANAGER $VERB removes a package" "ssh host 'corepack $MANAGER $VERB --save-dev @types/node'"
+    passes "$MANAGER $VERB removes a package" "ssh host '$MANAGER $VERB --save-dev @types/node'"
+  done
+done
+for RUNNER in 'yarn run jest' 'corepack yarn run jest' 'bin/rails test' 'rails test' rake 'mix test' 'dotnet test' 'dotnet run'; do
+  passes "$RUNNER treats filters as data" "ssh host '$RUNNER --filter unlink ./tests'"
+  asks "$RUNNER does not hide a following delete" "ssh host '$RUNNER --filter unlink ./tests; rm /srv/x'" "/srv/x"
+done
+for MANAGER in docker 'docker compose' docker-compose podman-compose podman nerdctl; do
+  passes "$MANAGER keeps docker rm behavior" "ssh host '$MANAGER rm -f /app'"
+  passes "wrapped $MANAGER keeps docker rm behavior" "ssh host 'sudo $MANAGER rm -f app'"
+  asks "$MANAGER does not hide a following delete" "ssh host '$MANAGER rm -f app && rm /srv/x'" "/srv/x"
+done
+passes "jq variable named cmd contains rm data" 'ssh host "jq --arg cmd rm '\''.[] | select(.command == \$cmd)'\'' /srv/events.json"'
+passes "yq run field contains rm data" 'ssh host "yq '\''.steps[] | select(.run == \"rm\")'\'' /srv/ci.yml"'
+passes "pgrep pattern" "ssh host 'pgrep -fl unlink'"
+passes "journalctl piped to a search" "ssh host 'journalctl -u app | grep -c unlink'"
+for READER in jq yq xmllint xmlstarlet csvgrep csvcut sqlite3 column cut sort uniq wc head tail \
+              less more bat nl tr diff cmp comm od hexdump strings file stat ls du df lsof ps pgrep \
+              journalctl dmesg 'systemctl status' 'kubectl get' 'kubectl describe' 'kubectl logs'; do
+  passes "$READER deletion word is data" "ssh host '$READER unlink /srv/data'"
+  passes "wrapped $READER deletion word is data" "ssh host 'env VAR=x $READER rm ./data'"
+  asks "$READER does not hide command-position rm" "ssh host '$READER unlink /srv/data && rm /srv/x'" "/srv/x"
+done
+for SQL in 'psql -c' 'mysql -e' 'mariadb -e' 'sqlite3 /srv/db'; do
+  passes "$SQL statement is data" "ssh host '$SQL \"select unlink from events\" /srv/data'"
+done
+asks "sqlite shell escape remains executable" "ssh host 'sqlite3 /srv/db \".shell rm /srv/x\"'" "/srv/x"
+asks "sqlite system escape remains executable" "ssh host 'sqlite3 /srv/db \".system rm /srv/x\"'" "/srv/x"
+asks "jq followed by rm" "ssh host 'jq . f && rm /srv/x'" "/srv/x"
+asks "plain command-position rm" "ssh host 'rm /srv/x'" "/srv/x"
+
+# 6o. Remote tools inside SSH retain their destination and remote file boundaries.
+asks "ssh lftp double-quoted commands" "ssh host 'lftp -e \"rm /srv/old.zip\" ftp.example'" "on ftp.example" "/srv/old.zip"
+asks "ssh lftp single-quoted commands" "ssh bastion \"lftp -e 'rm /upload/old.zip' ftp.example\"" "on ftp.example" "/upload/old.zip"
+asks "ssh sftp cannot read a remote batch even when it exists locally" "ssh host 'sftp -b batch.txt other'" "on other" "cannot read" "sftp -b batch.txt other"
+asks "ssh sftp heredoc retains its body" "ssh host \"sftp other <<'EOF'
+rm /x
+EOF\"" "on other" "/x" "the whole sftp command text"
+asks "ssh rsync names its destination host" "ssh jump 'rsync -a --delete /srv/a/ other:/srv/b/'" "on other" "other:/srv/b/"
+passes "ssh lftp listing" "ssh host 'lftp -e \"ls /srv\" ftp.example'"
+passes "ssh rsync without deletion" "ssh host 'rsync -a /srv/a/ other:/srv/b/'"
+passes "ssh rsync local dry run" "ssh host 'rsync --delete --dry-run /srv/source/ /srv/destination/'"
+passes "ssh rsync remote dry run" "ssh host 'rsync --delete --dry-run /srv/source/ other:/srv/destination/'"
+
+# 6p. Privilege wrappers consume option values before resolving executable text.
+asks "setpriv bare relative delete" "ssh host.example 'setpriv -- rm old'" "old" "the whole remote command"
+asks "setpriv explicit uid delete" "ssh host 'setpriv --reuid=1000 -- rm /srv/x'" "/srv/x" "the whole remote command"
+for WRAPPER in 'setpriv --reuid=1000 --regid=1000 --clear-groups --inh-caps=-all --' \
+               'setpriv --reuid 1000 --regid 1000 --inh-caps -all --clear-groups' \
+               'setpriv --ruid 1000 --euid 1000 --rgid 1000 --egid 1000 --groups 1000 --' \
+               'setpriv --ambient-caps -all --bounding-set -all --nnp --' \
+               'setpriv --selinux-label rm --apparmor-profile unlink --' \
+               'chpst -u deploy:staff -U deploy -e /srv/env -/ /srv/jail -C /srv -n 5' \
+               'chpst -P -b rm -l /srv/lock -m 1000000 -d 1000000 -o 100 -p 10 -f 1000000 -c 0 -t 10' \
+               'chpst -vu1000 -L/srv/lock'; do
+  asks "$WRAPPER resolves a relative delete" "ssh host '$WRAPPER rm old'" "old" "the whole remote command"
+  passes "$WRAPPER resolves search data" "ssh host '$WRAPPER grep -e rm /srv/log'"
+done
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done

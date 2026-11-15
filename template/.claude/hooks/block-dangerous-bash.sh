@@ -1486,11 +1486,26 @@ POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|t
 
 # Commands whose arguments are words and patterns, not commands to run: a deleting word after them is data.
 NOISE = {"grep", "egrep", "fgrep", "zgrep", "bzgrep", "xzgrep", "zegrep", "fd", "rg", "ag", "ack",
-         "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker",
-         "podman", "nerdctl", "git", "npm", "yarn", "pnpm", "kubectl", "helm", "apt", "apt-get", "yum", "dnf", "brew",
+         "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker", "docker-compose",
+         "podman", "podman-compose", "nerdctl", "git", "npm", "yarn", "pnpm", "kubectl", "helm", "apt", "apt-get", "yum", "dnf", "brew",
          "pip", "pip3", "cat", "less", "more", "tail", "head", "sed", "awk", "ls", "test", "[", "[[", "find", "gfind",
          "history", "alias", "complete", "logger", "wall", "write", "tee", "cut", "tr", "sort", "wc", "journalctl",
-         "pytest", "py.test", "tox", "nox", "go", "cargo", "make", "rspec", "jest", "phpunit", "mvn", "gradle", "ctest"}
+         "pytest", "py.test", "tox", "nox", "go", "cargo", "make", "rspec", "jest", "phpunit", "mvn", "gradle", "ctest",
+         "rails", "rake", "mix", "dotnet",
+         "jq", "yq", "xmllint", "xmlstarlet", "csvgrep", "csvcut", "sqlite3", "psql", "mysql", "mariadb",
+         "column", "uniq", "bat", "nl", "diff", "cmp", "comm", "od", "hexdump", "strings", "file", "stat",
+         "du", "df", "lsof", "ps", "pgrep", "dmesg"}
+
+
+def remote_data_command(b, args):
+    # SQLite can escape to the shell. Do not exempt that mode just because SQL is data.
+    if b == "sqlite3" and re.search(r"\.shell\b|\bsystem\b", " ".join(args), re.I): return False
+    if b == "systemctl":
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            i += remote_opt_width(args[i], {"-H", "--host", "-M", "--machine", "-t", "--type", "--state", "-p", "--property", "-n", "--lines"})
+        return i < len(args) and args[i] == "status"
+    return b in NOISE
 
 
 def coarse(text):
@@ -1503,8 +1518,11 @@ def coarse(text):
     r = None
     for w, _, _ in (segs(code) or []):
         i = remote_command_start(w)
-        if i is None or os.path.basename(w[i]) in NOISE: continue
+        if i is None: continue
         b = os.path.basename(w[i])
+        if remote_data_command(b, w[i + 1:]): continue
+        if b == "sqlite3" and re.search(r"\b(?:" + "|".join(DEL_VERBS) + r")\b", " ".join(w[i + 1:])):
+            r = "sqlite3 shell/system escape"; break
         # These commands have explicit source/payload boundaries in script_dels. Re-scanning
         # their argv here would turn filters, script arguments and nested searches into code.
         if INTERP.fullmatch(b) or b in SHELL_NAMES | {"su", "runuser", "flock", "eval", "trap", "ssh", "autossh"}: continue
@@ -1610,9 +1628,36 @@ REMOTE_WRAPPER_VAL = {
     "ltrace": {"-e", "-o", "-p", "-s", "-u"},
     "runuser": {"-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell", "--whitelist-environment"},
     "chroot": {"--userspec", "--groups"},
+    "setpriv": {"--ruid", "--euid", "--reuid", "--rgid", "--egid", "--regid", "--groups",
+                "--inh-caps", "--ambient-caps", "--bounding-set", "--securebits", "--pdeathsig",
+                "--selinux-label", "--apparmor-profile", "--landlock-access", "--landlock-rule", "--seccomp-filter"},
+    "chpst": {"-u", "-U", "-b", "-e", "-/", "-C", "-n", "-l", "-L", "-m", "-d", "-o", "-p", "-f", "-c", "-t"},
     "uv": {"--directory", "--project", "--config-file", "--cache-dir", "--python", "-p",
            "--with", "--with-editable", "--with-requirements", "--extra", "--group", "--package", "--env-file", "--index", "--index-url"},
     "poetry": {"-C", "--directory", "-P", "--project"},
+    "pipenv": {"--python"},
+    "pipx": {"--spec", "--python", "--pip-args", "--index-url"},
+    "hatch": {"-e", "--env", "-p", "--project"},
+    "pdm": {"-p", "--project", "-c", "--config", "-G", "--group"},
+    "rye": {"--pyproject"},
+    "conda": {"-n", "--name", "-p", "--prefix", "--cwd"},
+    "tox": {"-e", "-c", "--conf", "--workdir", "--root"},
+    "npx": {"-p", "--package", "--cache", "--registry", "--userconfig"},
+    "bunx": {"-p", "--package"}, "pnpx": {"--package"},
+    "pnpm": {"-C", "--dir", "--filter", "--package", "--store-dir"},
+    "yarn": {"--cwd", "--cache-folder", "--modules-folder", "-p", "--package"},
+    "npm": {"--prefix", "--workspace", "-w", "--package", "--cache", "--registry"},
+    "corepack": set(), "bundle": {"--gemfile", "--path"},
+}
+REMOTE_WRAPPER_VAL["uvx"] = REMOTE_WRAPPER_VAL["uv"] | {"--from"}
+# Only these subcommands launch another tool. In particular, package-manager rm/remove
+# stays attached to npm/pnpm/yarn, whose operands are packages rather than filesystem paths.
+# Their run subcommand names project scripts (even a script named unlink), not OS commands.
+REMOTE_LAUNCH_SUBCOMMANDS = {
+    "uv": {"run"}, "poetry": {"run"}, "pipenv": {"run"}, "pipx": {"run"},
+    "hatch": {"run"}, "pdm": {"run"}, "rye": {"run"}, "conda": {"run"},
+    "pnpm": {"exec", "dlx"}, "yarn": {"exec", "dlx"}, "npm": {"exec"},
+    "bundle": {"exec"},
 }
 
 
@@ -1627,15 +1672,17 @@ def remote_command_start(w):
         if b == "runuser" and not any(a in ("-u", "--user") or a.startswith(("-u", "--user=")) for a in w[i + 1:]): return i
         vals = REMOTE_WRAPPER_VAL[b]
         i += 1
+        terminated = False
         while i < len(w) and w[i].startswith("-"):
             a = w[i]
-            if a == "--": i += 1; break
+            if a == "--": i += 1; terminated = True; break
             if b in ("flock", "runuser") and a in ("-c", "--command", "--session-command"): return start
             if b == "command" and re.match(r"^-[A-Za-z]*[vV]", a): return None
             if b == "xcrun" and a in ("--find", "-f", "--show-sdk-path", "--show-sdk-version"): return None
             i += remote_opt_width(a, vals)
-        if b in ("uv", "poetry"):
-            if i >= len(w) or w[i] != "run": return start
+        if b == "tox" and not terminated: return start
+        if b in REMOTE_LAUNCH_SUBCOMMANDS:
+            if i >= len(w) or w[i] not in REMOTE_LAUNCH_SUBCOMMANDS[b]: return start
             i += 1
             while i < len(w) and w[i].startswith("-"):
                 if w[i] == "--": i += 1; break
@@ -2067,8 +2114,10 @@ def script_dels(text, depth=0):
             code_text = interpreter_source(b, args)
             if code_text is None: code_text = "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
             found += interp_code_dels(b, code_text)
-        elif b in ("ssh", "autossh"):
-            found += [(what + " (on " + h + ", through this host)", p) for h, what, p in remote_findings(join(w[i:]), REMOTE_FILE, depth + 1)]
+    # Scan the complete payload so nested remote tools retain heredocs/pipelines too.
+    # Files named here live on the SSH host and must never be read from the local cwd.
+    found += [(what + " (on " + h + ", through this host)", p)
+              for h, what, p in remote_findings(text, REMOTE_FILE, depth + 1)]
     return found
 
 
