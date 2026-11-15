@@ -255,6 +255,38 @@ asks "an attached option value" "ssh -lalice -p2222 host.example 'rm /srv/a'" "o
 OUT=$(jq -n --arg c "ssh host.example 'rm /srv/approved /srv/unapproved'" '{tool_input:{command:$c}}' | PATH="$T/badpy:$PATH" /bin/bash "$HOOK" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecisionReason | contains("/srv/unapproved")' >/dev/null 2>&1; then ok; else bad "a failing python3: the fallback reason carries the command text"; fi
 
+# 6g. Third ship round (2026-11-15, two readers) and the backstop under the parser.
+printf 'rm /srv/approved\n' > "$T/cwd/script.sh"      # outer script.sh now deletes one path; deploy/script.sh deletes two
+asks "a file read by the producer inside a subshell is read from the subshell's directory" "(cd deploy && cat script.sh) | ssh host.example 'bash -s'" "/srv/unapproved"
+printf 'ls /srv\n' > "$T/cwd/script.sh"
+asks "find with escaped parentheses and -delete" "ssh host.example 'find /srv/logs -type f \\( -name \"*.log\" -o -name \"*.tmp\" \\) -delete'" "find -delete"
+asks "find with escaped parentheses and -exec rm" "ssh host.example 'find /srv/logs -type f \\( -name \"*.log\" -o -name \"*.tmp\" \\) -exec rm {} +'" "find -exec rm"
+printf "ssh host.example 'rm /srv/old'\n" > "$T/cwd/ssh-commands.txt"
+OUT=$(jq -n --arg c "sh -c 'cat > copied.txt' < ssh-commands.txt" --arg d "$T/cwd" '{cwd:$d,tool_input:{command:$c}}' | PATH="$T/jqonly:/usr/bin:/bin" /bin/bash "$HOOK" 2>/dev/null)
+if [ -z "$OUT" ]; then ok; else bad "a shell given its program with -c does not run its stdin file (no rmtrash)"; fi
+passes "sftp: a local !command is not a remote delete" "sftp host.example <<'EOF'
+!ls ./download.tmp
+get report.csv
+EOF"
+OUT=$(jq -n --arg c "sftp host.example <<'EOF'
+!rm ./download.tmp
+get report.csv
+EOF" '{tool_input:{command:$c}}' | PATH="$T/jqonly:/usr/bin:/bin" /bin/bash "$HOOK" 2>/dev/null)
+if [ -z "$OUT" ]; then ok; else bad "sftp !rm runs locally: no remote-delete prompt (no rmtrash)"; fi
+asks "sudo -iu user in front of the delete" "ssh host.example 'sudo -iu deploy rm -f /srv/unapproved'" "/srv/unapproved"
+asks "repeated spaces in a file name survive in the reason" "ssh host.example 'rm -f /srv/approved \"/srv/Report  final.csv\"'" "Report  final.csv"
+i=0; : > "$T/cwd/dense.sh"; while [ $i -lt 9 ]; do printf ':\n%.0s' $(seq 1 50000) >> "$T/cwd/dense.sh"; i=$((i + 1)); done; printf 'rm /srv/unapproved\n' >> "$T/cwd/dense.sh"
+run "ssh host.example 'bash -s' < dense.sh"
+if [ "$RC" = 2 ] || { [ -n "$WHY" ] && case "$WHY" in *"/srv/unapproved"*|*INCOMPLETE*) true ;; *) false ;; esac; }; then ok; else bad "a script too big to parse in time: blocked, or asked with the path or the word INCOMPLETE (rc=$RC)"; fi
+asks "sftp -bFILE attached" "sftp -bbatch.txt user@host.example" "/upload/old.zip"
+asks "bash -euo pipefail reads its stdin script" "ssh host.example 'bash -euo pipefail' < del.sh" "releases/old"
+asks "zip -m deletes what it archived" "ssh host.example 'zip -m logs.zip /srv/logs/old.log'" "zip -m"
+asks "backstop: a delete behind a wrapper the parser does not know" "ssh host.example 'runuser -u deploy -- true; flock /tmp/l sudo -H -u deploy rm -rf /srv/x'" "/srv/x"
+asks "backstop: a delete after a construct the parser cannot split" "ssh host.example 'case \$1 in a) ;; esac; rm -rf /srv/y'" "/srv/y"
+passes "backstop: rm as an argument, not a command" "ssh host.example 'ls | grep -v rm; man rm; which rm; type rm'"
+passes "backstop: docker and package managers" "ssh host.example 'docker rm old; docker image rm x; npm rm left-pad; apt-get remove -y pkg'"
+passes "backstop: a word in echoed text" "ssh host.example 'echo \"please rm nothing\"; printf \"%s\\n\" rm'"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done

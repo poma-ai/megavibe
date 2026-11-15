@@ -990,7 +990,9 @@ import os, re, shlex, signal, sys
 # prose); quoted text counts only when a shell, eval, trap, env -S, parallel or awk runs it.
 # A pathological input that makes the patterns slow is blocked, never let through.
 LOCAL, REMOTE = os.environ.get("RD_LOCAL", "1") == "1", os.environ.get("RD_REMOTE") == "1"
-signal.signal(signal.SIGALRM, lambda *a: (print(("L\t" if LOCAL else "R\t?\t") + "a command too complex to check (guard timed out)"), sys.exit(0)))
+signal.signal(signal.SIGALRM, lambda *a: (print("L\ta command too complex to check (guard timed out)" if LOCAL else
+    "R\t?\ta command too complex to check: the guard timed out, so nothing was parsed and this prompt is INCOMPLETE\tthe command, as written: "
+    + globals().get("ORIG", "").replace("\t", " ").replace("\n", "\\n")[:3000]), sys.exit(0)))
 signal.alarm(2)
 
 ORIG = sys.stdin.read()
@@ -1468,6 +1470,18 @@ RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files
 DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
 HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
 REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
+ESC = {";": "\x02", "(": "\x05", ")": "\x06"}      # escaped \; \( \): words of find, not shell operators
+# Command position in plain text, for the backstop: after a separator, a wrapper with its options, or find -exec.
+POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|time|command|nice|ionice|timeout|busybox|parallel)"
+       r"\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*|\s-(?:exec|execdir|ok|okdir)\s+)[ \t]*(?:\w+=\S*\s+)*(?:\S*/)?")
+
+
+def coarse(text):
+    """The backstop under the parser: a deleting command in command position anywhere in a text that
+    runs remotely, found by pattern. Used only where the parser found nothing in that text."""
+    m = re.search(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", text)
+    r = m.group(1) if m else ("find -delete" if re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", text) else None)
+    return ("a deleting command (" + r + ") that the parser could not place; read the text") if r else None
 
 
 def heredocs(text):
@@ -1534,15 +1548,18 @@ def segs(text, bodies=None):
     t, subs = mask_subs(text.replace("\\\n", ""))
     inq = quoted_mask(t)
     # both only outside quotes: inside a quoted word they belong to the text that word carries
-    t = "".join(" ; " if c == "\n" and not inq[k] else (" \x02 " if c == ";" and k and t[k - 1] == "\\" and not inq[k] else c)
-                for k, c in enumerate(t)).replace("\\ \x02 ", " \x02 ")
+    def piece(k, c):
+        if c == "\n" and not inq[k]: return " ; "
+        if c in ";()" and k and t[k - 1] == "\\" and not inq[k]: return " " + ESC[c] + " "
+        return c
+    t = re.sub(r"\\( [\x02\x05\x06] )", r"\1", "".join(piece(k, c) for k, c in enumerate(t)))
     try:
         lx = shlex.shlex(t, posix=True, punctuation_chars=True)
         lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
     except ValueError:
         return None
-    back = lambda x: re.sub("\x03(\\d+)\x03", lambda m: subs[int(m.group(1))], x).replace("\x02", ";")
+    back = lambda x: re.sub("\x03(\\d+)\x03", lambda m: subs[int(m.group(1))], x).replace("\x02", ";").replace("\x05", "(").replace("\x06", ")")
     out, cur, red, pre, op = [], [], [], "", None
     for tok in toks:
         if op:
@@ -1589,7 +1606,12 @@ def shell_reads_stdin(w):
     if i is None or os.path.basename(w[i]) not in SHELL_NAMES: return False
     args = w[i + 1:]
     if any(re.match(r"^-[A-Za-z]*[cn][A-Za-z]*$", a) for a in args): return False
-    return any(re.match(r"^-[A-Za-z]*s[A-Za-z]*$", a) for a in args) or not operands(args)
+    ops, skip = [], False
+    for a in args:
+        if skip: skip = False
+        elif a[:1] in "-+" and not a.startswith("--"): skip = a.endswith("o")      # -o pipefail, -euo pipefail
+        elif not a.startswith("--"): ops.append(a)
+    return any(re.match(r"^-[A-Za-z]*s[A-Za-z]*$", a) for a in args) or not ops
 
 
 def read_local(path, cwd):
@@ -1609,9 +1631,11 @@ def read_local(path, cwd):
         return None
 
 
-def stdin_texts(ss, k, cwd):
-    """What seg k reads on stdin: [(label, text or None when unreadable)]."""
+def stdin_texts(ss, k, cwd, pcwd=Ellipsis):
+    """What seg k reads on stdin: [(label, text or None when unreadable)]. pcwd: the directory of the
+    command before the pipe, when it differs (a cd inside a subshell)."""
     out = []
+    if pcwd is Ellipsis: pcwd = cwd
     w, pre, red = ss[k]
     def from_redirs(red):
         for op, tgt in red:
@@ -1626,7 +1650,7 @@ def stdin_texts(ss, k, cwd):
         a = pw[i + 1:] if i is not None else []
         if b == "cat":
             files = operands(a)
-            for f in files: out.append(("the file " + f, read_local(f, cwd)))
+            for f in files: out.append(("the file " + f, read_local(f, pcwd)))
             if not files: from_redirs(pred)
         elif b == "echo":
             while a and re.match(r"^-[neE]+$", a[0]): a = a[1:]
@@ -1697,7 +1721,7 @@ def script_dels(text, depth=0):
             fed = fed or b == "parallel"
             b, args = os.path.basename(args[j]), args[j + 1:]
         if b in DEL_VERBS:
-            paths = operands(args)
+            paths = [shlex.quote(x) if re.search(r"\s", x) else x for x in operands(args)]
             if fed and piped(pre) and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
             elif fed: paths.append("(names from stdin)")
             found.append((b, paths))
@@ -1719,6 +1743,8 @@ def script_dels(text, depth=0):
             if (dest or src) and len(pos) > 1: found.append(("rsync with a deleting option", [" ".join(w[i:])]))
         elif b in ("tar", "gtar", "bsdtar") and any(a.startswith("--remove-files") for a in args):
             found.append(("tar --remove-files (deletes what it archived)", [" ".join(w[i:])]))
+        elif b == "zip" and any(a == "--move" or re.match(r"^-[A-Za-z0-9]*m[A-Za-z0-9]*$", a) for a in args):
+            found.append(("zip -m (deletes what it archived)", [" ".join(w[i:])]))
         elif b == "eval":
             found += script_dels(" ".join(args), depth + 1)
         elif b == "trap" and operands(args):
@@ -1728,8 +1754,9 @@ def script_dels(text, depth=0):
             for n, a in enumerate(args[:-1]):
                 if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
                     found += script_dels(args[n + 1], depth + 1); break
-            for _, t in stdin_texts(ss, k, REMOTE_FILE):
-                if t: found += script_dels(t, depth + 1)
+            if shell_reads_stdin([b] + args):
+                for _, t in stdin_texts(ss, k, REMOTE_FILE):
+                    if t: found += script_dels(t, depth + 1)
         elif INTERP.match(" " + b):
             code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
             m = DEL_API.search(code_text)
@@ -1757,7 +1784,7 @@ def ftp_dels(tool, host, label, t):
         for c in (re.split(r";|&&|\|\|", line) if tool == "lftp" else [line]):
             m = re.match(r"^\s*(?:open|connect)\s+(?:-\S+\s+(?:\S+\s+)?)*?(\S+)\s*$", c)
             if m and tool == "lftp": host = m.group(1); continue
-            m = re.match(r"^\s*[-@!]?\s*(?:glob\s+)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
+            m = re.match(r"^\s*[-@]?\s*(?:glob\s+)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
             if m: out.append((host, tool + " " + m.group(1) + " (in " + label + ")", [m.group(2).strip()]))
             # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
             elif re.match(r"^\s*mirror\b", c) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", c) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", c) \
@@ -1778,11 +1805,13 @@ def remote_findings(text, cwd, depth=0):
         return out
     for sub in live_subs(code):          # outside single quotes, not escaped: quoted prose is not a command
         out += remote_findings(sub, cwd, depth + 1)
-    scopes = []
+    scopes, cwds = [], []
     for k, (w, pre, red) in enumerate(ss):
         for ch in pre:                        # a directory change inside ( ) ends with the subshell
             if ch == "(": scopes.append(cwd)
             elif ch == ")" and scopes: cwd = scopes.pop()
+        cwds.append(cwd)
+        pcwd = cwds[k - 1] if k else cwd      # the command before a `) |` ran in the subshell's directory
         i = command_start(w)
         if i is None: continue
         b = os.path.basename(w[i])
@@ -1815,26 +1844,30 @@ def remote_findings(text, cwd, depth=0):
             payload = " ".join(rest)                    # ssh itself joins the words with spaces
             got = [(host, what, p) for what, p in script_dels(payload)]
             if got: got.append((host, "the whole remote command, as written", [payload]))
+            elif coarse(payload): got.append((host, coarse(payload), [payload]))
             ps = segs(heredocs(payload)[0]) or []
             if not payload.strip() or any(shell_reads_stdin(x[0]) for x in ps):
-                for label, t in stdin_texts(ss, k, cwd):
+                for label, t in stdin_texts(ss, k, cwd, pcwd):
                     if t is None:
                         got.append((host, "a script the guard cannot read is sent to a remote shell (" + label + "); pass a literal file path (no cd before it) or put the commands in the call", []))
                         continue
                     d = script_dels(t)
                     got += [(host, what + " (in " + label + ")", p) for what, p in d]
                     if d: got.append((host, "the whole script (" + label + ")", [t]))
+                    elif coarse(t): got.append((host, coarse(t) + " (" + label + ")", [t]))
             out += got
         elif b in ("sftp", "lftp"):
             pos, j, batch = [], 0, []
             while j < len(args):
                 if (args[j] == "-b" or (args[j] == "-f" and b == "lftp")) and j + 1 < len(args) and args[j + 1] != "-":     # -b -: the batch is stdin
                     batch.append(("the batch file " + args[j + 1], read_local(args[j + 1], cwd)))
+                if b == "sftp" and args[j].startswith("-b") and len(args[j]) > 2:      # -bFILE
+                    batch.append(("the batch file " + args[j][2:], read_local(args[j][2:], cwd)))
                 if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1]))
                 if args[j].startswith("-"): j += 2 if (b == "sftp" and args[j] in SFTP_VAL) or (b == "lftp" and args[j] in ("-c", "-e", "-f", "-u", "-p")) else 1
                 else: pos.append(args[j]); j += 1
             host = pos[0] if pos else "?"
-            for label, t in batch + stdin_texts(ss, k, cwd):
+            for label, t in batch + stdin_texts(ss, k, cwd, pcwd):
                 if t is None:
                     out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
                 d = ftp_dels(b, host, label, t)
@@ -1856,13 +1889,14 @@ def remote_findings(text, cwd, depth=0):
             for n, a in enumerate(args[:-1]):
                 if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
                     out += remote_findings(args[n + 1], cwd, depth + 1); break
-            for _, t in stdin_texts(ss, k, cwd):
-                if t: out += remote_findings(t, cwd, depth + 1)
+            if shell_reads_stdin(w[i:]):
+                for _, t in stdin_texts(ss, k, cwd, pcwd):
+                    if t: out += remote_findings(t, cwd, depth + 1)
     return out
 
 
 def clean(s, cap):
-    s = " ".join(str(s).split())
+    s = str(s).strip().replace("\r", "").replace("\t", "\\t").replace("\n", "\\n")      # one line, spaces as written
     return s if len(s) <= cap else s[:cap] + " [CUT: " + str(len(s) - cap) + " more characters not shown, so this list is INCOMPLETE; read the command itself]"
 
 
