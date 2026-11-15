@@ -337,6 +337,16 @@ rm /upload/old.zip
 bye
 EOF" "on user@host.example"
 
+# 6j. Sweep cycle after the fourth ship round.
+asks "a local wrapper in front of rsync --delete" "ionice -c3 rsync -a --delete build/ host.example:/srv/app/" "/srv/app/"
+asks "taskset in front of rsync --delete" "taskset -c 0 rsync -a --delete build/ deploy@host.example:/srv/app/" "/srv/app/"
+asks "an unknown rsync option with a value after the destination" "rsync -a --delete build/ host.example:/srv/app/ --copy-as deploy" "/srv/app/"
+passes "rsync --delete pulling, with an exclude value before the source" "rsync -a --delete --exclude cache user@host.example:/srv/app/ ./mirror/"
+asks "lftp queue rm" "lftp -e 'queue rm /upload/old.zip; bye' ftp.example" "/upload/old.zip"
+asks "lftp commands separated by a single &" "lftp -e 'cd /upload & rm old.zip; bye' ftp.example" "old.zip"
+asks "backstop: a relative operand behind an unlisted wrapper" "ssh host.example 'chroot /srv/jail rm -rf releases/old'" "releases/old"
+passes "backstop: a subcommand named rm with a bare word" "ssh host.example 'mytool rm item42; conda env list'"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done

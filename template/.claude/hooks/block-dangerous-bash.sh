@@ -1515,7 +1515,8 @@ def coarse(text):
             for n in range(i + 1, len(w) - 1):
                 if w[n] in ("rm", "rmdir", "unlink", "shred", "srm"):
                     ops = [a for a in w[n + 1:] if a != "--" and not a.startswith("-")]
-                    if ops and re.match(r"^(/|~|\.\.?/|\$)", ops[0]): r = w[n]; break
+                    flagged = any(a.startswith("-") and a != "--" for a in w[n + 1:])
+                    if ops and (flagged or "/" in ops[0] or ops[0][:1] in "~$."): r = w[n]; break
             if r: break
     return ("a deleting command (" + r + ") that the parser could not place; read the text") if r else None
 
@@ -1823,7 +1824,8 @@ def ftp_dels(tool, host, label, t):
     with ; && || too, and `open` changes the host the rest runs on."""
     out = []
     for line in t.split("\n"):
-        for c in (re.split(r";|&&|\|\|", line) if tool == "lftp" else [line]):
+        for c in (re.split(r";|&&?|\|\|", line) if tool == "lftp" else [line]):
+            if tool == "lftp": c = re.sub(r"^\s*queue\s+", "", c)
             cw = c.split()
             if tool == "lftp" and len(cw) > 1 and cw[0] in ("open", "connect"): host = cw[-1]; continue
             m = re.match(r"^\s*[-@]?\s*(?:glob\s+(?:-\S+\s+)*)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
@@ -1873,6 +1875,11 @@ def remote_findings(text, cwd, depth=0):
             if i >= len(w): continue
             b = os.path.basename(w[i])
         args = w[i + 1:]
+        while b in ("ionice", "taskset", "chrt", "setsid", "chronic", "unbuffer", "caffeinate"):
+            j = 0
+            while j < len(args) and (args[j].startswith("-") or args[j].isdigit()): j += 1
+            if j >= len(args): break
+            b, args = os.path.basename(args[j]), args[j + 1:]
         if b in ("ssh", "autossh"):
             vals = SSH_VAL | ({"-M"} if b == "autossh" else set())      # ssh -M is a flag, autossh -M takes a port
             j = 0
@@ -1920,8 +1927,10 @@ def remote_findings(text, cwd, depth=0):
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue
             remote_end = lambda p: is_remote(p) or p.startswith("rsync://")
-            if dest and remote_end(pos[-1]):
-                out.append((rsync_host(pos[-1]), "rsync with a --delete option removes whatever the source does not have", [pos[-1]]))
+            pathlike = lambda x: remote_end(x) or "/" in x or x in (".", "..")
+            rd = [n for n, x in enumerate(pos) if n and remote_end(x) and not any(pathlike(y) for y in pos[n + 1:])]
+            if dest and rd:
+                out.append((rsync_host(pos[rd[0]]), "rsync with a --delete option removes whatever the source does not have", [pos[rd[0]]]))
             if src and any(remote_end(p) for p in pos[:-1]):
                 rp = [p for p in pos[:-1] if remote_end(p)]
                 out.append((rsync_host(rp[0]), "rsync --remove-source-files deletes the transferred files there", rp))
