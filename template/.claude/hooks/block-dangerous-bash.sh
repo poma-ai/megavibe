@@ -966,9 +966,13 @@ _rd_remote_ask() {    # $1: the lines "host<TAB>what<TAB>paths"; prints the ask 
   while IFS=$'\t' read -r host what paths; do
     [ -n "$what" ] && why+="- on ${host}: ${what}${paths:+: $paths}"$'\n'
   done <<< "$1"
+  # the whole reason is capped, and says so: a prompt nobody can read protects nothing
+  if [ "${#why}" -gt 16000 ]; then why="${why:0:16000}"$'\n'"[CUT: $(( ${#why} - 16000 )) more characters not shown, so this list is INCOMPLETE; read the command and any script it sends]"$'\n'; fi
   why+="An approval covers the paths named in it and nothing else: approve only if every line above is exactly what was asked for, and none is a file of unknown origin."$'\n'
   why+="Agent: if this was denied, do not respell it. Either move instead of deleting, which needs no approval (ssh HOST 'mkdir -p ~/.megavibe-quarantine/DATE && mv -n -- PATHS ~/.megavibe-quarantine/DATE/'), or name these exact paths to the user in chat and let them approve the prompt or run the command themselves."
-  jq -n --arg r "$why" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}'
+  # through stdin, not an argument (a long reason does not fit an argument list); if jq fails, still ask
+  printf '%s' "$why" | jq -Rs '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: .}}' 2>/dev/null \
+    || printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Remote delete: this command deletes on a remote host, where nothing can be restored. The details could not be shown, so this prompt is INCOMPLETE: read the command and any script it sends before approving."}}'
   exit 0
 }
 _rd_cmd_text() {      # the command on one line for a fallback reason, capped, and saying so when it is cut
@@ -1488,20 +1492,31 @@ NOISE = {"grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "man", "which",
 
 
 def coarse(text):
-    """The backstop under the parser: a deleting command in command position anywhere in a text that
-    runs remotely, found by pattern. Used only where the parser found nothing in that text."""
-    m = re.search(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", text)
-    r = m.group(1) if m else ("find -delete" if re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", text) else None)
+    """The backstop under the parser: a deleting command in a text that runs remotely, found by
+    pattern where the parser found nothing. It reads executable text only: comments are out, and so
+    are heredoc bodies (one that a shell runs has been read by the parser; one that is written to a
+    file is data). A deleting word after a command that takes words as data (NOISE) is data, also
+    behind sudo, env, xargs and the other wrappers."""
+    code = heredocs(text)[0]
+    bare = unquoted(code)          # a quoted string is an argument here (grep -F "sudo rm -rf" log); a quoted
+    r = None                       # program for sh -c, su -c, eval or trap has been read by the parser
+    for m in re.finditer(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", bare):
+        before = bare[:m.start(1)].split()
+        if before and os.path.basename(before[-1]) in NOISE: continue      # xargs -0 grep rm
+        r = m.group(1); break
+    if not r and re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", bare):
+        r = "find -delete"
     if not r:
         # behind a wrapper nobody listed (chroot DIR rm -rf x, setpriv ... -- rm x): the word, then
-        # options and something path-like, in a command that is not known to take such words as data
-        for piece in re.split(r"[;&|\n]+", text):
-            w = piece.split()
-            while w and re.match(r"^\w+=", w[0]): w = w[1:]
-            if not w or os.path.basename(w[0]) in NOISE: continue
-            m = re.search(r"(?<![\w./\x27\"=-])(rm|rmdir|unlink|shred|srm)\s+(?:-[A-Za-z-]+\s+)*(?:--\s+)?[\x27\"]?(?:/|~|\.\.?/|\$)", piece)
-            if m and m.start() > 0:
-                r = m.group(1); break
+        # options and a path-like operand, in a command that is not known to take such words as data
+        for w, _, _ in (segs(code) or []):
+            i = command_start(w)
+            if i is None or os.path.basename(w[i]) in NOISE: continue
+            for n in range(i + 1, len(w) - 1):
+                if w[n] in ("rm", "rmdir", "unlink", "shred", "srm"):
+                    ops = [a for a in w[n + 1:] if a != "--" and not a.startswith("-")]
+                    if ops and re.match(r"^(/|~|\.\.?/|\$)", ops[0]): r = w[n]; break
+            if r: break
     return ("a deleting command (" + r + ") that the parser could not place; read the text") if r else None
 
 
@@ -1892,7 +1907,7 @@ def remote_findings(text, cwd, depth=0):
                     batch.append(("the batch file " + args[j][2:], read_local(args[j][2:], cwd)))
                 if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1]))
                 if b == "lftp" and args[j][:2] in ("-c", "-e") and len(args[j]) > 2: batch.append(("the command text", args[j][2:]))
-                if args[j].startswith("-"): j += 2 if (b == "sftp" and args[j] in SFTP_VAL) or (b == "lftp" and args[j] in ("-c", "-e", "-f", "-u", "-p")) else 1
+                if args[j].startswith("-"): j += opt_width(args[j], SFTP_VAL) if b == "sftp" else (2 if args[j] in ("-c", "-e", "-f", "-u", "-p") else 1)     # sftp -qP 2222
                 else: pos.append(args[j]); j += 1
             host = pos[0] if pos else "?"
             for label, t in batch + stdin_texts(ss, k, cwd, pcwd):
@@ -1944,11 +1959,15 @@ if REMOTE:
         # the guard's own failure must not wave a remote delete through
         if re.search(RM_WORD, ORIG) or re.search(r"-delete\b|\bunlink\b|--del|--remove-", ORIG):
             remote = [("?", "ssh, sftp, lftp or rsync next to a deleting word (the guard failed to parse the command)", [])]
-seen = set()
-for host, what, paths in remote:
+seen, rows = set(), []
+for host, what, paths in sorted(remote, key=lambda x: not x[1].startswith("the whole")):      # the text as written first
     row = "R\t" + clean(host, 120) + "\t" + clean(what, 300) + "\t" + clean(" ".join(paths), 3000)
     if row not in seen:
-        seen.add(row); print(row)
+        seen.add(row); rows.append(row)
+if len(rows) > 40:
+    rows = rows[:40] + ["R\t?\t" + str(len(rows) - 40) + " more findings not shown, so this list is INCOMPLETE; read the command and any script it sends\t"]
+for row in rows:
+    print(row)
 if LOCAL:
     r = reasons(ORIG)
     if r:

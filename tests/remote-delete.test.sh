@@ -314,6 +314,29 @@ asks "backstop: an object-store delete" "ssh host.example 'aws s3 rm s3://bucket
 passes "backstop: a deleting word as data for grep, sed, journalctl and docker" "ssh host.example 'grep -c rm /var/log/app.log; sed -n /rm/p /etc/x; journalctl -u rm /dev/null; docker rm -f /web'"
 passes "backstop: a path that only contains the word" "ssh host.example 'ls /srv/rm /tmp/unlink; cat ./rm/readme; stat /usr/bin/rm'"
 
+# 6i. Fourth ship round (2026-11-15, two readers), each failing before its fix.
+passes "backstop: a search behind sudo" "ssh host.example 'sudo grep -n rm /var/log/cloud-init-output.log'"
+passes "backstop: a search behind env and timeout" "ssh host.example 'env LC_ALL=C grep rm /var/log/app.log; timeout 10 grep rm /var/log/app.log'"
+passes "backstop: a search fed by xargs" "ssh host.example 'find /srv -type f -print0 | xargs -0 grep rm'"
+passes "backstop: searching for a deleting command as a quoted string" "ssh host.example 'grep -F \"sudo rm -rf\" /var/log/auth.log; grep -c \"find . -delete\" /root/.bash_history'"
+passes "backstop: wrapped docker and git rm --cached" "ssh host.example 'sudo docker rm -f web; sudo -u deploy git rm --cached .env'"
+passes "backstop: a script written through a heredoc is not run" "ssh host.example \"cat > /srv/app/cleanup.sh <<'EOF'
+rm /srv/old
+EOF\""
+passes "backstop: a commented delete in a deploy script" "ssh host.example 'bash -s' <<'EOF'
+cd /srv/app
+# rm /srv/old after approval
+git pull
+EOF"
+asks "backstop still catches an unlisted wrapper behind sudo" "ssh host.example 'sudo chroot /srv/jail rm -rf /tmp/old'" "/tmp/old"
+i=0; : > "$T/cwd/purge.sh"; while [ $i -lt 8000 ]; do printf 'rm -f /srv/app/cache/%s-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n' $i; i=$((i + 1)); done >> "$T/cwd/purge.sh"
+run "ssh host.example 'bash -s' < purge.sh"
+if [ "$RC" = 2 ] || { [ -n "$WHY" ] && case "$WHY" in *INCOMPLETE*) true ;; *) false ;; esac; }; then ok; else bad "a script with thousands of deletes: valid ask JSON that says INCOMPLETE, or a block (rc=$RC, ${#OUT} bytes out)"; fi
+asks "sftp options in a cluster: the host is the host" "sftp -qP 2222 -b - user@host.example <<'EOF'
+rm /upload/old.zip
+bye
+EOF" "on user@host.example"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
