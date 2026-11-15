@@ -933,7 +933,58 @@ _rd_gate() {
 # Only where deletes go to the Trash at all: without rmtrash, rm-to-trash.sh is inert, `rm`
 # deletes for real, and blocking the other forms would only push agents to that rm.
 _rd_trash_ready() { command -v rmtrash &>/dev/null; }      # the same condition rm-to-trash.sh uses
-if [ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && command -v python3 &>/dev/null && _rd_trash_ready && _rd_gate; then
+# ---------------------------------------------------------------------------
+# Deletes on a remote host (ssh, sftp, rsync --delete towards a remote side).
+#
+# There is no Trash on the other side, and both delete guards used to treat the quoted
+# remote command as an opaque argument: on 2026-11-15 an agent ran an approved log purge
+# over ssh and appended an `rm -f` of a neighbouring file nobody had approved; nothing
+# fired and the file was gone for good. A remote delete is therefore sent to the
+# permission prompt (permissionDecision "ask") with the host and every deleted path
+# named, so the human compares them with what they approved. Where no prompt can be
+# shown (dontAsk, headless, measured 2026-11-15 on bypassPermissions/dontAsk/default with
+# Bash allow-listed: the call is denied and the reason reaches the agent) it is a block.
+# No environment escape hatch and no inline acknowledgement: either would be written by
+# the agent this guard exists to stop. Moving files (mv into a dated quarantine folder
+# on that host) is not a delete and passes.
+# Read: the remote command (quoted or not, through sh -c, eval, trap, xargs, find -exec, $( )),
+# a script sent on stdin to a remote shell (heredoc, here-string, `< file`, `cat file |`,
+# `echo ... |`), sftp/lftp command text, rsync --delete/--remove-source-files with a remote side.
+# A stdin script the guard cannot read (a variable path, another command's output) is asked
+# about as well. The local real-delete check below still reads the whole command, as it always
+# did: where it fires on a command that also deletes remotely (a shell or interpreter word
+# outside the quotes, an unquoted remote find -delete) the call stays blocked, with a note on
+# the form that reaches the prompt. HACK: a net, not a wall. Not covered: a script that already lives on the
+# remote host, kubectl/docker exec payloads, scp/mv/redirects that overwrite, truncation,
+# database statements, rclone and other clients, a command line assembled at runtime.
+# ---------------------------------------------------------------------------
+_RD_LOCAL=0; _RD_REMOTE=0
+[ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && _rd_trash_ready && _rd_gate && _RD_LOCAL=1
+[[ $_TE == *ssh* || $_TE == *sftp* || $_TE == *lftp* || $_TE == *rsync* ]] && _RD_REMOTE=1      # _TE: quotes and backslashes out, lower case
+_rd_remote_ask() {    # $1: the lines "host<TAB>what<TAB>paths"; prints the ask decision and ends the hook
+  local why="Remote delete: no Trash on the other side, nothing here can be restored."$'\n' host what paths
+  while IFS=$'\t' read -r host what paths; do
+    [ -n "$what" ] && why+="- on ${host}: ${what}${paths:+: $paths}"$'\n'
+  done <<< "$1"
+  # the whole reason is capped, and says so: a prompt nobody can read protects nothing
+  if [ "${#why}" -gt 16000 ]; then why="${why:0:16000}"$'\n'"[CUT: $(( ${#why} - 16000 )) more characters not shown, so this list is INCOMPLETE; read the command and any script it sends]"$'\n'; fi
+  why+="An approval covers the paths named in it and nothing else: approve only if every line above is exactly what was asked for, and none is a file of unknown origin."$'\n'
+  why+="Agent: if this was denied, do not respell it. Either move instead of deleting, which needs no approval (ssh HOST 'mkdir -p ~/.megavibe-quarantine/DATE && mv -n -- PATHS ~/.megavibe-quarantine/DATE/'), or name these exact paths to the user in chat and let them approve the prompt or run the command themselves."
+  # through stdin, not an argument (a long reason does not fit an argument list); if jq fails, still ask
+  printf '%s' "$why" | jq -Rs '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: .}}' 2>/dev/null \
+    || printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Remote delete: this command deletes on a remote host, where nothing can be restored. The details could not be shown, so this prompt is INCOMPLETE: read the command and any script it sends before approving."}}'
+  exit 0
+}
+_rd_cmd_text() {      # the command on one line for a fallback reason, capped, and saying so when it is cut
+  local c; c=$(printf '%s' "$COMMAND" | tr '\t\n' '  ')
+  if [ "${#c}" -gt 3000 ]; then c="${c:0:3000} [CUT: $(( ${#c} - 3000 )) more characters not shown, so this is INCOMPLETE; read the command itself]"; fi
+  printf '%s' "the command, as written: $c"
+}
+if ! command -v python3 &>/dev/null && [ "$_RD_REMOTE" = 1 ] \
+   && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
+  _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (python3 is missing, so the command was not parsed)"$'\t'"$(_rd_cmd_text)"
+fi
+if command -v python3 &>/dev/null && [ "$_RD_LOCAL$_RD_REMOTE" != 00 ]; then
   read -r -d '' _RD_PY <<'PY' || true
 import os, re, shlex, signal, sys
 
@@ -942,7 +993,10 @@ import os, re, shlex, signal, sys
 # shell or interpreter consumes them (a commit message written through `cat <<EOF` is
 # prose); quoted text counts only when a shell, eval, trap, env -S, parallel or awk runs it.
 # A pathological input that makes the patterns slow is blocked, never let through.
-signal.signal(signal.SIGALRM, lambda *a: (print("a command too complex to check (guard timed out)"), sys.exit(0)))
+LOCAL, REMOTE = os.environ.get("RD_LOCAL", "1") == "1", os.environ.get("RD_REMOTE") == "1"
+signal.signal(signal.SIGALRM, lambda *a: (print("L\ta command too complex to check (guard timed out)" if LOCAL else
+    "R\t?\ta command too complex to check: the guard timed out, so nothing was parsed and this prompt is INCOMPLETE\tthe command, as written: "
+    + globals().get("ORIG", "").replace("\t", " ").replace("\n", "\\n")[:3000]), sys.exit(0)))
 signal.alarm(2)
 
 ORIG = sys.stdin.read()
@@ -1409,12 +1463,894 @@ def reasons(raw, depth=0):
     return None
 
 
-r = reasons(ORIG)
-if r:
-    print(r)
+# --- Deletes on a remote host -------------------------------------------------------------
+SSH_VAL = set("-B -b -c -D -E -e -F -I -i -J -L -l -m -O -o -P -p -Q -R -S -W -w".split())
+SFTP_VAL = set("-B -b -c -D -F -i -J -l -o -P -R -S -s -X".split())
+RSYNC_VAL = {"-e", "--rsh", "--exclude", "--include", "-f", "--filter", "--files-from", "--exclude-from", "--include-from",
+             "--backup-dir", "--suffix", "-T", "--temp-dir", "--log-file", "--partial-dir", "--compare-dest", "--copy-dest",
+             "--link-dest", "--bwlimit", "--port", "--password-file", "--rsync-path", "--chown", "--chmod", "-M",
+             "--remote-option", "--max-size", "--min-size", "--timeout", "--out-format", "--info", "--debug", "--max-delete",
+             "-B", "--block-size", "--contimeout", "--address", "--sockopts", "--iconv", "--checksum-seed",
+             "--modify-window", "--max-alloc", "--stop-after", "--stop-at", "--usermap", "--groupmap",
+             "--skip-compress", "--compress-level", "--outbuf", "--write-batch", "--read-batch",
+             "--only-write-batch", "--early-input", "--protocol", "--checksum-choice", "--compress-choice",
+             "--log-file-format", "--max-delete", "--delay-updates-dir", "--files-from", "--from0-file", "--copy-as"}
+DEL_VERBS = {"rm", "rmdir", "unlink", "shred", "srm", "rimraf"}
+HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
+REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
+ESC = {";": "\x02", "(": "\x05", ")": "\x06"}      # escaped \; \( \): words of find, not shell operators
+# Command position in plain text, for the backstop: after a separator, a wrapper with its options, or find -exec.
+POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|time|command|nice|ionice|timeout|busybox|parallel|taskset|chrt|setsid|stdbuf|unbuffer)"
+       r"\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*|\s-(?:exec|execdir|ok|okdir)\s+)[ \t]*(?:\w+=\S*\s+)*(?:\S*/)?")
+
+
+# Commands whose arguments are words and patterns, not commands to run: a deleting word after them is data.
+NOISE = {"grep", "egrep", "fgrep", "zgrep", "bzgrep", "xzgrep", "zegrep", "fd", "rg", "ag", "ack",
+         "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker", "docker-compose",
+         "podman", "podman-compose", "nerdctl", "git", "npm", "yarn", "pnpm", "kubectl", "helm", "apt", "apt-get", "yum", "dnf", "brew",
+         "pip", "pip3", "cat", "less", "more", "tail", "head", "sed", "awk", "ls", "test", "[", "[[", "find", "gfind",
+         "history", "alias", "complete", "logger", "wall", "write", "tee", "cut", "tr", "sort", "wc", "journalctl",
+         "pytest", "py.test", "tox", "nox", "go", "cargo", "make", "rspec", "jest", "phpunit", "mvn", "gradle", "ctest",
+         "rails", "rake", "mix", "dotnet",
+         "jq", "yq", "xmllint", "xmlstarlet", "csvgrep", "csvcut", "sqlite3", "psql", "mysql", "mariadb",
+         "column", "uniq", "bat", "nl", "diff", "cmp", "comm", "od", "hexdump", "strings", "file", "stat",
+         "du", "df", "lsof", "ps", "pgrep", "dmesg"}
+
+
+def remote_data_command(b, args):
+    # SQLite can escape to the shell. Do not exempt that mode just because SQL is data.
+    if b == "sqlite3" and re.search(r"\.shell\b|\bsystem\b", " ".join(args), re.I): return False
+    if b == "systemctl":
+        i = 0
+        while i < len(args) and args[i].startswith("-"):
+            i += remote_opt_width(args[i], {"-H", "--host", "-M", "--machine", "-t", "--type", "--state", "-p", "--property", "-n", "--lines"})
+        return i < len(args) and args[i] == "status"
+    return b in NOISE
+
+
+def coarse(text):
+    """The backstop under the parser: a deleting command in a text that runs remotely, found by
+    pattern where the parser found nothing. It reads executable text only: comments are out, and so
+    are heredoc bodies (one that a shell runs has been read by the parser; one that is written to a
+    file is data). A deleting word after a command that takes words as data (NOISE) is data, also
+    behind sudo, env, xargs and the other wrappers."""
+    code = heredocs(text)[0]
+    r = None
+    for w, _, _ in (segs(code) or []):
+        i = remote_command_start(w)
+        if i is None: continue
+        b = os.path.basename(w[i])
+        if remote_data_command(b, w[i + 1:]): continue
+        if b == "sqlite3" and re.search(r"\b(?:" + "|".join(DEL_VERBS) + r")\b", " ".join(w[i + 1:])):
+            r = "sqlite3 shell/system escape"; break
+        # These commands have explicit source/payload boundaries in script_dels. Re-scanning
+        # their argv here would turn filters, script arguments and nested searches into code.
+        if INTERP.fullmatch(b) or b in SHELL_NAMES | {"su", "runuser", "flock", "eval", "trap", "ssh", "autossh"}: continue
+        # Resolve wrappers before searching command positions: their option operands and the
+        # arguments of grep/git/etc. must never become executable words in the backstop.
+        bare = unquoted(join(w[i:]))
+        m = re.search(POS + r"\\?(rm|rmdir|unlink|shred|srm)(?=\s|$)", bare)
+        if m: r = m.group(1); break
+        if re.search(r"\bg?find\b(?:\\;|[^;|&\n])*\s-delete\b", bare):
+            r = "find -delete"; break
+        # behind a wrapper nobody listed (chroot DIR rm -rf x, setpriv ... -- rm x): the word, then
+        # options and a path-like operand, in a command that is not known to take such words as data
+        for n in range(i + 1, len(w) - 1):
+            if w[n] in ("rm", "rmdir", "unlink", "shred", "srm"):
+                ops = [a for a in w[n + 1:] if a != "--" and not a.startswith("-")]
+                flagged = any(a.startswith("-") and a != "--" for a in w[n + 1:])
+                if ops and (flagged or "/" in ops[0] or ops[0][:1] in "~$."): r = w[n]; break
+        if r: break
+    return ("a deleting command (" + r + ") that the parser could not place; read the text") if r else None
+
+
+def heredocs(text):
+    """(the command lines without comments and heredoc bodies, {marker: [body, ...]} in order of appearance)."""
+    out, bodies, pending, q = [], {}, [], (None, [])
+    rows = text.split("\n")
+    for n, line in enumerate(rows):
+        if pending:
+            if line.strip() == pending[0]: pending.pop(0)
+            else: bodies[pending[0]][-1].append(line)
+            continue
+        line, q, outside = scan_line(line, q)
+        out.append(line)
+        for m in re.finditer(HD_RE, line):
+            if outside[m.start()] and any(r.strip() == m.group(2) for r in rows[n + 1:]):
+                pending.append(m.group(2)); bodies.setdefault(m.group(2), []).append([])
+    return "\n".join(out), {k: ["\n".join(b) for b in v] for k, v in bodies.items()}
+
+
+def mask_subs(t):
+    """$( ) and backtick spans outside single quotes replaced by placeholders, so that the
+    parentheses inside them do not split the word they belong to: (text, the spans)."""
+    nosq = re.sub(r"\x27[^\x27]*\x27", lambda m: "\x27" + " " * (len(m.group(0)) - 2) + "\x27", t)
+    out, subs, i, last = [], [], 0, 0
+    while True:
+        m = re.search(r"(?<!\\)(?:\$\(|`)", nosq[i:])
+        if not m: break
+        s = i + m.start()
+        if nosq[s] == "`":
+            e = nosq.find("`", s + 1); e = len(nosq) if e < 0 else e + 1
+        else:
+            d, e = 1, s + 2
+            while e < len(nosq) and d: d += {"(": 1, ")": -1}.get(nosq[e], 0); e += 1
+        out.append(t[last:s]); out.append("\x03%d\x03" % len(subs)); subs.append(t[s:e]); last = i = e
+    out.append(t[last:])
+    return "".join(out), subs
+
+
+def piped(pre):
+    """Whether the operators before a command make it read the previous command's output. A newline
+    after the | (a pipeline continued on the next line) arrives as | followed by ;."""
+    return bool(re.search(r"(?<!\|)\|&?(?!\|)", pre))          # | or |&, also inside a run like )| ; never ||
+
+
+def live_subs(code):
+    """substitutions() without the escaped \\$( forms, which are literal text in a message."""
+    return substitutions(re.sub(r"\\\$\(", "\\$ (", code))
+
+
+def opt_width(a, vals):
+    """How many words an ssh option word takes: -p 2222 is two, -p2222 and -tt one, -tp 2222 two
+    (the first letter in the cluster that takes a value takes the rest of the word, or the next word)."""
+    for n, ch in enumerate(a[1:]):
+        if "-" + ch in vals: return 2 if n == len(a) - 2 else 1
+    return 1
+
+
+def ssh_target(args, vals):
+    """Keep explicit connection settings while resolving the host and payload. Never read
+    SSH config or execute ProxyCommand; the same parser also handles SSH inside a payload."""
+    j, hostname, options = 0, None, []
+
+    def scan_options():
+        nonlocal j, hostname
+        while j < len(args) and args[j].startswith("-") and args[j] != "--":
+            a, width = args[j], opt_width(args[j], vals)
+            for n, ch in enumerate(a[1:]):
+                flag = "-" + ch
+                if flag not in vals: continue
+                value = a[n + 2:] or (args[j + 1] if j + 1 < len(args) else "")
+                key, setting = "", ""
+                if flag == "-o":
+                    m = re.match(r"^\s*([^\s=]+)(?:\s*=\s*|\s+)(.*)$", value)
+                    if m: key, setting = m.group(1).lower(), m.group(2).strip()
+                if key == "hostname" and hostname is None: hostname = setting
+                if flag in {"-J", "-p", "-W", "-F", "-l"} or key in {"hostname", "proxyjump", "proxycommand", "port", "user"}:
+                    note = join(args[j:j + width])
+                    if flag == "-F": note += " (config file in use; real destination may come from that file)"
+                    options.append(note)
+                break       # the rest of this option word is its value, not more flags
+            j += width
+
+    scan_options()
+    if j < len(args) and args[j] == "--": j += 1
+    if j >= len(args): return None, [], options
+    host, j = args[j], j + 1
+    scan_options()           # ssh host -p 2222 cmd
+    if j < len(args) and args[j] == "--": j += 1
+    if hostname is not None: host = hostname + " (ssh alias " + host + ")"
+    return host, args[j:], options
+
+
+def remote_opt_width(a, vals):
+    """Separate long-option values, or the first value-taking short option in a cluster."""
+    if a in vals: return 2
+    return 1 if a.startswith("--") else opt_width(a, vals)
+
+
+REMOTE_WRAPPER_VAL = {
+    "sudo": SUDO_VAL | {"--close-from", "--command-timeout", "--other-user", "--role", "--type"},
+    "doas": {"-u", "-C"}, "nice": {"-n", "--adjustment"},
+    "env": {"-u", "-C", "-S", "-P", "--unset", "--chdir", "--split-string"},
+    "xargs": XARGS_VAL | {"--max-args", "--replace", "--delimiter", "--eof", "--max-lines",
+                           "--max-procs", "--max-chars", "--arg-file"},
+    "command": set(), "builtin": set(), "exec": {"-a"}, "nohup": set(),
+    "time": {"-o", "-f", "--output", "--format"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "gtimeout": {"-s", "-k", "--signal", "--kill-after"},
+    "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"},
+    "taskset": set(), "chrt": {"-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"},
+    "setsid": set(), "chronic": set(), "unbuffer": set(), "caffeinate": {"-t", "-w"},
+    "flock": {"-w", "-E", "--wait", "--timeout", "--conflict-exit-code"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "xcrun": {"-sdk", "--sdk", "-toolchain", "--toolchain"}, "arch": {"-e"},
+    "busybox": set(), "parallel": XARGS_VAL | {"-j", "--jobs"},
+    "numactl": {"-m", "-p", "-i", "-N", "-C", "--membind", "--preferred", "--interleave",
+                "--cpunodebind", "--physcpubind"},
+    "watch": {"-n", "--interval"}, "strace": {"-e", "-o", "-p", "-s", "-u"},
+    "ltrace": {"-e", "-o", "-p", "-s", "-u"},
+    "runuser": {"-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell", "--whitelist-environment"},
+    "chroot": {"--userspec", "--groups"},
+    "setpriv": {"--ruid", "--euid", "--reuid", "--rgid", "--egid", "--regid", "--groups",
+                "--inh-caps", "--ambient-caps", "--bounding-set", "--securebits", "--pdeathsig",
+                "--selinux-label", "--apparmor-profile", "--landlock-access", "--landlock-rule", "--seccomp-filter"},
+    "chpst": {"-u", "-U", "-b", "-e", "-/", "-C", "-n", "-l", "-L", "-m", "-d", "-o", "-p", "-f", "-c", "-t"},
+    "uv": {"--directory", "--project", "--config-file", "--cache-dir", "--python", "-p",
+           "--with", "--with-editable", "--with-requirements", "--extra", "--group", "--package", "--env-file", "--index", "--index-url"},
+    "poetry": {"-C", "--directory", "-P", "--project"},
+    "pipenv": {"--python"},
+    "pipx": {"--spec", "--python", "--pip-args", "--index-url"},
+    "hatch": {"-e", "--env", "-p", "--project"},
+    "pdm": {"-p", "--project", "-c", "--config", "-G", "--group"},
+    "rye": {"--pyproject"},
+    "conda": {"-n", "--name", "-p", "--prefix", "--cwd"},
+    "tox": {"-e", "-c", "--conf", "--workdir", "--root"},
+    "npx": {"-p", "--package", "--cache", "--registry", "--userconfig"},
+    "bunx": {"-p", "--package"}, "pnpx": {"--package"},
+    "pnpm": {"-C", "--dir", "--filter", "--package", "--store-dir"},
+    "yarn": {"--cwd", "--cache-folder", "--modules-folder", "-p", "--package"},
+    "npm": {"--prefix", "--workspace", "-w", "--package", "--cache", "--registry"},
+    "corepack": set(), "bundle": {"--gemfile", "--path"},
+}
+REMOTE_WRAPPER_VAL["uvx"] = REMOTE_WRAPPER_VAL["uv"] | {"--from"}
+# Only these subcommands launch another tool. In particular, package-manager rm/remove
+# stays attached to npm/pnpm/yarn, whose operands are packages rather than filesystem paths.
+# Their run subcommand names project scripts (even a script named unlink), not OS commands.
+REMOTE_LAUNCH_SUBCOMMANDS = {
+    "uv": {"run"}, "poetry": {"run"}, "pipenv": {"run"}, "pipx": {"run"},
+    "hatch": {"run"}, "pdm": {"run"}, "rye": {"run"}, "conda": {"run"},
+    "pnpm": {"exec", "dlx"}, "yarn": {"exec", "dlx"}, "npm": {"exec"},
+    "bundle": {"exec"},
+}
+
+
+def remote_command_start(w):
+    """Shared command resolution for remote parsing and its backstop; LOCAL keeps its resolver."""
+    i = 0
+    while i < len(w):
+        x = w[i]; b = os.path.basename(x)
+        if re.match(r"[A-Za-z_]\w*\+?=", x) or x in KEYWORDS: i += 1; continue
+        if b not in REMOTE_WRAPPER_VAL: return i
+        start = i
+        if b == "runuser" and not any(a in ("-u", "--user") or a.startswith(("-u", "--user=")) for a in w[i + 1:]): return i
+        vals = REMOTE_WRAPPER_VAL[b]
+        i += 1
+        terminated = False
+        while i < len(w) and w[i].startswith("-"):
+            a = w[i]
+            if a == "--": i += 1; terminated = True; break
+            if b in ("flock", "runuser") and a in ("-c", "--command", "--session-command"): return start
+            if b == "command" and re.match(r"^-[A-Za-z]*[vV]", a): return None
+            if b == "xcrun" and a in ("--find", "-f", "--show-sdk-path", "--show-sdk-version"): return None
+            i += remote_opt_width(a, vals)
+        if b == "tox" and not terminated: return start
+        if b in REMOTE_LAUNCH_SUBCOMMANDS:
+            if i >= len(w) or w[i] not in REMOTE_LAUNCH_SUBCOMMANDS[b]: return start
+            i += 1
+            while i < len(w) and w[i].startswith("-"):
+                if w[i] == "--": i += 1; break
+                i += remote_opt_width(w[i], vals)
+        if b in ("timeout", "gtimeout", "taskset", "chrt", "flock", "chroot"): i += 1  # duration, CPU mask, priority, lock, root
+        if b == "flock" and i < len(w) and w[i] in ("-c", "--command"): return start
+    return None
+
+
+def segs(text, bodies=None):
+    """The simple commands of a shell text, in order: (words, the operator before it, [(redirection, target)]).
+    A newline ends a command only outside quotes: inside a quoted word it belongs to the text that
+    word carries (a remote script), which is parsed on its own, comments included. An escaped \\; is
+    a word (find's terminator), not a separator. Each heredoc redirection gets its own body, in order
+    of appearance, as ("<<body", text)."""
+    t, subs = mask_subs(re.sub(r"(?<![\\\w$])\$(?=\x27)", "", text.replace("\\\n", "")))
+    inq = quoted_mask(t)
+    # both only outside quotes: inside a quoted word they belong to the text that word carries
+    def piece(k, c):
+        if c == "\n" and not inq[k]: return " ; "
+        if c in ";()" and k and t[k - 1] == "\\" and not inq[k]: return " " + ESC[c] + " "
+        return c
+    t = re.sub(r"\\( [\x02\x05\x06] )", r"\1", "".join(piece(k, c) for k, c in enumerate(t)))
+    try:
+        lx = shlex.shlex(t, posix=True, punctuation_chars=True)
+        lx.whitespace_split = True; lx.commenters = ""
+        toks = list(lx)
+    except ValueError:
+        return None
+    back = lambda x: re.sub("\x03(\\d+)\x03", lambda m: subs[int(m.group(1))], x).replace("\x02", ";").replace("\x05", "(").replace("\x06", ")")
+    out, cur, red, pre, op = [], [], [], "", None
+    for tok in toks:
+        if op:
+            if op in ("<<", "<<-") and bodies is not None:
+                b = bodies.get(tok) or bodies.get(tok.lstrip("-")) or [""]      # <<-EOF arrives as << and -EOF
+                red.append(("<<body", b.pop(0) if len(b) > 1 else b[0]))
+            else:
+                red.append((op, back(tok)))
+            op = None
+            if tok.endswith("(") and set(tok) <= PUNCT:       # < <(cmd): unreadable input, and cmd is a command of its own
+                out.append((cur, pre, red)); cur, red, pre = [], [], "("
+            continue
+        if tok and set(tok) <= PUNCT:
+            if ("<" in tok or ">" in tok) and not tok.endswith("("):
+                if cur and cur[-1].isdigit() and len(cur[-1]) == 1: cur.pop()     # 2>file: a descriptor, not an operand
+                op = tok
+            else:
+                if cur or red:
+                    out.append((cur, pre, red)); cur, red, pre = [], [], tok
+                else:
+                    pre = (pre + " " + tok).strip()
+            continue
+        cur.append(back(tok))
+    if cur or red: out.append((cur, pre, red))
+    return out
+
+
+def operands(args):
+    out, done = [], False
+    for a in args:
+        if a == "--" and not done: done = True
+        elif done or not a.startswith("-"): out.append(a)
+    return out
+
+
+def join(words):
+    return " ".join(shlex.quote(x) for x in words)
+
+
+def shell_reads_stdin(w):
+    """sh, bash -s, sudo bash: a shell with no script operand and no -c runs what arrives on stdin
+    (not with -n, which only checks the syntax)."""
+    i = remote_command_start(w)
+    if i is None or os.path.basename(w[i]) not in SHELL_NAMES: return False
+    args = w[i + 1:]
+    if any(re.match(r"^-[A-Za-z]*[cn][A-Za-z]*$", a) for a in args): return False
+    ops, skip = [], False
+    for a in args:
+        if skip: skip = False
+        elif a[:1] in "-+" and not a.startswith("--"): skip = a.endswith("o")      # -o pipefail, -euo pipefail
+        elif not a.startswith("--"): ops.append(a)
+    return any(re.match(r"^-[A-Za-z]*s[A-Za-z]*$", a) for a in args) or not ops
+
+
+def read_local(path, cwd):
+    """A local file's text, or None when the guard cannot know it (a variable, a glob, missing, not a
+    regular file, too big, a relative path after a cd, a path on the other host)."""
+    if cwd is REMOTE_FILE: return None
+    if path == "/dev/null": return ""
+    if re.search(r"[$*?`\[<(]", path): return None
+    p = os.path.expanduser(path)
+    if not os.path.isabs(p):
+        if cwd is MOVED: return None
+        p = os.path.join(cwd or ".", p)
+    try:
+        if not os.path.isfile(p) or os.path.getsize(p) > 1 << 20: return None
+        with open(p, errors="replace") as f: return f.read()
+    except OSError:
+        return None
+
+
+def stdin_texts(ss, k, cwd, pcwd=Ellipsis):
+    """What seg k reads on stdin: [(label, text or None when unreadable)]. pcwd: the directory of the
+    command before the pipe, when it differs (a cd inside a subshell)."""
+    out = []
+    if pcwd is Ellipsis: pcwd = cwd
+    w, pre, red = ss[k]
+    def from_redirs(red):
+        for op, tgt in red:
+            if op == "<<body": out.append(("a heredoc", tgt))
+            elif op == "<<<": out.append(("a here-string", tgt))
+            elif op == "<": out.append(("the file " + tgt, read_local(tgt, cwd)))
+    from_redirs(red)
+    if piped(pre) and k > 0:
+        pw, _, pred = ss[k - 1]
+        i = command_start(pw)
+        b = os.path.basename(pw[i]) if i is not None else ""
+        a = pw[i + 1:] if i is not None else []
+        if b == "cat":
+            files = operands(a)
+            for f in files: out.append(("the file " + f, read_local(f, pcwd)))
+            if not files: from_redirs(pred)
+        elif b == "echo":
+            while a and re.match(r"^-[neE]+$", a[0]): a = a[1:]
+            out.append(("the output of: " + join(pw[i:]), " ".join(a).replace("\\n", "\n")))
+        elif b == "printf":
+            # the format with its arguments filled in when it only uses %s; otherwise every argument
+            # as a line of its own (the label carries the command as written either way)
+            fmt, rest = (a[0], a[1:]) if a else ("", [])
+            n = fmt.count("%s")
+            if n and rest and "%" not in fmt.replace("%s", ""):
+                parts, text = fmt.split("%s"), ""
+                for j in range(0, len(rest), n):         # printf reuses the format until the arguments run out
+                    text += "".join(p + c for p, c in zip(parts, (rest[j:j + n] + [""] * n)[:n] + [""]))
+            else:
+                text = "\n".join(a)
+            out.append(("the output of: " + join(pw[i:]), text.replace("\\n", "\n")))
+        else: out.append(("the output of " + (b or "a command"), None))
+    return out
+
+
+def rsync_dels(args):
+    """(deletes on the destination side, deletes on the source side, positionals); nothing on a dry run."""
+    pos, opts, j = [], [], 0
+    while j < len(args):
+        if args[j] == "--": pos.extend(args[j + 1:]); break
+        if args[j].startswith("-"):
+            a = args[j]
+            # Attached option values are data, including an 'n' in -ffilter or -essh.
+            flag = a
+            if not a.startswith("--"):
+                for n, ch in enumerate(a[1:], 1):
+                    if "-" + ch in RSYNC_VAL: flag = a[:n]; break
+            opts.append(flag)
+            j += remote_opt_width(a, RSYNC_VAL)
+        else: pos.append(args[j]); j += 1
+    if any(a in ("--dry-run", "--list-only") or re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in opts): return False, False, []
+    args = opts
+    dest = any(re.match(r"^--del(ete(-(before|during|delay|after|excluded|missing-args))?)?$", a) for a in args)
+    src = "--remove-source-files" in args or "--remove-sent-files" in args
+    return dest, src, pos
+
+
+def remote_git(args):
+    """Why a git command on the remote side deletes files, or None."""
+    i = 0
+    while i < len(args):
+        if args[i] in GIT_VAL: i += 2; continue
+        if args[i].startswith("-"): i += 1; continue
+        break
+    if args[i:i + 1] == ["rm"] and any(a == "--dry-run" or re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args[i + 1:]): return None
+    r = git_reason(args)
+    if r: return r.split(" (")[0]
+    if args[i:i + 2] == ["worktree", "remove"]: return "git worktree remove (it deletes the worktree's untracked and ignored files)"
+    return None
+
+
+def python_source(args):
+    """Executable -c text, None for stdin, or empty text for module/script arguments."""
+    j = 0
+    while j < len(args):
+        a = args[j]
+        if a == "--":
+            return None if j + 1 == len(args) or args[j + 1] == "-" else ""
+        if a == "-": return None
+        if not a.startswith("-") or a in ("-h", "-V") or a.startswith(("--help", "--version")): return ""
+        if a == "--check-hash-based-pycs": j += 2; continue
+        if not a.startswith("--"):
+            for n, ch in enumerate(a[1:], 1):
+                if ch in "cmWX":
+                    value = a[n + 1:] or (args[j + 1] if j + 1 < len(args) else "")
+                    if ch == "c": return value
+                    if ch == "m": return ""
+                    if not a[n + 1:]: j += 1
+                    break
+        j += 1
+    return None
+
+
+# Only options that take executable source belong here. In particular node -r, ruby -E,
+# perl -p and Python -m take modules/encodings or change execution mode, not inline code.
+INLINE_CODE = {
+    "node": {"-e", "-p", "--eval", "--print"}, "nodejs": {"-e", "-p", "--eval", "--print"},
+    "bun": {"-e", "-p", "--eval", "--print"}, "deno": set(),
+    "ruby": {"-e"}, "perl": {"-e", "-E"}, "php": {"-r", "-B", "-R", "-E"},
+    "lua": {"-e"}, "osascript": {"-e"},
+}
+INTERP_VALUES = {
+    "node": {"-r", "--require", "--import", "--loader", "--experimental-loader", "--test-name-pattern", "--test-skip-pattern", "--test-reporter", "--test-reporter-destination", "--input-type", "--conditions", "-C"},
+    "bun": {"-r", "--require", "--preload", "--loader", "--define", "--cwd", "--env-file", "--config", "-c"},
+    "deno": {"--config", "-c", "--import-map", "--lock", "--seed", "--v8-flags", "--ext"},
+    "ruby": {"-I", "-r", "-E", "--encoding", "-C", "-F", "-K"},
+    "perl": {"-I", "-M", "-m", "-F"}, "php": {"-c", "-d", "-z", "--php-ini", "--define"},
+    "lua": {"-l"}, "osascript": {"-l", "-s"},
+}
+
+
+def interpreter_source(b, args):
+    """Inline source, None for a stdin script, or empty text for script/subcommand argv.
+    Stop at the source boundary; a script's options and arguments are never interpreter code.
+    Used for both remote stdin routing and the parser (which owns these commands in coarse).
+    """
+    if re.fullmatch(r"(?:python|pypy)[0-9.]*", b): return python_source(args)
+    if b not in INLINE_CODE: return ""
+    opts = INLINE_CODE[b]
+    vals = INTERP_VALUES.get("node" if b == "nodejs" else b, set())
+    sources, j, mode = [], 0, None
+    while j < len(args):
+        a = args[j]
+        if a == "--":
+            return "\n".join(sources) if sources else (None if j + 1 == len(args) or args[j + 1] == "-" else "")
+        if a == "-": return "\n".join(sources) if sources else None
+        if not a.startswith("-"):
+            if b in ("deno", "bun") and mode is None and a in ("eval", "run"):
+                mode = a; j += 1; continue
+            if b == "deno" and mode == "eval": return a
+            return "\n".join(sources)
+        if a in ("-h", "--help", "-v", "--version") or (b in ("node", "nodejs") and a in ("--test", "-c", "--check")):
+            return ""
+        if b == "php" and (a in ("-f", "--file", "-F") or a.startswith(("--file=", "-f", "-F"))): return "\n".join(sources)
+        if a.startswith("--"):
+            flag, eq, value = a.partition("=")
+            if flag in opts:
+                sources.append(value if eq else (args[j + 1] if j + 1 < len(args) else ""))
+                j += 1 if eq else 2
+                if b in ("node", "nodejs", "bun"): return "\n".join(sources)
+                continue
+            j += 2 if flag in vals and not eq else 1
+            continue
+        # Short options can be clustered and their value can be attached (-weCODE, -Itest).
+        for n, ch in enumerate(a[1:], 1):
+            flag = "-" + ch
+            if flag in opts | vals:
+                value = a[n + 1:] or (args[j + 1] if j + 1 < len(args) else "")
+                if flag in opts: sources.append(value)
+                if not a[n + 1:]: j += 1
+                if flag in opts and b in ("node", "nodejs", "bun"): return "\n".join(sources)
+                break
+        j += 1
+    if sources: return "\n".join(sources)
+    return "" if b == "deno" else None
+
+
+def interp_code_dels(b, code_text):
+    m = DEL_API.search(code_text)
+    r = (b + " code that deletes (" + " ".join(m.group(0).split())[:40] + "); the code") if m else interp_runs_deleter(code_text)
+    return [(r, [code_text])] if r else []
+
+
+def filter_sources(b, args):
+    """awk/sed programs only: -e/--expression/--source or the first non-option.
+    File names, -v assignments, field separators and input files are data.
+    """
+    sources, supplied, j = [], False, 0
+    vals = {"-v", "--assign", "-F", "--field-separator", "-i", "--include", "-l", "--load"} if b != "sed" else set()
+    while j < len(args):
+        a = args[j]
+        flag, eq, value = a.partition("=")
+        if flag in ("-e", "--expression", "--source", "-f", "--file") or a[:2] in ("-e", "-f"):
+            short = a[:2] in ("-e", "-f")
+            value = a[2:] if short else (value if eq else "")
+            if not value:
+                j += 1; value = args[j] if j < len(args) else ""
+            if flag not in ("-f", "--file") and not a.startswith("-f"): sources.append(value)
+            supplied = True
+        elif a == "--":
+            if not supplied and j + 1 < len(args): sources.append(args[j + 1])
+            break
+        elif a.startswith("-"): j += remote_opt_width(a, vals) - 1
+        elif not supplied: sources.append(a); supplied = True
+        j += 1
+    return sources
+
+
+def awk_dels(source, depth):
+    # Mask strings, regex literals and comments before locating execution operators. Their
+    # contents cannot introduce system() or a pipe, but a string at an operator is shell text.
+    pattern = r'"(?:\\.|[^"\\])*"|/(?:\\.|[^/\\\n])*/|#[^\n]*'
+    literals = {}
+    def mask(m):
+        if m.group().startswith('"'):
+            literals[m.start()] = re.sub(r'\\(["\\])', r'\1', m.group()[1:-1])
+        return " " * len(m.group())
+    code = re.sub(pattern, mask, source)
+    found = []
+    for m in re.finditer(r"\bsystem\s*\(|(?<!\|)\|(?!\|)", code):
+        start = m.end()
+        end = re.search(r"[);}\n]", code[start:])
+        end = start + end.start() if end else len(code)
+        command = "".join(v for p, v in literals.items() if start <= p < end)
+        found += script_dels(command, depth + 1)
+        if coarse(command): found.append((coarse(command), [source]))
+        # Invalid shell quoting in a pipe target must not abort the surrounding script scan.
+        if m.group() == "|" and any(shell_reads_stdin(w) for w, _, _ in (segs(command) or [])):
+            # print "rm /path" | "sh": the strings on the sending side are shell source.
+            boundary = max(code.rfind(";", 0, m.start()), code.rfind("{", 0, m.start()), code.rfind("\n", 0, m.start()))
+            for p, value in literals.items():
+                if boundary < p < m.start(): found += script_dels(value, depth + 1)
+    return [("awk command: " + what, [source] + paths) for what, paths in found]
+
+
+def sed_dels(source, depth):
+    """Skip addresses and s/y pattern/replacement data; only e executes shell text."""
+    found, i = [], 0
+    def delimited(pos, delimiter):
+        while pos < len(source):
+            if source[pos] == "\\": pos += 2; continue
+            if source[pos] == delimiter: return pos + 1
+            pos += 1
+        return pos
+    while i < len(source):
+        c = source[i]
+        if c.isspace() or c.isdigit() or c in ";,${}!": i += 1; continue
+        if c == "#":
+            i = source.find("\n", i)
+            if i < 0: break
+            continue
+        if c == "/": i = delimited(i + 1, c); continue
+        if c == "\\" and i + 1 < len(source): i = delimited(i + 2, source[i + 1]); continue
+        if c in "sy" and i + 1 < len(source):
+            delimiter = source[i + 1]
+            start = i + 2
+            middle = delimited(start, delimiter)
+            end = delimited(middle, delimiter)
+            flags = re.match(r"[^;\n}]*", source[end:]).group()
+            if c == "s" and "e" in flags.split("w", 1)[0]:
+                for text in (source[start:middle - 1], source[middle:end - 1]):
+                    found += script_dels(text, depth + 1)
+            i = end + len(flags); continue
+        end = source.find("\n", i)
+        if end < 0: end = len(source)
+        if c == "e": found += script_dels(source[i + 1:end].strip(), depth + 1)
+        elif c not in "aicw":
+            i += 1; continue
+        i = end
+    return [("sed command: " + what, [source] + paths) for what, paths in found]
+
+
+def script_dels(text, depth=0):
+    """Deletes in a shell text that runs on the remote side: [(what, paths)]."""
+    found = []
+    if depth > 3 or not text.strip(): return found
+    code, bodies = heredocs(text)
+    ss = segs(code, bodies)
+    if ss is None:
+        if re.search(RM_WORD, text) or shell_text_reasons(text):
+            found.append(("a delete in text the guard cannot parse", [text]))
+        return found
+    for sub in live_subs(code):
+        found += script_dels(sub, depth + 1)
+    for k, (w, pre, red) in enumerate(ss):
+        i = remote_command_start(w)
+        if i is None: continue
+        b, args = os.path.basename(w[i]), w[i + 1:]
+        fed = any(os.path.basename(x) in ("xargs", "parallel") for x in w[:i])
+        if b in DEL_VERBS:
+            paths = [shlex.quote(x) if re.search(r"\s", x) else x for x in operands(args)]
+            if fed and piped(pre) and k > 0: paths.append("(names from: " + " ".join(ss[k - 1][0]) + ")")
+            elif fed: paths.append("(names from stdin)")
+            found.append((b, paths))
+        elif b in ("find", "gfind"):
+            if "-delete" in args: found.append(("find -delete", [" ".join(w[i:])]))
+            for n, a in enumerate(args):
+                if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                    sub = []
+                    for y in args[n + 1:]:
+                        if y in (";", "+"): break
+                        sub.append(y)
+                    for what, _ in script_dels(join(sub), depth + 1):
+                        found.append(("find " + a + " " + what, [" ".join(w[i:])]))
+        elif b == "fd":
+            for n, a in enumerate(args):
+                if a in ("-x", "--exec", "-X", "--exec-batch"):
+                    sub = args[n + 1:]
+                    if ";" in sub: sub = sub[:sub.index(";")]
+                    for what, _ in script_dels(join(sub), depth + 1):
+                        found.append(("fd " + a + " " + what, [" ".join(w[i:])]))
+                    break
+        elif b == "git":
+            r = remote_git(args)
+            if r: found.append((r, [" ".join(w[i:])]))
+        elif b == "rsync":
+            dest, src, pos = rsync_dels(args)
+            if (dest or src) and len(pos) > 1: found.append(("rsync with a deleting option", [" ".join(w[i:])]))
+        elif b in ("tar", "gtar", "bsdtar") and any(a.startswith("--remove-files") for a in args):
+            found.append(("tar --remove-files (deletes what it archived)", [" ".join(w[i:])]))
+        elif b == "zip" and any(a == "--move" or re.match(r"^-[A-Za-z0-9]*m[A-Za-z0-9]*$", a) for a in args):
+            found.append(("zip -m (deletes what it archived)", [" ".join(w[i:])]))
+        elif b in ("su", "runuser", "flock"):
+            for n, a in enumerate(args[:-1]):
+                if a in ("-c", "--command", "--session-command"):
+                    found += script_dels(args[n + 1], depth + 1); break
+        elif b == "eval":
+            found += script_dels(" ".join(args), depth + 1)
+        elif b == "trap" and operands(args):
+            found += [("trap: " + what, p) for what, p in script_dels(operands(args)[0], depth + 1)]
+        elif b in SHELL_NAMES:
+            if any(re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args): continue       # a syntax check runs nothing
+            for n, a in enumerate(args[:-1]):
+                if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
+                    found += script_dels(args[n + 1], depth + 1); break
+            if shell_reads_stdin([b] + args):
+                for _, t in stdin_texts(ss, k, REMOTE_FILE):
+                    if t: found += script_dels(t, depth + 1)
+        elif b in ("awk", "gawk", "mawk", "sed"):
+            for source in filter_sources(b, args):
+                found += sed_dels(source, depth) if b == "sed" else awk_dels(source, depth)
+        elif INTERP.match(" " + b):
+            code_text = interpreter_source(b, args)
+            if code_text is None: code_text = "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
+            found += interp_code_dels(b, code_text)
+    # Scan the complete payload so nested remote tools retain heredocs/pipelines too.
+    # Files named here live on the SSH host and must never be read from the local cwd.
+    found += [(what + " (on " + h + ", through this host)", p)
+              for h, what, p in remote_findings(text, REMOTE_FILE, depth + 1)]
+    return found
+
+
+def is_remote(p):
+    return bool(re.match(r"^(?:[^/\s:\[]*\[[^\]]+\]|[^/\s:]+):", p))
+
+
+def rsync_host(p):
+    m = re.match(r"^rsync://(?:[^@/]*@)?(\[[^\]]+\]|[^/:]+)", p) or re.match(r"^((?:[^@/\s]*@)?\[[^\]]+\]):", p)
+    return m.group(1) if m else p.split(":")[0]
+
+
+def ftp_dels(tool, host, label, t):
+    """Deleting commands and final host in sftp or lftp command text. lftp separates commands
+    with ; && || too, and `open` changes the host the rest runs on."""
+    out = []
+    for line in t.split("\n"):
+        for c in (re.split(r";|&&?|\|\|", line) if tool == "lftp" else [line]):
+            if tool == "lftp": c = re.sub(r"^\s*queue\s+", "", c)
+            cw = c.split()
+            if tool == "lftp" and len(cw) > 1 and cw[0] in ("open", "connect"): host = cw[-1]; continue
+            m = re.match(r"^\s*[-@]?\s*(?:glob\s+(?:-\S+\s+)*)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
+            if m: out.append((host, tool + " " + m.group(1) + " (in " + label + ")", [m.group(2).strip()]))
+            # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
+            elif re.match(r"^\s*mirror\b", c) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", c) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", c) \
+                    and not re.search(r"\s--dry-run\b|\s--just-print\b", c):
+                out.append((host, "lftp mirror --reverse --delete removes whatever the local side does not have", [c.strip()]))
+    return out, host
+
+
+def remote_findings(text, cwd, depth=0):
+    """Deletes this LOCAL shell text runs on a remote host: [(host, what, paths)]."""
+    out = []
+    if depth > 3: return out
+    code, bodies = heredocs(text)
+    ss = segs(code, bodies)
+    if ss is None:
+        if re.search(r"(?<![\w.-])(ssh|sftp|lftp)(?![\w.-])", text) and (re.search(RM_WORD, text) or shell_text_reasons(text)):
+            out.append(("?", "ssh, sftp or lftp next to a delete, in a command the guard cannot parse; the command", [text]))
+        return out
+    for sub in live_subs(code):          # outside single quotes, not escaped: quoted prose is not a command
+        out += remote_findings(sub, cwd, depth + 1)
+    scopes, cwds = [], []
+    for k, (w, pre, red) in enumerate(ss):
+        for ch in pre:                        # a directory change inside ( ) ends with the subshell
+            if ch == "(": scopes.append(cwd)
+            elif ch == ")" and scopes: cwd = scopes.pop()
+        cwds.append(cwd)
+        pcwd = cwds[k - 1] if k else cwd      # the command before a `) |` ran in the subshell's directory
+        i = remote_command_start(w)
+        if i is None: continue
+        b = os.path.basename(w[i])
+        if b in ("cd", "pushd", "popd") and cwd is not REMOTE_FILE:
+            # a relative script path after this is read from where the shell then is; when that
+            # cannot be known (cd -, a variable, pushd) it is not read at all
+            dest = operands(w[i + 1:])[:1]
+            if b == "cd" and dest and not re.search(r"[$*?`\[]", dest[0]) and dest[0] != "-":
+                d = os.path.expanduser(dest[0])
+                cwd = d if os.path.isabs(d) else (MOVED if cwd is MOVED else os.path.normpath(os.path.join(cwd or ".", d)))
+            else:
+                cwd = MOVED
+            continue
+        if b == "sshpass":
+            i += 1
+            while i < len(w) and w[i].startswith("-"): i += 2 if w[i] in ("-p", "-f", "-d", "-P") else 1
+            if i >= len(w): continue
+            b = os.path.basename(w[i])
+        args = w[i + 1:]
+        if b in ("ssh", "autossh"):
+            vals = SSH_VAL | ({"-M"} if b == "autossh" else set())      # ssh -M is a flag, autossh -M takes a port
+            host, rest, connection_options = ssh_target(args, vals)
+            if host is None: continue
+            payload = " ".join(rest)                    # ssh itself joins the words with spaces
+            got = [(host, what, p) for what, p in script_dels(payload)]
+            if got: got.append((host, "the whole remote command, as written", [payload]))
+            elif coarse(payload): got.append((host, coarse(payload), [payload]))
+            ps = segs(heredocs(payload)[0]) or []
+            readers = []
+            for pw, _, _ in ps:
+                pi = remote_command_start(pw)
+                if pi is None: continue
+                pb = os.path.basename(pw[pi])
+                if shell_reads_stdin(pw) or (INTERP.fullmatch(pb) and interpreter_source(pb, pw[pi + 1:]) is None):
+                    readers.append(pb)
+            if not payload.strip(): readers.append("sh")
+            if readers:
+                for label, t in stdin_texts(ss, k, cwd, pcwd):
+                    if t is None:
+                        got.append((host, "a script the guard cannot read is sent to a remote shell (" + label + "); pass a literal file path (no cd before it) or put the commands in the call", []))
+                        continue
+                    d = []
+                    for reader in readers:
+                        d += script_dels(t) if reader in SHELL_NAMES else interp_code_dels(reader, t)
+                    got += [(host, what + " (in " + label + ")", p) for what, p in d]
+                    if d: got.append((host, "the whole script (" + label + ")", [t]))
+                    elif any(reader in SHELL_NAMES for reader in readers) and coarse(t): got.append((host, coarse(t) + " (" + label + ")", [t]))
+            if got and connection_options:
+                got.append((host, "ssh connection options", [" ".join(connection_options)]))
+            out += got
+        elif b in ("sftp", "lftp"):
+            pos, j, batch = [], 0, []
+            while j < len(args):
+                if (args[j] == "-b" or (args[j] == "-f" and b == "lftp")) and j + 1 < len(args) and args[j + 1] != "-":     # -b -: the batch is stdin
+                    batch.append(("the batch file " + args[j + 1], read_local(args[j + 1], cwd)))
+                if b == "sftp" and args[j].startswith("-b") and len(args[j]) > 2:      # -bFILE
+                    batch.append(("the batch file " + args[j][2:], read_local(args[j][2:], cwd)))
+                if args[j] in ("-c", "-e") and b == "lftp" and j + 1 < len(args): batch.append(("the command text", args[j + 1]))
+                if b == "lftp" and args[j][:2] in ("-c", "-e") and len(args[j]) > 2: batch.append(("the command text", args[j][2:]))
+                if args[j].startswith("-"): j += opt_width(args[j], SFTP_VAL) if b == "sftp" else (2 if args[j] in ("-c", "-e", "-f", "-u", "-p") else 1)     # sftp -qP 2222
+                else: pos.append(args[j]); j += 1
+            host = pos[0] if pos else "?"
+            context = []
+            for label, t in batch + stdin_texts(ss, k, cwd, pcwd):
+                if t is None:
+                    out.append((host, b + " commands the guard cannot read (" + label + ")", [])); continue
+                context.append(label + ":\n" + t)
+                d, host = ftp_dels(b, host, label, t)
+                out += d
+                if d: out.append((d[-1][0], "the whole " + b + " command text, as written", ["\n".join(context)]))
+        elif b == "rsync":
+            dest, src, pos = rsync_dels(args)
+            if len(pos) < 2: continue
+            remote_end = lambda p: is_remote(p) or p.startswith("rsync://")
+            if dest and remote_end(pos[-1]):
+                out.append((rsync_host(pos[-1]), "rsync with a --delete option removes whatever the source does not have", [pos[-1]]))
+            if src and any(remote_end(p) for p in pos[:-1]):
+                rp = [p for p in pos[:-1] if remote_end(p)]
+                out.append((rsync_host(rp[0]), "rsync --remove-source-files deletes the transferred files there", rp))
+        elif b in ("find", "gfind"):
+            for n, a in enumerate(args):
+                if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                    sub = []
+                    for y in args[n + 1:]:
+                        if y in (";", "+"): break
+                        sub.append(y)
+                    out += remote_findings(join(sub), cwd, depth + 1)
+        elif b == "eval":
+            out += remote_findings(" ".join(args), cwd, depth + 1)
+        elif b in SHELL_NAMES:
+            if any(re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args): continue       # a syntax check runs nothing
+            for n, a in enumerate(args[:-1]):
+                if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a):
+                    out += remote_findings(args[n + 1], cwd, depth + 1); break
+            if shell_reads_stdin(w[i:]):
+                for _, t in stdin_texts(ss, k, cwd, pcwd):
+                    if t: out += remote_findings(t, cwd, depth + 1)
+    return out
+
+
+def clean(s, cap):
+    s = str(s).strip().replace("\r", "").replace("\t", "\\t").replace("\n", "\\n")      # one line, spaces as written
+    return s if len(s) <= cap else s[:cap] + " [CUT: " + str(len(s) - cap) + " more characters not shown, so this list is INCOMPLETE; read the command itself]"
+
+
+remote = []
+if REMOTE:
+    try:
+        remote = remote_findings(ORIG, os.environ.get("RD_CWD", ""))
+    except Exception:
+        # the guard's own failure must not wave a remote delete through
+        if re.search(RM_WORD, ORIG) or re.search(r"-delete\b|\bunlink\b|--del|--remove-", ORIG):
+            remote = [("?", "ssh, sftp, lftp or rsync next to a deleting word (the guard failed to parse the command)", [])]
+seen, rows = set(), []
+for host, what, paths in sorted(remote, key=lambda x: not x[1].startswith("the whole")):      # the text as written first
+    row = "R\t" + clean(host, 120) + "\t" + clean(what, 300) + "\t" + clean(" ".join(paths), 3000)
+    if row not in seen:
+        seen.add(row); rows.append(row)
+if len(rows) > 40:
+    rows = rows[:40] + ["R\t?\t" + str(len(rows) - 40) + " more findings not shown, so this list is INCOMPLETE; read the command and any script it sends\t"]
+for row in rows:
+    print(row)
+if LOCAL:
+    r = reasons(ORIG)
+    if r:
+        print("L\t" + clean(r, 400))
 PY
-  _RD=$(printf '%s' "$COMMAND" | python3 -c "$_RD_PY" 2>/dev/null || true)
+  _RD_RC=0
+  _RD_OUT=$(printf '%s' "$COMMAND" | RD_LOCAL=$_RD_LOCAL RD_REMOTE=$_RD_REMOTE RD_CWD="$_TRASH_CWD" python3 -c "$_RD_PY" 2>/dev/null) || _RD_RC=$?
+  # python3 is there but the check itself died: the same crude ask as without python3
+  if [ "$_RD_RC" != 0 ] && [ "$_RD_REMOTE" = 1 ] \
+     && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
+    _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (the check failed to run, so the command was not parsed)"$'\t'"$(_rd_cmd_text)"
+  fi
+  _RD=""; _RD_R=""
+  while IFS= read -r _rd_line; do
+    case "$_rd_line" in
+      L$'\t'*) [ -z "$_RD" ] && _RD=${_rd_line#L$'\t'} ;;
+      R$'\t'*) _RD_R+="${_rd_line#R$'\t'}"$'\n' ;;
+    esac
+  done <<< "$_RD_OUT"
+  if [ -z "$_RD" ] && [ -n "$_RD_R" ]; then
+    _rd_remote_ask "$_RD_R"
+  fi
   if [ -n "$_RD" ]; then
+    # The local check reads the whole command and cannot tell a remote delete from a local one in
+    # this form (a shell or interpreter word outside the quotes, an unquoted remote command), so it
+    # stays a block, exactly as before the remote rule existed.
+    [ -n "$_RD_R" ] && echo "Note: this command also deletes on a remote host, and in this form the local check cannot tell the two apart. A remote delete goes to the user's prompt when it is a plain rm or find in a single-quoted ssh command of its own (ssh HOST 'rm -- PATH'; ssh HOST 'find DIR ... -exec rm {} +'), with nothing local in the same call." >&2
     echo "Blocked: a real delete that skips the Trash: $_RD." >&2
     echo "Use rm on the command line itself (with rmtrash installed it goes to the Trash and is recorded for review), or call ~/.megavibe/scripts/trash.sh from the code. A glob or rmtree over a scratch directory has destroyed finished work for good before." >&2
     echo "If this is only text (a commit message, a note), run it as its own Bash call, or write it to a file with the Write tool and pass the file (git commit -F, gh pr create --body-file). If a human has decided the delete must be unrecoverable, they set MEGAVIBE_ALLOW_REAL_DELETE=1 in Claude Code's environment." >&2
