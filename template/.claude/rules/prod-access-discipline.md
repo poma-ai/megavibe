@@ -100,16 +100,16 @@ delivered before anyone looked. The page had been classified by its name and
 the size of its output. Its code was 71 lines.
 
 - **Establish the effects of each route before you request it**, browser
-  navigation included: read the handler and what it calls (middleware, helpers,
-  queued work) for database writes, mail and queue inserts, payment calls,
-  webhooks and other outbound requests. One page read does not vouch for the
-  next one in the list.
-- Evidence you already have counts while it still applies: a documented
-  read-only contract (a health endpoint, a published API), or a route you
-  verified earlier that has not changed.
-- Where the effects stay unknown or the source is not yours to read, do not
-  call the request read-only: use an isolated environment, or get the user's
-  agreement to that specific request and its uncertainty.
+  navigation included, from evidence that applies to it: the handler and what
+  it calls (middleware, helpers, queued work), read for database writes, mail
+  and queue inserts, payment calls, webhooks and other outbound requests; or a
+  documented read-only contract (a health endpoint, a published API); or an
+  earlier verification whose code and configuration have not changed since.
+  Source access is not required where an applicable contract establishes the
+  effects. One page read does not vouch for the next one in the list.
+- If the available evidence does not establish the effects, do not call the
+  request read-only: use an isolated environment, or get the user's agreement
+  to that specific request and its uncertainty.
 - Repeating a list of requests "to compare output" repeats whatever each
   handler does.
 
@@ -171,11 +171,22 @@ Halting is the first step, not the response.
    production state, such as moving queued rows aside, disabling a route or
    pausing a sender, needs the user's agreement to that action, however
    reversible it is; have the exact action, its scope and its rollback ready
-   when you ask. The one exception: harm that is still growing while the user
-   does not answer. Then take the single most reversible step that touches only
-   what your own test created (park the rows your requests queued), nothing
-   shared, and report it immediately. Park, never purge: keep what is needed to
-   measure the damage and to put things back.
+   when you ask.
+
+   The sole exception is one reversible hold per incident, while further harm
+   from your test is demonstrably still occurring. Ask for the exact action in
+   chat first, with a deadline the observed urgency justifies, and give the
+   user a real chance to reply: a message that has merely not been answered yet
+   does not qualify, and a refusal or "wait" overrides the exception. When the
+   deadline has passed without a reply, act only on pending items that are
+   attributable to your test by request or job identifiers or equally specific
+   evidence; a time window or a rising count is not attribution. The hold must
+   keep the items and their original state, be safe against concurrent
+   consumers, and touch no unrelated work, shared service or shared
+   configuration. If any of that cannot be established, wait for approval and
+   keep preparing the remedy. Park, never purge, and do not replay parked work
+   on your own. Record the evidence, the action and its rollback, and report at
+   once.
 4. **Establish who and what is affected** from the evidence available:
    confirmed counts, estimates and unknowns, each with how it was established.
 5. **Prepare the remedy while you wait** and bring it ready to execute: the
