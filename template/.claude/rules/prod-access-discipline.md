@@ -123,7 +123,13 @@ credentials, enabled senders and consumers) before testing. A separate database
 copy with test-only integrations is not a live connection, though copied
 personal data still needs its protection.
 
-Before a run against live production data or channels:
+Before a run against live production data or channels, work through the three
+points below. A bounded request covered by an applicable documented read-only
+contract is the exception: the contract establishes its side-effect scope, and
+access to internal code or configuration, or changes to integrations, are not
+needed just to make that request. Check what can be observed and say what was
+not. The exception does not hold where the code or configuration under test
+could invalidate the contract.
 
 - **Identify the side-effect channels this test can reach**, from the code paths
   it exercises, the configuration and the background consumers that pick up
@@ -150,8 +156,12 @@ not show a test was clean.
 
 ## Checking production without loading it
 
-- Light statements only: indexed, bounded, a count or a limit. A heavy check
-  query can lock the very thing it checks.
+- Light statements only: known cheap, indexed lookups with bounded work, or
+  existing monitoring. A COUNT or a LIMIT bounds the output, not the rows
+  examined, joined or sorted. Know the expected work before you run a
+  statement and use the per-statement time and lock-wait limits the database
+  offers; if the cost is unknown, use another source of evidence or ask first.
+  A heavy check query can lock the very thing it checks.
 - After anything slow, look at the process list, and cancel only your own
   statement.
 - Never print raw statement text from a process list or a query log: it carries
