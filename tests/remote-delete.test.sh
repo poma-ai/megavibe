@@ -33,6 +33,8 @@ asks() {  # asks <name> <command> [text the reason must contain]...
 }
 passes() { run "$2"; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "$1 (rc=$RC out=${OUT:0:80})"; fi; }
 blocks() { run "$2"; if [ "$RC" = 2 ]; then ok; else bad "$1 (rc=$RC)"; fi; }
+# stops: asked about, or blocked by the local guard (a shell word outside the quotes): never a silent pass
+stops() { run "$2"; if [ "$RC" = 2 ] || [ -n "$WHY" ]; then ok; else bad "$1 (rc=$RC, passed silently)"; fi; }
 
 # 1. The 2026-11-15 shapes: an approved purge with an appended path, a staging copy, one file.
 asks "purge plus an appended rm names both" \
@@ -44,7 +46,7 @@ asks "a single rm -f" "ssh user@host.example 'rm -f /archive-today.tar.gz'" "/ar
 # 2. Other spellings of a remote delete.
 asks "unquoted remote command" "ssh host.example rm -f /tmp/x" "/tmp/x"
 asks "options with values before the host" "ssh -p 2222 -i ~/.ssh/id -l deploy host.example 'rmdir /srv/empty'" "host.example" "/srv/empty"
-asks "find -delete is asked, not hard-blocked as a local delete" "ssh host.example 'find logs -mtime +90 -delete'" "find -delete"
+asks "find -delete in a quoted remote command" "ssh host.example 'find logs -mtime +90 -delete'" "find -delete"
 asks "find -exec rm" "ssh host.example 'find /var/tmp -name \"*.old\" -exec rm {} +'" "find -exec rm"
 asks "sudo sh -c" "ssh host.example \"sudo sh -c 'rm -rf /var/cache/app'\"" "/var/cache/app"
 asks "inside a command substitution" "ssh host.example 'echo \"left: \$(rm -f /tmp/a; ls | wc -l)\"'" "/tmp/a"
@@ -53,7 +55,7 @@ asks "interpreter code that deletes" "ssh host.example 'python3 -c \"import shut
 asks "behind timeout" "timeout 30 ssh host.example 'unlink /srv/link'" "/srv/link"
 asks "behind sshpass" "sshpass -p secret ssh host.example 'rm /srv/a'" "/srv/a"
 asks "in a loop over hosts" 'for h in a.example b.example; do ssh "$h" "rm -f /tmp/lock"; done' "/tmp/lock"
-asks "through bash -c" "bash -c \"ssh host.example 'rm /srv/a'\"" "/srv/a"
+stops "through bash -c" "bash -c \"ssh host.example 'rm /srv/a'\"" "/srv/a"
 asks "an ssh inside the remote command" "ssh jump.example \"ssh inner.example 'rm /srv/a'\"" "inner.example"
 asks "multi-line payload" "ssh host.example '
 cd /srv/app
@@ -61,7 +63,7 @@ rm -rf releases/old
 '" "releases/old"
 
 # 3. A script sent to a remote shell on stdin.
-asks "heredoc into bash -s" "ssh host.example bash -s <<'EOF'
+stops "heredoc into bash -s" "ssh host.example bash -s <<'EOF'
 cd /srv/app
 rm -rf releases/old
 EOF" "releases/old" "heredoc"
@@ -70,8 +72,8 @@ rm /srv/a
 EOF" "/srv/a"
 asks "a script file redirected into a remote shell" "ssh host.example 'bash -s' < del.sh" "releases/old" "del.sh"
 asks "the same through cat and a pipe" "cat del.sh | ssh host.example bash" "releases/old"
-asks "echo piped into a remote shell" "echo 'rm /srv/a' | ssh host.example sh" "/srv/a"
-asks "a here-string" "ssh host.example bash <<< 'rm /srv/a'" "/srv/a"
+stops "echo piped into a remote shell" "echo 'rm /srv/a' | ssh host.example sh" "/srv/a"
+stops "a here-string" "ssh host.example bash <<< 'rm /srv/a'" "/srv/a"
 asks "a script file the guard cannot read" "ssh host.example 'bash -s' < missing.sh" "cannot read"
 asks "a script path in a variable" 'ssh host.example bash -s < "$SCRIPT"' "cannot read"
 asks "another command's output as the script" "sed 's/a/b/' plain.sh | ssh host.example bash" "cannot read"
@@ -119,6 +121,43 @@ if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "ask"' 
 mkdir -p "$T/jqonly"; ln -sf "$(command -v jq)" "$T/jqonly/jq"      # a PATH without rmtrash
 OUT=$(jq -n --arg c "ssh host.example 'rm /srv/a'" '{tool_input:{command:$c}}' | PATH="$T/jqonly:/usr/bin:/bin" /bin/bash "$HOOK" 2>/dev/null)
 if printf '%s' "$OUT" | jq -e '.hookSpecificOutput.permissionDecision == "ask"' >/dev/null 2>&1; then ok; else bad "asked without rmtrash too (a remote rule needs no local Trash)"; fi
+
+# 6b. Round-1 review findings (2026-11-15), each failing before its fix.
+blocks "a local find -delete stays blocked next to the same text run remotely" "ssh host.example 'find build -delete'; find build -delete"
+asks "a comment line in a multi-line remote script hides nothing" "ssh host.example '
+# Clean expired release
+rm -rf /srv/releases/old
+'" "/srv/releases/old"
+asks "interpreter code is shown, so both targets are visible" "ssh host.example 'python3 -c \"import os; os.remove(\\\"/srv/approved\\\"); os.remove(\\\"/srv/unapproved\\\")\"'" "/srv/approved" "/srv/unapproved"
+asks "git clean shows its operands" "ssh host.example 'git clean -fd -- /srv/app/cache /srv/important'" "/srv/important"
+LONG=$(i=0; while [ $i -lt 400 ]; do printf '/srv/logs/file-%04d.log ' $i; i=$((i + 1)); done)
+asks "an over-long path list says it is incomplete" "ssh host.example 'rm ${LONG}/srv/secret'" "INCOMPLETE"
+asks "printf piped into a remote login shell" "printf '%s\\n' 'rm /srv/old' | ssh host.example" "/srv/old"
+asks "echo -n piped into a remote login shell" "echo -n 'rm /srv/old' | ssh host.example" "/srv/old"
+asks "lftp -e on an ftp host" "lftp -e 'rm /upload/old.zip; bye' ftp.example" "ftp.example" "/upload/old.zip"
+passes "rsync --delay-updates is not a deleting option" "rsync -a --delay-updates build/ host.example:/srv/app/"
+passes "a remote rsync dry run" "ssh host.example 'rsync -an --delete /srv/a/ /srv/b/'"
+asks "a remote rsync --delete" "ssh host.example 'rsync -a --delete /srv/a/ /srv/b/'" "/srv/b/"
+passes "sftp -b - reads its batch from stdin: a download" "sftp -b - host.example <<'EOF'
+get report.csv
+bye
+EOF"
+asks "sftp -b - with a delete in the stdin batch" "sftp -b - host.example <<'EOF'
+rm /upload/old.zip
+EOF" "/upload/old.zip"
+asks "ssh -M is a flag, the next word is the host" "ssh -M host.example 'rm /srv/old'" "host.example" "/srv/old"
+asks "autossh -M takes a port" "autossh -M 0 host.example 'rm /srv/old'" "host.example" "/srv/old"
+passes "a literal command substitution in a single-quoted commit message" "git commit -m 'Document \$(ssh host.example rm /srv/old)'"
+asks "a command substitution that does run" "echo \"\$(ssh host.example rm /srv/old)\"" "/srv/old"
+asks "git worktree remove without --force on the remote side" "ssh host.example 'git worktree remove /srv/app-old'" "/srv/app-old"
+asks "a deleting trap" "ssh host.example 'trap \"rm /srv/lock\" EXIT; echo ok'" "/srv/lock"
+asks "find -exec with git rm -f" "ssh host.example 'find /srv/old -type f -exec git rm -f {} +'" "find -exec"
+asks "an rsync daemon URL names its host" "rsync -a --delete build/ rsync://backup.example/module/" "on backup.example"
+asks "a -- between host and command" "ssh host.example -- rm -f /srv/x" "/srv/x"
+asks "tar --remove-files" "ssh host.example 'tar czf logs.tgz logs --remove-files'" "remove-files"
+passes "a plain remote git rm of a tracked file" "ssh host.example 'git rm old.txt && git commit -m cleanup'"
+passes "a FIFO as stdin is not read" "ssh host.example 'cat > /tmp/f' < /dev/zero"
+asks "a device as a script for a remote shell is asked about, not read" "ssh host.example bash -s < /dev/zero" "cannot read"
 
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
