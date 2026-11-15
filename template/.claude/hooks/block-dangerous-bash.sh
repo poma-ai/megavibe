@@ -1475,7 +1475,7 @@ HD_RE = r"(?<!<)<<(?!<)-?\s*(\\?[\x27\"]?)([^\s;|&<>()\x27\"]+)[\x27\"]?"
 REMOTE_FILE, MOVED = False, None      # read_local: a path on the other host; a relative path after a cd
 ESC = {";": "\x02", "(": "\x05", ")": "\x06"}      # escaped \; \( \): words of find, not shell operators
 # Command position in plain text, for the backstop: after a separator, a wrapper with its options, or find -exec.
-POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|time|command|nice|ionice|timeout|busybox|parallel)"
+POS = (r"(?:^|[;&|(`\n{]|\$\(|\b(?:then|do|else|xargs|exec|env|sudo|doas|nohup|time|command|nice|ionice|timeout|busybox|parallel|taskset|chrt|setsid|stdbuf|unbuffer)"
        r"\s+(?:-\S+\s+(?:[^-\s]\S*\s+)?)*|\s-(?:exec|execdir|ok|okdir)\s+)[ \t]*(?:\w+=\S*\s+)*(?:\S*/)?")
 
 
@@ -1676,11 +1676,12 @@ def stdin_texts(ss, k, cwd, pcwd=Ellipsis):
 
 def rsync_dels(args):
     """(deletes on the destination side, deletes on the source side, positionals); nothing on a dry run."""
-    if any(a == "--dry-run" or re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in args): return False, False, []
-    pos, j = [], 0
+    pos, opts, j = [], [], 0
     while j < len(args):
-        if args[j].startswith("-"): j += 2 if args[j] in RSYNC_VAL else 1
+        if args[j].startswith("-"): opts.append(args[j]); j += 2 if args[j] in RSYNC_VAL else 1
         else: pos.append(args[j]); j += 1
+    if any(a in ("--dry-run", "--list-only") or re.match(r"^-[A-Za-z]*n[A-Za-z]*$", a) for a in opts): return False, False, []
+    args = opts
     dest = any(re.match(r"^--del(ete(-(before|during|delay|after|excluded|missing-args))?)?$", a) for a in args)
     src = "--remove-source-files" in args or "--remove-sent-files" in args
     return dest, src, pos
@@ -1717,7 +1718,7 @@ def script_dels(text, depth=0):
         if i is None: continue
         b, args = os.path.basename(w[i]), w[i + 1:]
         fed = any(os.path.basename(x) in ("xargs", "parallel") for x in w[:i])
-        while b in ("busybox", "ionice", "parallel", "setsid", "chronic", "flock"):      # wrappers command_start does not know
+        while b in ("busybox", "ionice", "parallel", "setsid", "chronic", "flock", "taskset", "chrt", "numactl", "unbuffer", "watch", "strace", "ltrace"):      # wrappers command_start does not know
             j = 0
             while j < len(args) and (args[j].startswith("-") or args[j].isdigit()): j += 1
             if b == "flock": j += 1               # the lock file
@@ -1792,7 +1793,7 @@ def ftp_dels(tool, host, label, t):
         for c in (re.split(r";|&&|\|\|", line) if tool == "lftp" else [line]):
             m = re.match(r"^\s*(?:open|connect)\s+(?:-\S+\s+(?:\S+\s+)?)*?(\S+)\s*$", c)
             if m and tool == "lftp": host = m.group(1); continue
-            m = re.match(r"^\s*[-@]?\s*(?:glob\s+)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
+            m = re.match(r"^\s*[-@]?\s*(?:glob\s+(?:-\S+\s+)*)?(rm|rmdir|mrm|mdelete|delete|mrmdir)\b\s*(.*)", c)
             if m: out.append((host, tool + " " + m.group(1) + " (in " + label + ")", [m.group(2).strip()]))
             # lftp mirror -R uploads; with --delete (-e) it removes what the local side does not have
             elif re.match(r"^\s*mirror\b", c) and re.search(r"\s(--delete\b|-[A-Za-z]*e)", c) and re.search(r"\s(--reverse\b|-[A-Za-z]*R)", c) \

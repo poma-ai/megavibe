@@ -297,6 +297,12 @@ asks "a dollar-quoted remote command" "ssh host.example \$'rm -rf /srv/old'" "/s
 passes "git clean dry run on the remote side" "ssh host.example 'cd /srv/app && git clean -nd'"
 passes "flock around a harmless command" "ssh host.example 'flock /var/lock/x.lock ./deploy.sh'"
 
+asks "lftp glob with an option" "lftp -e 'glob -a rm /upload/old.zip; bye' ftp.example" "/upload/old.zip"
+asks "an rsync option value that starts with a dash" "rsync -a --delete --exclude -notes build/ host.example:/srv/app/" "/srv/app/"
+passes "rsync --list-only deletes nothing" "rsync --list-only --delete user@host.example:/srv/app/ ./listing/"
+asks "taskset in front of the delete" "ssh host.example 'taskset -c 0 rm -rf /srv/x'" "/srv/x"
+passes "git rm --cached on the remote side" "ssh host.example 'cd /srv/app && git rm --cached .env'"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
