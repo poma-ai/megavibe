@@ -1489,7 +1489,8 @@ NOISE = {"grep", "egrep", "fgrep", "zgrep", "bzgrep", "xzgrep", "zegrep", "fd", 
          "echo", "printf", "man", "which", "type", "whereis", "apropos", "docker",
          "podman", "nerdctl", "git", "npm", "yarn", "pnpm", "kubectl", "helm", "apt", "apt-get", "yum", "dnf", "brew",
          "pip", "pip3", "cat", "less", "more", "tail", "head", "sed", "awk", "ls", "test", "[", "[[", "find", "gfind",
-         "history", "alias", "complete", "logger", "wall", "write", "tee", "cut", "tr", "sort", "wc", "journalctl"}
+         "history", "alias", "complete", "logger", "wall", "write", "tee", "cut", "tr", "sort", "wc", "journalctl",
+         "pytest", "py.test", "tox", "nox", "go", "cargo", "make", "rspec", "jest", "phpunit", "mvn", "gradle", "ctest"}
 
 
 def coarse(text):
@@ -1503,7 +1504,10 @@ def coarse(text):
     for w, _, _ in (segs(code) or []):
         i = remote_command_start(w)
         if i is None or os.path.basename(w[i]) in NOISE: continue
-        if re.fullmatch(r"(?:python|pypy)[0-9.]*", os.path.basename(w[i])): continue  # executable code checked by script_dels
+        b = os.path.basename(w[i])
+        # These commands have explicit source/payload boundaries in script_dels. Re-scanning
+        # their argv here would turn filters, script arguments and nested searches into code.
+        if INTERP.fullmatch(b) or b in SHELL_NAMES | {"su", "runuser", "flock", "eval", "trap", "ssh", "autossh"}: continue
         # Resolve wrappers before searching command positions: their option operands and the
         # arguments of grep/git/etc. must never become executable words in the backstop.
         bare = unquoted(join(w[i:]))
@@ -1604,6 +1608,11 @@ REMOTE_WRAPPER_VAL = {
                 "--cpunodebind", "--physcpubind"},
     "watch": {"-n", "--interval"}, "strace": {"-e", "-o", "-p", "-s", "-u"},
     "ltrace": {"-e", "-o", "-p", "-s", "-u"},
+    "runuser": {"-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell", "--whitelist-environment"},
+    "chroot": {"--userspec", "--groups"},
+    "uv": {"--directory", "--project", "--config-file", "--cache-dir", "--python", "-p",
+           "--with", "--with-editable", "--with-requirements", "--extra", "--group", "--package", "--env-file", "--index", "--index-url"},
+    "poetry": {"-C", "--directory", "-P", "--project"},
 }
 
 
@@ -1615,16 +1624,23 @@ def remote_command_start(w):
         if re.match(r"[A-Za-z_]\w*\+?=", x) or x in KEYWORDS: i += 1; continue
         if b not in REMOTE_WRAPPER_VAL: return i
         start = i
+        if b == "runuser" and not any(a in ("-u", "--user") or a.startswith(("-u", "--user=")) for a in w[i + 1:]): return i
         vals = REMOTE_WRAPPER_VAL[b]
         i += 1
         while i < len(w) and w[i].startswith("-"):
             a = w[i]
             if a == "--": i += 1; break
-            if b == "flock" and a in ("-c", "--command"): return start
+            if b in ("flock", "runuser") and a in ("-c", "--command", "--session-command"): return start
             if b == "command" and re.match(r"^-[A-Za-z]*[vV]", a): return None
             if b == "xcrun" and a in ("--find", "-f", "--show-sdk-path", "--show-sdk-version"): return None
             i += remote_opt_width(a, vals)
-        if b in ("timeout", "gtimeout", "taskset", "chrt", "flock"): i += 1  # duration, CPU mask, priority, lock
+        if b in ("uv", "poetry"):
+            if i >= len(w) or w[i] != "run": return start
+            i += 1
+            while i < len(w) and w[i].startswith("-"):
+                if w[i] == "--": i += 1; break
+                i += remote_opt_width(w[i], vals)
+        if b in ("timeout", "gtimeout", "taskset", "chrt", "flock", "chroot"): i += 1  # duration, CPU mask, priority, lock, root
         if b == "flock" and i < len(w) and w[i] in ("-c", "--command"): return start
     return None
 
@@ -1819,10 +1835,163 @@ def python_source(args):
     return None
 
 
+# Only options that take executable source belong here. In particular node -r, ruby -E,
+# perl -p and Python -m take modules/encodings or change execution mode, not inline code.
+INLINE_CODE = {
+    "node": {"-e", "-p", "--eval", "--print"}, "nodejs": {"-e", "-p", "--eval", "--print"},
+    "bun": {"-e", "-p", "--eval", "--print"}, "deno": set(),
+    "ruby": {"-e"}, "perl": {"-e", "-E"}, "php": {"-r", "-B", "-R", "-E"},
+    "lua": {"-e"}, "osascript": {"-e"},
+}
+INTERP_VALUES = {
+    "node": {"-r", "--require", "--import", "--loader", "--experimental-loader", "--test-name-pattern", "--test-skip-pattern", "--test-reporter", "--test-reporter-destination", "--input-type", "--conditions", "-C"},
+    "bun": {"-r", "--require", "--preload", "--loader", "--define", "--cwd", "--env-file", "--config", "-c"},
+    "deno": {"--config", "-c", "--import-map", "--lock", "--seed", "--v8-flags", "--ext"},
+    "ruby": {"-I", "-r", "-E", "--encoding", "-C", "-F", "-K"},
+    "perl": {"-I", "-M", "-m", "-F"}, "php": {"-c", "-d", "-z", "--php-ini", "--define"},
+    "lua": {"-l"}, "osascript": {"-l", "-s"},
+}
+
+
+def interpreter_source(b, args):
+    """Inline source, None for a stdin script, or empty text for script/subcommand argv.
+    Stop at the source boundary; a script's options and arguments are never interpreter code.
+    Used for both remote stdin routing and the parser (which owns these commands in coarse).
+    """
+    if re.fullmatch(r"(?:python|pypy)[0-9.]*", b): return python_source(args)
+    if b not in INLINE_CODE: return ""
+    opts = INLINE_CODE[b]
+    vals = INTERP_VALUES.get("node" if b == "nodejs" else b, set())
+    sources, j, mode = [], 0, None
+    while j < len(args):
+        a = args[j]
+        if a == "--":
+            return "\n".join(sources) if sources else (None if j + 1 == len(args) or args[j + 1] == "-" else "")
+        if a == "-": return "\n".join(sources) if sources else None
+        if not a.startswith("-"):
+            if b in ("deno", "bun") and mode is None and a in ("eval", "run"):
+                mode = a; j += 1; continue
+            if b == "deno" and mode == "eval": return a
+            return "\n".join(sources)
+        if a in ("-h", "--help", "-v", "--version") or (b in ("node", "nodejs") and a in ("--test", "-c", "--check")):
+            return ""
+        if b == "php" and (a in ("-f", "--file", "-F") or a.startswith(("--file=", "-f", "-F"))): return "\n".join(sources)
+        if a.startswith("--"):
+            flag, eq, value = a.partition("=")
+            if flag in opts:
+                sources.append(value if eq else (args[j + 1] if j + 1 < len(args) else ""))
+                j += 1 if eq else 2
+                if b in ("node", "nodejs", "bun"): return "\n".join(sources)
+                continue
+            j += 2 if flag in vals and not eq else 1
+            continue
+        # Short options can be clustered and their value can be attached (-weCODE, -Itest).
+        for n, ch in enumerate(a[1:], 1):
+            flag = "-" + ch
+            if flag in opts | vals:
+                value = a[n + 1:] or (args[j + 1] if j + 1 < len(args) else "")
+                if flag in opts: sources.append(value)
+                if not a[n + 1:]: j += 1
+                if flag in opts and b in ("node", "nodejs", "bun"): return "\n".join(sources)
+                break
+        j += 1
+    if sources: return "\n".join(sources)
+    return "" if b == "deno" else None
+
+
 def interp_code_dels(b, code_text):
     m = DEL_API.search(code_text)
     r = (b + " code that deletes (" + " ".join(m.group(0).split())[:40] + "); the code") if m else interp_runs_deleter(code_text)
     return [(r, [code_text])] if r else []
+
+
+def filter_sources(b, args):
+    """awk/sed programs only: -e/--expression/--source or the first non-option.
+    File names, -v assignments, field separators and input files are data.
+    """
+    sources, supplied, j = [], False, 0
+    vals = {"-v", "--assign", "-F", "--field-separator", "-i", "--include", "-l", "--load"} if b != "sed" else set()
+    while j < len(args):
+        a = args[j]
+        flag, eq, value = a.partition("=")
+        if flag in ("-e", "--expression", "--source", "-f", "--file") or a[:2] in ("-e", "-f"):
+            short = a[:2] in ("-e", "-f")
+            value = a[2:] if short else (value if eq else "")
+            if not value:
+                j += 1; value = args[j] if j < len(args) else ""
+            if flag not in ("-f", "--file") and not a.startswith("-f"): sources.append(value)
+            supplied = True
+        elif a == "--":
+            if not supplied and j + 1 < len(args): sources.append(args[j + 1])
+            break
+        elif a.startswith("-"): j += remote_opt_width(a, vals) - 1
+        elif not supplied: sources.append(a); supplied = True
+        j += 1
+    return sources
+
+
+def awk_dels(source, depth):
+    # Mask strings, regex literals and comments before locating execution operators. Their
+    # contents cannot introduce system() or a pipe, but a string at an operator is shell text.
+    pattern = r'"(?:\\.|[^"\\])*"|/(?:\\.|[^/\\\n])*/|#[^\n]*'
+    literals = {}
+    def mask(m):
+        if m.group().startswith('"'):
+            literals[m.start()] = re.sub(r'\\(["\\])', r'\1', m.group()[1:-1])
+        return " " * len(m.group())
+    code = re.sub(pattern, mask, source)
+    found = []
+    for m in re.finditer(r"\bsystem\s*\(|(?<!\|)\|(?!\|)", code):
+        start = m.end()
+        end = re.search(r"[);}\n]", code[start:])
+        end = start + end.start() if end else len(code)
+        command = "".join(v for p, v in literals.items() if start <= p < end)
+        found += script_dels(command, depth + 1)
+        if coarse(command): found.append((coarse(command), [source]))
+        # Invalid shell quoting in a pipe target must not abort the surrounding script scan.
+        if m.group() == "|" and any(shell_reads_stdin(w) for w, _, _ in (segs(command) or [])):
+            # print "rm /path" | "sh": the strings on the sending side are shell source.
+            boundary = max(code.rfind(";", 0, m.start()), code.rfind("{", 0, m.start()), code.rfind("\n", 0, m.start()))
+            for p, value in literals.items():
+                if boundary < p < m.start(): found += script_dels(value, depth + 1)
+    return [("awk command: " + what, [source] + paths) for what, paths in found]
+
+
+def sed_dels(source, depth):
+    """Skip addresses and s/y pattern/replacement data; only e executes shell text."""
+    found, i = [], 0
+    def delimited(pos, delimiter):
+        while pos < len(source):
+            if source[pos] == "\\": pos += 2; continue
+            if source[pos] == delimiter: return pos + 1
+            pos += 1
+        return pos
+    while i < len(source):
+        c = source[i]
+        if c.isspace() or c.isdigit() or c in ";,${}!": i += 1; continue
+        if c == "#":
+            i = source.find("\n", i)
+            if i < 0: break
+            continue
+        if c == "/": i = delimited(i + 1, c); continue
+        if c == "\\" and i + 1 < len(source): i = delimited(i + 2, source[i + 1]); continue
+        if c in "sy" and i + 1 < len(source):
+            delimiter = source[i + 1]
+            start = i + 2
+            middle = delimited(start, delimiter)
+            end = delimited(middle, delimiter)
+            flags = re.match(r"[^;\n}]*", source[end:]).group()
+            if c == "s" and "e" in flags.split("w", 1)[0]:
+                for text in (source[start:middle - 1], source[middle:end - 1]):
+                    found += script_dels(text, depth + 1)
+            i = end + len(flags); continue
+        end = source.find("\n", i)
+        if end < 0: end = len(source)
+        if c == "e": found += script_dels(source[i + 1:end].strip(), depth + 1)
+        elif c not in "aicw":
+            i += 1; continue
+        i = end
+    return [("sed command: " + what, [source] + paths) for what, paths in found]
 
 
 def script_dels(text, depth=0):
@@ -1877,7 +2046,7 @@ def script_dels(text, depth=0):
             found.append(("zip -m (deletes what it archived)", [" ".join(w[i:])]))
         elif b in ("su", "runuser", "flock"):
             for n, a in enumerate(args[:-1]):
-                if a in ("-c", "--command"):
+                if a in ("-c", "--command", "--session-command"):
                     found += script_dels(args[n + 1], depth + 1); break
         elif b == "eval":
             found += script_dels(" ".join(args), depth + 1)
@@ -1891,12 +2060,12 @@ def script_dels(text, depth=0):
             if shell_reads_stdin([b] + args):
                 for _, t in stdin_texts(ss, k, REMOTE_FILE):
                     if t: found += script_dels(t, depth + 1)
+        elif b in ("awk", "gawk", "mawk", "sed"):
+            for source in filter_sources(b, args):
+                found += sed_dels(source, depth) if b == "sed" else awk_dels(source, depth)
         elif INTERP.match(" " + b):
-            if re.fullmatch(r"(?:python|pypy)[0-9.]*", b):
-                code_text = python_source(args)
-                if code_text is None: code_text = "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
-            else:
-                code_text = " ".join(args) + "\n" + "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
+            code_text = interpreter_source(b, args)
+            if code_text is None: code_text = "\n".join(t or "" for _, t in stdin_texts(ss, k, REMOTE_FILE))
             found += interp_code_dels(b, code_text)
         elif b in ("ssh", "autossh"):
             found += [(what + " (on " + h + ", through this host)", p) for h, what, p in remote_findings(join(w[i:]), REMOTE_FILE, depth + 1)]
@@ -1988,7 +2157,7 @@ def remote_findings(text, cwd, depth=0):
                 pi = remote_command_start(pw)
                 if pi is None: continue
                 pb = os.path.basename(pw[pi])
-                if shell_reads_stdin(pw) or (re.fullmatch(r"(?:python|pypy)[0-9.]*", pb) and python_source(pw[pi + 1:]) is None):
+                if shell_reads_stdin(pw) or (INTERP.fullmatch(pb) and interpreter_source(pb, pw[pi + 1:]) is None):
                     readers.append(pb)
             if not payload.strip(): readers.append("sh")
             if readers:

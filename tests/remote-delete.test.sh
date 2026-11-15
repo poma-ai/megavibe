@@ -470,6 +470,122 @@ asks "Python heredoc through ssh is executable code" "ssh host 'sudo -iu deploy 
 import os; os.remove('/srv/x')
 EOF" "/srv/x"
 
+# 6m. Seventh ship round: one failing-first regression per class.
+passes "interpreter test filters are data" "ssh host 'node --test --test-name-pattern unlink test/fs.test.js'"
+passes "awk regex patterns are data" "ssh host 'awk \"/unlink /\" /var/log/app.log'"
+passes "test runner filters are data in the backstop" "ssh host 'pytest -k unlink /srv/tests'"
+
+# A. The executable source boundary is shared by every interpreter and the backstop.
+for CMD in 'node --test --test-name-pattern=unlink' 'node -e "console.log(process.argv[1])" unlink' \
+           'ruby -Itest test/x_test.rb -n unlink' 'php artisan test --filter unlink' \
+           'bun test -t unlink' 'deno test --filter unlink' \
+           'node -r unlink script.js' 'ruby -E unlink script.rb' 'perl -p script.pl unlink /srv/tests' \
+           'deno run script.ts unlink /srv/tests'; do
+  passes "$CMD keeps non-code arguments as data" "ssh host '$CMD'"
+done
+for INTERPRETER in node nodejs deno bun ruby php perl python python3; do
+  passes "$INTERPRETER script and arguments are data" "ssh host '$INTERPRETER script unlink /srv/tests'"
+  passes "$INTERPRETER does not treat script stdin as code" "ssh host \"$INTERPRETER script <<'EOF'
+unlink('/srv/x');
+EOF\""
+done
+while IFS='|' read -r INTERPRETER OPTION CODE; do
+  passes "$INTERPRETER $OPTION trailing argv is data" "ssh host '$INTERPRETER $OPTION \"1\" unlink /srv/tests'"
+  asks "$INTERPRETER $OPTION source deletes" "ssh host '$INTERPRETER $OPTION \"$CODE\"'" "/srv/x"
+done <<'CASES'
+node|-e|require(\"fs\").unlinkSync(\"/srv/x\")
+nodejs|--eval|require(\"fs\").unlinkSync(\"/srv/x\")
+node|-p|require(\"fs\").rmSync(\"/srv/x\")
+bun|--print|require(\"fs\").unlinkSync(\"/srv/x\")
+deno|eval|Deno.remove(\"/srv/x\")
+ruby|-e|File.unlink(\"/srv/x\")
+php|-r|unlink(\"/srv/x\");
+perl|-E|unlink(\"/srv/x\");
+python|-c|import os; os.unlink(\"/srv/x\")
+python3|-c|import os; os.unlink(\"/srv/x\")
+CASES
+asks "PHP single quoted inline code" "ssh host \"php -r 'unlink(\\\"/srv/x\\\");'\"" "/srv/x"
+asks "attached node eval source" "ssh host 'node --eval=\"require(\\\"fs\\\").unlinkSync(\\\"/srv/x\\\")\"'" "/srv/x"
+asks "repeated Ruby source options" "ssh host 'ruby -e \"1\" -e \"File.unlink(\\\"/srv/x\\\")\"'" "/srv/x"
+asks "clustered Perl source option" "ssh host 'perl -we\"unlink(\\\"/srv/x\\\")\"'" "/srv/x"
+while IFS='|' read -r READER CODE; do
+  asks "$READER remote heredoc source" "ssh host \"$READER <<'EOF'
+$CODE
+EOF\"" "/srv/x"
+  asks "$READER heredoc through ssh" "ssh host '$READER' <<'EOF'
+$CODE
+EOF" "/srv/x"
+done <<'CASES'
+node -|require('fs').unlinkSync('/srv/x')
+nodejs -|require('fs').unlinkSync('/srv/x')
+bun -|require('fs').unlinkSync('/srv/x')
+deno run -|Deno.remove('/srv/x')
+ruby -|File.unlink('/srv/x')
+php|<?php unlink('/srv/x');
+perl -|unlink('/srv/x');
+python -|import os; os.unlink('/srv/x')
+python3 -|import os; os.unlink('/srv/x')
+CASES
+asks "Node remote here-string source" "ssh host 'node - <<< \"require(\\\"fs\\\").unlinkSync(\\\"/srv/x\\\")\"'" "/srv/x"
+asks "Node remote piped source" "ssh host 'printf %s \"require(\\\"fs\\\").unlinkSync(\\\"/srv/x\\\")\" | node -'" "/srv/x"
+passes "Node inline source does not execute stdin" "ssh host \"node -e '1' <<'EOF'
+require('fs').unlinkSync('/srv/x')
+EOF\""
+
+# B. Filter programs execute shell commands only at their execution mechanisms.
+for AWK in awk gawk mawk; do
+  passes "$AWK regex is data" "ssh host \"$AWK '/rmdir/ {print}' /var/log/app.log\""
+  passes "$AWK quoted pattern is data" "ssh host '$AWK \"/unlink /\" /var/log/app.log'"
+  passes "$AWK printed string is data" "ssh host '$AWK \"BEGIN{print \\\"rm /srv/x\\\"}\"'"
+  passes "$AWK fake mechanism in regex is data" "ssh host '$AWK \"/system(unlink )/\" /var/log/app.log'"
+  passes "$AWK variable and input path are data" "ssh host '$AWK -v pattern=unlink \"{print}\" /srv/rm'"
+  asks "$AWK system runs delete" "ssh host \"$AWK 'BEGIN{system(\\\"rm -f /srv/x\\\")}'\"" "/srv/x"
+  asks "$AWK command pipe runs delete" "ssh host \"$AWK 'BEGIN{print | \\\"rm /srv/x\\\"}'\"" "/srv/x"
+  asks "$AWK shell pipe executes printed source" "ssh host \"$AWK 'BEGIN{print \\\"rm /srv/x\\\" | \\\"sh\\\"}'\"" "/srv/x"
+  passes "$AWK system search argument is data" "ssh host \"$AWK 'BEGIN{system(\\\"grep unlink /srv/log\\\")}'\""
+done
+asks "awk pipe with a trailing backslash does not hide the next delete" "$(cat <<'EOF'
+ssh host "awk 'BEGIN{print 1 | \"a\\\\\"}' /dev/null; shred /srv/x"
+EOF
+)" "shred" "/srv/x"
+asks "awk pipe with an apostrophe does not hide the next delete" "$(cat <<'EOF'
+ssh host.example "awk \"BEGIN{print 1 | \\\"echo it's\\\"}\"; git clean -fdx"
+EOF
+)" "git clean"
+passes "sed address pattern is data" "ssh host \"sed -n '/unlink/p' /var/log/app.log\""
+passes "sed substitution patterns are data" "ssh host \"sed 's/rm//; s/unlink /rmdir/' /var/log/app.log\""
+passes "sed replacement looking like a command is data" "ssh host \"sed 's#foo#rm /srv/x#' /var/log/app.log\""
+asks "sed e executes a command" "ssh host \"sed 'e rm /srv/x' /var/log/app.log\"" "/srv/x"
+asks "sed substitution e executes replacement" "ssh host \"sed 's#foo#rm /srv/x#e' /var/log/app.log\"" "/srv/x"
+passes "sed w only writes the named file" "ssh host \"sed 'w /srv/x' /var/log/app.log\""
+passes "sed addressed w only writes matching lines" "ssh host \"sed -n '/ERROR/w /tmp/errors.txt' /var/log/app.log\""
+passes "sed substitution w only writes the named file" "ssh host \"sed 's#foo#bar#w /tmp/errors.txt' /var/log/app.log\""
+asks "sed -n e still executes a deleting command" "ssh host \"sed -n 'e rm /srv/x' f\"" "/srv/x"
+
+# C. Data-taking tools and wrappers share command resolution with the backstop.
+for CMD in 'pytest -k unlink /srv/tests' 'py.test -k unlink /srv/tests' 'tox -e unlink /srv/tests' \
+           'nox -s unlink /srv/tests' 'go test -run unlink ./...' 'go run unlink /srv/tests' \
+           'go install unlink /srv/tests' 'cargo test unlink /srv/tests' 'npm test unlink /srv/tests' \
+           'npm run unlink /srv/tests' 'yarn test unlink /srv/tests' 'yarn run unlink /srv/tests' \
+           'pnpm test unlink /srv/tests' 'pnpm run unlink /srv/tests' 'make unlink /srv/tests' \
+           'rspec -e unlink /srv/tests' 'jest -t unlink /srv/tests' 'phpunit --filter unlink /srv/tests' \
+           'mvn test -Dtest=unlink /srv/tests' 'gradle test --tests unlink /srv/tests' 'ctest -R unlink /srv/tests'; do
+  passes "$CMD arguments are data" "ssh host '$CMD'"
+done
+for WRAPPER in 'uv run' 'uv --directory /srv run --with pytest' 'poetry run' \
+               'poetry -C /srv run' 'runuser -u deploy --' 'runuser --user=deploy --' \
+               'doas -u deploy' 'chroot /srv/jail'; do
+  passes "$WRAPPER resolves a search" "ssh host '$WRAPPER grep -n rm /srv/log'"
+  passes "$WRAPPER resolves a test runner" "ssh host '$WRAPPER pytest -k unlink /srv/tests'"
+  asks "$WRAPPER resolves a deleter" "ssh host '$WRAPPER rm /srv/x'" "/srv/x"
+done
+passes "poetry run pytest rm filter" "ssh host 'poetry run pytest -k rm tests'"
+passes "su -c search arguments are data" "ssh host \"su deploy -c 'grep -n rm /srv/log'\""
+asks "runuser -c payload deletes" "ssh host \"runuser -c 'rm /srv/x' deploy\"" "/srv/x"
+passes "nested ssh resolves a search" "ssh jump 'ssh internal grep -n rm /var/log/app.log'"
+passes "nested ssh resolves interpreter arguments" "ssh jump 'ssh internal node script.js unlink /srv/tests'"
+asks "nested ssh resolves a deleter" "ssh jump 'ssh internal rm /srv/x'" "/srv/x" "internal"
+
 # 7. Without python3: a crude ask instead of silence.
 mkdir -p "$T/nopy"
 for f in /bin/* /usr/bin/*; do case "${f##*/}" in python*) ;; *) ln -s "$f" "$T/nopy/${f##*/}" 2>/dev/null ;; esac; done
