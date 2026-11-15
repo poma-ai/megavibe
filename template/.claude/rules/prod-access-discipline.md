@@ -2,7 +2,8 @@
 
 Rules for touching a live production system — a Kubernetes cluster, a managed
 database, a running service. They apply whenever the target is not visibly a
-dev/test/staging environment.
+dev/test/staging environment. A staging copy that uses production data or
+production side-effect channels counts as production (see below).
 
 ## The command class that gets mistaken for a read
 
@@ -83,6 +84,78 @@ Two consequences worth holding:
   trigger will look unrelated to the breakage.
 - When something breaks shortly after a restart, the merged manifest PR is the
   first suspect, not the last.
+
+## A request to an application is whatever its handler does
+
+The `exec` trap again, over HTTP. A request to an application that runs against
+production data is a **write** until you have read the handler it reaches, for
+database writes, mail and queue inserts, payment calls, webhooks and other
+outbound requests. The URL, the page's name, the size of its output and the
+HTTP method prove nothing: a GET does whatever the code behind it does, and
+legacy pages act on load.
+
+On 2026-11-15 a "read-only" comparison of admin pages, run before and after a
+routing change, requested one page that queues a mail to every active customer
+on each plain GET. Six requests queued about 70,000 mails; about 9,300 were
+delivered before anyone looked. The page had been classified by its name and
+the size of its output. Its code was 71 lines.
+
+- Read the handler of every page you are about to request, not a sample. A
+  page you have not read is not requested.
+- Repeating a list of requests "to compare output" multiplies whatever each
+  handler does by the number of runs.
+
+## Staging wired to production data is production
+
+A staging copy protects the code and nothing else. If it loads the production
+config or database, it writes production tables and feeds the production
+side-effect channels: the mail queue, payment, webhooks, external APIs. "It
+runs from a staging directory" and "it listens on localhost" say where the code
+is, not what it touches.
+
+Before a run of that kind:
+
+- **List the side-effect channels** of the system: outbound mail and queue
+  tables, payment, webhooks, external APIs, scheduled jobs that pick up rows.
+- **Neutralise them for the test** where you can (a test database, a disabled
+  sender, a sink address). Where you cannot, tell the user before the run, not
+  after.
+- **Record their counts before the run and after every run.** A count that
+  moved and should not have stops the test at once. One look after the first
+  request is the difference between one stray mail and a mass mailing.
+
+That check is part of verification. Evidence that the change works is one half;
+evidence that the test itself changed nothing it should not is the other.
+
+## Checking production without loading it
+
+- Light statements only: indexed, bounded, a count or a limit. A heavy check
+  query can lock the thing it checks (one held a mail queue for two and a half
+  minutes while verifying that the queue was clean).
+- After anything slow, look at the process list, and cancel only your own
+  statement.
+- Never print raw statement text from a process list or a query log: it carries
+  personal data. Print ids, states and durations.
+
+## When you find harm you caused, still in progress
+
+Halting is the first step, not the response. In this order:
+
+1. **Stop it by the most reversible means.** Park, do not purge: move the
+   queued rows aside, disable the route, pause the sender. Do not destroy what
+   you will need to measure the damage or to put things back.
+2. **Measure exactly who and what is affected**, with numbers and how each was
+   established.
+3. **Prepare the remedy at once and bring it to the user ready to execute**:
+   the correction built and checked somewhere it cannot go out by itself, the
+   fix as a reviewed diff. A step that is destructive or reaches other people
+   still needs the user's word, and it should be waiting for that word, not
+   unstarted.
+4. **Then write the report.**
+
+Stopping, reporting and waiting for instructions leaves the user to design the
+remedy while the damage ages. The session that caused it knows the system state
+best in those minutes and owes the work.
 
 ## When you are blamed for an incident
 
