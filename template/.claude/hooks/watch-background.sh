@@ -106,6 +106,7 @@ if [ "$EVENT" = "PostToolUse" ]; then
       [ -n "$ID" ] || exit 0
       OUT=$(task_file "$ID")
       KIND=bash
+      CMDTXT=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
       DESC=$(printf '%s' "$INPUT" | jq -r '.tool_input.description // "background task"' 2>/dev/null | cut -c1-80)
       ;;
     Agent)
@@ -120,6 +121,60 @@ if [ "$EVENT" = "PostToolUse" ]; then
       ;;
     *) exit 0 ;;
   esac
+  # The id is pasted into generated shell text below: accept only the harness's own id shape.
+  case $ID in ''|*[!A-Za-z0-9_-]*) exit 0 ;; esac
+
+  # A Codex job is recognised by the COMMAND WORD of a segment, never by text anywhere in the
+  # line: a prompt, a search pattern or a flag value that mentions codex must not turn an ordinary
+  # task into one, nor hide a real one. The line is tokenised quote-aware (python3 shlex, as in
+  # block-dangerous-bash.sh) and split at && || ; | & ( ) (a subshell or { group is a segment of its own). `codex exec` (not --ephemeral, which writes
+  # no rollout), codex-review.sh, second-opinion.sh. Only codex-review.sh --as-reviewer without
+  # --strict / MEGAVIBE_CODEX_SCRATCH=0 runs in a codex-review-scratch.* dir, which narrows the
+  # search. Without python3, or on a line shlex cannot parse, nothing is a Codex job (the ordinary
+  # output-file heartbeat applies).
+  CODEXJOB=0; CSCRATCH=0
+  if [ "$KIND" = "bash" ] && [ -n "${CMDTXT:-}" ] && command -v python3 >/dev/null 2>&1; then
+    _cx=$(MV_CMD="$CMDTXT" python3 -I -c '
+import os, shlex
+try:
+    lx = shlex.shlex(os.environ["MV_CMD"], posix=False, punctuation_chars=";&|()")
+    lx.whitespace_split = True
+    toks = list(lx)
+except ValueError:
+    print("0 0"); raise SystemExit
+segs, cur = [], []
+for t in toks:
+    if t and set(t) <= set(";&|()"):
+        segs.append(cur); cur = []
+    else:
+        cur.append(t)
+segs.append(cur)
+job = scratch = 0
+for w in segs:
+    # posix=False keeps quotes on a quoted token, so a quoted "&&" or "--strict" is never an
+    # operator or a flag; only the command word itself is unquoted for comparison
+    i = 1 if w[:1] == ["{"] else 0
+    while i < len(w) and "=" in w[i] and not w[i].startswith("-") and (w[i][0].isalpha() or w[i][0] == "_"):
+        i += 1
+    env = w[:i]
+    if i < len(w) and os.path.basename(w[i].strip(chr(34) + chr(39))) in ("bash", "sh", "zsh", "command", "exec"):
+        i += 1
+    if i >= len(w):
+        continue
+    cmd, rest = os.path.basename(w[i].strip(chr(34) + chr(39))), w[i + 1:]
+    if cmd == "codex" and rest[:1] == ["exec"] and "--ephemeral" not in rest:
+        job = 1
+    elif cmd == "codex-review.sh":
+        job = 1
+        if "--as-reviewer" in rest and "--strict" not in rest and "MEGAVIBE_CODEX_SCRATCH=0" not in env and os.environ.get("MEGAVIBE_CODEX_SCRATCH") != "0":
+            scratch = 1
+    elif cmd == "second-opinion.sh":
+        job = 1
+print(job, scratch)
+' 2>/dev/null) || _cx="0 0"
+    CODEXJOB=${_cx%% *}; CSCRATCH=${_cx##* }
+    case $CODEXJOB$CSCRATCH in [01][01]) ;; *) CODEXJOB=0; CSCRATCH=0 ;; esac
+  fi
 
   # A subagent's calls carry an agent_id. It has no Monitor tool and its cache
   # expires after 5 minutes, so it gets the 170 s wait-slice rule (spinouts.md)
@@ -127,6 +182,7 @@ if [ "$EVENT" = "PostToolUse" ]; then
   AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
   if [ -n "$AGENT_ID" ]; then
     MSG="Background $KIND task $ID started${OUT:+. Output: $OUT}. Do not arm a Monitor (a subagent may not have one, and a long wait spends its 5 minute cache) and do not wait longer than 170 s in one tool call (your prompt cache expires after 5 minutes). Wait in slices: one Bash call with timeout 200000 that loops until the job's rc file is non-empty or SECONDS passes 170, then prints the rc, the log's byte count and its tail. Judge the log against what the job is (a build or test run that has not grown for two slices is hung, a server idling is healthy, repeating lines are a crashloop) and act on it. If the job has no rc file (or is an agent), check the output file's size and tail instead of an rc. If you would wait more than about 35 minutes in total, report the command, its log path and its rc path to the parent and stop."
+    [ "$CODEXJOB" = 1 ] && MSG="$MSG This is a Codex job: its log and rc file show start-up errors and the exit status, but its progress is in its rollout. In each slice also run ~/.megavibe/scripts/codex-progress.sh --path --since $((NOW - 120)) once to find the job's rollout (exit 3 lists several: pick yours), then ~/.megavibe/scripts/codex-progress.sh --file <rollout> --brief for idle seconds and its last message. Unchanged bytes are a reason to look, not proof of a hang."
     jq -nc --arg m "$MSG" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
     exit 0
   fi
@@ -137,11 +193,25 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # The loop is built by jq so the path is shell-quoted whatever it contains.
   # No path resolved → no loop: a loop on a placeholder reports 0 bytes
   # forever, which reads as a hang and gets a healthy task killed.
-  if [ -n "$OUT" ]; then
+  if [ -n "$OUT" ] || [ "$CODEXJOB" = 1 ]; then
     if [ "$KIND" = "bash" ]; then
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
         "f=" + ($p|@sh) + "; last=0; while sleep " + ($s|tostring) + "; do s=$(wc -c <\"$f\" 2>/dev/null | tr -d \" \" || echo 0); printf '"'"'bg " + $id + ": %s bytes (+%s) | %s\\n'"'"' \"$s\" \"$((s-last))\" \"$(tail -c 200 \"$f\" 2>/dev/null | tr '"'"'\\n'"'"' '"'"' '"'"')\"; last=$s; done"')
       READ="Each beat is the byte delta and the tail. Judge it against what the task IS: a build or test run at +0 for two beats is hung; a server idling at +0 is healthy; a file that keeps growing with the same lines repeating is a crashloop. Read the output file before acting, then act — kill it, fix it, or say it is fine."
+      # A Codex job's stdout is usually redirected, so its .output file stays empty and
+      # `-o FILE` holds only the final message: the real progress log is the rollout
+      # under ~/.codex/sessions. Watch that instead (codex-progress.sh --brief).
+      if [ "$CODEXJOB" = 1 ]; then
+        # No command parsing: the command text cannot tell which rollout is this job's
+        # (a quoted prompt may contain "-C" or "git -C"). The loop looks for rollouts that
+        # started shortly before this hook ran, pins one only when exactly one exists, and
+        # says "ambiguous" otherwise; a review run is narrowed to the scratch-dir glob.
+        CSEL=""
+        [ "$CSCRATCH" = 1 ] && CSEL="--cwd '*/codex-review-scratch.*'"
+        SINCE=$((NOW - 120))
+        LOOP="P=~/.megavibe/scripts/codex-progress.sh; F=; last=0; while sleep $BEAT_SECS; do if [ -z \"\$F\" ]; then F=\$(\"\$P\" --path $CSEL --since $SINCE 2>&1) || { printf 'codex $ID: %s\\n' \"\$(printf %s \"\$F\" | head -c 300 | tr '\\n' ' ')\"; F=; continue; }; fi; b=\$(wc -c <\"\$F\" | tr -d ' '); printf 'codex $ID: +%s bytes | %s\\n' \"\$((b-last))\" \"\$(\"\$P\" --file \"\$F\" --brief | cut -c1-300)\"; last=\$b; done"
+        READ="This is a Codex job: its Bash .output file is empty when stdout is redirected and -o FILE holds only the final message, so this heartbeat reads the job's rollout under ~/.codex/sessions through codex-progress.sh (the first beats may say 'no matching rollout yet'). It pins one rollout; if it says ambiguous (several Codex jobs started together), run ~/.megavibe/scripts/codex-progress.sh --path $CSEL --since $SINCE yourself, pick the job's file, and re-arm with --file. +0 bytes is a reason to look, not proof of a hang: Codex can reason for minutes without writing an event. Read the idle seconds and the last message, check the process is alive (ps), and keep the job unless it is idle past about 10 minutes or its process is gone. The job's own log and rc file still carry start-up errors and the exit status."
+      fi
     else
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
         "f=" + ($p|@sh) + "; last=0; while sleep " + ($s|tostring) + "; do n=$(wc -l <\"$f\" 2>/dev/null | tr -d \" \" || echo 0); t=$(tail -1 \"$f\" 2>/dev/null | jq -r '"'"'[.message.content[]? | select(.type==\"tool_use\") | .name] | join(\",\")'"'"' 2>/dev/null); printf '"'"'agent " + $id + ": %s entries (+%s) | last tools: %s\\n'"'"' \"$n\" \"$((n-last))\" \"${t:-none}\"; last=$n; done"')
