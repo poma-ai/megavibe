@@ -6,6 +6,7 @@
 # what the operating system said. The fake logs into its own scratch dir (the only place it may
 # write), which the tests read through --keep-scratch.
 set -u
+export MEGAVIBE_AMASS_GATE=0   # these tests exercise the worker, not the sweep gate (tests/amass-gate.test.sh)
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 CR="$REPO/scripts/claude-review.sh"
 T=$(mktemp -d "${TMPDIR:-/tmp}/claude-review-test.XXXXXX") || exit 2
