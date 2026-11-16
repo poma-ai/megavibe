@@ -78,4 +78,13 @@ o=$(hook 'codex exec "Explain the --ephemeral option"'); [[ "$o" == *"codex-prog
 o=$(hook 'bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --strict --prompt x'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "--strict review is not narrowed to scratch dirs: $o"
 o=$(hook "printf '%s\\n' 'codex exec is documented here'"); [[ "$o" != *"codex-progress"* ]] && ok || bad "printing the text codex exec is not a Codex job: $o"
 o=$(hook 'codex exec --ephemeral go'); [[ "$o" != *"codex-progress"* ]] && ok || bad "a real --ephemeral flag still excludes"
+o=$(hook 'echo "x; codex exec y"'); [[ "$o" != *"codex-progress"* ]] && ok || bad "a separator inside quotes does not start a Codex segment: $o"
+o=$(hook 'bash codex-review.sh --prompt "review it" --as-reviewer --strict'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "--strict after a quoted value still counts: $o"
+o=$(hook 'codex exec --model "gpt x" --ephemeral go'); [[ "$o" != *"codex-progress"* ]] && ok || bad "--ephemeral after a quoted value still excludes: $o"
+o=$(hook "rg '; codex exec' notes.md"); [[ "$o" != *"codex-progress"* ]] && ok || bad "rg for quoted '; codex exec' is not a Codex job: $o"
+o=$(hook 'bash codex-review.sh --as-reviewer --no-amass "input over 150 KB" --strict --prompt x'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "--strict after a quoted --no-amass reason is seen: $o"
+o=$(hook "echo 'a | codex-review.sh --as-reviewer'"); [[ "$o" != *"codex-progress"* ]] && ok || bad "a quoted pipe into codex-review.sh is prose: $o"
+o=$(hook '( codex exec -C /work/project "do work" ) > job.log 2>&1; echo $? > job.rc'); [[ "$o" == *"codex-progress.sh"* ]] && ok || bad "a Codex job in a subshell is recognised: $o"
+o=$(hook '{ codex exec go; } > job.log'); [[ "$o" == *"codex-progress.sh"* ]] && ok || bad "a Codex job in a { group } is recognised: $o"
+o=$(MEGAVIBE_CODEX_SCRATCH=0 hook 'bash scripts/codex-review.sh --as-reviewer --prompt x'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "an inherited MEGAVIBE_CODEX_SCRATCH=0 is honoured: $o"
 echo "codex-progress tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

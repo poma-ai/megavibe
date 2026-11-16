@@ -81,6 +81,8 @@ A `while true; do <cmd>; sleep N; done` against an external API (kubectl, gcloud
 - **`sleep ≥ 30s`** for cloud API polls. Per-second polls are how a forgotten watchdog generates 1.2M log files in 14 days.
 - **Run in a named tmux session**, not disowned. So when auth eventually does break, the user can find and kill it.
 
+**Before relaunching a job that looks failed, confirm it stopped.** A status file left by an earlier attempt (an rc file, a log, an empty `.output`) proves nothing about the run you are looking at; check the process (`ps`, the harness's task list) first. Relaunching a job that is still running gives two copies writing the same outputs (it doubled a two-reader review round on 2026-11-16).
+
 ## Tell the user where it lives
 
 When you start a long-running process, your final report must include:

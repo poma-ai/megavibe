@@ -124,28 +124,54 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # The id is pasted into generated shell text below: accept only the harness's own id shape.
   case $ID in ''|*[!A-Za-z0-9_-]*) exit 0 ;; esac
 
-  # A Codex job is recognised by the COMMAND WORD of a segment (split on && || ; | &), never by
-  # text anywhere in the line: a prompt, a file name or a flag value that mentions codex must not
-  # turn an ordinary task into one, nor hide a real one. `codex exec` (not --ephemeral, which
-  # writes no rollout), codex-review.sh, second-opinion.sh. Only codex-review.sh --as-reviewer is
-  # known to run in a codex-review-scratch.* directory, which narrows the rollout search.
+  # A Codex job is recognised by the COMMAND WORD of a segment, never by text anywhere in the
+  # line: a prompt, a search pattern or a flag value that mentions codex must not turn an ordinary
+  # task into one, nor hide a real one. The line is tokenised quote-aware (python3 shlex, as in
+  # block-dangerous-bash.sh) and split at && || ; | & ( ) (a subshell or { group is a segment of its own). `codex exec` (not --ephemeral, which writes
+  # no rollout), codex-review.sh, second-opinion.sh. Only codex-review.sh --as-reviewer without
+  # --strict / MEGAVIBE_CODEX_SCRATCH=0 runs in a codex-review-scratch.* dir, which narrows the
+  # search. Without python3, or on a line shlex cannot parse, nothing is a Codex job (the ordinary
+  # output-file heartbeat applies).
   CODEXJOB=0; CSCRATCH=0
-  if [ "$KIND" = "bash" ] && [ -n "${CMDTXT:-}" ]; then
-    while IFS= read -r _seg; do
-      set -f; read -r -a _w <<< "$_seg"; set +f
-      _i=0
-      while [ "$_i" -lt "${#_w[@]}" ] && case ${_w[$_i]} in [A-Za-z_]*=*) true ;; *) false ;; esac; do _i=$((_i + 1)); done
-      case ${_w[$_i]:-} in bash|sh|zsh|*/bash|*/sh|*/zsh|command|exec) _i=$((_i + 1)) ;; esac
-      _cmd=${_w[$_i]:-}; _rest=" "
-      # flags only up to the first quoted word: prompt prose must not decide anything
-      for _x in "${_w[@]:$((_i + 1))}"; do case $_x in \"*|\'*) break ;; esac; _rest="$_rest$_x "; done
-      case ${_cmd##*/} in
-        codex) [ "${_w[$((_i + 1))]:-}" = exec ] && case $_rest in *" --ephemeral "*) ;; *) CODEXJOB=1 ;; esac ;;
-        codex-review.sh) CODEXJOB=1
-          case $_rest in *" --strict "*) ;; *" --as-reviewer "*) case $_seg in *MEGAVIBE_CODEX_SCRATCH=0*) ;; *) CSCRATCH=1 ;; esac ;; esac ;;
-        second-opinion.sh) CODEXJOB=1 ;;
-      esac
-    done < <(printf '%s\n' "$CMDTXT" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
+  if [ "$KIND" = "bash" ] && [ -n "${CMDTXT:-}" ] && command -v python3 >/dev/null 2>&1; then
+    _cx=$(MV_CMD="$CMDTXT" python3 -I -c '
+import os, shlex
+try:
+    lx = shlex.shlex(os.environ["MV_CMD"], posix=True, punctuation_chars=";&|()")
+    lx.whitespace_split = True
+    toks = list(lx)
+except ValueError:
+    print("0 0"); raise SystemExit
+segs, cur = [], []
+for t in toks:
+    if t and set(t) <= set(";&|()"):
+        segs.append(cur); cur = []
+    else:
+        cur.append(t)
+segs.append(cur)
+job = scratch = 0
+for w in segs:
+    i = 1 if w[:1] == ["{"] else 0
+    while i < len(w) and "=" in w[i] and not w[i].startswith("-") and (w[i][0].isalpha() or w[i][0] == "_"):
+        i += 1
+    env = w[:i]
+    if i < len(w) and os.path.basename(w[i]) in ("bash", "sh", "zsh", "command", "exec"):
+        i += 1
+    if i >= len(w):
+        continue
+    cmd, rest = os.path.basename(w[i]), w[i + 1:]
+    if cmd == "codex" and rest[:1] == ["exec"] and "--ephemeral" not in rest:
+        job = 1
+    elif cmd == "codex-review.sh":
+        job = 1
+        if "--as-reviewer" in rest and "--strict" not in rest and "MEGAVIBE_CODEX_SCRATCH=0" not in env and os.environ.get("MEGAVIBE_CODEX_SCRATCH") != "0":
+            scratch = 1
+    elif cmd == "second-opinion.sh":
+        job = 1
+print(job, scratch)
+' 2>/dev/null) || _cx="0 0"
+    CODEXJOB=${_cx%% *}; CSCRATCH=${_cx##* }
+    case $CODEXJOB$CSCRATCH in [01][01]) ;; *) CODEXJOB=0; CSCRATCH=0 ;; esac
   fi
 
   # A subagent's calls carry an agent_id. It has no Monitor tool and its cache
