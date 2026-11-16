@@ -43,6 +43,15 @@ w=$("$G" waive "$(printf 'bad\033[31mreason')" 2>&1 >/dev/null); [[ "$w" != *$'\
 reset
 # the review scripts: refused before any backend runs, waiver accepted for that call, non-reviewer untouched
 mkdir -p "$T/bin"; printf '#!/bin/bash\necho "stub codex $*"; exit 0\n' > "$T/bin/codex"; chmod +x "$T/bin/codex"
+# a fake claude for claude-review.sh: reports a claude.ai login, answers nothing else (no login or
+# sandbox needed on the test machine); --tools none keeps the seatbelt out of these checks
+cat > "$T/bin/fake-claude" <<'FAKE'
+#!/bin/bash
+case "$*" in *"auth status"*) echo '{"loggedIn":true,"authMethod":"claude.ai"}' ;; esac
+exit 0
+FAKE
+chmod +x "$T/bin/fake-claude"
+export CLAUDE_REVIEW_CLAUDE="$T/bin/fake-claude"
 out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --prompt x 2>&1); rc=$?
 [ $rc -eq 6 ] && [[ "$out" == *"no amass sweep recorded"* ]] && ok || bad "codex-review --as-reviewer refused (rc=$rc): $out"
 out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --no-amass "hotfix, reviewed after the ship" --prompt x 2>&1); rc=$?
@@ -54,7 +63,7 @@ out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --n
 [ $rc -eq 2 ] && ok || bad "--no-amass cannot swallow the next option (codex, rc=$rc)"
 out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --no-amass 2>&1); rc=$?
 [ $rc -eq 2 ] && ok || bad "--no-amass without a value (claude, rc=$rc)"
-out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --prompt x 2>&1); rc=$?
+out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --prompt x 2>&1); rc=$?
 [ $rc -eq 6 ] && ok || bad "claude-review --as-reviewer refused (rc=$rc): $out"
 reset
 # the gate comes after the scripts' own validation: usage errors keep their exit codes
@@ -68,7 +77,7 @@ out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools read --model h
 [ $rc -eq 2 ] && ok || bad "an oversized request keeps exit 2 (rc=$rc): $out"
 # an inherited CDPATH must not make the gate look absent
 out=$(CDPATH=. PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates codex-review (rc=$rc): $out"
-out=$(CDPATH=. bash "$REPO/scripts/claude-review.sh" --as-reviewer --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates claude-review (rc=$rc): $out"
-out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --no-amass "prose only" --prompt x 2>&1); rc=$?
+out=$(CDPATH=. bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates claude-review (rc=$rc): $out"
+out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --no-amass "prose only" --prompt x 2>&1); rc=$?
 grep -q '"cmd":"waive"' "$AMASS_LEDGER" && ok || bad "claude-review --no-amass records its waiver (rc=$rc): $out"
 echo "amass-gate tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
