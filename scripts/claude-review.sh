@@ -378,16 +378,6 @@ if [ "$TOOLS" = exec ]; then
   [ -n "$HOOKS" ] || die "--tools exec needs both block-dangerous-bash.sh and block-permission-hooks.sh, executable, in one directory (looked in $MV_HOME/template and next to this script); refusing to run Bash unguarded"
 fi
 
-# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
-# After every argument and prerequisite check so those keep their own exit codes; before the
-# scratch directory exists, so a refusal leaves nothing behind.
-if [ "$AS_REVIEWER" = 1 ]; then
-  if [ ! -f "$SELF_DIR/amass-gate.sh" ]; then
-    echo "$PROG: warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
-  elif [ -n "$NO_AMASS" ]; then bash "$SELF_DIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
-  else bash "$SELF_DIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
-fi
-
 SC=''; CTL=''; TOOLDIR=''; SUP_PID=''
 cleanup() {
   if [ -n "$CTL" ] && [ -f "$CTL/descendants" ]; then
@@ -525,6 +515,16 @@ M=$(jq -r 'select(.loggedIn == true) | .authMethod // empty' "$CTL/auth.json" 2>
 } > "$CTL/request.txt"
 KB=$(( ($(wc -c < "$CTL/request.txt") + 1023) / 1024 ))
 [ "$KB" -le "$MAXKB" ] || die "the request is $KB KB, above --max-input-kb $MAXKB"
+
+# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
+# After every argument, prerequisite and input-size check so those keep their own exit codes;
+# the cleanup trap is installed by now, so a refusal leaves nothing behind.
+if [ "$AS_REVIEWER" = 1 ]; then
+  if [ ! -f "$SELF_DIR/amass-gate.sh" ]; then
+    echo "$PROG: warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
+  elif [ -n "$NO_AMASS" ]; then bash "$SELF_DIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
+  else bash "$SELF_DIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
+fi
 
 case $TOOLS in
   exec) TL="Read,Grep,Glob,Bash,Write"; SANDBOX_NOTE="seatbelt: writes only in the scratch dir" ;;

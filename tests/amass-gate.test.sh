@@ -62,6 +62,10 @@ out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --prompt x --tools bog
 out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --prompt x --max-input-kb oops 2>&1); rc=$?; [ $rc -eq 2 ] && ok || bad "claude --max-input-kb oops keeps exit 2 (rc=$rc)"
 out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer 2>&1); rc=$?; [ $rc -eq 2 ] && ok || bad "codex without a prompt keeps exit 2 (rc=$rc)"
 out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --prompt-file "$T/absent.md" 2>&1); rc=$?; [ $rc -eq 1 ] && ok || bad "codex with a missing prompt file keeps exit 1 (rc=$rc)"
+# an oversized request keeps its own exit 2 (size is checked before the gate)
+head -c 160000 /dev/zero | tr '\0' 'a' > "$T/large.txt"
+out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools read --model haiku --prompt review "$T/large.txt" 2>&1); rc=$?
+[ $rc -eq 2 ] && ok || bad "an oversized request keeps exit 2 (rc=$rc): $out"
 # an inherited CDPATH must not make the gate look absent
 out=$(CDPATH=. PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates codex-review (rc=$rc): $out"
 out=$(CDPATH=. bash "$REPO/scripts/claude-review.sh" --as-reviewer --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates claude-review (rc=$rc): $out"
