@@ -66,4 +66,16 @@ o=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"ag1"
 "$S" --days 0 >/dev/null 2>&1; [ $? -eq 2 ] && ok || bad "--days 0 is a usage error"
 o=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"run_in_background":true,"command":"codex exec go","description":"d"},"tool_response":{"backgroundTaskId":"x'"'"';touch pwn;'"'"'"}}' | (cd "$T/p" && HOME="$T/h" CLAUDE_PROJECT_DIR="$T/p" bash "$REPO/template/.claude/hooks/watch-background.sh") 2>&1)
 [ -z "$o" ] && ok || bad "a task id with shell metacharacters gets no generated loop: $o"
+# Codex is recognised by the command word of a segment, never by text elsewhere
+o=$(hook 'codex exec -C /work/main "Fix scripts/codex-review.sh"'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "a prompt naming codex-review.sh does not narrow to review dirs: $o"
+o=$(hook "rg 'codex exec' README.md"); [[ "$o" != *"codex-progress"* ]] && ok || bad "a search for the text codex exec is not a Codex job: $o"
+o=$(hook 'bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --no-amass "input over 150 KB" --prompt review README.md'); [[ "$o" == *"codex-review-scratch"* ]] && ok || bad "a --no-amass review is still a Codex job: $o"
+o=$(hook 'codex exec "Fix amass support"'); [[ "$o" == *"codex-progress.sh"* ]] && ok || bad "a prompt mentioning amass keeps the rollout heartbeat: $o"
+o=$(hook 'cd /repo && /bin/bash scripts/codex-review.sh --as-reviewer --prompt-file b.txt > log 2>&1; echo $? > rc'); [[ "$o" == *"codex-review-scratch"* ]] && ok || bad "cd ... && bash codex-review.sh --as-reviewer is a review job: $o"
+o=$(hook 'FOO=1 codex exec -s workspace-write -C /w go'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "env-prefixed codex exec is a Codex job, not a review: $o"
+o=$(hook 'bash scripts/codex-review.sh --prompt x'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "a non-reviewer codex-review.sh call is not narrowed: $o"
+o=$(hook 'codex exec "Explain the --ephemeral option"'); [[ "$o" == *"codex-progress.sh"* ]] && ok || bad "--ephemeral inside a quoted prompt does not count: $o"
+o=$(hook 'bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --strict --prompt x'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "--strict review is not narrowed to scratch dirs: $o"
+o=$(hook "printf '%s\\n' 'codex exec is documented here'"); [[ "$o" != *"codex-progress"* ]] && ok || bad "printing the text codex exec is not a Codex job: $o"
+o=$(hook 'codex exec --ephemeral go'); [[ "$o" != *"codex-progress"* ]] && ok || bad "a real --ephemeral flag still excludes"
 echo "codex-progress tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

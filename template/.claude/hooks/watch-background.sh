@@ -124,8 +124,29 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # The id is pasted into generated shell text below: accept only the harness's own id shape.
   case $ID in ''|*[!A-Za-z0-9_-]*) exit 0 ;; esac
 
-  CODEXJOB=0
-  if [ "$KIND" = "bash" ] && ! printf '%s' "${CMDTXT:-}" | grep -Eq -e '--ephemeral|amass' && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi
+  # A Codex job is recognised by the COMMAND WORD of a segment (split on && || ; | &), never by
+  # text anywhere in the line: a prompt, a file name or a flag value that mentions codex must not
+  # turn an ordinary task into one, nor hide a real one. `codex exec` (not --ephemeral, which
+  # writes no rollout), codex-review.sh, second-opinion.sh. Only codex-review.sh --as-reviewer is
+  # known to run in a codex-review-scratch.* directory, which narrows the rollout search.
+  CODEXJOB=0; CSCRATCH=0
+  if [ "$KIND" = "bash" ] && [ -n "${CMDTXT:-}" ]; then
+    while IFS= read -r _seg; do
+      set -f; read -r -a _w <<< "$_seg"; set +f
+      _i=0
+      while [ "$_i" -lt "${#_w[@]}" ] && case ${_w[$_i]} in [A-Za-z_]*=*) true ;; *) false ;; esac; do _i=$((_i + 1)); done
+      case ${_w[$_i]:-} in bash|sh|zsh|*/bash|*/sh|*/zsh|command|exec) _i=$((_i + 1)) ;; esac
+      _cmd=${_w[$_i]:-}; _rest=" "
+      # flags only up to the first quoted word: prompt prose must not decide anything
+      for _x in "${_w[@]:$((_i + 1))}"; do case $_x in \"*|\'*) break ;; esac; _rest="$_rest$_x "; done
+      case ${_cmd##*/} in
+        codex) [ "${_w[$((_i + 1))]:-}" = exec ] && case $_rest in *" --ephemeral "*) ;; *) CODEXJOB=1 ;; esac ;;
+        codex-review.sh) CODEXJOB=1
+          case $_rest in *" --strict "*) ;; *" --as-reviewer "*) case $_seg in *MEGAVIBE_CODEX_SCRATCH=0*) ;; *) CSCRATCH=1 ;; esac ;; esac ;;
+        second-opinion.sh) CODEXJOB=1 ;;
+      esac
+    done < <(printf '%s\n' "$CMDTXT" | awk '{ gsub(/&&|\|\||[;|&]/, "\n"); print }')
+  fi
 
   # A subagent's calls carry an agent_id. It has no Monitor tool and its cache
   # expires after 5 minutes, so it gets the 170 s wait-slice rule (spinouts.md)
@@ -158,7 +179,7 @@ if [ "$EVENT" = "PostToolUse" ]; then
         # started shortly before this hook ran, pins one only when exactly one exists, and
         # says "ambiguous" otherwise; a review run is narrowed to the scratch-dir glob.
         CSEL=""
-        if printf '%s' "$CMDTXT" | grep -Eq 'codex-review\.sh|second-opinion\.sh'; then CSEL="--cwd '*/codex-review-scratch.*'"; fi
+        [ "$CSCRATCH" = 1 ] && CSEL="--cwd '*/codex-review-scratch.*'"
         SINCE=$((NOW - 120))
         LOOP="P=~/.megavibe/scripts/codex-progress.sh; F=; last=0; while sleep $BEAT_SECS; do if [ -z \"\$F\" ]; then F=\$(\"\$P\" --path $CSEL --since $SINCE 2>&1) || { printf 'codex $ID: %s\\n' \"\$(printf %s \"\$F\" | head -c 300 | tr '\\n' ' ')\"; F=; continue; }; fi; b=\$(wc -c <\"\$F\" | tr -d ' '); printf 'codex $ID: +%s bytes | %s\\n' \"\$((b-last))\" \"\$(\"\$P\" --file \"\$F\" --brief | cut -c1-300)\"; last=\$b; done"
         READ="This is a Codex job: its Bash .output file is empty when stdout is redirected and -o FILE holds only the final message, so this heartbeat reads the job's rollout under ~/.codex/sessions through codex-progress.sh (the first beats may say 'no matching rollout yet'). It pins one rollout; if it says ambiguous (several Codex jobs started together), run ~/.megavibe/scripts/codex-progress.sh --path $CSEL --since $SINCE yourself, pick the job's file, and re-arm with --file. +0 bytes is a reason to look, not proof of a hang: Codex can reason for minutes without writing an event. Read the idle seconds and the last message, check the process is alive (ps), and keep the job unless it is idle past about 10 minutes or its process is gone. The job's own log and rc file still carry start-up errors and the exit status."
