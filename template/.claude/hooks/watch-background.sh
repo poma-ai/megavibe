@@ -122,12 +122,16 @@ if [ "$EVENT" = "PostToolUse" ]; then
     *) exit 0 ;;
   esac
 
+  CODEXJOB=0
+  if [ "$KIND" = "bash" ] && ! printf '%s' "${CMDTXT:-}" | grep -Eq -e '--ephemeral|amass' && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi
+
   # A subagent's calls carry an agent_id. It has no Monitor tool and its cache
   # expires after 5 minutes, so it gets the 170 s wait-slice rule (spinouts.md)
   # instead of a heartbeat, and its task is not recorded for the parent's Stop check.
   AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
   if [ -n "$AGENT_ID" ]; then
     MSG="Background $KIND task $ID started${OUT:+. Output: $OUT}. Do not arm a Monitor (a subagent may not have one, and a long wait spends its 5 minute cache) and do not wait longer than 170 s in one tool call (your prompt cache expires after 5 minutes). Wait in slices: one Bash call with timeout 200000 that loops until the job's rc file is non-empty or SECONDS passes 170, then prints the rc, the log's byte count and its tail. Judge the log against what the job is (a build or test run that has not grown for two slices is hung, a server idling is healthy, repeating lines are a crashloop) and act on it. If the job has no rc file (or is an agent), check the output file's size and tail instead of an rc. If you would wait more than about 35 minutes in total, report the command, its log path and its rc path to the parent and stop."
+    [ "$CODEXJOB" = 1 ] && MSG="$MSG This is a Codex job: its log and rc file show start-up errors and the exit status, but its progress is in its rollout. In each slice also run ~/.megavibe/scripts/codex-progress.sh --path --since $((NOW - 120)) once to find the job's rollout (exit 3 lists several: pick yours), then ~/.megavibe/scripts/codex-progress.sh --file <rollout> --brief for idle seconds and its last message. Unchanged bytes are a reason to look, not proof of a hang."
     jq -nc --arg m "$MSG" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $m}}'
     exit 0
   fi
@@ -138,8 +142,6 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # The loop is built by jq so the path is shell-quoted whatever it contains.
   # No path resolved → no loop: a loop on a placeholder reports 0 bytes
   # forever, which reads as a hang and gets a healthy task killed.
-  CODEXJOB=0
-  if [ "$KIND" = "bash" ] && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi
   if [ -n "$OUT" ] || [ "$CODEXJOB" = 1 ]; then
     if [ "$KIND" = "bash" ]; then
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
@@ -149,16 +151,15 @@ if [ "$EVENT" = "PostToolUse" ]; then
       # `-o FILE` holds only the final message: the real progress log is the rollout
       # under ~/.codex/sessions. Watch that instead (codex-progress.sh --brief).
       if [ "$CODEXJOB" = 1 ]; then
-        # -C is taken only when it is a plain path token (no quotes, redirections or
-        # spaces to misparse); anything else falls back to the scratch-dir glob of a
-        # review run, or to no selector. The loop pins ONE rollout on its first success
-        # and says "ambiguous" instead of choosing when several match.
-        CDIR=$(printf '%s' "$CMDTXT" | sed -n 's/.*[[:space:]]-C[[:space:]]\{1,\}\([A-Za-z0-9_.\/+-]\{1,\}\)\([[:space:]]\{1,\}.*\)\{0,1\}$/\1/p' | head -1)
+        # No command parsing: the command text cannot tell which rollout is this job's
+        # (a quoted prompt may contain "-C" or "git -C"). The loop looks for rollouts that
+        # started shortly before this hook ran, pins one only when exactly one exists, and
+        # says "ambiguous" otherwise; a review run is narrowed to the scratch-dir glob.
         CSEL=""
-        if [ -n "$CDIR" ]; then CSEL="--cwd $(jq -nr --arg d "$CDIR" '$d|@sh')"
-        elif printf '%s' "$CMDTXT" | grep -Eq 'codex-review\.sh|second-opinion\.sh'; then CSEL="--cwd '*/codex-review-scratch.*'"; fi
-        LOOP="P=~/.megavibe/scripts/codex-progress.sh; F=; last=0; while sleep $BEAT_SECS; do if [ -z \"\$F\" ]; then F=\$(\$P --path $CSEL --since $NOW 2>&1) || { printf 'codex $ID: %s\\n' \"\$(printf %s \"\$F\" | head -c 300 | tr '\\n' ' ')\"; F=; continue; }; fi; b=\$(wc -c <\"\$F\" | tr -d ' '); printf 'codex $ID: +%s bytes | %s\\n' \"\$((b-last))\" \"\$(\$P --file \"\$F\" --brief | cut -c1-300)\"; last=\$b; done"
-        READ="This is a Codex job: its Bash .output file is empty when stdout is redirected and -o FILE holds only the final message, so this heartbeat reads the job's rollout under ~/.codex/sessions through codex-progress.sh (the first beats may say 'no matching rollout yet'). It pins one rollout; if it says ambiguous (several Codex jobs started together), run ~/.megavibe/scripts/codex-progress.sh --path ${CSEL:---latest} --since $NOW yourself, pick the job's file, and re-arm with --file. +0 bytes is a reason to look, not proof of a hang: Codex can reason for minutes without writing an event. Read the idle seconds and the last message, check the process is alive (ps), and keep the job unless it is idle past about 10 minutes or its process is gone. The job's own log and rc file still carry start-up errors and the exit status."
+        if printf '%s' "$CMDTXT" | grep -Eq 'codex-review\.sh|second-opinion\.sh'; then CSEL="--cwd '*/codex-review-scratch.*'"; fi
+        SINCE=$((NOW - 120))
+        LOOP="P=~/.megavibe/scripts/codex-progress.sh; F=; last=0; while sleep $BEAT_SECS; do if [ -z \"\$F\" ]; then F=\$(\"\$P\" --path $CSEL --since $SINCE 2>&1) || { printf 'codex $ID: %s\\n' \"\$(printf %s \"\$F\" | head -c 300 | tr '\\n' ' ')\"; F=; continue; }; fi; b=\$(wc -c <\"\$F\" | tr -d ' '); printf 'codex $ID: +%s bytes | %s\\n' \"\$((b-last))\" \"\$(\"\$P\" --file \"\$F\" --brief | cut -c1-300)\"; last=\$b; done"
+        READ="This is a Codex job: its Bash .output file is empty when stdout is redirected and -o FILE holds only the final message, so this heartbeat reads the job's rollout under ~/.codex/sessions through codex-progress.sh (the first beats may say 'no matching rollout yet'). It pins one rollout; if it says ambiguous (several Codex jobs started together), run ~/.megavibe/scripts/codex-progress.sh --path $CSEL --since $SINCE yourself, pick the job's file, and re-arm with --file. +0 bytes is a reason to look, not proof of a hang: Codex can reason for minutes without writing an event. Read the idle seconds and the last message, check the process is alive (ps), and keep the job unless it is idle past about 10 minutes or its process is gone. The job's own log and rc file still carry start-up errors and the exit status."
       fi
     else
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '

@@ -45,12 +45,22 @@ mk "$D/rollout-q.jsonl" /work/quote "Remaining 08 bytes"; o=$("$S" --file "$D/ro
 mkdir -p "$T/p/.agent"
 hook() { printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"run_in_background":true,"command":%s,"description":"d"},"tool_response":{"backgroundTaskId":"bt1"}}' "$(printf '%s' "$1" | jq -Rs .)" \
   | (cd "$T/p" && HOME="$T/h" CLAUDE_PROJECT_DIR="$T/p" bash "$REPO/template/.claude/hooks/watch-background.sh") | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null; }
-o=$(hook 'codex exec -C /work/alpha go'); [[ "$o" == *"--path --cwd '/work/alpha' --since"* && "$o" == *'--file "$F" --brief'* ]] && ok || bad "hook pins by -C dir: $o"
+o=$(hook 'codex exec -C /work/alpha go'); [[ "$o" == *"--path  --since"* && "$o" == *'--file "$F" --brief'* && "$o" != *"/work/alpha"* ]] && ok || bad "hook never parses -C, pins by --path: $o"
+o=$(hook 'codex exec -C /work/alpha "Check git -C /work/beta status"'); [[ "$o" != *"/work/beta"* ]] && ok || bad "a -C inside prompt text selects nothing: $o"
 o=$(hook 'codex exec -C /work/alpha>job.log fixture'); [[ "$o" != *"job.log"* ]] && ok || bad "redirection not injected into the loop: $o"
 o=$(hook 'bash ~/.megavibe/scripts/codex-review.sh --as-reviewer x'); [[ "$o" == *"codex-review-scratch"* ]] && ok || bad "review runs use the scratch glob: $o"
-o=$(hook 'amass.sh run --provider claude x'); [[ "$o" != *"codex-progress"* ]] && ok || bad "amass is not a Codex rollout job"
+o=$(hook 'amass.sh run --provider codex x'); [[ "$o" != *"codex-progress"* ]] && ok || bad "amass is not a rollout job"
+o=$(hook 'codex exec --ephemeral -C /work/alpha go'); [[ "$o" != *"codex-progress"* ]] && ok || bad "an ephemeral run writes no rollout"
 o=$(hook 'make test'); [[ "$o" != *"codex-progress"* ]] && ok || bad "non-codex command keeps the output heartbeat"
-# the generated loop runs one pinned beat (script from the repo, sleep replaced, since 0)
+# the generated loop: one match is pinned, two are reported as ambiguous (never one picked)
 loop=$(hook 'codex exec -C /work/alpha go' | sed -n '/^P=/p' | sed "s#~/.megavibe/scripts/codex-progress.sh#$S#; s/while sleep [0-9]*; do/for _ in 1; do/; s/--since [0-9]*/--since 0/")
-o=$(bash -c "$loop" 2>&1); [[ "$o" == *"codex bt1: +"*"bytes | idle"* ]] && ok || bad "loop runs one pinned beat: $o"
+o=$(bash -c "$loop" 2>&1); [[ "$o" == *"codex bt1: codex-progress: ambiguous"* ]] && ok || bad "several fresh rollouts are reported ambiguous: $o"
+E="$T/one"; mkdir -p "$E/sessions/$(date +%Y/%m/%d)"; mk "$E/sessions/$(date +%Y/%m/%d)/rollout-only.jsonl" /work/alpha solo
+o=$(CODEX_HOME="$E" bash -c "$loop" 2>&1); [[ "$o" == *"codex bt1: +"*"bytes | idle"*"found solo bug"* ]] && ok || bad "a single rollout is pinned: $o"
+# a helper path with spaces (HOME) still runs; a subagent's Codex task gets rollout advice
+SP="$T/First Last/.megavibe/scripts"; mkdir -p "$SP"; cp "$S" "$SP/codex-progress.sh"
+loop2=$(hook 'codex exec -C /work/alpha go' | sed -n '/^P=/p' | sed "s#~/.megavibe/scripts/codex-progress.sh#'$SP/codex-progress.sh'#; s/while sleep [0-9]*; do/for _ in 1; do/; s/--since [0-9]*/--since 0/")
+o=$(CODEX_HOME="$E" bash -c "$loop2" 2>&1); [[ "$o" == *"found solo bug"* ]] && ok || bad "helper path with spaces: $o"
+o=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"ag1","tool_input":{"run_in_background":true,"command":"codex exec go","description":"d"},"tool_response":{"backgroundTaskId":"bt2"}}' | (cd "$T/p" && HOME="$T/h" CLAUDE_PROJECT_DIR="$T/p" bash "$REPO/template/.claude/hooks/watch-background.sh") | jq -r '.hookSpecificOutput.additionalContext')
+[[ "$o" == *"codex-progress.sh --path --since"* ]] && ok || bad "subagent Codex advice: $o"
 echo "codex-progress tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]
