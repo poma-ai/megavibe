@@ -87,4 +87,7 @@ o=$(hook "echo 'a | codex-review.sh --as-reviewer'"); [[ "$o" != *"codex-progres
 o=$(hook '( codex exec -C /work/project "do work" ) > job.log 2>&1; echo $? > job.rc'); [[ "$o" == *"codex-progress.sh"* ]] && ok || bad "a Codex job in a subshell is recognised: $o"
 o=$(hook '{ codex exec go; } > job.log'); [[ "$o" == *"codex-progress.sh"* ]] && ok || bad "a Codex job in a { group } is recognised: $o"
 o=$(MEGAVIBE_CODEX_SCRATCH=0 hook 'bash scripts/codex-review.sh --as-reviewer --prompt x'); [[ "$o" == *"codex-progress.sh"* && "$o" != *"codex-review-scratch"* ]] && ok || bad "an inherited MEGAVIBE_CODEX_SCRATCH=0 is honoured: $o"
+o=$(hook "rg '&&' scripts/codex-review.sh"); [[ "$o" != *"codex-progress"* ]] && ok || bad "a quoted && pattern is not a separator: $o"
+o=$(hook '"/bin/bash" scripts/codex-review.sh --as-reviewer --prompt x'); [[ "$o" == *"codex-review-scratch"* ]] && ok || bad "a quoted interpreter path still counts: $o"
+o=$(hook "rg ';' scripts/codex-review.sh"); [[ "$o" != *"codex-progress"* ]] && ok || bad "a quoted ; pattern is not a separator: $o"
 echo "codex-progress tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

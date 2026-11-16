@@ -137,7 +137,7 @@ if [ "$EVENT" = "PostToolUse" ]; then
     _cx=$(MV_CMD="$CMDTXT" python3 -I -c '
 import os, shlex
 try:
-    lx = shlex.shlex(os.environ["MV_CMD"], posix=True, punctuation_chars=";&|()")
+    lx = shlex.shlex(os.environ["MV_CMD"], posix=False, punctuation_chars=";&|()")
     lx.whitespace_split = True
     toks = list(lx)
 except ValueError:
@@ -151,15 +151,17 @@ for t in toks:
 segs.append(cur)
 job = scratch = 0
 for w in segs:
+    # posix=False keeps quotes on a quoted token, so a quoted "&&" or "--strict" is never an
+    # operator or a flag; only the command word itself is unquoted for comparison
     i = 1 if w[:1] == ["{"] else 0
     while i < len(w) and "=" in w[i] and not w[i].startswith("-") and (w[i][0].isalpha() or w[i][0] == "_"):
         i += 1
     env = w[:i]
-    if i < len(w) and os.path.basename(w[i]) in ("bash", "sh", "zsh", "command", "exec"):
+    if i < len(w) and os.path.basename(w[i].strip(chr(34) + chr(39))) in ("bash", "sh", "zsh", "command", "exec"):
         i += 1
     if i >= len(w):
         continue
-    cmd, rest = os.path.basename(w[i]), w[i + 1:]
+    cmd, rest = os.path.basename(w[i].strip(chr(34) + chr(39))), w[i + 1:]
     if cmd == "codex" and rest[:1] == ["exec"] and "--ephemeral" not in rest:
         job = 1
     elif cmd == "codex-review.sh":
