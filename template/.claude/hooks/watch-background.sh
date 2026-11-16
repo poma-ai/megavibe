@@ -106,6 +106,7 @@ if [ "$EVENT" = "PostToolUse" ]; then
       [ -n "$ID" ] || exit 0
       OUT=$(task_file "$ID")
       KIND=bash
+      CMDTXT=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
       DESC=$(printf '%s' "$INPUT" | jq -r '.tool_input.description // "background task"' 2>/dev/null | cut -c1-80)
       ;;
     Agent)
@@ -137,11 +138,23 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # The loop is built by jq so the path is shell-quoted whatever it contains.
   # No path resolved → no loop: a loop on a placeholder reports 0 bytes
   # forever, which reads as a hang and gets a healthy task killed.
-  if [ -n "$OUT" ]; then
+  CODEXJOB=0
+  if [ "$KIND" = "bash" ] && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|amass\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi
+  if [ -n "$OUT" ] || [ "$CODEXJOB" = 1 ]; then
     if [ "$KIND" = "bash" ]; then
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
         "f=" + ($p|@sh) + "; last=0; while sleep " + ($s|tostring) + "; do s=$(wc -c <\"$f\" 2>/dev/null | tr -d \" \" || echo 0); printf '"'"'bg " + $id + ": %s bytes (+%s) | %s\\n'"'"' \"$s\" \"$((s-last))\" \"$(tail -c 200 \"$f\" 2>/dev/null | tr '"'"'\\n'"'"' '"'"' '"'"')\"; last=$s; done"')
       READ="Each beat is the byte delta and the tail. Judge it against what the task IS: a build or test run at +0 for two beats is hung; a server idling at +0 is healthy; a file that keeps growing with the same lines repeating is a crashloop. Read the output file before acting, then act — kill it, fix it, or say it is fine."
+      # A Codex job's stdout is usually redirected, so its .output file stays empty and
+      # `-o FILE` holds only the final message: the real progress log is the rollout
+      # under ~/.codex/sessions. Watch that instead (codex-progress.sh --brief).
+      if [ "$CODEXJOB" = 1 ]; then
+        CDIR=$(printf '%s' "$CMDTXT" | sed -n 's/.*[[:space:]]-C[[:space:]]\{1,\}\([^[:space:]'"'"'"]\{1,\}\).*/\1/p' | head -1)
+        CSEL="--latest"; [ -n "$CDIR" ] && CSEL="--cwd $CDIR"
+        LOOP=$(jq -nr --arg id "$ID" --arg sel "$CSEL" --argjson s "$BEAT_SECS" '
+          "last=0; while sleep " + ($s|tostring) + "; do o=$(~/.megavibe/scripts/codex-progress.sh " + $sel + " --brief 2>&1 | head -c 600); b=$(printf '"'"'%s'"'"' \"$o\" | sed -n '"'"'s/.*: \\([0-9][0-9]*\\) bytes.*/\\1/p'"'"'); b=${b:-0}; printf '"'"'codex " + $id + ": rollout +%s bytes | %s\\n'"'"' \"$((b-last))\" \"$o\"; last=$b; done"')
+        READ="This is a Codex job: its Bash .output file is empty when stdout is redirected, and -o FILE holds only the final message, so the heartbeat reads the rollout under ~/.codex/sessions through codex-progress.sh. +0 rollout bytes for two beats is hung; a rollout still growing is working, so read the last assistant message for what it found so far. If $CSEL picks the wrong job (several Codex jobs run at once), run ~/.megavibe/scripts/codex-progress.sh --cwd <the job's -C dir or codex-review-scratch> once and rebuild the loop. Never kill a job that is still growing."
+      fi
     else
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
         "f=" + ($p|@sh) + "; last=0; while sleep " + ($s|tostring) + "; do n=$(wc -l <\"$f\" 2>/dev/null | tr -d \" \" || echo 0); t=$(tail -1 \"$f\" 2>/dev/null | jq -r '"'"'[.message.content[]? | select(.type==\"tool_use\") | .name] | join(\",\")'"'"' 2>/dev/null); printf '"'"'agent " + $id + ": %s entries (+%s) | last tools: %s\\n'"'"' \"$n\" \"$((n-last))\" \"${t:-none}\"; last=$n; done"')

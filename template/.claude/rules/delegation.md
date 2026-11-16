@@ -63,6 +63,12 @@ When a Fable/Opus session or subtask is stuck on a problem that is well posed (y
 
 Measurements, prices, cliffs and limits: **`README-amass.md`**.
 
+## Watching a Codex job: its rollout, not its output file
+
+Every `codex exec` run (`codex-review.sh`, `second-opinion.sh`, amass Codex workers, a hand-started job) writes each event to `~/.codex/sessions/YYYY/MM/DD/rollout-<local time>-<uuid>.jsonl`; the first line records the working directory (`-C`, or a `codex-review-scratch.*` directory under `--as-reviewer`) and the file grows while the job lives. That is the heartbeat. The Bash task's `.output` file is EMPTY when stdout is redirected (`> log`) and `-o FILE` holds only the final message, so a long job watched through either looks silent (false Stop-hook alarms, and a user asking what the job is doing). `~/.megavibe/scripts/codex-progress.sh [--latest | --cwd DIR | --file F] [--last N] [--brief]` prints the rollout path, size, age, event count, the last N assistant messages (what Codex found so far, usually every few minutes) and commands; `--brief` is one line for a `Monitor` loop. No growth for two beats is hung; a growing rollout is working, so do not kill it. `watch-background.sh` arms its heartbeat with this script for a background Bash command that starts Codex. Match a job by `--cwd` when several run at once.
+
+**A Codex run cannot write git metadata** (`index.lock` is outside its sandbox): it leaves its changes uncommitted in the tree or in a private clone, and the parent reviews and commits them. Expect that; it is not a failed run.
+
 ## Both providers, in every shape: allocation and spawn paths
 
 Every unit of work (a review reader, a fix round, an implementation, a digest, a second opinion) can go to either subscription, and the continuous allocation rule above decides it by weighing both windows each time:
