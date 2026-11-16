@@ -121,6 +121,8 @@ if [ "$EVENT" = "PostToolUse" ]; then
       ;;
     *) exit 0 ;;
   esac
+  # The id is pasted into generated shell text below: accept only the harness's own id shape.
+  case $ID in ''|*[!A-Za-z0-9_-]*) exit 0 ;; esac
 
   CODEXJOB=0
   if [ "$KIND" = "bash" ] && ! printf '%s' "${CMDTXT:-}" | grep -Eq -e '--ephemeral|amass' && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi

@@ -63,4 +63,7 @@ loop2=$(hook 'codex exec -C /work/alpha go' | sed -n '/^P=/p' | sed "s#~/.megavi
 o=$(CODEX_HOME="$E" bash -c "$loop2" 2>&1); [[ "$o" == *"found solo bug"* ]] && ok || bad "helper path with spaces: $o"
 o=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","agent_id":"ag1","tool_input":{"run_in_background":true,"command":"codex exec go","description":"d"},"tool_response":{"backgroundTaskId":"bt2"}}' | (cd "$T/p" && HOME="$T/h" CLAUDE_PROJECT_DIR="$T/p" bash "$REPO/template/.claude/hooks/watch-background.sh") | jq -r '.hookSpecificOutput.additionalContext')
 [[ "$o" == *"codex-progress.sh --path --since"* ]] && ok || bad "subagent Codex advice: $o"
+"$S" --days 0 >/dev/null 2>&1; [ $? -eq 2 ] && ok || bad "--days 0 is a usage error"
+o=$(printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"run_in_background":true,"command":"codex exec go","description":"d"},"tool_response":{"backgroundTaskId":"x'"'"';touch pwn;'"'"'"}}' | (cd "$T/p" && HOME="$T/h" CLAUDE_PROJECT_DIR="$T/p" bash "$REPO/template/.claude/hooks/watch-background.sh") 2>&1)
+[ -z "$o" ] && ok || bad "a task id with shell metacharacters gets no generated loop: $o"
 echo "codex-progress tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

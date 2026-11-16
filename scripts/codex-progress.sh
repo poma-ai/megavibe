@@ -50,6 +50,7 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 [[ "$last" =~ ^[0-9]+$ && "$days" =~ ^[0-9]+$ && "$since" =~ ^[0-9]+$ ]] || { echo "codex-progress: --last, --days and --since take a number" >&2; exit 2; }
+[[ $days -ge 1 ]] || { echo "codex-progress: --days must be at least 1" >&2; exit 2; }
 
 home="${CODEX_HOME:-$HOME/.codex}/sessions"
 
