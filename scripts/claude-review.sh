@@ -351,16 +351,6 @@ case $OUT in ""|/*|./*) ;; *) OUT=./$OUT ;; esac
 valid_model "$MODEL" || die "bad --model"
 isnum "$TIMEOUT" && [ "$TIMEOUT" -ge 1 ] || die "--timeout must be a number of seconds, at least 1"
 [ -z "$EFFORT" ] || case $EFFORT in *[!A-Za-z0-9_-]*) die "bad --effort" ;; esac
-# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
-if [ "$AS_REVIEWER" = 1 ]; then
-  _GD=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-  if [ ! -f "$_GD/amass-gate.sh" ]; then
-    echo "$PROG: warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
-  else
-    if [ -n "$NO_AMASS" ]; then bash "$_GD/amass-gate.sh" waive "$NO_AMASS" || exit 2
-    else bash "$_GD/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
-  fi
-fi
 if [ -z "$TOOLS" ]; then if [ "$AS_REVIEWER" = 1 ]; then TOOLS=exec; else TOOLS=read; fi; fi
 case $TOOLS in exec|read|none) ;; *) die "--tools must be exec, read or none" ;; esac
 if [ -z "$MAXKB" ]; then case $MODEL in haiku*) MAXKB=150 ;; *) MAXKB=600 ;; esac; fi
@@ -386,6 +376,16 @@ if [ "$TOOLS" = exec ]; then
     if [ -x "$d/block-dangerous-bash.sh" ] && [ -x "$d/block-permission-hooks.sh" ]; then HOOKS=$(CDPATH= cd -- "$d" && pwd -P); break; fi
   done
   [ -n "$HOOKS" ] || die "--tools exec needs both block-dangerous-bash.sh and block-permission-hooks.sh, executable, in one directory (looked in $MV_HOME/template and next to this script); refusing to run Bash unguarded"
+fi
+
+# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
+# After every argument and prerequisite check so those keep their own exit codes; before the
+# scratch directory exists, so a refusal leaves nothing behind.
+if [ "$AS_REVIEWER" = 1 ]; then
+  if [ ! -f "$SELF_DIR/amass-gate.sh" ]; then
+    echo "$PROG: warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
+  elif [ -n "$NO_AMASS" ]; then bash "$SELF_DIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
+  else bash "$SELF_DIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
 fi
 
 SC=''; CTL=''; TOOLDIR=''; SUP_PID=''

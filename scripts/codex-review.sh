@@ -127,7 +127,7 @@ TIMEOUT=$((10#$TIMEOUT))   # "0600" is decimal 600 here, not octal
 # and MEGAVIBE_REVIEWERS is a statement about reviewing, not about the backend.
 # Gating unconditionally would have stripped context recovery of its backend for
 # anyone who switched one reviewer off.
-_RVDIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+_RVDIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
   _rv_rc=0; bash "$_RVDIR/reviewers.sh" enabled codex >/dev/null 2>&1 || _rv_rc=$?
   # ONLY 1 means "switched off". A helper that crashed, or one from a future
@@ -137,15 +137,6 @@ if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
     echo "skip: codex is not in MEGAVIBE_REVIEWERS ($(bash "$_RVDIR/reviewers.sh" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//'))" >&2
     exit 4
   fi
-fi
-
-# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
-# Only under --as-reviewer, like the allow-list above; exit 6 = refused for want of a sweep.
-if [ -n "$AS_REVIEWER" ] && [ ! -f "$_RVDIR/amass-gate.sh" ]; then
-  echo "warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
-elif [ -n "$AS_REVIEWER" ]; then
-  if [ -n "$NO_AMASS" ]; then bash "$_RVDIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
-  else bash "$_RVDIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
 fi
 
 command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1; }
@@ -227,6 +218,15 @@ fi
     printf '\n\n===== %s =====\n' "$f"; cat -- "$f"
   done
 } > "$REQ"
+
+# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
+# Only under --as-reviewer, like the allow-list above; exit 6 = refused for want of a sweep.
+if [ -n "$AS_REVIEWER" ] && [ ! -f "$_RVDIR/amass-gate.sh" ]; then
+  echo "warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
+elif [ -n "$AS_REVIEWER" ]; then
+  if [ -n "$NO_AMASS" ]; then bash "$_RVDIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
+  else bash "$_RVDIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
+fi
 
 # --skip-git-repo-check: reviews run against arbitrary paths, including temp
 # dirs that are not repos. -o writes ONLY the final message, so the answer never

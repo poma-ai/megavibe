@@ -15,11 +15,11 @@
 # takes longer than the window only in slow sessions; run the sweep again, it costs cents.
 #
 #   amass-gate.sh check             exit 0 passes, 6 blocks (prints why and the command to run)
-#   amass-gate.sh waive "<reason>"  record a waiver (reason of 3+ characters; exit 2 if it could not be recorded)
+#   amass-gate.sh waive "<reason>"  record a waiver (reason of 3+ characters; a ledger that cannot be written warns and proceeds)
 # Project key = the full working directory ($PWD; rows from before it was recorded fall back to the
 # basename). Known limits: a reminder with a recorded escape hatch, not authentication (the caller
 # controls the env switch and the ledger path), and it checks the sweep's age, not that the sweep covered
-# the candidate now under review. MEGAVIBE_AMASS_GATE=0 switches
+# the candidate now under review. A run counts only if at least one of its calls succeeded. MEGAVIBE_AMASS_GATE=0 switches
 # the gate off (a setting, like MEGAVIBE_REVIEWERS, not a failure). Fails OPEN on anything that
 # is not a clear "no sweep" (no jq): a broken helper must never silence a reviewer.
 set -uo pipefail
@@ -34,11 +34,11 @@ case $cmd in
   waive)
     reason=$(printf '%s' "${2:-}" | tr -d '[:cntrl:]' | cut -c1-200)
     [ "${#reason}" -ge 3 ] || { echo "amass-gate: --no-amass needs a reason (3+ characters)" >&2; exit 2; }
-    command -v jq >/dev/null 2>&1 || { echo "amass-gate: jq missing, waiver not recorded" >&2; exit 2; }
+    command -v jq >/dev/null 2>&1 || { echo "amass-gate: jq missing, waiver not recorded; proceeding" >&2; exit 0; }
     mkdir -p "$(dirname "$LEDGER")" 2>/dev/null
     jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg p "$PROJ" --arg c "$PWD" --arg r "$reason" \
       '{ts:$ts,cmd:"waive",project:$p,cwd:$c,reason:$r}' >> "$LEDGER" 2>/dev/null \
-      || { echo "amass-gate: could not write the waiver to $LEDGER" >&2; exit 2; }
+      || { echo "amass-gate: WARNING could not record the waiver in $LEDGER; proceeding (the ledger is the only record of it)" >&2; exit 0; }
     echo "amass-gate: waiver recorded for $PROJ: $reason" >&2
     ;;
   check)
@@ -46,10 +46,13 @@ case $cmd in
     command -v jq >/dev/null 2>&1 || { echo "amass-gate: jq missing, gate skipped" >&2; exit 0; }
     now=$(date +%s)
     ok=0
+    if [ -e "$LEDGER" ] && [ ! -r "$LEDGER" ]; then
+      echo "amass-gate: $LEDGER exists but cannot be read, gate skipped" >&2; exit 0
+    fi
     if [ -r "$LEDGER" ]; then
       # line by line: one malformed row must not disable the gate for every other row
       ok=$(jq -R -r --arg p "$PROJ" --arg c "$PWD" --argjson cut $((now - MINS * 60)) \
-        'fromjson? | select(type == "object" and .cmd == "run" and ((.cwd // "") == $c or ((.cwd // "") == "" and .project == $p))
+        'fromjson? | select(type == "object" and .cmd == "run" and ((.ok | tonumber? // 0) > 0) and ((.cwd // "") == $c or ((.cwd // "") == "" and .project == $p))
            and ((.ts | tostring | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0) >= $cut)) | 1' "$LEDGER" 2>/dev/null | wc -l | tr -d ' ') || ok=0
     fi
     case $ok in ''|*[!0-9]*) exit 0 ;; esac   # unreadable ledger content: fail open
