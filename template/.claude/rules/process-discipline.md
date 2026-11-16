@@ -46,7 +46,7 @@ not in your tool set, `ToolSearch "select:Monitor"`; if it is unavailable
 altogether, run the same loop with a fixed beat count through
 `run_in_background` and let its completion be the wake-up.
 
-**A Codex job is watched through its rollout, not its output file.** Its stdout is usually redirected, so the task's `.output` file is empty, and `-o FILE` holds only the final message. The progress log is `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; `~/.megavibe/scripts/codex-progress.sh --cwd <its -C dir> --brief` prints its size, idle time and last assistant message, and `watch-background.sh` builds the heartbeat loop from it for a background command that starts Codex. Rollout bytes at +0 for two beats is hung; growing is working. Detail: `delegation.md`, "Watching a Codex job".
+**A Codex job is watched through its rollout, not its output file.** Its stdout is usually redirected, so the task's `.output` file is empty, and `-o FILE` holds only the final message. The progress log is `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; `~/.megavibe/scripts/codex-progress.sh --cwd <its -C dir> --brief` prints its size, idle time and last assistant message, and `watch-background.sh` builds the heartbeat loop from it for a background command that starts Codex. Rollout bytes at +0 are a reason to read the idle seconds and the last message, not proof of a hang (reasoning gaps of minutes occur): hung is idle past about 10 minutes or a dead process. Detail: `delegation.md`, "Watching a Codex job".
 
 `watch-background.sh` enforces both halves. On start it injects the exact loop
 to arm (to a subagent's call, identified by `agent_id`, the 170 s wait-slice advice instead). On a turn boundary it reads the harness's live task registry and

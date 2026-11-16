@@ -139,7 +139,7 @@ if [ "$EVENT" = "PostToolUse" ]; then
   # No path resolved → no loop: a loop on a placeholder reports 0 bytes
   # forever, which reads as a hang and gets a healthy task killed.
   CODEXJOB=0
-  if [ "$KIND" = "bash" ] && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|amass\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi
+  if [ "$KIND" = "bash" ] && printf '%s' "${CMDTXT:-}" | grep -Eq 'codex exec|codex-review\.sh|second-opinion\.sh|(^|[ /;&|])codex( |$)'; then CODEXJOB=1; fi
   if [ -n "$OUT" ] || [ "$CODEXJOB" = 1 ]; then
     if [ "$KIND" = "bash" ]; then
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
@@ -149,11 +149,16 @@ if [ "$EVENT" = "PostToolUse" ]; then
       # `-o FILE` holds only the final message: the real progress log is the rollout
       # under ~/.codex/sessions. Watch that instead (codex-progress.sh --brief).
       if [ "$CODEXJOB" = 1 ]; then
-        CDIR=$(printf '%s' "$CMDTXT" | sed -n 's/.*[[:space:]]-C[[:space:]]\{1,\}\([^[:space:]'"'"'"]\{1,\}\).*/\1/p' | head -1)
-        CSEL="--latest"; [ -n "$CDIR" ] && CSEL="--cwd $CDIR"
-        LOOP=$(jq -nr --arg id "$ID" --arg sel "$CSEL" --argjson s "$BEAT_SECS" '
-          "last=0; while sleep " + ($s|tostring) + "; do o=$(~/.megavibe/scripts/codex-progress.sh " + $sel + " --brief 2>&1 | head -c 600); b=$(printf '"'"'%s'"'"' \"$o\" | sed -n '"'"'s/.*: \\([0-9][0-9]*\\) bytes.*/\\1/p'"'"'); b=${b:-0}; printf '"'"'codex " + $id + ": rollout +%s bytes | %s\\n'"'"' \"$((b-last))\" \"$o\"; last=$b; done"')
-        READ="This is a Codex job: its Bash .output file is empty when stdout is redirected, and -o FILE holds only the final message, so the heartbeat reads the rollout under ~/.codex/sessions through codex-progress.sh. +0 rollout bytes for two beats is hung; a rollout still growing is working, so read the last assistant message for what it found so far. If $CSEL picks the wrong job (several Codex jobs run at once), run ~/.megavibe/scripts/codex-progress.sh --cwd <the job's -C dir or codex-review-scratch> once and rebuild the loop. Never kill a job that is still growing."
+        # -C is taken only when it is a plain path token (no quotes, redirections or
+        # spaces to misparse); anything else falls back to the scratch-dir glob of a
+        # review run, or to no selector. The loop pins ONE rollout on its first success
+        # and says "ambiguous" instead of choosing when several match.
+        CDIR=$(printf '%s' "$CMDTXT" | sed -n 's/.*[[:space:]]-C[[:space:]]\{1,\}\([A-Za-z0-9_.\/+-]\{1,\}\)\([[:space:]]\{1,\}.*\)\{0,1\}$/\1/p' | head -1)
+        CSEL=""
+        if [ -n "$CDIR" ]; then CSEL="--cwd $(jq -nr --arg d "$CDIR" '$d|@sh')"
+        elif printf '%s' "$CMDTXT" | grep -Eq 'codex-review\.sh|second-opinion\.sh'; then CSEL="--cwd '*/codex-review-scratch.*'"; fi
+        LOOP="P=~/.megavibe/scripts/codex-progress.sh; F=; last=0; while sleep $BEAT_SECS; do if [ -z \"\$F\" ]; then F=\$(\$P --path $CSEL --since $NOW 2>&1) || { printf 'codex $ID: %s\\n' \"\$(printf %s \"\$F\" | head -c 300 | tr '\\n' ' ')\"; F=; continue; }; fi; b=\$(wc -c <\"\$F\" | tr -d ' '); printf 'codex $ID: +%s bytes | %s\\n' \"\$((b-last))\" \"\$(\$P --file \"\$F\" --brief | cut -c1-300)\"; last=\$b; done"
+        READ="This is a Codex job: its Bash .output file is empty when stdout is redirected and -o FILE holds only the final message, so this heartbeat reads the job's rollout under ~/.codex/sessions through codex-progress.sh (the first beats may say 'no matching rollout yet'). It pins one rollout; if it says ambiguous (several Codex jobs started together), run ~/.megavibe/scripts/codex-progress.sh --path ${CSEL:---latest} --since $NOW yourself, pick the job's file, and re-arm with --file. +0 bytes is a reason to look, not proof of a hang: Codex can reason for minutes without writing an event. Read the idle seconds and the last message, check the process is alive (ps), and keep the job unless it is idle past about 10 minutes or its process is gone. The job's own log and rc file still carry start-up errors and the exit status."
       fi
     else
       LOOP=$(jq -nr --arg p "$OUT" --arg id "$ID" --argjson s "$BEAT_SECS" '
