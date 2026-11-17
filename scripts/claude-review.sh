@@ -4,7 +4,7 @@
 # the allocation rule in .claude/rules/delegation.md can give a unit of work to either
 # provider by weighing both weekly windows, not by which side is easier to spawn.
 #
-#   claude-review.sh [--as-reviewer] [--prompt TEXT | --prompt-file F] [--out FILE]
+#   claude-review.sh [--as-reviewer [--no-amass "<reason>"]] [--prompt TEXT | --prompt-file F] [--out FILE]
 #                    [--model sonnet] [--timeout 900] [--tools exec|read|none]
 #                    [--effort LEVEL] [--max-input-kb N] [--keep-scratch] FILE...
 #
@@ -318,11 +318,12 @@ usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 valid_model() { case $1 in ''|-*|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
 isnum() { case $1 in ''|*[!0-9]*) return 1 ;; esac; return 0; }
 
-AS_REVIEWER=0 PROMPT='' PROMPT_FILE='' OUT='' MODEL=sonnet TIMEOUT=900 TOOLS='' EFFORT='' MAXKB='' KEEP=0
+AS_REVIEWER=0 PROMPT='' PROMPT_FILE='' OUT='' MODEL=sonnet TIMEOUT=900 TOOLS='' EFFORT='' MAXKB='' KEEP=0 NO_AMASS=''
 FILES=()
 while [ $# -gt 0 ]; do
   case $1 in
     --as-reviewer) AS_REVIEWER=1; shift ;;
+    --no-amass) [ $# -ge 2 ] || die "--no-amass needs a reason"; case $2 in -*) die "--no-amass needs a reason, got an option: $2" ;; esac; NO_AMASS=$2; shift 2 ;;
     --prompt) PROMPT=${2:-}; shift 2 ;;
     --prompt-file) PROMPT_FILE=${2:-}; shift 2 ;;
     --out) OUT=${2:-}; shift 2 ;;
@@ -514,6 +515,16 @@ M=$(jq -r 'select(.loggedIn == true) | .authMethod // empty' "$CTL/auth.json" 2>
 } > "$CTL/request.txt"
 KB=$(( ($(wc -c < "$CTL/request.txt") + 1023) / 1024 ))
 [ "$KB" -le "$MAXKB" ] || die "the request is $KB KB, above --max-input-kb $MAXKB"
+
+# The amass sweep before a reader round is enforced here, not left to memory (amass-gate.sh).
+# After every argument, prerequisite and input-size check so those keep their own exit codes;
+# the cleanup trap is installed by now, so a refusal leaves nothing behind.
+if [ "$AS_REVIEWER" = 1 ]; then
+  if [ ! -f "$SELF_DIR/amass-gate.sh" ]; then
+    echo "$PROG: warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
+  elif [ -n "$NO_AMASS" ]; then bash "$SELF_DIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
+  else bash "$SELF_DIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
+fi
 
 case $TOOLS in
   exec) TL="Read,Grep,Glob,Bash,Write"; SANDBOX_NOTE="seatbelt: writes only in the scratch dir" ;;

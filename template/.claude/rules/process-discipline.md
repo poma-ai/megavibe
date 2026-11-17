@@ -46,6 +46,8 @@ not in your tool set, `ToolSearch "select:Monitor"`; if it is unavailable
 altogether, run the same loop with a fixed beat count through
 `run_in_background` and let its completion be the wake-up.
 
+**A Codex job is watched through its rollout, not its output file.** Its stdout is usually redirected, so the task's `.output` file is empty, and `-o FILE` holds only the final message. The progress log is `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; `~/.megavibe/scripts/codex-progress.sh --cwd <its -C dir> --brief` prints its size, idle time and last assistant message, and `watch-background.sh` builds the heartbeat loop from it for a background command that starts Codex. Rollout bytes at +0 are a reason to read the idle seconds and the last message, not proof of a hang (reasoning gaps of minutes occur): hung is idle past about 10 minutes or a dead process. Detail: `delegation.md`, "Watching a Codex job".
+
 `watch-background.sh` enforces both halves. On start it injects the exact loop
 to arm (to a subagent's call, identified by `agent_id`, the 170 s wait-slice advice instead). On a turn boundary it reads the harness's live task registry and
 refuses to let the turn end while a running task older than the interval has
@@ -78,6 +80,8 @@ A `while true; do <cmd>; sleep N; done` against an external API (kubectl, gcloud
 - **Exit on auth failure.** If the command fails with `Unauthorized`, `ReauthRequired`, `401`, `Token expired`, or similar — stop the loop. Don't retry. The credentials are not going to fix themselves while you're hammering the API. Hammering produces failure-log spam, sometimes millions of files.
 - **`sleep ≥ 30s`** for cloud API polls. Per-second polls are how a forgotten watchdog generates 1.2M log files in 14 days.
 - **Run in a named tmux session**, not disowned. So when auth eventually does break, the user can find and kill it.
+
+**Before relaunching a job that looks failed, confirm it stopped.** A status file left by an earlier attempt (an rc file, a log, an empty `.output`) proves nothing about the run you are looking at; check the process (`ps`, the harness's task list) first. Relaunching a job that is still running gives two copies writing the same outputs (it doubled a two-reader review round on 2026-11-16).
 
 ## Tell the user where it lives
 

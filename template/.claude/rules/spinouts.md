@@ -148,6 +148,7 @@ reproduced on another project.
   to arm a Monitor; a payload carrying an `agent_id` (a subagent's call) gets the
   slice advice instead and is not recorded for the parent's Stop check. A subagent without Monitor (the `reviewer`) keeps the
   slice loop instead.
+- **A Codex job's log shows start-up errors and its rc file the exit status, but not progress** (its stdout is redirected, the work is in its rollout): in each slice also print `~/.megavibe/scripts/codex-progress.sh --file <its rollout> --brief` (idle time, size, last assistant message; find the file once with `--path --cwd <its -C dir> --since <start epoch>`); see `delegation.md`, "Watching a Codex job".
 - **Waits over about 35 minutes belong to the parent** (a heuristic: a slice
   costs about 0.035 of the context per minute at 0.1x, a cold re-write 1.25).
   The parent starts and awaits such a job, if its own cache lifetime is longer,

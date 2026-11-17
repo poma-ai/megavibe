@@ -1,13 +1,16 @@
 #!/bin/bash
 # amass.sh — a cheap first pass: many headless one-shot model calls over the SAME inlined
 # input, one lens per prompt, then ONE dedupe call. It is a source of LEADS, never a review
-# and never a gate (the review tiers in .claude/rules/delegation.md are unchanged).
+# or a verdict (the review tiers in .claude/rules/delegation.md are unchanged), but a
+# successful run must PRECEDE every reader round: codex-review.sh and claude-review.sh
+# --as-reviewer exit 6 without one from this directory in the last 120 minutes, unless the
+# call passes --no-amass "<reason>" (amass-gate.sh).
 #
 #   amass.sh run    --out DIR [--change TEXT | --task-file F] [--provider auto|mix|claude|codex] [--split N:M]
 #                   [--model MODEL | --claude-model M --codex-model M] [--codex-effort E] [--lens name=text]...
 #                   [--lenses-file F] [--no-lens] [--copies 3] [--whole 0] [--parallel 12]
 #                   [--timeout 280] [--max-input-kb KB] [--dry-run] FILE... [--context FILE...]...
-#   amass.sh dedupe --out DIR [--provider auto|claude|codex] [--model MODEL] [--timeout 280]
+#   amass.sh dedupe --out DIR [--provider auto|claude|codex] [--model MODEL] [--timeout S]  (default 280 s, +4 s per KB of prompt past 40 KB, max 900)
 #   amass.sh summary --out DIR
 #
 # Why it is built this way (measured in a pilot; the numbers are in README-amass.md):
@@ -436,9 +439,9 @@ alive() { kill -0 "$1" 2>/dev/null; }
 ledger() { # cmd model calls ok cost input_kb unknown_costs tokens provider   (cost is null whenever any call's cost is unknown; cost_known is the known subtotal)
   local f=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
-  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd "$1" --arg model "$2" --arg proj "$(basename "$PWD")" \
+  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd "$1" --arg model "$2" --arg proj "$(basename "$PWD")" --arg cwd "$PWD" \
     --arg provider "$9" --arg tokens "${8:-?}" --argjson calls "$3" --argjson ok "$4" --arg cost "$5" --argjson kb "$6" --argjson unk "${7:-0}" \
-    '{ts:$ts,cmd:$cmd,model:$model,provider:$provider,tokens:($tokens|tonumber? // null),project:$proj,calls:$calls,ok:$ok,cost:(if $unk > 0 then null else ($cost|tonumber? // null) end),cost_known:(if $provider == "codex" and $unk == $calls then null else ($cost|tonumber? // null) end),cost_unknown_calls:$unk,input_kb:$kb} + (if $provider == "codex" then {cost_estimated:($unk < $calls)} else {} end)' >> "$f" 2>/dev/null || true
+    '{ts:$ts,cmd:$cmd,model:$model,provider:$provider,tokens:($tokens|tonumber? // null),project:$proj,cwd:$cwd,calls:$calls,ok:$ok,cost:(if $unk > 0 then null else ($cost|tonumber? // null) end),cost_known:(if $provider == "codex" and $unk == $calls then null else ($cost|tonumber? // null) end),cost_unknown_calls:$unk,input_kb:$kb} + (if $provider == "codex" then {cost_estimated:($unk < $calls)} else {} end)' >> "$f" 2>/dev/null || true
 }
 
 codex_summary() { # worker provider of the run's calls: claude or codex
@@ -834,7 +837,7 @@ cmd_run() {
 }
 
 cmd_dedupe() {
-  local MODEL='' MODEL_SET=0 MAXKB_SET=0 TIMEOUT=280 MAXKB=150 DRY=0 DP REQ_SET=0 rq
+  local MODEL='' MODEL_SET=0 MAXKB_SET=0 TIMEOUT=280 TIMEOUT_SET=0 MAXKB=150 DRY=0 DP REQ_SET=0 rq
   while [ $# -gt 0 ]; do
     case $1 in
       --out) OUT=${2:-}; shift 2 ;;
@@ -843,7 +846,7 @@ cmd_dedupe() {
       --claude-model) CLAUDE_MODEL=${2:-}; shift 2 ;;
       --codex-model) CODEX_MODEL=${2:-}; shift 2 ;;
       --codex-effort) CODEX_EFFORT=${2:-}; shift 2 ;;
-      --timeout) TIMEOUT=${2:-}; shift 2 ;;
+      --timeout) TIMEOUT=${2:-}; TIMEOUT_SET=1; shift 2 ;;
       --max-input-kb) MAXKB=${2:-}; MAXKB_SET=1; shift 2 ;;
       -h|--help) usage 0 ;;
       *) die "unknown option $1" ;;
@@ -912,7 +915,11 @@ cmd_dedupe() {
   local pk
   pk=$(( ($(wc -c < "$OUT/dedupe_prompt.txt") + 1023) / 1024 ))
   [ "$pk" -le "$MAXKB" ] || die "the dedupe prompt is $pk KB, above --max-input-kb $MAXKB$CAP_SUFFIX; dedupe per lens in separate run directories"
-  printf 'dedupe: %d findings, %d KB, provider %s, model %s\n' "$lines" "$pk" "$DP" "$MODEL"
+  # The output is a cluster list that grows with the findings, so a fixed deadline fails on a
+  # large sweep (a 108 KB list timed out twice at 280 s, 2026-11-16). Without --timeout, allow
+  # 280 s plus 4 s per KB past 40 KB, at most 900 s.
+  if [ "$TIMEOUT_SET" = 0 ] && [ "$pk" -gt 40 ]; then TIMEOUT=$(( 280 + (pk - 40) * 4 )); [ "$TIMEOUT" -le 900 ] || TIMEOUT=900; fi
+  printf 'dedupe: %d findings, %d KB, provider %s, model %s, timeout %ss\n' "$lines" "$pk" "$DP" "$MODEL" "$TIMEOUT"
   local rc=0 cost dok=0
   call_model "$DP" "$MODEL" "$TIMEOUT" "$OUT/dedupe_prompt.txt" "$OUT/dedupe_raw.json" "$OUT/dedupe_raw.err" || rc=$?
   cost=$(call_cost "$DP" "$OUT/dedupe_raw.json")
