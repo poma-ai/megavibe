@@ -356,7 +356,7 @@ Set every `MEGAVIBE_MEMORY_*` variable in the `env` block of your user-level `~/
 
 The document server behind `MEGAVIBE_MEMORY_DOCS` can be any MCP server that meets these requirements:
 
-- Ingest: a tool that takes a whole file or URL and does the parsing, chunking and embedding itself. A bare vector database that only stores text you chunk yourself does not qualify. The tool's name must contain `ingest`: that is the only signal that makes Claude check the setting on a document question.
+- Ingest: a tool that takes a whole file or URL and does the parsing, chunking and embedding itself. A bare vector database that only stores text you chunk yourself does not qualify. The tool's name must contain `ingest`: that is the only signal that makes Claude check the setting on a document question. An explicit request to store a document is a trigger of its own, so a configured but disconnected document server (no tool visible) still gets the "not stored" answer.
 - Search: a tool that returns passages together with their source document. Restricting a search to one document is optional.
 - Document list (optional): without it, the duplicate check is skipped and Claude asks the usual question.
 - Attributes and filters (optional): used to record the file name as a `filename` attribute and to look it up. Where the ingest tool has no `attributes` parameter, Claude omits it.
