@@ -6,6 +6,8 @@ set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d "${TMPDIR:-/tmp}/usage-route.XXXXXX") || exit 2
 trap 'rm -rf "$T"' EXIT
+# Calendar time: neither the session's MEGAVIBE_WORK_DAYS nor the user's settings file may leak in.
+unset MEGAVIBE_WORK_DAYS; export MEGAVIBE_USER_SETTINGS="$T/no-settings.json"
 PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 NOW=1793109600; WEEK=604800
