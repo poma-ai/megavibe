@@ -17,7 +17,7 @@
 #       prose     every file, and every path inside a .patch/.diff, is prose or data
 #                 (.md .markdown .txt .rst .adoc .org .csv .tsv .log .pdf .png .jpg .jpeg)
 #       hotfix    accepted unchecked, but a sweep is owed: `status` lists it until a sweep runs
-#                 in that directory.
+#                 in that directory (for 7 days, so a deleted worktree does not nag forever).
 #     Anything else ("sweep ran earlier on the branch", "small diff", "another author's PR") is
 #     refused (exit 2): an audit on 2026-11-19 found about 52 of 71 free-text waivers outside the
 #     documented exemptions, and readers found defects in most of the waived re-review rounds.
@@ -48,17 +48,27 @@ fingerprint() {
   local top h d
   top=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || return 0
   h=$(git -C "$top" rev-parse HEAD 2>/dev/null) || return 0
-  d=$(git -C "$top" diff HEAD --binary -- . ':(exclude).agent' ':(exclude)megavibe-deliverables' 2>/dev/null | shasum -a 256 | cut -c1-16)
+  local sum="shasum -a 256"; command -v shasum >/dev/null 2>&1 || sum=sha256sum
+  d=$(git -C "$top" diff HEAD --binary -- . ':(exclude).agent' ':(exclude)megavibe-deliverables' 2>/dev/null | $sum | cut -c1-16)
   printf '%s:%s' "$h" "$d"
 }
 ext_of() { local b=${1##*/}; case $b in *.*) printf '%s' "${b##*.}" | tr 'A-Z' 'a-z' ;; esac; }
+# every path a patch touches, from each header form git writes (renames, copies, binary and
+# mode-only changes have no ---/+++ lines); quotes around escaped names are dropped
+patch_paths() {
+  local r
+  for r in 's#^diff --git a/.* b/(.*)$#\1#p' 's#^\+\+\+ b/(.*)$#\1#p' 's#^--- a/(.*)$#\1#p' 's#^(rename|copy) (from|to) (.*)$#\3#p' \
+           's#^Binary files a/(.*) and b/.* differ$#\1#p' 's#^Binary files .* and b/(.*) differ$#\1#p'; do
+    tr -d '"' < "$1" | sed -nE "$r"
+  done | sed 's/[[:space:]]*$//' | sort -u
+}
 in_set() { [ -n "$1" ] && case $2 in *" $1 "*) return 0 ;; esac; return 1; }
 
 case ${1:-check} in
   fingerprint) fingerprint; echo ;;
   waive)
     reason=$(printf '%s' "${2:-}" | tr -d '[:cntrl:]' | cut -c1-200); shift 2 2>/dev/null || shift $#
-    cat=$(printf '%s' "$reason" | sed -E 's/^[[:space:]]*([A-Za-z]*).*/\1/' | tr 'A-Z' 'a-z')
+    cat=$(printf '%s' "$reason" | sed -nE 's/^[[:space:]]*([A-Za-z]+)([[:space:]:,].*)?$/\1/p' | tr 'A-Z' 'a-z')
     case $cat in
       oversize)
         total=0; n=0
@@ -72,7 +82,7 @@ case ${1:-check} in
         for f in "$@"; do
           e=$(ext_of "$f")
           if [ "$e" = patch ] || [ "$e" = diff ]; then
-            paths=$(sed -nE 's#^\+\+\+ b/(.*)$#\1#p; s#^--- a/(.*)$#\1#p' "$f" 2>/dev/null | sed 's/[[:space:]]*$//' | sort -u)
+            paths=$(patch_paths "$f" 2>/dev/null)
             [ -n "$paths" ] || { echo "amass-gate: --no-amass prose refused: $f names no changed paths" >&2; exit 2; }
             while IFS= read -r p; do
               in_set "$(ext_of "$p")" "$OK_EXT" || { echo "amass-gate: --no-amass prose refused: $f changes $p, which is not prose" >&2; exit 2; }
@@ -131,11 +141,11 @@ EOF
   status)
     h=${2:-24}; case $h in ''|*[!0-9]*) h=24 ;; esac
     command -v jq >/dev/null 2>&1 && [ -r "$LEDGER" ] || exit 0
-    jq -R -s -r --argjson cut $(( $(date +%s) - h * 3600 )) --arg h "$h" '
+    jq -R -s -r --argjson now "$(date +%s)" --argjson cut $(( $(date +%s) - h * 3600 )) --arg h "$h" '
       [split("\n")[] | fromjson? | select(type == "object")
         | . + {t: ((.ts // "") | tostring | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0)}] as $rows
       | [$rows[] | select(.cmd == "waive" and .t >= $cut)] as $w
-      | [$rows[] | select(.cmd == "waive" and (.category // "") == "hotfix") as $x
+      | [$rows[] | select(.cmd == "waive" and (.category // "") == "hotfix" and .t >= ($now - 7 * 86400)) as $x
           | select(any($rows[]; .cmd == "run" and ((.ok | tonumber? // 0) > 0) and .cwd == $x.cwd and .t >= $x.t) | not) | $x.project] | unique as $owed
       | if ($w | length) == 0 and ($owed | length) == 0 then empty else
           "amass waivers (last \($h) h): \($w | length)"
