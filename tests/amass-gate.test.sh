@@ -157,6 +157,10 @@ cd "$R/sub" || exit 2; reset; fprow "$("$G" fingerprint)"
 printf 'another note\n' > .agent/log.md; [ "$(rc_check)" = 0 ] && ok || bad "a nested .agent/ edit does not change the candidate"
 printf 'd\n' > c.py; [ "$(rc_check)" = 6 ] && ok || bad "a nested code edit does change it"
 git checkout -q -- c.py; cd "$R" || exit 2
+# racy clean: an edit of the same size in the same second as the index write is still seen
+reset; printf 'aaaa\n' > f.sh; git commit -qam racy; fprow "$("$G" fingerprint)"; printf 'bbbb\n' > f.sh; sleep 1
+[ "$(rc_check)" = 6 ] && ok || bad "a same-second, same-size edit after the sweep needs a new sweep"
+git checkout -q HEAD -- f.sh
 reset; printf '{"ts":"%s","cmd":"run","project":"repo","cwd":"%s","ok":1}\n' "$(now 1)" "$R" >> "$AMASS_LEDGER"; [ "$(rc_check)" = 0 ] && ok || bad "a row without a fingerprint counts by the window"
 cd "$P" || exit 2; [ -z "$("$G" fingerprint)" ] && ok || bad "no fingerprint outside git"
 echo "amass-gate tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

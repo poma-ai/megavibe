@@ -48,7 +48,8 @@ DATA_EXT=" csv tsv log pdf png jpg jpeg "
 
 fingerprint() {
   # The CONTENT of the tracked files, not the commit: a tree hash of HEAD's index updated with
-  # every tracked edit (git add -u on a copy of the index, so the stat cache keeps it fast), with
+  # every tracked edit (git add -u on a copy of the index, so the stat cache keeps it fast; the copy
+  # keeps the index's mtime, `cp -p`, or git's racy-clean check misses a same-second edit), with
   # every .agent/ and megavibe-deliverables/ dropped. Committing or amending exactly the swept
   # content keeps the fingerprint; a fix edit or a fix commit changes it. Independent of diff
   # settings (diff.external, color). Writes blob objects as `git stash create` does; any failure
@@ -58,7 +59,7 @@ fingerprint() {
   git -C "$top" rev-parse -q --verify HEAD >/dev/null 2>&1 || return 0
   idx=$(git -C "$top" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 0
   tmp=$(mktemp "${TMPDIR:-/tmp}/amass-fp.XXXXXX") || return 0
-  if [ -f "$idx" ]; then cp "$idx" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }; else : > "$tmp"; fi
+  if [ -f "$idx" ]; then cp -p "$idx" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }; else : > "$tmp"; fi
   t=$( cd "$top" && export GIT_INDEX_FILE="$tmp" && { [ -s "$tmp" ] || git read-tree HEAD; } \
        && git add -u -- . 2>/dev/null \
        && git rm --cached -r -q --ignore-unmatch -- ':(glob)**/.agent/**' ':(glob)**/megavibe-deliverables/**' >/dev/null 2>&1 \
