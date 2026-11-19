@@ -846,5 +846,11 @@ for doc in "$REPO/README-amass.md" "$REPO/README.md" "$REPO/template/.claude/rul
   check "$(basename "$doc") says Codex workers run in a read-only sandbox and can read local files" 'grep -i "amass" "$doc" | grep -qi "read-only sandbox" && grep -i "amass\|codex worker" "$doc" | grep -qi "read local files\|read files"'
 done
 
+# the run row carries the candidate fingerprint where it ran in a git checkout (the reader gate compares it)
+mkdir -p "$T/gitc" && ( cd "$T/gitc" && git init -q && git config user.email t@t && git config user.name t && printf 'a\n' > f && git add f && git commit -qm c )
+newlog 2
+( cd "$T/gitc" && "$AM" run --out "$T/o2g" --change "a change" --lens x=text1 --copies 1 --whole 0 "$T/a.txt" >/dev/null 2>&1 )
+fpw=$(cd "$T/gitc" && bash "$(dirname "$AM")/amass-gate.sh" fingerprint)
+check "a run in a git checkout records its fingerprint" '[ -n "$fpw" ] && tail -1 "$AMASS_LEDGER" | jq -e --arg f "$fpw" ".cmd == \"run\" and .fingerprint == \$f" >/dev/null'
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

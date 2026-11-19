@@ -4,7 +4,7 @@
 # the allocation rule in .claude/rules/delegation.md can give a unit of work to either
 # provider by weighing both weekly windows, not by which side is easier to spawn.
 #
-#   claude-review.sh [--as-reviewer [--no-amass "<reason>"]] [--prompt TEXT | --prompt-file F] [--out FILE]
+#   claude-review.sh [--as-reviewer [--no-amass "oversize|prose|hotfix[: note]"]] [--prompt TEXT | --prompt-file F] [--out FILE]
 #                    [--model sonnet] [--timeout 900] [--tools exec|read|none]
 #                    [--effort LEVEL] [--max-input-kb N] [--keep-scratch] FILE...
 #
@@ -522,7 +522,7 @@ KB=$(( ($(wc -c < "$CTL/request.txt") + 1023) / 1024 ))
 if [ "$AS_REVIEWER" = 1 ]; then
   if [ ! -f "$SELF_DIR/amass-gate.sh" ]; then
     echo "$PROG: warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
-  elif [ -n "$NO_AMASS" ]; then bash "$SELF_DIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
+  elif [ -n "$NO_AMASS" ]; then bash "$SELF_DIR/amass-gate.sh" waive "$NO_AMASS" ${FILES[@]+"${FILES[@]}"} || exit 2
   else bash "$SELF_DIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
 fi
 

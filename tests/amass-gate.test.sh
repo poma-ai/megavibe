@@ -28,18 +28,18 @@ row 300 run proj; [ "$(rc_check)" = 6 ] && ok || bad "a sweep older than the win
 row 5 dedupe proj; [ "$(rc_check)" = 6 ] && ok || bad "dedupe alone is not a sweep"
 row 5 run proj; [ "$(rc_check)" = 0 ] && ok || bad "a recent run (old-format row, basename key) passes"
 reset; "$G" waive "ab" >/dev/null 2>&1; [ $? -eq 2 ] && ok || bad "a waiver needs a real reason"
-"$G" waive "input over 150 KB" >/dev/null 2>&1; [ "$(rc_check)" = 6 ] && ok || bad "a waiver authorizes only its own call, never the window"
+"$G" waive "hotfix: urgent" >/dev/null 2>&1; [ "$(rc_check)" = 6 ] && ok || bad "a waiver authorizes only its own call, never the window"
 grep -q '"cmd":"waive"' "$AMASS_LEDGER" && ok || bad "the waiver is a ledger row"
 reset; printf 'not json\n' > "$AMASS_LEDGER"; row 5 run proj; [ "$(rc_check)" = 0 ] && ok || bad "a malformed row does not hide a valid sweep"
 reset; printf 'not json\n' > "$AMASS_LEDGER"; [ "$(rc_check)" = 6 ] && ok || bad "a ledger of only malformed rows blocks"
 reset; printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"/elsewhere/proj"}\n' "$(now 5)" > "$AMASS_LEDGER"; [ "$(rc_check)" = 6 ] && ok || bad "same basename, other directory does not count"
 reset; printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"%s","ok":1}\n' "$(now 5)" "$P" > "$AMASS_LEDGER"; [ "$(rc_check)" = 0 ] && ok || bad "a sweep from this directory counts"
-chmod a-w "$AMASS_LEDGER"; "$G" waive "reason that cannot be written" >/dev/null 2>&1; [ $? -eq 0 ] && ok || bad "an unwritable ledger warns and proceeds (fail open)"; chmod u+w "$AMASS_LEDGER"
+chmod a-w "$AMASS_LEDGER"; "$G" waive "hotfix: cannot be written" >/dev/null 2>&1; [ $? -eq 0 ] && ok || bad "an unwritable ledger warns and proceeds (fail open)"; chmod u+w "$AMASS_LEDGER"
 chmod 000 "$AMASS_LEDGER"; [ "$(rc_check)" = 0 ] && ok || bad "an existing unreadable ledger fails open"; chmod u+rw "$AMASS_LEDGER"
 reset; printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"%s","ok":0,"calls":3}\n' "$(now 5)" "$P" > "$AMASS_LEDGER"; [ "$(rc_check)" = 6 ] && ok || bad "a sweep whose calls all failed does not count"
 reset; printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"%s","ok":2,"calls":3}\n' "$(now 5)" "$P" > "$AMASS_LEDGER"; [ "$(rc_check)" = 0 ] && ok || bad "a sweep with a successful call counts"
 reset; MEGAVIBE_AMASS_GATE=0 "$G" check; [ $? -eq 0 ] && ok || bad "gate off"
-w=$("$G" waive "$(printf 'bad\033[31mreason')" 2>&1 >/dev/null); [[ "$w" != *$'\033'* ]] && ok || bad "control characters stripped from a waiver reason"
+w=$("$G" waive "$(printf 'hotfix bad\033[31mreason')" 2>&1 >/dev/null); [[ "$w" != *$'\033'* ]] && ok || bad "control characters stripped from a waiver reason"
 reset
 # the review scripts: refused before any backend runs, waiver accepted for that call, non-reviewer untouched
 mkdir -p "$T/bin"; printf '#!/bin/bash\necho "stub codex $*"; exit 0\n' > "$T/bin/codex"; chmod +x "$T/bin/codex"
@@ -78,6 +78,57 @@ out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools read --model h
 # an inherited CDPATH must not make the gate look absent
 out=$(CDPATH=. PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates codex-review (rc=$rc): $out"
 out=$(CDPATH=. bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --prompt x 2>&1); rc=$?; [ $rc -eq 6 ] && ok || bad "CDPATH=. still gates claude-review (rc=$rc): $out"
-out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --no-amass "prose only" --prompt x 2>&1); rc=$?
+out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --no-amass "hotfix: after the ship" --prompt x 2>&1); rc=$?
 grep -q '"cmd":"waive"' "$AMASS_LEDGER" && ok || bad "claude-review --no-amass records its waiver (rc=$rc): $out"
+reset; out=$(bash "$REPO/scripts/claude-review.sh" --as-reviewer --tools none --no-amass "sweep ran earlier on the branch" --prompt x 2>&1); rc=$?
+[ $rc -eq 2 ] && ! [ -s "$AMASS_LEDGER" ] && ok || bad "claude-review refuses a free-text waiver (rc=$rc): $out"
+reset; out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --no-amass "re-review after fix round" --prompt x 2>&1); rc=$?
+[ $rc -eq 2 ] && ok || bad "codex-review refuses a free-text waiver (rc=$rc): $out"
+printf '# doc\n' > "$T/doc.md"
+out=$(PATH="$T/bin:$PATH" bash "$REPO/scripts/codex-review.sh" --as-reviewer --no-amass "prose: doc wording" --prompt x "$T/doc.md" 2>&1); rc=$?
+[ $rc -ne 2 ] && [ $rc -ne 6 ] && ok || bad "codex-review passes its files to the prose check (rc=$rc): $out"
+
+# --- waiver categories (2026-11-19): only oversize|prose|hotfix, the first two checked against the files
+W="$T/w"; mkdir -p "$W"
+wv() { "$G" waive "$@" >/dev/null 2>&1; echo $?; }
+reset
+[ "$(wv "sweep ran on the branch earlier")" = 2 ] && ok || bad "free-text waiver refused"
+[ "$(wv "small diff, tested")" = 2 ] && ok || bad "small-diff waiver refused"
+printf 'x=1\n' > "$W/a.py"; printf '# t\n' > "$W/a.md"; printf 'a,b\n' > "$W/d.csv"
+[ "$(wv "oversize: big" "$W/a.py")" = 2 ] && ok || bad "oversize refused for a small file"
+head -c 200000 /dev/zero | tr '\0' 'a' > "$W/big.py"; head -c 200000 /dev/zero | tr '\0' 'a' > "$W/big.csv"
+[ "$(wv "oversize: big" "$W/big.py")" = 0 ] && ok || bad "oversize accepted over 150 KB"
+[ "$(wv "Oversize" "$W/big.csv" "$W/a.py")" = 2 ] && ok || bad "data files do not make a review oversize"
+[ "$(wv "prose: wording" "$W/a.md" "$W/d.csv")" = 0 ] && ok || bad "prose accepted for md+csv"
+[ "$(wv "prose: wording" "$W/a.md" "$W/a.py")" = 2 ] && ok || bad "prose refused with a code file"
+[ "$(wv "prose")" = 2 ] && ok || bad "prose refused without files"
+printf 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n' > "$W/p.patch"
+[ "$(wv "prose: readme" "$W/p.patch")" = 0 ] && ok || bad "prose accepted for a patch of .md only"
+printf 'diff --git a/x.sh b/x.sh\nnew file mode 100755\n--- /dev/null\n+++ b/x.sh\n@@ -0,0 +1 @@\n+echo x\n' >> "$W/p.patch"
+[ "$(wv "prose: readme" "$W/p.patch")" = 2 ] && ok || bad "prose refused when the patch adds a script"
+printf 'no paths here\n' > "$W/e.diff"; [ "$(wv "prose" "$W/e.diff")" = 2 ] && ok || bad "prose refused for a patch naming no paths"
+grep -q '"category":"oversize"' "$AMASS_LEDGER" && grep -q '"category":"prose"' "$AMASS_LEDGER" && ok || bad "categories recorded"
+
+# --- status: silent without waivers, owed hotfix until a sweep runs in that directory
+reset; [ -z "$("$G" status)" ] && ok || bad "status silent with no waivers"
+"$G" waive "hotfix: prod down" >/dev/null 2>&1
+st=$("$G" status); [[ "$st" == *"waivers (last 24 h): 1 (hotfix 1)"* && "$st" == *"sweeps owed: proj"* ]] && ok || bad "status shows the owed hotfix sweep: $st"
+sleep 1; printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"%s","ok":1}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$P" >> "$AMASS_LEDGER"
+st=$("$G" status); [[ "$st" != *"owed"* ]] && ok || bad "a later sweep settles the owed hotfix: $st"
+printf '{"ts":"%s","cmd":"waive","project":"old","cwd":"/x","reason":"free text"}\n' "$(now 5)" >> "$AMASS_LEDGER"
+st=$("$G" status); [[ "$st" == *"unchecked 1"* ]] && ok || bad "a legacy free-text waiver shows as unchecked: $st"
+
+# --- the sweep must be of THIS candidate in a git checkout
+R="$T/repo"; mkdir -p "$R/.agent"; cd "$R" || exit 2; R=$PWD
+git init -q; git config user.email t@t; git config user.name t; printf 'a\n' > f.sh; printf 'n\n' > .agent/n.md; git add -A; git commit -qm one
+fprow() { printf '{"ts":"%s","cmd":"run","project":"repo","cwd":"%s","ok":1,"fingerprint":"%s"}\n' "$(now 1)" "$R" "$1" >> "$AMASS_LEDGER"; }
+reset; fp=$("$G" fingerprint); [[ "$fp" == *:* ]] && ok || bad "fingerprint in a git checkout: $fp"
+fprow "$fp"; [ "$(rc_check)" = 0 ] && ok || bad "a sweep of this candidate counts"
+printf 'n2\n' > .agent/n.md; [ "$(rc_check)" = 0 ] && ok || bad ".agent edits do not change the candidate"
+printf 'b\n' > f.sh; out=$("$G" check 2>&1); rc=$?
+[ $rc -eq 6 ] && [[ "$out" == *"another candidate"* ]] && ok || bad "a tracked edit after the sweep needs a new sweep (rc=$rc): $out"
+git commit -qam two; [ "$(rc_check)" = 6 ] && ok || bad "a commit after the sweep needs a new sweep"
+fprow "$("$G" fingerprint)"; [ "$(rc_check)" = 0 ] && ok || bad "a new sweep of the new commit counts"
+reset; printf '{"ts":"%s","cmd":"run","project":"repo","cwd":"%s","ok":1}\n' "$(now 1)" "$R" >> "$AMASS_LEDGER"; [ "$(rc_check)" = 0 ] && ok || bad "a row without a fingerprint counts by the window"
+cd "$P" || exit 2; [ -z "$("$G" fingerprint)" ] && ok || bad "no fingerprint outside git"
 echo "amass-gate tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

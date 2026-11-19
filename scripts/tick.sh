@@ -136,6 +136,13 @@ else
   say "auth: claude-auth-check.sh not installed (skipped)"
 fi
 
+# --- amass waivers (silent when none; an owed hotfix sweep needs action) -----
+AG="$SELF_DIR/amass-gate.sh"; [ -f "$AG" ] || AG="$MV/scripts/amass-gate.sh"
+if [ -f "$AG" ]; then
+  w=$(bash "$AG" status 24 2>/dev/null) || w=""
+  case $w in "") ;; *"sweeps owed"*) NEED=$((NEED + 1)); say "! $w" ;; *) say "$w" ;; esac
+fi
+
 # --- usage ------------------------------------------------------------------
 UR="$SELF_DIR/usage-route.sh"; [ -f "$UR" ] || UR="$MV/scripts/usage-route.sh"
 if [ -f "$UR" ]; then

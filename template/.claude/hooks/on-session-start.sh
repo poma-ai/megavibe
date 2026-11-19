@@ -289,6 +289,16 @@ Claude login: ${_auth}. Say this to the user before any unattended window." ;;
   esac
 fi
 
+# amass waivers: the reader gate's escape hatch, made visible (an audit on 2026-11-19 found most
+# free-text waivers outside the documented exemptions). Silent when there were none.
+AMASS_ROW=""
+_AG="$HOME/.megavibe/scripts/amass-gate.sh"
+if [ -f "$_AG" ]; then
+  _amw=$(bash "$_AG" status 24 2>/dev/null </dev/null) || _amw=""
+  [ -n "$_amw" ] && AMASS_ROW="
+| Amass gate | ${_amw} |"
+fi
+
 # Playwright
 PLAYWRIGHT_STATUS=$(mcp_status "playwright")
 [ -z "$PLAYWRIGHT_STATUS" ] && PLAYWRIGHT_STATUS="not installed"
@@ -310,7 +320,7 @@ SUBAGENT_STATUS="
 | Codex | ${CODEX_STATUS} |
 | Gemini | ${GEMINI_STATUS} |
 | Playwright | ${PLAYWRIGHT_STATUS} |
-| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${REVIEWER_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
+| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${AMASS_ROW}${REVIEWER_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
 
 # The model reads hookSpecificOutput.additionalContext; systemMessage is shown
 # to the user only, so this block used to reach nobody it was written for. And
