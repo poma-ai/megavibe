@@ -8,12 +8,14 @@
 #   - an `amass.sh run` recorded in the amass ledger for THIS directory within the window
 #     (MEGAVIBE_AMASS_GATE_MINS, default 120; the ledger row is written only by a run that
 #     reached a model, so --dry-run does not count) AND of THIS candidate: in a git checkout the
-#     run row carries a fingerprint (HEAD plus the tracked working-tree diff, `.agent/` and
-#     `megavibe-deliverables/` left out), and a run of another fingerprint does not count. A fix
-#     commit or a fix edit after the sweep therefore needs a new sweep; it costs cents.
+#     run row carries a fingerprint (a tree hash of the tracked content, every `.agent/` and
+#     `megavibe-deliverables/` left out, taken when the sweep froze its input), and a run of
+#     another fingerprint does not count. A fix edit or fix commit after the sweep therefore
+#     needs a new sweep (it costs cents); committing exactly the swept content does not.
 #   - `--no-amass "<category>[: note]"` on THAT review call. Only three categories exist, and the
 #     script checks the first two against the files handed to the reviewer:
-#       oversize  the review files (data files such as .csv/.log/images left out) exceed 150 KB
+#       oversize  the review files (data files such as .csv/.log/images left out) exceed 140 KB
+#                 (amass.sh caps its whole prompt, head and context included, at 150 KB)
 #       prose     every file, and every path inside a .patch/.diff, is prose or data
 #                 (.md .markdown .txt .rst .adoc .org .csv .tsv .log .pdf .png .jpg .jpeg)
 #       hotfix    accepted unchecked, but a sweep is owed: `status` lists it until a sweep runs
@@ -40,17 +42,29 @@ LEDGER=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
 MINS=${MEGAVIBE_AMASS_GATE_MINS:-120}
 case $MINS in ''|*[!0-9]*|??????*) MINS=120 ;; esac
 PROJ=$(basename "$PWD")
-CAP=153600
+CAP=143360   # 140 KB: amass.sh caps its whole prompt (head, change text, context) at 150 KB
 OK_EXT=" md markdown txt rst adoc org csv tsv log pdf png jpg jpeg "
 DATA_EXT=" csv tsv log pdf png jpg jpeg "
 
 fingerprint() {
-  local top h d
+  # The CONTENT of the tracked files, not the commit: a tree hash of HEAD's index updated with
+  # every tracked edit (git add -u on a copy of the index, so the stat cache keeps it fast), with
+  # every .agent/ and megavibe-deliverables/ dropped. Committing or amending exactly the swept
+  # content keeps the fingerprint; a fix edit or a fix commit changes it. Independent of diff
+  # settings (diff.external, color). Writes blob objects as `git stash create` does; any failure
+  # prints nothing, and the gate then falls back to the window.
+  local top idx tmp t
   top=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || return 0
-  h=$(git -C "$top" rev-parse HEAD 2>/dev/null) || return 0
-  local sum="shasum -a 256"; command -v shasum >/dev/null 2>&1 || sum=sha256sum
-  d=$(git -C "$top" diff HEAD --binary -- . ':(exclude).agent' ':(exclude)megavibe-deliverables' 2>/dev/null | $sum | cut -c1-16)
-  printf '%s:%s' "$h" "$d"
+  git -C "$top" rev-parse -q --verify HEAD >/dev/null 2>&1 || return 0
+  idx=$(git -C "$top" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/amass-fp.XXXXXX") || return 0
+  if [ -f "$idx" ]; then cp "$idx" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }; else : > "$tmp"; fi
+  t=$( cd "$top" && export GIT_INDEX_FILE="$tmp" && { [ -s "$tmp" ] || git read-tree HEAD; } \
+       && git add -u -- . 2>/dev/null \
+       && git rm --cached -r -q --ignore-unmatch -- ':(glob)**/.agent/**' ':(glob)**/megavibe-deliverables/**' >/dev/null 2>&1 \
+       && git write-tree 2>/dev/null )
+  rm -f "$tmp" "$tmp.lock" 2>/dev/null
+  [ -n "$t" ] && printf 'tree:%s' "$t"
 }
 ext_of() { local b=${1##*/}; case $b in *.*) printf '%s' "${b##*.}" | tr 'A-Z' 'a-z' ;; esac; }
 # every path a patch touches, from each header form git writes (renames, copies, binary and
@@ -76,7 +90,7 @@ case ${1:-check} in
           [ -f "$f" ] || continue; in_set "$(ext_of "$f")" "$DATA_EXT" && continue
           total=$((total + $(wc -c < "$f"))); n=$((n + 1))
         done
-        [ "$total" -gt "$CAP" ] || { echo "amass-gate: --no-amass oversize refused: the review files come to $((total / 1024)) KB ($n non-data files), not over 150 KB. Sweep them, or split them by file group." >&2; exit 2; } ;;
+        [ "$total" -gt "$CAP" ] || { echo "amass-gate: --no-amass oversize refused: the review files come to $((total / 1024)) KB ($n non-data files), not over 140 KB. Sweep them (amass.sh run; raise --max-input-kb if its prompt is just over 150 KB), or split them by file group." >&2; exit 2; } ;;
       prose)
         [ $# -gt 0 ] || { echo "amass-gate: --no-amass prose refused: no files were passed to check" >&2; exit 2; }
         for f in "$@"; do
@@ -94,7 +108,7 @@ case ${1:-check} in
       hotfix) ;;
       *) cat >&2 <<'EOF'
 amass-gate: --no-amass refused: the reason must start with oversize, prose or hotfix (e.g. --no-amass "prose: README wording").
-  oversize  the review files exceed 150 KB (checked)    prose  only prose/data files change (checked)
+  oversize  the review files exceed 140 KB (checked)    prose  only prose/data files change (checked)
   hotfix    urgent fix reviewed after the ship (a sweep is owed and shown at session start)
 A re-review after a fix round, a small diff or another author's PR is not a waiver: run the sweep, it costs cents.
 EOF
@@ -126,7 +140,7 @@ EOF
     case $ok in ''|*[!0-9]*) exit 0 ;; esac   # unreadable ledger content: fail open
     [ "$ok" -gt 0 ] && exit 0
     if [ "${recent:-0}" -gt 0 ]; then
-      echo "amass-gate: the sweep recorded here in the last $MINS minutes was of another candidate (a commit or a tracked edit since), so this reader round is refused. Sweep the current candidate:" >&2
+      echo "amass-gate: the sweep recorded here in the last $MINS minutes was of other content (a tracked edit or a fix commit since), so this reader round is refused. Sweep the current candidate:" >&2
     else
       echo "amass-gate: no amass sweep recorded for \"$PWD\" in the last $MINS minutes, so this reader round is refused." >&2
       echo "Run the sweep on the frozen candidate first (cents; delegation.md, \"Cut rounds before cutting readers\"):" >&2
@@ -134,24 +148,25 @@ EOF
     cat >&2 <<'EOF'
   ~/.megavibe/scripts/amass.sh run --out <dir> --change "<what changed, what to hunt>" FILE... [--context FILE...]
   ~/.megavibe/scripts/amass.sh dedupe --out <dir>     # then triage the clusters by running their exact inputs
-Waivers exist only for --no-amass "oversize: ..." (files over 150 KB), "prose: ..." (prose-only change), both checked, and "hotfix: ..." (a sweep is then owed).
+Waivers exist only for --no-amass "oversize: ..." (files over 140 KB), "prose: ..." (prose-only change), both checked, and "hotfix: ..." (a sweep is then owed).
 EOF
     exit 6
     ;;
   status)
     h=${2:-24}; case $h in ''|*[!0-9]*) h=24 ;; esac
     command -v jq >/dev/null 2>&1 && [ -r "$LEDGER" ] || exit 0
-    jq -R -s -r --argjson now "$(date +%s)" --argjson cut $(( $(date +%s) - h * 3600 )) --arg h "$h" '
+    grep -E '"cmd": *"(waive|run)"' "$LEDGER" 2>/dev/null | jq -R -s -r --argjson now "$(date +%s)" --argjson cut $(( $(date +%s) - h * 3600 )) --arg h "$h" '
       [split("\n")[] | fromjson? | select(type == "object")
-        | . + {t: ((.ts // "") | tostring | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0)}] as $rows
+        | . + {t: ((.ts // "") | tostring | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0)}]
+      | to_entries | map(.value + {i: .key}) as $rows
       | [$rows[] | select(.cmd == "waive" and .t >= $cut)] as $w
       | [$rows[] | select(.cmd == "waive" and (.category // "") == "hotfix" and .t >= ($now - 7 * 86400)) as $x
-          | select(any($rows[]; .cmd == "run" and ((.ok | tonumber? // 0) > 0) and .cwd == $x.cwd and .t >= $x.t) | not) | $x.project] | unique as $owed
+          | select(any($rows[]; .cmd == "run" and ((.ok | tonumber? // 0) > 0) and .cwd == $x.cwd and .i > $x.i) | not) | $x.project] | unique as $owed
       | if ($w | length) == 0 and ($owed | length) == 0 then empty else
           "amass waivers (last \($h) h): \($w | length)"
           + (if ($w | length) > 0 then " (" + ($w | group_by(.category // "unchecked") | map("\(.[0].category // "unchecked") \(length)") | join(", ")) + ")" else "" end)
           + (if ($owed | length) > 0 then "; hotfix sweeps owed: " + ($owed | join(", ")) else "" end)
-        end' "$LEDGER" 2>/dev/null
+        end' 2>/dev/null
     ;;
   *) echo "usage: amass-gate.sh check | waive <reason> [FILE...] | fingerprint | status [HOURS]" >&2; exit 2 ;;
 esac

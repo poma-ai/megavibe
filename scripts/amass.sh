@@ -3,8 +3,8 @@
 # input, one lens per prompt, then ONE dedupe call. It is a source of LEADS, never a review
 # or a verdict (the review tiers in .claude/rules/delegation.md are unchanged), but a
 # successful run must PRECEDE every reader round: codex-review.sh and claude-review.sh
-# --as-reviewer exit 6 without one from this directory, of this candidate (git HEAD plus the
-# tracked diff), in the last 120 minutes, unless the call passes a checked waiver
+# --as-reviewer exit 6 without one from this directory, of this content (a tree hash of the
+# tracked files, taken when the input is frozen), in the last 120 minutes, unless the call passes a checked waiver
 # --no-amass "oversize|prose|hotfix: ..." (amass-gate.sh).
 #
 #   amass.sh run    --out DIR [--change TEXT | --task-file F] [--provider auto|mix|claude|codex] [--split N:M]
@@ -440,8 +440,7 @@ alive() { kill -0 "$1" 2>/dev/null; }
 ledger() { # cmd model calls ok cost input_kb unknown_costs tokens provider   (cost is null whenever any call's cost is unknown; cost_known is the known subtotal)
   local f=${AMASS_LEDGER:-$HOME/.megavibe/amass-usage.jsonl}
   mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
-  local fp="" g; g="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/amass-gate.sh"   # the candidate this run saw, for the reader gate
-  [ "$1" = run ] && [ -f "$g" ] && fp=$(bash "$g" fingerprint 2>/dev/null)
+  local fp=""; [ "$1" = run ] && fp=${RUN_FP:-}   # the candidate this run read (taken around freezing its input), for the reader gate
   jq -cn --arg fp "$fp" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cmd "$1" --arg model "$2" --arg proj "$(basename "$PWD")" --arg cwd "$PWD" \
     --arg provider "$9" --arg tokens "${8:-?}" --argjson calls "$3" --argjson ok "$4" --arg cost "$5" --argjson kb "$6" --argjson unk "${7:-0}" \
     '{ts:$ts,cmd:$cmd,model:$model,provider:$provider,tokens:($tokens|tonumber? // null),project:$proj,cwd:$cwd,calls:$calls,ok:$ok,cost:(if $unk > 0 then null else ($cost|tonumber? // null) end),cost_known:(if $provider == "codex" and $unk == $calls then null else ($cost|tonumber? // null) end),cost_unknown_calls:$unk,input_kb:$kb} + (if $provider == "codex" then {cost_estimated:($unk < $calls)} else {} end) + (if $fp != "" then {fingerprint:$fp} else {} end)' >> "$f" 2>/dev/null || true
@@ -669,6 +668,10 @@ cmd_run() {
   fi
   mkdir "$OUT/raw" "$OUT/lists" "$OUT/prompts" "$OUT/work"
   OUT=$(cd "$OUT" && pwd -P); WORK="$OUT/work"
+  # The reader gate counts this sweep only for the candidate it read: take the fingerprint before
+  # and after freezing the input; an edit in between records a value no candidate matches.
+  local gate fp0=""; gate="$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd -P)/amass-gate.sh"
+  [ -f "$gate" ] && fp0=$(bash "$gate" fingerprint 2>/dev/null)
   {
     if [ -n "$TASK_FILE" ]; then cat < "$TASK_FILE"; else
       printf '%s\n' "$DEFAULT_HEAD"
@@ -681,12 +684,14 @@ cmd_run() {
     for i in "${FILES[@]}"; do printf '\n===== FILE %s =====\n' "$i"; cat < "$i"; done
     for i in ${CONTEXT[@]+"${CONTEXT[@]}"}; do printf '\n===== CONTEXT %s =====\n' "$i"; cat < "$i"; done
   } > "$OUT/base.txt"
+  RUN_FP=$fp0
+  if [ -n "$fp0" ] && [ "$(bash "$gate" fingerprint 2>/dev/null)" != "$fp0" ]; then RUN_FP="changed-while-reading"; fi
   local bytes kb
   bytes=$(wc -c < "$OUT/base.txt" | tr -d ' '); kb=$(( (bytes + 1023) / 1024 ))
   printf 'input %d KB (about %d tokens at 1.8 bytes per token)\n' "$kb" $(( bytes * 10 / 18 ))
   # auto without an explicit cap needs to know who is usable before it knows the cap
   if [ "$REQ" = auto ] && [ "$MAXKB_SET" = 0 ]; then resolve_providers; apply_caps; fi
-  if [ "$kb" -gt "$MAXKB" ]; then die "input is $kb KB, above --max-input-kb $MAXKB ($CAP_REASON); inline less or raise the limit on purpose"; fi
+  if [ "$kb" -gt "$MAXKB" ]; then die "input is $kb KB, above --max-input-kb $MAXKB ($CAP_REASON); inline less or raise the limit on purpose (nothing was sent; $OUT now exists, so the next run needs a new --out)"; fi
 
   # prompts: the shared base first, the lens last
   local PN=() PK=()

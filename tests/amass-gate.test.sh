@@ -96,7 +96,7 @@ reset
 [ "$(wv "small diff, tested")" = 2 ] && ok || bad "small-diff waiver refused"
 printf 'x=1\n' > "$W/a.py"; printf '# t\n' > "$W/a.md"; printf 'a,b\n' > "$W/d.csv"
 [ "$(wv "oversize: big" "$W/a.py")" = 2 ] && ok || bad "oversize refused for a small file"
-head -c 200000 /dev/zero | tr '\0' 'a' > "$W/big.py"; head -c 200000 /dev/zero | tr '\0' 'a' > "$W/big.csv"
+head -c 145000 /dev/zero | tr '\0' 'a' > "$W/big.py"; head -c 200000 /dev/zero | tr '\0' 'a' > "$W/big.csv"
 [ "$(wv "oversize: big" "$W/big.py")" = 0 ] && ok || bad "oversize accepted over 150 KB"
 [ "$(wv "Oversize" "$W/big.csv" "$W/a.py")" = 2 ] && ok || bad "data files do not make a review oversize"
 [ "$(wv "prose: wording" "$W/a.md" "$W/d.csv")" = 0 ] && ok || bad "prose accepted for md+csv"
@@ -125,6 +125,11 @@ reset; [ -z "$("$G" status)" ] && ok || bad "status silent with no waivers"
 st=$("$G" status); [[ "$st" == *"waivers (last 24 h): 1 (hotfix 1)"* && "$st" == *"sweeps owed: proj"* ]] && ok || bad "status shows the owed hotfix sweep: $st"
 sleep 1; printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"%s","ok":1}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$P" >> "$AMASS_LEDGER"
 st=$("$G" status); [[ "$st" != *"owed"* ]] && ok || bad "a later sweep settles the owed hotfix: $st"
+# a sweep earlier in the ledger, in the same second, does not settle a later hotfix (ledger order breaks the tie)
+reset; ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '{"ts":"%s","cmd":"run","project":"proj","cwd":"%s","ok":1}\n{"ts":"%s","cmd":"waive","category":"hotfix","project":"proj","cwd":"%s","reason":"hotfix"}\n' "$ts" "$P" "$ts" "$P" > "$AMASS_LEDGER"
+st=$("$G" status); [[ "$st" == *"sweeps owed: proj"* ]] && ok || bad "same-second earlier sweep leaves the hotfix owed: $st"
+
 printf '{"ts":"%s","cmd":"waive","category":"hotfix","project":"gone","cwd":"/gone","reason":"hotfix"}\n' "$(now 14400)" >> "$AMASS_LEDGER"
 st=$("$G" status); [[ "$st" != *"gone"* ]] && ok || bad "an owed hotfix older than 7 days is no longer listed: $st"
 printf '{"ts":"%s","cmd":"waive","project":"old","cwd":"/x","reason":"free text"}\n' "$(now 5)" >> "$AMASS_LEDGER"
@@ -133,14 +138,25 @@ st=$("$G" status); [[ "$st" == *"unchecked 1"* ]] && ok || bad "a legacy free-te
 # --- the sweep must be of THIS candidate in a git checkout
 R="$T/repo"; mkdir -p "$R/.agent"; cd "$R" || exit 2; R=$PWD
 git init -q; git config user.email t@t; git config user.name t; printf 'a\n' > f.sh; printf 'n\n' > .agent/n.md; git add -A; git commit -qm one
-fprow() { printf '{"ts":"%s","cmd":"run","project":"repo","cwd":"%s","ok":1,"fingerprint":"%s"}\n' "$(now 1)" "$R" "$1" >> "$AMASS_LEDGER"; }
-reset; fp=$("$G" fingerprint); [[ "$fp" == *:* ]] && ok || bad "fingerprint in a git checkout: $fp"
+fprow() { printf '{"ts":"%s","cmd":"run","project":"repo","cwd":"%s","ok":1,"fingerprint":"%s"}\n' "$(now 1)" "$PWD" "$1" >> "$AMASS_LEDGER"; }
+reset; fp=$("$G" fingerprint); [[ "$fp" == tree:* ]] && ok || bad "fingerprint in a git checkout: $fp"
 fprow "$fp"; [ "$(rc_check)" = 0 ] && ok || bad "a sweep of this candidate counts"
 printf 'n2\n' > .agent/n.md; [ "$(rc_check)" = 0 ] && ok || bad ".agent edits do not change the candidate"
 printf 'b\n' > f.sh; out=$("$G" check 2>&1); rc=$?
-[ $rc -eq 6 ] && [[ "$out" == *"another candidate"* ]] && ok || bad "a tracked edit after the sweep needs a new sweep (rc=$rc): $out"
-git commit -qam two; [ "$(rc_check)" = 6 ] && ok || bad "a commit after the sweep needs a new sweep"
+[ $rc -eq 6 ] && [[ "$out" == *"other content"* ]] && ok || bad "a tracked edit after the sweep needs a new sweep (rc=$rc): $out"
+git commit -qam two; [ "$(rc_check)" = 6 ] && ok || bad "a commit of unswept content needs a new sweep"
+reset; fprow "$("$G" fingerprint)"; printf 'e\n' > f.sh; fprow "$("$G" fingerprint)"
+git commit -qam swept; [ "$(rc_check)" = 0 ] && ok || bad "committing exactly the swept content keeps the sweep"
+git commit -q --amend -m "swept, reworded"; [ "$(rc_check)" = 0 ] && ok || bad "amending the message keeps the sweep"
+git -c diff.external=/bin/echo -c color.ui=always status >/dev/null; [ "$(GIT_EXTERNAL_DIFF=/bin/echo rc_check)" = 0 ] && ok || bad "diff settings do not change the fingerprint"
+printf 'f\n' > f.sh; git add f.sh; [ "$(rc_check)" = 6 ] && ok || bad "a staged fix edit needs a new sweep"; git checkout -q HEAD -- f.sh
 fprow "$("$G" fingerprint)"; [ "$(rc_check)" = 0 ] && ok || bad "a new sweep of the new commit counts"
+# a nested project's .agent/ (cwd below the git top) is left out too
+mkdir -p "$R/sub/.agent"; printf 'x\n' > "$R/sub/.agent/log.md"; printf 'c\n' > "$R/sub/c.py"; git add -A; git commit -qm three
+cd "$R/sub" || exit 2; reset; fprow "$("$G" fingerprint)"
+printf 'another note\n' > .agent/log.md; [ "$(rc_check)" = 0 ] && ok || bad "a nested .agent/ edit does not change the candidate"
+printf 'd\n' > c.py; [ "$(rc_check)" = 6 ] && ok || bad "a nested code edit does change it"
+git checkout -q -- c.py; cd "$R" || exit 2
 reset; printf '{"ts":"%s","cmd":"run","project":"repo","cwd":"%s","ok":1}\n' "$(now 1)" "$R" >> "$AMASS_LEDGER"; [ "$(rc_check)" = 0 ] && ok || bad "a row without a fingerprint counts by the window"
 cd "$P" || exit 2; [ -z "$("$G" fingerprint)" ] && ok || bad "no fingerprint outside git"
 echo "amass-gate tests: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

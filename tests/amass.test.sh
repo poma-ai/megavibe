@@ -38,6 +38,8 @@ printf '%s\n' "${CLAUDE_CODE_USE_BEDROCK:-<unset>}" > "$d/bedrock"
 pwd > "$d/cwd"
 env | cut -d= -f1 | sort > "$d/envnames"
 cat > "$d/prompt"
+# FAKE_EDIT=<repo>: commit an edit while the sweep is running (the reader gate must not credit it)
+if [ -n "${FAKE_EDIT:-}" ]; then ( cd "$FAKE_EDIT" && printf 'during\n' >> f && git commit -qam during ) >/dev/null 2>&1; fi
 if [ -n "${FAKE_DEDUPE_FAIL:-}" ] && grep -q 'dedupe stage' "$d/prompt"; then echo "boom" >&2; exit 1; fi
 case "${FAKE_MODE:-ok}" in
   nul) jq -n '[{"type":"result","is_error":false,"result":"F1 | P1 | a:1 | before\u0000after | why\nF2 | P2 | a:2 | ok | why","total_cost_usd":0.005}]'; exit 0 ;;
@@ -851,6 +853,15 @@ mkdir -p "$T/gitc" && ( cd "$T/gitc" && git init -q && git config user.email t@t
 newlog 2
 ( cd "$T/gitc" && "$AM" run --out "$T/o2g" --change "a change" --lens x=text1 --copies 1 --whole 0 "$T/a.txt" >/dev/null 2>&1 )
 fpw=$(cd "$T/gitc" && bash "$(dirname "$AM")/amass-gate.sh" fingerprint)
+# CDPATH must not break finding the gate (the row then lost its fingerprint)
+newlog 2
+( cd "$T/gitc" && CDPATH=. "$AM" run --out "$T/o2h" --change "a change" --lens x=text1 --copies 1 --whole 0 "$T/a.txt" >/dev/null 2>&1 )
+check "CDPATH=. still records the fingerprint" 'tail -1 "$AMASS_LEDGER" | jq -e --arg f "$fpw" ".fingerprint == \$f" >/dev/null'
+# an edit committed while the workers run is not credited to the sweep (fingerprint taken when the input was frozen)
+newlog 2
+( cd "$T/gitc" && fk FAKE_EDIT="$T/gitc" -- "$AM" run --out "$T/o2i" --change "a change" --lens x=text1 --copies 1 --whole 0 "$T/a.txt" >/dev/null 2>&1 )
+check "a commit during the sweep makes the gate refuse" 'git -C "$T/gitc" log --oneline | grep -q during && ( cd "$T/gitc" && bash "$(dirname "$AM")/amass-gate.sh" check >/dev/null 2>&1; [ $? -eq 6 ] )'
+
 check "a run in a git checkout records its fingerprint" '[ -n "$fpw" ] && tail -1 "$AMASS_LEDGER" | jq -e --arg f "$fpw" ".cmd == \"run\" and .fingerprint == \$f" >/dev/null'
 printf 'amass.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
