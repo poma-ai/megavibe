@@ -42,7 +42,7 @@ set -u
 # the remote's last-fetched refs do not hold; a new branch yields every commit it
 # does not share with the remote): added lines, commit messages, changed file paths.
 #   generic     home paths (/Users/<name>/, /home/<name>/; placeholders such as
-#               /Users/you/ pass, the real login name never does), private keys and
+#               /Users/<you>/ pass, the real login name never does), private keys and
 #               token shapes (AWS, GitHub, Slack, Anthropic/OpenAI sk-, Google AIza,
 #               Stripe live, GitLab; a line containing example/placeholder/xxx/redacted/
 #               dummy is skipped for these, as scripts/leak-scan.sh does), email addresses other than: the authors and

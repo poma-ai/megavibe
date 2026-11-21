@@ -15,7 +15,7 @@ bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
 
 export HOME="$T/home"; mkdir -p "$HOME/.megavibe/personal" "$T/bin" "$T/vis"
 export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
-git config --global user.email "dev@corp.test"; git config --global user.name dev
+git config --global user.email "user@corp.test"; git config --global user.name dev
 git config --global init.defaultBranch main
 # stub gh: `gh repo view [owner/repo] --json ...`; visibility per file $T/vis/<owner>_<repo>; GH_FAIL=1 fails
 cat > "$T/bin/gh" <<'EOF'
@@ -89,9 +89,9 @@ commit "$L" p.md "cd /Users/you/proj; ls /home/runner/work; mail user@example.co
   "docs
 
 Co-authored-by: megavibe <bot@vendor.test>
-Signed-off-by: Dev <dev@corp.test>"
+Signed-off-by: Dev <user@corp.test>"
 passes "placeholders, trailers, noreply, example.com" "$L" "git push origin main"
-commit "$L" p2.md "committer is dev@corp.test and that is published anyway"
+commit "$L" p2.md "committer is user@corp.test and that is published anyway"
 passes "the commit's own author email" "$L" "git push"
 HOME_USER=$(basename "$HOME")
 commit "$L" p3.md "path /Users/$HOME_USER/x"
