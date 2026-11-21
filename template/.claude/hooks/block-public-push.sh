@@ -194,6 +194,7 @@ def do_cd(argv):
     state["cwd"] = os.path.normpath(os.path.join(state["cwd"], expand(p)))
 
 SCOPES = []
+UNPARSED = []
 ENVSEL = {}   # inline GH_REPO= / GH_HOST= selections, which gh honours (the override variable is NOT honoured inline)
 def note_assign(a):
     if a.startswith("MEGAVIBE_ALLOW_PUBLIC_PUSH="):
@@ -233,7 +234,9 @@ def scan_argv(argv, depth=0):
         for j, a in enumerate(argv[1:], 1):
             if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
                 t = split_tokens(argv[j + 1])
-                if t is None: return
+                if t is None:
+                    if GITPUSH.search(argv[j + 1]): UNPARSED.append(argv[j + 1])
+                    return
                 saved = (state["cwd"], state["cwd_known"], len(SCOPES))
                 for c in commands(t): scan_argv(c, depth + 1)
                 state["cwd"], state["cwd_known"] = saved[0], saved[1]; del SCOPES[saved[2]:]   # a child shell's cd does not persist
@@ -281,6 +284,8 @@ if toks is None:
     sys.exit(0)
 for c in commands(toks):
     scan_argv(c)
+if UNPARSED:
+    ask(["a nested shell command mentions a push or a public-repository operation but could not be parsed, so its target was not checked."])
 SUBST = re.compile(r"(?:\$\(|`|\beval\b)[^)`]*" + GITPUSH.pattern)
 if not ACTIONS and SUBST.search(TEXT):
     ask(["a push or public-repository operation sits inside a command substitution or eval, which this guard does not parse: its target was not checked."])

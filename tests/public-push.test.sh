@@ -296,6 +296,8 @@ run "$MV" "git push origin k"; lacks "denylist value is redacted like any secret
 case "$WHY" in *"denylist"*) ok ;; *) bad "denylist hit still reported" ;; esac
 rm -f "$HOME/.megavibe/personal/public-push.deny"; ( cd "$MV" && git checkout -q main )
 
+asks "an unparseable nested shell string with a push asks" "$MV" "bash -c \"git push origin 'main\"" "nested shell"
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 
