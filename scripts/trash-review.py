@@ -157,7 +157,7 @@ def root_of(r):
     v = r.get("trash_root")
     if v is None:
         return TRASH
-    return v if isinstance(v, str) and v else "\0not-a-root"
+    return v if isinstance(v, str) and v else "not-a-root"
 
 
 def claim_dir(root):
@@ -459,7 +459,7 @@ def cmd_status():
     for root in sorted({root_of(r) for r in ledger() if r.get("trash_path") and r.get("id") not in closed} - {TRASH}):
         if not root_ok(root):
             n = sum(1 for r in ledger() if root_of(r) == root and r.get("id") not in closed)
-            print(f"{n} item(s) in {root} not counted: that volume is not mounted (or its Trash is not usable)")
+            print(f"{n} item(s) in {json.dumps(root, ensure_ascii=True)} not counted: that volume is not mounted (or its Trash is not usable)")
     d = droppable()
     if d:
         kb = sum(max(r.get("kb", 0), 0) for r in d)
@@ -539,12 +539,14 @@ def claim_dirs():
     """Existing claim directories: the boot one, and one inside each mounted volume Trash the ledger names."""
     out = []
     for root in sorted({TRASH} | {root_of(r) for r in ledger()}):
+        if not root_ok(root):
+            continue
         d = claim_dir(root)
         try:
             real = stat.S_ISDIR(os.lstat(d).st_mode)
-        except OSError:
+        except (OSError, ValueError):
             real = False
-        if root_ok(root) and real:
+        if real:
             out.append(d)
     return out
 

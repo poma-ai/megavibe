@@ -1700,6 +1700,20 @@ case("mount_of a path on the boot volume is some ancestor of it", sys.argv[2].st
 case("ident_matches without root uses the device too", tr.ident_matches({"dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), False)
 case("ident_matches on a volume record uses the inode", tr.ident_matches({"trash_root": "/V/.Trashes/1", "dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), True)
 case("an old record with no root means ~/.Trash", tr.root_of({}), tr.TRASH)
+# a malformed root in a ledger row must not crash the paths that list claim directories
+import json as _j, tempfile as _t
+_d = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d
+open(os.path.join(_d, "ledger.jsonl"), "w").write(_j.dumps({"id": "bad1", "path": "/x", "trash_path": "/y/z", "trash_root": "a\u0000b", "dev": 1, "ino": 2}) + "\n" + _j.dumps({"id": "bad2", "path": "/x", "trash_path": "/y/z", "trash_root": ["l"], "dev": 1, "ino": 2}) + "\n")
+spec2 = importlib.util.spec_from_file_location("tr2", sys.argv[1]); tr2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(tr2)
+try:
+    case("claim_dirs with malformed roots does not raise", tr2.claim_dirs(), [])
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()) as _o:
+        tr2.cmd_status()
+    case("status shows a malformed root escaped", "\\u0000" in _o.getvalue(), True)
+    case("same_entry with a NUL root is False", tr2.same_entry({"trash_path": "/y/z", "trash_root": "a\0b", "dev": 1, "ino": 2}), False)
+except Exception as e:
+    bad.append("malformed trash_root raised %r" % (e,))
 for bad_root in ("", 0, [], ["x"], {"a": 1}, 7):
     r = tr.root_of({"trash_root": bad_root})
     case("a trash_root of %r is never a Trash" % (bad_root,), (isinstance(r, str), tr.root_ok(r)), (True, False))
