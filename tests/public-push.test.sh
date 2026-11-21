@@ -1,0 +1,343 @@
+#!/bin/bash
+# /bin/bash tests/public-push.test.sh
+# block-public-push.sh: visibility lookup (stub gh), scan of outgoing commits, denylist,
+# unknown-visibility posture, command parsing, override. Nothing touches the network: the
+# remotes are never contacted, gh is a stub, HOME is a scratch directory.
+set -u
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+HOOK="$REPO/template/.claude/hooks/block-public-push.sh"
+T=$(mktemp -d "${TMPDIR:-/tmp}/public-push-test.XXXXXX") || exit 2
+T=$(cd "$T" && pwd -P)
+trap '/bin/rm -rf "$T"' EXIT
+PASS=0; FAIL=0
+ok() { PASS=$((PASS + 1)); }
+bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
+
+export HOME="$T/home"; mkdir -p "$HOME/.megavibe/personal" "$T/bin" "$T/vis"
+export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
+git config --global user.email "user@corp.test"; git config --global user.name dev
+git config --global init.defaultBranch main
+# stub gh: `gh repo view [owner/repo] --json ...`; visibility per file $T/vis/<owner>_<repo>; GH_FAIL=1 fails
+cat > "$T/bin/gh" <<'EOF'
+#!/bin/bash
+echo "$*" >> "$STUB_LOG"
+[ "${GH_FAIL:-0}" = 1 ] && exit 1
+repo=""; [ "$1 $2" = "repo view" ] && repo=$3
+[ "${repo:0:2}" = "--" ] && repo=$(git remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+[ -z "$repo" ] && repo="nowhere/none"
+f="$STUB_DIR/$(printf '%s' "$repo" | tr / _)"
+[ -f "$f" ] || exit 1
+printf '{"visibility":"%s","nameWithOwner":"%s"}\n' "$(cat "$f")" "$repo"
+EOF
+chmod +x "$T/bin/gh"
+export STUB_DIR="$T/vis" STUB_LOG="$T/gh.log" PATH="$T/bin:$PATH"
+printf PUBLIC > "$T/vis/acme_pub"; printf PRIVATE > "$T/vis/acme_priv"; printf INTERNAL > "$T/vis/acme_int"
+printf PUBLIC > "$T/vis/cur_rent"
+
+mkrepo() {   # mkrepo <dir> <remote url>: a repo with one clean commit that the "remote" already has
+  mkdir -p "$1" && ( cd "$1" && git init -q && git remote add origin "$2" && echo "hello" > a.txt && git add a.txt \
+    && git commit -qm "init" && git update-ref refs/remotes/origin/main HEAD && git branch -q --set-upstream-to=origin/main main 2>/dev/null; true )
+}
+commit() {   # commit <dir> <file> <content> [message]
+  ( cd "$1" && printf '%s\n' "$3" >> "$2" && git add "$2" && git commit -qm "${4:-change}" )
+}
+run() {   # run <cwd> <command>: sets RC OUT WHY
+  OUT=$(jq -n --arg c "$2" --arg d "$1" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' | bash "$HOOK" 2>/dev/null); RC=$?
+  WHY=$(printf '%s' "$OUT" | jq -r 'select(.hookSpecificOutput.permissionDecision == "ask") | .hookSpecificOutput.permissionDecisionReason' 2>/dev/null)
+}
+passes() { run "$2" "$3"; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "$1 (rc=$RC out=${OUT:0:200})"; fi; }
+asks() {  # asks <name> <cwd> <cmd> [text the reason must contain]...
+  local name=$1 cwd=$2 cmd=$3; run "$cwd" "$cmd"; shift 3
+  if [ "$RC" != 0 ] || [ -z "$WHY" ]; then bad "$name (rc=$RC, no ask)"; return; fi
+  local s; for s in "$@"; do case "$WHY" in *"$s"*) ;; *) bad "$name (reason lacks: $s) :: ${WHY:0:300}"; return ;; esac; done
+  ok
+}
+lacks() { case "$WHY" in *"$2"*) bad "$1 (reason has: $2)" ;; *) ok ;; esac; }
+
+PUB="$T/pub"; PRIV="$T/priv"; mkrepo "$PUB" https://github.com/acme/pub.git; mkrepo "$PRIV" git@github.com:acme/priv.git
+
+# 1. Targets: public clean passes, private/internal pass with no scan, hits ask.
+commit "$PUB" a.txt "plain change"
+passes "public, clean outgoing commit" "$PUB" "git push origin main"
+passes "public, bare git push (upstream remote)" "$PUB" "git push"
+commit "$PRIV" a.txt "token ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+passes "private target is not scanned" "$PRIV" "git push origin main"
+printf INTERNAL > "$T/vis/acme_priv"
+passes "internal target is not scanned" "$PRIV" "git push"
+printf PRIVATE > "$T/vis/acme_priv"
+
+# 2. Generic leaks on a public target.
+L=$T/leak; mkrepo "$L" https://github.com/acme/pub.git
+commit "$L" notes.md "see /Users/jsmith/work/secret.txt for the formula" "add notes"
+asks "home path in added line" "$L" "git push origin main" "PUBLIC" "notes.md:" "[home path]"
+( cd "$L" && git reset -q --hard HEAD~1 )
+commit "$L" k.txt "AKIAABCDEFGHIJKLMNOP"
+asks "AWS key; value truncated" "$L" "git push" "[AWS key]" "AKIA…"; lacks "secret not echoed" "ABCDEFGHIJKLMNOP"
+( cd "$L" && git reset -q --hard HEAD~1 )
+commit "$L" k.txt "-----BEGIN OPENSSH PRIVATE KEY-----"
+asks "private key" "$L" "git push" "[private key]"
+( cd "$L" && git reset -q --hard HEAD~1 )
+commit "$L" m.txt "x" "mail bob@internal-corp.biz about it"
+asks "email in commit message" "$L" "git push" "[email]" "message"
+( cd "$L" && git reset -q --hard HEAD~1 )
+commit "$L" m.txt "contact: alice@internal-corp.biz"
+asks "email in added line" "$L" "git push" "[email]"
+( cd "$L" && git reset -q --hard HEAD~1 )
+
+# 3. False-block guards: placeholders, trailers, own authors, noreply, example domains.
+commit "$L" p.md "cd /Users/you/proj; ls /home/runner/work; mail user@example.com; x@users.noreply.github.com" \
+  "docs
+
+Co-authored-by: megavibe <bot@vendor.test>
+Signed-off-by: Dev <user@corp.test>"
+passes "placeholders, trailers, noreply, example.com" "$L" "git push origin main"
+commit "$L" p2.md "committer is user@corp.test and that is published anyway"
+passes "the commit's own author email" "$L" "git push"
+HOME_USER=$(basename "$HOME")
+commit "$L" p3.md "path /Users/$HOME_USER/x"
+asks "the real login name always hits" "$L" "git push" "[home path]"
+( cd "$L" && git reset -q --hard HEAD~1 )
+printf 'jane@corp-partner.biz\n*@partner.biz\n' > "$HOME/.megavibe/personal/public-push.allow-email"
+commit "$L" p4.md "ping jane@corp-partner.biz and bob@partner.biz"
+passes "allow-email file" "$L" "git push"
+/bin/rm -f "$HOME/.megavibe/personal/public-push.allow-email"
+
+# 4. Denylist: literal (case-insensitive), /regex/, invalid regex, path names, comments.
+D=$T/deny; mkrepo "$D" https://github.com/acme/pub.git
+printf '# customers\nACME Corp\n/prod-db-[0-9]+/\n/(unclosed/\n\n' > "$HOME/.megavibe/personal/public-push.deny"
+commit "$D" c.md "pricing for acme corp is 4 euro"
+asks "denylist literal, case-insensitive" "$D" "git push" "[denylist #2]" "c.md:"
+( cd "$D" && git reset -q --hard HEAD~1 )
+commit "$D" c.md "connect to prod-db-17 now"
+asks "denylist regex" "$D" "git push" "[denylist #3]" "invalid regex" "4"
+( cd "$D" && git reset -q --hard HEAD~1 )
+( cd "$D" && echo x > "ACME Corp-notes.txt" && git add . && git commit -qm "file named after a customer" )
+asks "denylist hits a file path" "$D" "git push" "path"
+( cd "$D" && git reset -q --hard HEAD~1 )
+commit "$D" c.md "nothing to see"
+passes "denylist present, clean change" "$D" "git push"
+/bin/rm -f "$HOME/.megavibe/personal/public-push.deny"
+
+# 5. New branch versus existing branch.
+N=$T/newbr; mkrepo "$N" https://github.com/acme/pub.git
+commit "$N" a.txt "token ghp_abcdefghijklmnopqrstuvwxyz0123456789" "early commit"
+( cd "$N" && git update-ref refs/remotes/origin/main HEAD )   # the remote already holds it
+( cd "$N" && git checkout -q -b feat )
+commit "$N" b.txt "fine"
+passes "new branch: only commits the remote lacks are scanned" "$N" "git push -u origin feat"
+( cd "$N" && git checkout -q main && git checkout -q -b feat2 && git reset -q --hard HEAD~0 )
+( cd "$N" && git update-ref -d refs/remotes/origin/main )
+asks "new branch, nothing on the remote: every reachable commit is scanned" "$N" "git push origin feat2" "ghp_"
+
+# 6. Unknown visibility: asks, never silent.
+U=$T/unk; mkrepo "$U" https://github.com/acme/mystery.git
+asks "gh does not know the repo" "$U" "git push" "could not determine"
+rm -rf "$HOME/.megavibe/cache"; GH_FAIL=1 asks "gh failing (offline / not logged in)" "$PUB" "git push" "could not determine" 2>/dev/null
+G=$T/gitlab; mkrepo "$G" git@gitlab.example.net:grp/proj.git
+asks "a host that is not GitHub" "$G" "git push" "not a GitHub host" "gitlab.example.net"
+printf 'gitlab.example.net/grp/*\n' > "$HOME/.megavibe/personal/public-push.trusted"
+passes "trusted file silences a known-private host" "$G" "git push"
+printf 'github.com/acme/mystery\n' > "$HOME/.megavibe/personal/public-push.trusted"
+passes "trusted file silences an unknown repo" "$U" "git push"
+/bin/rm -f "$HOME/.megavibe/personal/public-push.trusted"
+LP=$T/localpath; mkrepo "$LP" "$T/bare.git"
+passes "a local-path remote is not public" "$LP" "git push"
+S=$T/sshalias; mkrepo "$S" git@work-alias:acme/priv.git
+asks "ssh alias that does not resolve" "$S" "git push" "not a GitHub host"
+
+# 7. Command parsing: all spellings the other guards parse.
+commit "$PUB" a.txt "token ghp_abcdefghijklmnopqrstuvwxyz0123456789" "oops"
+( cd "$PUB" && git tag v1 )
+for c in "git push origin main" "git push" "bash -c 'git push origin main'" "sudo git push" "env X=1 git push" \
+         "git -C $PUB push" "cd $PUB && git push" "echo hi; git push --force-with-lease origin main" "time git push -u origin HEAD" \
+         "git push origin HEAD:refs/heads/other" "sh -c \"cd $PUB && git push\"" "git push origin main 2>&1 | tail -3" "git push --tags origin"; do
+  cwd=$PUB; case "$c" in "git -C"*|"cd "*|"sh -c \"cd"*) cwd=/tmp ;; esac
+  asks "parse: $c" "$cwd" "$c" "ghp_"
+done
+passes "echo of a push is text" "$PUB" "echo 'git push origin main'"
+passes "commit message naming a push" "$PUB" "git commit -m 'git push later'"
+passes "heredoc body naming a push" "$PUB" $'cat <<EOF\ngit push\nEOF'
+passes "dry run sends nothing" "$PUB" "git push --dry-run"
+passes "short dry run" "$PUB" "git push -n origin main"
+passes "delete refspec" "$PUB" "git push origin :old-branch"
+passes "delete flag" "$PUB" "git push origin --delete old-branch"
+passes "not a push" "$PUB" "git status"
+passes "grep for push" "$PUB" "grep -rn push ."
+asks "cd into a variable cannot be resolved" /tmp 'cd "$X" && git push' "not statically known"
+( cd "$PUB" && git tag -d v1 >/dev/null; git reset -q --hard HEAD~1 )
+
+# 8. Override: the launch environment counts, an inline prefix does not.
+commit "$PUB" a.txt "token ghp_abcdefghijklmnopqrstuvwxyz0123456789" "oops"
+OUT=$(jq -n --arg c "git push" --arg d "$PUB" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' | MEGAVIBE_ALLOW_PUBLIC_PUSH=1 bash "$HOOK" 2>/dev/null); RC=$?
+if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "override env var passes (rc=$RC)"; fi
+asks "inline prefix is NOT an override, and is reported" "$PUB" "MEGAVIBE_ALLOW_PUBLIC_PUSH=1 git push" "ghp_" "inline MEGAVIBE_ALLOW_PUBLIC_PUSH"
+( cd "$PUB" && git reset -q --hard HEAD~1 )
+
+# 9. Cache: one gh call per repo inside the TTL; unknown is never cached.
+/bin/rm -rf "$HOME/.megavibe/cache"; : > "$STUB_LOG"
+passes "cache warm-up" "$PUB" "git push"; passes "cache hit" "$PUB" "git push"
+n=$(grep -c . "$STUB_LOG"); if [ "$n" = 1 ]; then ok; else bad "cache: expected 1 gh call, saw $n"; fi
+: > "$STUB_LOG"; GH_FAIL=1 run "$U" "git push"; GH_FAIL=1 run "$U" "git push"
+n=$(grep -c . "$STUB_LOG"); if [ "$n" = 2 ]; then ok; else bad "unknown result must not be cached: saw $n calls"; fi
+
+# 10. gh pr create / repo create / repo edit.
+PR=$T/pr; mkrepo "$PR" https://github.com/acme/pub.git
+asks "pr create: title with a path on a public base" "$PR" "gh pr create --title 'fix /Users/jsmith/x' --body '## Summary
+ok'" "pull request text"
+passes "pr create: clean text" "$PR" "gh pr create --title 'Fix thing' --body '## Summary
+ok'"
+passes "pr create to a private repo" "$PR" "gh pr create -R acme/priv --title '/Users/jsmith/x' --body y"
+asks "pr create -R public repo" "$PR" "gh pr create -R acme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"
+asks "pr create: attached short option -Racme/pub" "$PR" "gh pr create -Racme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"
+mkdir -p "$T/otherdir" && ( cd "$T/otherdir" && git init -q && git remote add origin https://github.com/cur/rent.git )
+printf PUBLIC > "$T/vis/acme_pub"
+printf PRIVATE > "$T/vis/cur_rent"
+passes "pr create resolves the base repo from the command's cd, not the hook's cwd" /tmp "cd $T/otherdir && gh pr create --title /Users/jsmith/x --body y"
+printf PUBLIC > "$T/vis/cur_rent"
+asks "pr create: gh cannot tell" "$PR" "gh pr create -R acme/mystery --title t --body b" "could not determine"
+asks "pr create: a heredoc body is scanned" "$PR" $'gh pr create --title t --body-file - <<\'EOF\'\n## Summary\nsee /Users/jsmith/proj\nEOF' "pull request text" "[home path]"
+asks "pr create: $(cat <<EOF) body idiom is scanned" "$PR" $'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\nkey AKIAABCDEFGHIJKLMNOP\nEOF\n)"' "[AWS key]"
+asks "repo create --public" "$PR" "gh repo create newthing --public" "creates a PUBLIC"
+passes "repo create --private" "$PR" "gh repo create newthing --private"
+asks "repo edit --visibility public" "$PR" "gh repo edit acme/priv --visibility public" "PUBLIC"
+passes "repo edit --visibility private" "$PR" "gh repo edit acme/pub --visibility private"
+passes "repo edit other flags" "$PR" "gh repo edit --description hi"
+passes "gh pr view is untouched" "$PR" "gh pr view 3"
+
+# 10b. Triage of the amass sweep: each was run with its exact input.
+X=$T/xtra; mkrepo "$X" https://github.com/acme/pub.git
+commit "$X" w.md "++ path /Users/jsmith/z is an added line that starts with three pluses"
+asks "added line '+++ ...' is content, not a file header" "$X" "git push" "[home path]" "w.md:"
+( cd "$X" && git reset -q --hard HEAD~1 )
+commit "$X" w.md "ok" $'subject\n\n\x01 \x02 literal delimiter bytes in a message'
+passes "literal control bytes in a message do not derail the parse" "$X" "git push"
+commit "$X" y.md "AKIAABCDEFGHIJKLMNOP"
+asks "unbalanced quote does not hide a push" "$X" "git commit -m 'oops && git push" "could not be parsed"
+asks "push inside $( ) is still parsed as a command" "$X" 'echo $(git push origin main)' "[AWS key]"
+asks "push inside eval is asked about" "$X" 'eval "git push origin main"' "eval"
+passes "unbalanced quote without a push stays silent" "$X" "echo 'unclosed"
+( cd "$X" && git remote set-url origin 'ext::sh -c foo' )
+asks "an ext:: remote is not silently passed" "$X" "git push" "not a GitHub host"
+( cd "$X" && git remote set-url origin https://github.com/acme/pub.git && git reset -q --hard HEAD~1 )
+mkdir -p "$X/sub" && printf 'import sys\nprint("PWNED", file=open("/dev/stderr","w"))\nsys.exit(0)\n' > "$X/json.py"
+commit "$X" y2.md "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+asks "a planted json.py in the project is not imported" "$X" "git push" "[GitHub token]"
+rm -f "$X/json.py"; ( cd "$X" && git reset -q --hard HEAD~1 )
+printf PUBLIC > "$T/vis/acme_a-b"; printf PRIVATE > "$T/vis/acme_a_b"
+rm -rf "$HOME/.megavibe/cache"
+Y=$T/coll1; mkrepo "$Y" https://github.com/acme/a-b.git; commit "$Y" l.md "token ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+Z=$T/coll2; mkrepo "$Z" https://github.com/acme/a_b.git; commit "$Z" l.md "token ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+passes "private repo a_b" "$Z" "git push"
+asks "public repo a-b is not served a_b's cached PRIVATE" "$Y" "git push" "[GitHub token]"
+EH=$T/edit; mkrepo "$EH" https://github.com/acme/pub.git; ( cd "$EH" && git checkout -q -b side && echo "tok ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm side && git checkout -q main )
+asks "repo edit public scans every branch" "$EH" "gh repo edit --visibility public" "every branch" "[GitHub token]"
+passes "placeholder token on an EXAMPLE line" "$X" "git push"
+commit "$X" ex.md "token: ghp_EXAMPLEexampleEXAMPLEexample01234567   # EXAMPLE placeholder"
+passes "a line marked EXAMPLE is a placeholder, not a secret" "$X" "git push"
+
+mkdir -p "$T/gitfail"; REALGIT=$(command -v git)
+printf '#!/bin/bash\ncase " $* " in *" -p "*) exit 1;; esac\nexec %s "$@"\n' "$REALGIT" > "$T/gitfail/git"; chmod +x "$T/gitfail/git"
+commit "$X" z.md "fine text"
+OUT=$(jq -n --arg c "git push" --arg d "$X" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' | PATH="$T/gitfail:$PATH" bash "$HOOK" 2>/dev/null)
+case "$OUT" in *"scan could not run"*) ok ;; *) bad "a failing git log must ask, not pass (out=${OUT:0:120})" ;; esac
+
+# 10c. Round-1 reader findings, each reproduced first.
+R1=$T/r1; mkrepo "$R1" https://github.com/acme/priv.git
+( cd "$R1" && git checkout -q -b secret && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm sec && git update-ref refs/remotes/origin/secret HEAD && git config remote.origin.pushurl https://github.com/acme/pub.git )
+asks "tracking refs of a private FETCH url do not excuse a different public push url" "$R1" "git push origin secret" "[GitHub token]"
+R2=$T/r2; mkrepo "$R2" https://github.com/acme/pub.git
+( cd "$R2" && git checkout -q -b secret && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm sec && git checkout -q main && git config remote.origin.push secret:secret )
+asks "remote.<name>.push is what git pushes, not HEAD" "$R2" "git push origin" "[GitHub token]"
+asks "global -R before the group and verb" "$PR" "gh -R acme/pub pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
+R4=$T/r4; mkrepo "$R4" https://github.com/acme/pub.git
+( cd "$R4" && echo "AKIAABCDEFGHIJKLMNOP" > ghp_abcdefghijklmnopqrstuvwxyz0123456789.txt && git add . && git commit -qm f )
+run "$R4" "git push"; lacks "a secret in a file NAME is not echoed in full" "ghp_abcdefghijklmnopqrstuvwxyz0123456789"; lacks "AWS value" "ABCDEFGHIJKLMNOP"
+case "$WHY" in *"[AWS key]"*) ok ;; *) bad "file-name case still asks" ;; esac
+
+# 10d. Round-1 (second reader) findings.
+M=$T/m1; mkrepo "$M" https://github.com/acme/pub.git
+( cd "$M" && git checkout -q -b release && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > r.txt && git add r.txt && git commit -qm rel && git update-ref refs/remotes/origin/release HEAD~1 && git checkout -q main )
+( cd "$M" && git config remote.origin.push release:release )
+asks "--repo origin honours remote.origin.push" "$M" "git push --repo origin" "[GitHub token]"
+( cd "$M" && git config --unset remote.origin.push && git config push.default matching )
+asks "push.default=matching scans every branch" "$M" "git push origin" "[GitHub token]"
+( cd "$M" && git config --unset push.default )
+asks "the ':' matching refspec is not a delete" "$M" "git push origin :" "[GitHub token]"
+passes "a real delete refspec still passes" "$M" "git push origin :old"
+( cd "$M" && git checkout -q release )
+asks "attached -C<path> reaches the other checkout" "$T/otherdir" "git -C$M push origin release" "[GitHub token]"
+asks "attached -c<key=val> before push still parsed" "$M" "git -ccore.x=1 push origin release" "[GitHub token]"
+asks "a subshell's cd does not leak into the next push" "$M" "(cd $T/otherdir && git status); git push origin release" "[GitHub token]"
+asks "a child shell's cd does not leak either" "$M" "bash -c 'cd $T/otherdir'; git push origin release" "[GitHub token]"
+( cd "$M" && git checkout -q main )
+
+# 10e. Round-2 reader findings.
+asks "angle brackets inside a quoted PR body are not a redirection" "$PR" "gh pr create --title t --body 'Contact <alice@internal-corp.biz> today'" "[email]"
+passes "a real redirection is still stripped from push args" "$PUB" "git push origin main > /dev/null"
+RW=$T/rw; mkrepo "$RW" https://github.com/acme/priv.git
+( cd "$RW" && git config "url.https://github.com/acme/pub.git.pushInsteadOf" https://github.com/acme/priv.git && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > t.txt && git add t.txt && git commit -qm t )
+asks "pushInsteadOf rewrites an explicit URL" "$RW" "git push https://github.com/acme/priv.git main" "[GitHub token]"
+asks "inline GH_REPO selects the public repo" "$T/otherdir" "GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
+asks "env GH_REPO= wrapper form" "$T/otherdir" "env GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
+
+# 10f. Round-2 (second reader) findings.
+asks "--body='two words' keeps its content" "$PR" "gh pr create --title=t --body='key AKIAABCDEFGHIJKLMNOP'" "[AWS key]"
+MV=$T/mv; mkrepo "$MV" https://github.com/acme/pub.git
+( cd "$MV" && git checkout -q -b other && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > o.txt && git add o.txt && git commit -qm o && git checkout -q main )
+asks "variable refspec on a public remote" "$MV" 'BRANCH=other; git push origin "$BRANCH"' "unexpanded variable"
+asks "variable remote" "$MV" 'REMOTE=origin; git push "$REMOTE" main' "unexpanded variable"
+passes "variable refspec on a private remote" "$PRIV" 'B=main; git push origin "$B"'
+( cd "$MV" && git config remote.origin.mirror true )
+asks "remote.<name>.mirror=true scans every branch" "$MV" "git push origin" "[GitHub token]"
+( cd "$MV" && git config --unset remote.origin.mirror )
+printf 'AKIAABCDEFGHIJKLMNOP\n' > "$HOME/.megavibe/personal/public-push.deny"
+( cd "$MV" && git checkout -q -b k && echo "AKIAABCDEFGHIJKLMNOP" > k.txt && git add k.txt && git commit -qm k )
+run "$MV" "git push origin k"; lacks "denylist value is redacted like any secret" "ABCDEFGHIJKL"
+case "$WHY" in *"denylist"*) ok ;; *) bad "denylist hit still reported" ;; esac
+rm -f "$HOME/.megavibe/personal/public-push.deny"; ( cd "$MV" && git checkout -q main )
+
+asks "an unparseable nested shell string with a push asks" "$MV" "bash -c \"git push origin 'main\"" "nested shell"
+
+# 10g. Round-3 findings.
+CM=$T/cm; mkrepo "$CM" https://github.com/acme/pub.git; commit "$CM" k.txt "AKIAABCDEFGHIJKLMNOP"
+asks "a trailing shell comment does not hide the push" "$CM" "git push # publish this branch" "[AWS key]"
+passes "a # inside quotes is not a comment (commit message)" "$CM" "git commit -m 'fix #12'"
+asks "a quoted # argument stays an argument" "$CM" "git push origin 'main' # c" "[AWS key]"
+( cd "$CM" && git reset -q --hard HEAD~1 )
+( cd "$CM" && echo x > "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-AKIAABCDEFGHIJKLMNOP.txt" && git add . && git commit -qm f )
+run "$CM" "git push"; lacks "a long file name is redacted before it is cut" "AKIAABCDE"
+case "$WHY" in *"AWS key"*) ok ;; *) bad "secret in a file name is reported" ;; esac
+( cd "$CM" && git reset -q --hard HEAD~1 )
+passes "clean PR with a home path earlier in the command" "$PR" "cd /Users/jsmith/project && gh pr create -R acme/pub --title Clean --body Done"
+
+# 10h. Round-3 (second reader) findings.
+SR=$T/sr; mkdir -p "$SR" && ( cd "$SR" && git init -q && git remote add upstream https://github.com/acme/pub.git && echo a > a.txt && git add a.txt && git commit -qm i && echo "AKIAABCDEFGHIJKLMNOP" > k.txt && git add k.txt && git commit -qm k )
+asks "the sole remote is used when it is not called origin" "$SR" "git -c push.default=current push" "[AWS key]"
+printf 'AKIAABCDEFGHIJKLMNOP\n' > "$HOME/pr.md"
+asks "--body-file ~/pr.md" "$PR" "gh pr create -R acme/pub --title Fix --body-file ~/pr.md" "[AWS key]"
+asks "--body-file \$HOME/pr.md" "$PR" 'gh pr create -R acme/pub --title Fix --body-file "$HOME/pr.md"' "[AWS key]"
+asks "--body-file - with no readable stdin source asks" "$PR" "cat x.md | gh pr create -R acme/pub --title Fix --body-file -" "could not be read"
+asks "--body-file that does not exist asks" "$PR" "gh pr create -R acme/pub --title Fix --body-file /nonexistent/x.md" "could not be read"
+rm -f "$HOME/pr.md"
+printf 'Customer-X\n' > "$HOME/.megavibe/personal/public-push.deny"
+DQ=$T/dq; mkrepo "$DQ" https://github.com/acme/pub.git; ( cd "$DQ" && echo ok > "Customer-X-ä.txt" && git add . && git commit -qm f )
+asks "denylist hits a git-quoted (non-ASCII) file name" "$DQ" "git push" "denylist"
+( cd "$DQ" && git config diff.noprefix true && git reset -q --hard HEAD~1 && echo ok > Customer-X.txt && git add . && git commit -qm g )
+asks "diff.noprefix does not hide a file name" "$DQ" "git push" "denylist"
+rm -f "$HOME/.megavibe/personal/public-push.deny"
+
+# 10i. Round-4 findings.
+asks "variable git -C directory asks" "$M" 'D=/nope; git -C "$D" push origin main' "not statically known"
+TG=$T/tg; mkrepo "$TG" https://github.com/acme/pub.git; ( cd "$TG" && git checkout -q -b tmp && echo "AKIAABCDEFGHIJKLMNOP" > t.txt && git add t.txt && git commit -qm t && git tag v9 && git checkout -q main && git branch -qD tmp )
+asks "refs/tags/* reaches a tag-only commit" "$TG" "git push origin 'refs/tags/*:refs/tags/*'" "[AWS key]"
+asks "variable PR body asks" "$PR" 'BODY=x; gh pr create -R acme/pub --title Clean --body "$BODY"' "unexpanded variable"
+mkdir -p "$T/Users/jsmith"; printf 'Clean summary\n' > "$T/Users/jsmith/body.md"
+passes "a body-file path is not published text" "$PR" "gh pr create -R acme/pub --title Fix --body-file $T/Users/jsmith/body.md"
+CL=$T/cl; mkrepo "$CL" https://github.com/acme/pub.git; commit "$CL" README.md "git clone git@github.com:acme/pub.git"
+passes "an ssh clone URL is not an email" "$CL" "git push"
+
+# 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
+OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
+
+printf '%d passed, %d failed\n' "$PASS" "$FAIL"
+[ "$FAIL" = 0 ]
