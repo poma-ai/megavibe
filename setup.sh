@@ -926,7 +926,7 @@ You are the user's personal assistant.
 
 ## Session & project visibility
 When asked about running sessions, active projects, or "what's going on":
-- Run: `bash ~/.megavibe/session-status.sh` — shows all active/idle megavibe sessions
+- Run: `bash ~/.megavibe/session-status.sh` — shows this personal project plus any projects in the legacy `~/.megavibe/projects.json` registry; it cannot see other projects, so "no active sessions" there does not mean none are running
 - Each project's `.agent/TASKS.md` has its task status; `.agent/FULL_CONTEXT.md` has recent activity
 
 ## Context files
