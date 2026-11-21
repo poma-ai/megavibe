@@ -233,7 +233,11 @@ def scan_argv(argv, depth=0):
     if base == "gh":
         rest = [x for x in argv[1:]]
         # gh [-R repo] group verb ...
-        words = [x for x in rest if not x.startswith("-")]
+        words, skip = [], False
+        for x in rest:   # global/option values (-R owner/repo, --repo x) are not the command group or verb
+            if skip: skip = False; continue
+            if x in ("-R", "--repo"): skip = True; continue
+            if not x.startswith("-"): words.append(x)
         if len(words) >= 2 and words[0] == "pr" and words[1] == "create":
             ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
         elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
@@ -403,6 +407,7 @@ class Scanner:
                                                   if l.strip() and not l.strip().startswith("#")]
         self.emails = {e.lower() for e in extra_emails if e}
     def hit(self, loc, kind, val):
+        for _k, rx in SECRET_RES: loc = rx.sub(lambda m: m.group(0)[:4] + "…", loc)   # a file name can carry a secret
         self.total += 1
         if len(self.hits) < MAX_HITS: self.hits.append("  %s  [%s] %s" % (loc, kind, val))
     def line(self, loc, text, trailer_ok=False, path_only=False):
@@ -523,6 +528,9 @@ def handle_push(act):
         if rc != 0 or not o.strip():
             return None   # no such remote: git push itself will fail
         urls, remote_name = [u.strip() for u in o.splitlines() if u.strip()], remote
+    if not refspecs and not repo_opt and remote_name:
+        rc, o = git(act, "config", "--get-all", "remote.%s.push" % remote_name)
+        if rc == 0 and o.strip(): refspecs = [l.strip() for l in o.splitlines() if l.strip()]   # what git will actually push
     # sources
     revargs = []
     for rs in refspecs:
@@ -556,7 +564,9 @@ def handle_push(act):
             problems.append("could not determine whether %s is public (gh missing, not logged in, offline or no access)." % slug)
             continue
         if vis != "PUBLIC": continue
-        hits, total, trunc_, sc = scan_range(act, revargs, remote_name)
+        fetch_urls = git(act, "remote", "get-url", remote_name)[1].split() if remote_name else []
+        # tracking refs describe what the FETCH side holds: use them only when we push to that same place
+        hits, total, trunc_, sc = scan_range(act, revargs, remote_name if (remote_name and u in fetch_urls) else None)
         if total or trunc_:
             hit_lines += report_hits("%s is PUBLIC and the outgoing commits contain:" % slug, hits, total, trunc_, sc)
     return problems + hit_lines or None

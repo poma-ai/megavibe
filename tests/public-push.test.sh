@@ -241,6 +241,19 @@ commit "$X" z.md "fine text"
 OUT=$(jq -n --arg c "git push" --arg d "$X" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' | PATH="$T/gitfail:$PATH" bash "$HOOK" 2>/dev/null)
 case "$OUT" in *"scan could not run"*) ok ;; *) bad "a failing git log must ask, not pass (out=${OUT:0:120})" ;; esac
 
+# 10c. Round-1 reader findings, each reproduced first.
+R1=$T/r1; mkrepo "$R1" https://github.com/acme/priv.git
+( cd "$R1" && git checkout -q -b secret && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm sec && git update-ref refs/remotes/origin/secret HEAD && git config remote.origin.pushurl https://github.com/acme/pub.git )
+asks "tracking refs of a private FETCH url do not excuse a different public push url" "$R1" "git push origin secret" "[GitHub token]"
+R2=$T/r2; mkrepo "$R2" https://github.com/acme/pub.git
+( cd "$R2" && git checkout -q -b secret && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm sec && git checkout -q main && git config remote.origin.push secret:secret )
+asks "remote.<name>.push is what git pushes, not HEAD" "$R2" "git push origin" "[GitHub token]"
+asks "global -R before the group and verb" "$PR" "gh -R acme/pub pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
+R4=$T/r4; mkrepo "$R4" https://github.com/acme/pub.git
+( cd "$R4" && echo "AKIAABCDEFGHIJKLMNOP" > ghp_abcdefghijklmnopqrstuvwxyz0123456789.txt && git add . && git commit -qm f )
+run "$R4" "git push"; lacks "a secret in a file NAME is not echoed in full" "ghp_abcdefghijklmnopqrstuvwxyz0123456789"; lacks "AWS value" "ABCDEFGHIJKLMNOP"
+case "$WHY" in *"[AWS key]"*) ok ;; *) bad "file-name case still asks" ;; esac
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 
