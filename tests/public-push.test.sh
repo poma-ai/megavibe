@@ -254,6 +254,23 @@ R4=$T/r4; mkrepo "$R4" https://github.com/acme/pub.git
 run "$R4" "git push"; lacks "a secret in a file NAME is not echoed in full" "ghp_abcdefghijklmnopqrstuvwxyz0123456789"; lacks "AWS value" "ABCDEFGHIJKLMNOP"
 case "$WHY" in *"[AWS key]"*) ok ;; *) bad "file-name case still asks" ;; esac
 
+# 10d. Round-1 (second reader) findings.
+M=$T/m1; mkrepo "$M" https://github.com/acme/pub.git
+( cd "$M" && git checkout -q -b release && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > r.txt && git add r.txt && git commit -qm rel && git update-ref refs/remotes/origin/release HEAD~1 && git checkout -q main )
+( cd "$M" && git config remote.origin.push release:release )
+asks "--repo origin honours remote.origin.push" "$M" "git push --repo origin" "[GitHub token]"
+( cd "$M" && git config --unset remote.origin.push && git config push.default matching )
+asks "push.default=matching scans every branch" "$M" "git push origin" "[GitHub token]"
+( cd "$M" && git config --unset push.default )
+asks "the ':' matching refspec is not a delete" "$M" "git push origin :" "[GitHub token]"
+passes "a real delete refspec still passes" "$M" "git push origin :old"
+( cd "$M" && git checkout -q release )
+asks "attached -C<path> reaches the other checkout" "$T/otherdir" "git -C$M push origin release" "[GitHub token]"
+asks "attached -c<key=val> before push still parsed" "$M" "git -ccore.x=1 push origin release" "[GitHub token]"
+asks "a subshell's cd does not leak into the next push" "$M" "(cd $T/otherdir && git status); git push origin release" "[GitHub token]"
+asks "a child shell's cd does not leak either" "$M" "bash -c 'cd $T/otherdir'; git push origin release" "[GitHub token]"
+( cd "$M" && git checkout -q main )
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 

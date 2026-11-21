@@ -144,8 +144,18 @@ def split_tokens(s):
     lx = shlex.shlex(s, posix=False, punctuation_chars=True)
     lx.whitespace_split = True
     lx.commenters = ""
-    try: return list(lx)
+    try: toks = list(lx)
     except ValueError: return None
+    out = []
+    for t in toks:   # shlex glues operator runs such as ");" into one token: split them
+        if t not in OPS and t and all(ch in "();&|" for ch in t):
+            i = 0
+            while i < len(t):
+                for op in ("&&", "||", "|&", ";;", ";", "&", "|", "(", ")"):
+                    if t.startswith(op, i): out.append(op); i += len(op); break
+        else:
+            out.append(t)
+    return out
 
 def unq(tok):
     try:
@@ -160,6 +170,8 @@ def commands(tokens):
         if t in OPS:
             if cur: yield [unq(x) for x in cur]
             cur = []
+            if t == "(": yield ["__PUSH__"]
+            elif t == ")": yield ["__POP__"]
         else:
             cur.append(t)
     if cur: yield [unq(x) for x in cur]
@@ -179,8 +191,13 @@ def do_cd(argv):
         state["cwd_known"] = False; return
     state["cwd"] = os.path.normpath(os.path.join(state["cwd"], expand(p)))
 
+SCOPES = []
 def scan_argv(argv, depth=0):
     if depth > 3 or not argv: return
+    if argv == ["__PUSH__"]: SCOPES.append((state["cwd"], state["cwd_known"])); return   # a subshell's cd must not leak out
+    if argv == ["__POP__"]:
+        if SCOPES: state["cwd"], state["cwd_known"] = SCOPES.pop()
+        return
     i = 0
     while i < len(argv):
         a = argv[i]; b = os.path.basename(a)
@@ -210,7 +227,9 @@ def scan_argv(argv, depth=0):
             if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
                 t = split_tokens(argv[j + 1])
                 if t is None: return
+                saved = (state["cwd"], state["cwd_known"], len(SCOPES))
                 for c in commands(t): scan_argv(c, depth + 1)
+                state["cwd"], state["cwd_known"] = saved[0], saved[1]; del SCOPES[saved[2]:]   # a child shell's cd does not persist
                 return
         return
     if base in ("cd", "pushd"):
@@ -220,6 +239,10 @@ def scan_argv(argv, depth=0):
         cwd = state["cwd"]
         while k < len(argv) and argv[k].startswith("-"):
             o = argv[k]
+            if len(o) > 2 and o[:2] == "-C" and not o.startswith("--"):
+                cwd = os.path.normpath(os.path.join(cwd, expand(o[2:]))); k += 1; continue
+            if len(o) > 2 and o[:2] == "-c" and not o.startswith("--"):
+                gitopts += ["-c", o[2:]]; k += 1; continue
             if o in ("-C",) and k + 1 < len(argv):
                 cwd = os.path.normpath(os.path.join(cwd, expand(argv[k + 1]))); k += 2; continue
             if o in ("-c", "--git-dir", "--work-tree", "--namespace", "--exec-path") and k + 1 < len(argv):
@@ -528,13 +551,15 @@ def handle_push(act):
         if rc != 0 or not o.strip():
             return None   # no such remote: git push itself will fail
         urls, remote_name = [u.strip() for u in o.splitlines() if u.strip()], remote
-    if not refspecs and not repo_opt and remote_name:
+    if not refspecs and remote_name:
         rc, o = git(act, "config", "--get-all", "remote.%s.push" % remote_name)
         if rc == 0 and o.strip(): refspecs = [l.strip() for l in o.splitlines() if l.strip()]   # what git will actually push
+        elif git(act, "config", "--get", "push.default")[1].strip() == "matching": refspecs = [":"]
     # sources
     revargs = []
     for rs in refspecs:
         rs = rs.lstrip("+")
+        if rs == ":": revargs.append("--branches"); continue   # the "matching" refspec pushes every branch the remote has
         if rs.startswith(":"): continue
         src = rs.split(":", 1)[0]
         if rs == "tag": continue
