@@ -46,6 +46,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `scripts/leak-scan.sh` | Pre-push check that this PUBLIC repo publishes no secrets/internal identifiers, and nothing that only works inside one company | Low — read-only |
 | `THIRD_PARTY_NOTICES.md` | MIT notices for the two upstreams `sr-style.md` adapts | Low — licensing |
 | `README-watcher.md` | Context-watcher detail | Low |
+| `scripts/megavibe-node.sh`, `template/node/` (`node.sh`, `pa-start.sh`, `CLAUDE.md`, `memory.gitignore`), `tests/node.test.sh`, `README-node.md` | Opt-in node (`megavibe node ...`): a LaunchAgent keeps a thin node session and, where `pa.on` is set, the PA alive in tmux; syncs the PA's memory repo (push on the writer, ff-only pull on a standby, never while a PA runs there); `takeover`/`handback`. `pa-start.sh` is the ONE PA launcher, also used by `megavibe assistant`. Never runs `launchctl` itself (the guard in `block-dangerous-bash.sh` stays; `install` prints the line); never stops a session | Medium — starts paid sessions, rewrites the PA's notes folder |
 | `.agent/` | Live context for developing megavibe itself | Continuous |
 | `README.md` | Full documentation | When features change |
 

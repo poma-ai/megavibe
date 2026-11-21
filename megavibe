@@ -942,8 +942,9 @@ fi
 
 # Subscription first: a launch that would bill per token is refused unless
 # MEGAVIBE_ALLOW_API_BILLING=1. Called on the main launch only, after ANTHROPIC_API_KEY is
-# masked. `megavibe assistant` starts Claude by another route (tmux)
-# and is NOT covered yet, and neither is a key supplied through `--settings`
+# masked. `megavibe assistant` and the node start the PA's session through this wrapper
+# (pa-start.sh), so it is covered too; not covered: a key supplied through `--settings`, and
+# pa-start.sh's one-line workspace-trust preflight (`claude -p`, as the assistant always ran it)
 # (your explicit choice; the login check cannot see it). $1 = `claude auth status` JSON.
 # authMethod is one of none | claude.ai | oauth_token | api_key | api_key_helper | third_party
 # (claude docs); oauth_token is a subscription token and stays allowed. Older CLIs report a
@@ -1434,6 +1435,17 @@ for r in bad[:15]:
   exit 0
 fi
 
+# ─── Node subcommand ─────────────────────────────────────────────────
+#
+# megavibe node ...: the opt-in node (scripts/megavibe-node.sh, README-node.md).
+if [ "${1:-}" = "node" ]; then
+  shift
+  _s="$MEGAVIBE_HOME/scripts/megavibe-node.sh"
+  [ -f "$_s" ] || _s="$SCRIPT_DIR/scripts/megavibe-node.sh"
+  [ -f "$_s" ] || { echo "megavibe node: megavibe-node.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
+  exec bash "$_s" "$@"
+fi
+
 # ─── Assistant subcommand ────────────────────────────────────────────
 
 if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
@@ -1449,13 +1461,21 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
     exit 1
   fi
   if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
+    # One launcher for every route that starts the PA: this one and the node (README-node.md).
+    # pa-start.sh starts it through this wrapper, fresh, with a first prompt that rebuilds from its
+    # notes. The node's installed copy wins; otherwise the synced template, then this repo's.
+    PA_START=""
+    for _c in "$MEGAVIBE_HOME/node/pa-start.sh" "$MEGAVIBE_HOME/template/node/pa-start.sh" "$SCRIPT_DIR/template/node/pa-start.sh"; do
+      [ -f "$_c" ] && { PA_START="$_c"; break; }
+    done
+    if [ -z "$PA_START" ]; then
+      echo "Error: pa-start.sh not found; run bash setup.sh from the megavibe repo."
+      exit 1
+    fi
     echo "Starting the personal assistant (first run may take a few seconds)…"
-    # Pre-accept workspace trust before starting the detached session.
-    ( cd "$PERSONAL_DIR" && claude -p --dangerously-skip-permissions "echo ok" >/dev/null 2>&1 ) || true
-    # Another assistant launch may create the session during the preflight.
+    # Another assistant launch (or the node) may create the session meanwhile; has-session decides below.
     tmux new-session -d -s "$PERSONAL_TMUX" -c "$PERSONAL_DIR" \
-      claude --dangerously-skip-permissions --remote-control --name "Personal Assistant" \
-      ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} \
+      env MEGAVIBE_HOME="$MEGAVIBE_HOME" bash "$PA_START" \
       2>/dev/null || true
     if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
       echo "Error: could not start the personal assistant (tmux: $PERSONAL_TMUX)."
@@ -1517,6 +1537,7 @@ if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" 
   echo ""
   echo "  (no args)             Launch a session in the current directory"
   echo "  assistant | personal  Attach to the persistent Personal Assistant"
+  echo "  node                  Opt-in node: keeps a node session and the PA running (macOS)"
   echo "  reviewers             Show or change which reviewers run (list|set)"
   echo "  tick                  One unattended watch tick: review requests, comments,"
   echo "                        login lifetime, usage (scheduled in a session by /watch)"
@@ -1652,7 +1673,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
