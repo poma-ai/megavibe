@@ -280,6 +280,22 @@ asks "pushInsteadOf rewrites an explicit URL" "$RW" "git push https://github.com
 asks "inline GH_REPO selects the public repo" "$T/otherdir" "GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
 asks "env GH_REPO= wrapper form" "$T/otherdir" "env GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
 
+# 10f. Round-2 (second reader) findings.
+asks "--body='two words' keeps its content" "$PR" "gh pr create --title=t --body='key AKIAABCDEFGHIJKLMNOP'" "[AWS key]"
+MV=$T/mv; mkrepo "$MV" https://github.com/acme/pub.git
+( cd "$MV" && git checkout -q -b other && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > o.txt && git add o.txt && git commit -qm o && git checkout -q main )
+asks "variable refspec on a public remote" "$MV" 'BRANCH=other; git push origin "$BRANCH"' "unexpanded variable"
+asks "variable remote" "$MV" 'REMOTE=origin; git push "$REMOTE" main' "unexpanded variable"
+passes "variable refspec on a private remote" "$PRIV" 'B=main; git push origin "$B"'
+( cd "$MV" && git config remote.origin.mirror true )
+asks "remote.<name>.mirror=true scans every branch" "$MV" "git push origin" "[GitHub token]"
+( cd "$MV" && git config --unset remote.origin.mirror )
+printf 'AKIAABCDEFGHIJKLMNOP\n' > "$HOME/.megavibe/personal/public-push.deny"
+( cd "$MV" && git checkout -q -b k && echo "AKIAABCDEFGHIJKLMNOP" > k.txt && git add k.txt && git commit -qm k )
+run "$MV" "git push origin k"; lacks "denylist value is redacted like any secret" "ABCDEFGHIJKL"
+case "$WHY" in *"denylist"*) ok ;; *) bad "denylist hit still reported" ;; esac
+rm -f "$HOME/.megavibe/personal/public-push.deny"; ( cd "$MV" && git checkout -q main )
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 

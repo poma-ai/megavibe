@@ -405,6 +405,10 @@ def load_deny():
             items.append((n, re.compile(re.escape(s), re.I)))
     return items, bad
 
+def redact(t):
+    for _k, rx in SECRET_RES: t = rx.sub(lambda m: m.group(0)[:4] + "…", t)
+    return t
+
 def trunc(s, n=16):
     s = s.replace("\n", " ")
     return s if len(s) <= n else s[:n] + "…"
@@ -437,7 +441,8 @@ class Scanner:
                                                   if l.strip() and not l.strip().startswith("#")]
         self.emails = {e.lower() for e in extra_emails if e}
     def hit(self, loc, kind, val):
-        for _k, rx in SECRET_RES: loc = rx.sub(lambda m: m.group(0)[:4] + "…", loc)   # a file name can carry a secret
+        for _k, rx in SECRET_RES:   # a file name or a matched denylist value can carry a secret
+            loc = rx.sub(lambda m: m.group(0)[:4] + "…", loc); val = rx.sub(lambda m: m.group(0)[:4] + "…", val)
         self.total += 1
         if len(self.hits) < MAX_HITS: self.hits.append("  %s  [%s] %s" % (loc, kind, val))
     def line(self, loc, text, trailer_ok=False, path_only=False):
@@ -456,7 +461,7 @@ class Scanner:
                     self.hit(loc, "email", trunc(e)); break
         for n, rx in self.deny:
             m = rx.search(text)
-            if m: self.hit(loc, "denylist #%d" % n, trunc(m.group(0)))
+            if m: self.hit(loc, "denylist #%d" % n, trunc(redact(m.group(0))))   # redact BEFORE truncating: a cut token no longer matches
 
 def scan_range(act, revargs, remote):
     """revargs: list of rev-list args selecting tips. Returns (hits_lines, total, truncated)."""
@@ -555,6 +560,9 @@ def handle_push(act):
     if "--dry-run" in flags or "-n" in flags: return None
     if "--delete" in flags or "-d" in flags: return None
     remote = repo_opt or (pos[0] if pos else None)
+    if remote and ("$" in remote or "`" in remote):
+        return ["the push remote %s contains an unexpanded variable or substitution, so the target cannot be resolved." % trunc(remote, 30)]
+    unexpanded = any(("$" in a or "`" in a) for a in pos)
     refspecs = pos[1:] if (pos and not repo_opt) else pos if repo_opt else []
     if not act["known"]:
         return ["the working directory is not statically known (cd into a variable), so the target repository cannot be resolved."]
@@ -572,6 +580,8 @@ def handle_push(act):
         if rc != 0 or not o.strip():
             return None   # no such remote: git push itself will fail
         urls, remote_name = [u.strip() for u in o.splitlines() if u.strip()], remote
+    if remote_name and not refspecs and git(act, "config", "--bool", "remote.%s.mirror" % remote_name)[1].strip() == "true":
+        flags.add("--mirror")
     if not refspecs and remote_name:
         rc, o = git(act, "config", "--get-all", "remote.%s.push" % remote_name)
         if rc == 0 and o.strip(): refspecs = [l.strip() for l in o.splitlines() if l.strip()]   # what git will actually push
@@ -610,6 +620,9 @@ def handle_push(act):
             problems.append("could not determine whether %s is public (gh missing, not logged in, offline or no access)." % slug)
             continue
         if vis != "PUBLIC": continue
+        if unexpanded:
+            problems.append("%s is PUBLIC and a refspec contains an unexpanded variable, so which commits go out cannot be known." % slug)
+            continue
         fetch_urls = git(act, "remote", "get-url", remote_name)[1].split() if remote_name else []
         # tracking refs describe what the FETCH side holds: use them only when we push to that same place
         hits, total, trunc_, sc = scan_range(act, revargs, remote_name if (remote_name and u in fetch_urls) else None)
@@ -649,7 +662,7 @@ def handle_pr(act):
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
     if vis != "PUBLIC": return None
     if got and is_trusted(host + "/" + got): return None
-    texts = flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # a heredoc body is how most PR bodies arrive
+    texts = [TEXT.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
     for f in flag_value(argv, ["--body-file", "-F"]):
         p = f if os.path.isabs(f) else os.path.join(act["cwd"], f)
         try: texts.append(open(p, encoding="utf-8", errors="replace").read(1 << 20))
