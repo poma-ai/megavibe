@@ -442,15 +442,42 @@ def rm_at(dfd, name):
     os.rmdir(name, dir_fd=dfd)
 
 
-class Trash:
-    """~/.Trash pinned by descriptor, plus a private quarantine directory inside it."""
+def volume_root_problem(root, home):
+    """None when `root` is the user's Trash on a mounted volume other than the home's: <mount>/.Trashes/<uid>, a real
+    directory of this user on the volume it names. Otherwise why not. The ledger names this path, and the ledger is
+    only a hint: what the run deletes is still decided by the object's device and inode, inside this directory."""
+    if not isinstance(root, str) or "\0" in root or not os.path.isabs(root) or os.path.normpath(root) != root:
+        return "not a normalized absolute path"
+    parent, leaf = os.path.split(root)
+    mnt, mid = os.path.split(parent)
+    if leaf != str(os.getuid()) or mid != ".Trashes" or mnt in ("", "/"):
+        return "not <volume>/.Trashes/<your uid>"
+    if not os.path.ismount(mnt):
+        return "%s is not mounted" % show(mnt)
+    try:
+        m, a, b, h = os.lstat(mnt), os.lstat(parent), os.lstat(root), os.stat(home)
+    except OSError as e:
+        return "cannot look at it: %s" % e.strerror
+    if not (stat.S_ISDIR(a.st_mode) and stat.S_ISDIR(b.st_mode) and a.st_dev == m.st_dev == b.st_dev and b.st_uid == os.getuid()):
+        return "not a plain directory of yours on that volume"
+    if b.st_dev == h.st_dev:
+        return "on the home volume, whose Trash is ~/.Trash"
+    return None
 
-    def __init__(self, home):
+
+class Trash:
+    """A Trash directory pinned by descriptor (~/.Trash, or with `path` a volume's, already checked by
+    volume_root_problem), plus a private quarantine directory inside it."""
+
+    def __init__(self, home, path=None):
         self.home = home
-        self.path = os.path.join(home, ".Trash")
+        self.volume = path is not None
+        self.path = path or os.path.join(home, ".Trash")
         try:
             self.fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as e:
+            if self.volume:
+                raise
             hint = ""
             if e.errno in (errno.EPERM, errno.EACCES):
                 hint = (" macOS may be denying this process access to the Trash: give Terminal (or whatever runs Claude Code) "
@@ -459,6 +486,9 @@ class Trash:
                 hint = " It must be a real directory, not a symlink."
             die(3, "cannot open %s: %s.%s" % (self.path, e.strerror, hint))
         if os.fstat(self.fd).st_uid != os.getuid():
+            if self.volume:
+                os.close(self.fd)
+                raise OSError(errno.EPERM, "not yours", self.path)
             die(3, "%s is not yours" % self.path)
         self.qname = self.qfd = None
         self.n = 0
@@ -498,7 +528,7 @@ class Trash:
             except OSError as e:
                 self.put_back(slot, qfd, name)
                 return "fail", "claimed but unreadable: " + e.strerror
-            if (got.st_dev, got.st_ino) != tuple(want):
+            if (want[0] is not None and got.st_dev != want[0]) or got.st_ino != want[1]:
                 where = "put back" if self.put_back(slot, qfd, name) else "could NOT be put back: it is in %s" % self.qname
                 return "skip", "replaced since it was marked (the object now there was %s)" % where
             _hook("after_claim", home=self.home, tfd=self.fd, name=name, slot=slot, qfd=qfd)
@@ -583,6 +613,7 @@ def main():
         die(1, "a Trash review is running; try again in a moment")
 
     trash = Trash(home)
+    vtrash = {}                      # volume Trash directories opened this run: root -> Trash, or why not
     _hook("after_open_trash", home=home, tfd=trash.fd)
     ledger_rows, reviewed_rows = read_jsonl(os.path.join(ldir, "ledger.jsonl")), read_jsonl(os.path.join(ldir, "reviewed.jsonl"))
     recs, latest = merged_ledger(ledger_rows), latest_decisions(reviewed_rows)
@@ -619,7 +650,7 @@ def main():
 
     leftovers_unresolved = False
 
-    def recover():
+    def recover_in(trash):
         """A run that was killed (KILL, power loss) after it claimed an entry leaves .megavibe-empty-<hex>/<slot> in the Trash.
         Droppable mode, under the lock, before anything else: an entry whose object the ledger says may go is finished; any
         other goes back under its Trash name, or under recovered-<hex>-<slot> when that name is taken or unknown."""
@@ -642,7 +673,7 @@ def main():
                     try:
                         sst = os.stat(slot, dir_fd=qfd, follow_symlinks=False)
                         ident = (sst.st_dev, sst.st_ino)
-                        matches = [r for r in recs if (r.get("dev"), r.get("ino")) == ident]
+                        matches = [r for r in recs if r.get("ino") == ident[1] and ((r.get("trash_root") == trash.path) if trash.volume else (r.get("dev") == ident[0]))]
                         drop = [r for r in matches if latest.get(r.get("id")) == "droppable"]
                         if drop and conflict(drop[0], recs, latest) is None:
                             rm_at(qfd, slot)
@@ -684,26 +715,56 @@ def main():
                 unresolved = True
         return closed, unresolved
 
+    def volume_trash(root):
+        """The opened Trash of a volume the ledger names, or the reason it cannot be used (a string). Cached."""
+        if root not in vtrash:
+            why = volume_root_problem(root, home)
+            if why is None:
+                try:
+                    vtrash[root] = Trash(home, root)
+                    return vtrash[root]
+                except OSError as e:
+                    why = "cannot open it: %s" % e.strerror
+            vtrash[root] = why
+        return vtrash[root]
+
+    def recover():
+        closed, unresolved = recover_in(trash)
+        for root in sorted({r["trash_root"] for r in recs if isinstance(r.get("trash_root"), str)} - {trash.path}):
+            t = volume_trash(root)
+            if not isinstance(t, str):         # an unmounted volume has nothing to recover from here
+                c2, u2 = recover_in(t)
+                closed |= c2
+                unresolved = unresolved or u2
+        return closed, unresolved
+
     def droppable_one(c):
         tp = c.get("trash_path")
         label = tp if isinstance(tp, str) else str(c.get("id"))
         if not (isinstance(tp, str) and is_int(c.get("dev")) and is_int(c.get("ino"))):
-            # An item the ledger cannot identify (taken by the rmtrash fallback, or on another volume) can never be emptied
+            # An item the ledger cannot identify (taken by the rmtrash fallback, or recorded before other volumes' Trash was tracked) can never be emptied
             # here. Say so once, and close it with a row, so it does not fail every later run.
             done(label, "skip", "no device and inode were recorded, so it cannot be emptied from here: empty it in Finder", [])
             rec = dict(c)
             row(rec, True, "no device and inode recorded; cannot be emptied by trash-empty.sh", action="unemptiable")
             return
+        tr, root = trash, c.get("trash_root")
+        volume = root is not None and root != trash.path
+        if volume:
+            tr = volume_trash(root)
+            if isinstance(tr, str):
+                done(label, "skip", "its Trash is not usable here (%s); nothing was touched" % tr, [])
+                return
         d, name = os.path.split(tp)
-        if "\0" in tp or tp.endswith("/") or d != trash.path or name in ("", ".", ".."):
-            done(label, "skip", "not a direct child of %s" % trash.path, [])
+        if "\0" in tp or tp.endswith("/") or d != tr.path or name in ("", ".", ".."):
+            done(label, "skip", "not a direct child of %s" % tr.path, [])
             return
         bad = conflict(c, recs, latest)
         if bad is not None:
             done(name, "skip", "another record for this object (%s) is not marked droppable" % bad.get("id"), [])
             return
         try:
-            st = os.stat(name, dir_fd=trash.fd, follow_symlinks=False)
+            st = os.stat(name, dir_fd=tr.fd, follow_symlinks=False)
         except FileNotFoundError:
             if leftovers_unresolved:
                 done(name, "skip", "not in the Trash, but an interrupted run left something it could not put back", [])
@@ -713,11 +774,11 @@ def main():
         except OSError as e:
             done(name, "skip", "cannot look at it: " + e.strerror, [])
             return
-        if (st.st_dev, st.st_ino) != (c["dev"], c["ino"]):
+        if st.st_ino != c["ino"] or (not volume and st.st_dev != c["dev"]):
             done(name, "skip", "replaced since it was marked droppable", [])
             return
-        _hook("after_check", home=home, tfd=trash.fd, name=name)
-        state, detail = trash.remove(name, (c["dev"], c["ino"]))
+        _hook("after_check", home=home, tfd=tr.fd, name=name)
+        state, detail = tr.remove(name, (None if volume else c["dev"], c["ino"]))
         done(name, state, detail, [c])
 
     try:
@@ -754,6 +815,9 @@ def main():
                 done(name, state, detail, match)
     finally:                           # even on a signal or an unexpected error: leave no quarantine, record what was done
         trash.finish()
+        for t in vtrash.values():
+            if not isinstance(t, str):
+                t.finish()
         append_rows(os.path.join(ldir, "reviewed.jsonl"), out_rows)
     summary = "mode=%s emptied=%d failed=%d skipped=%d gone=%d kb=%d recovered=%d" % (mode, emptied, failed, skipped, gone, kb, recovered)
     if emptied or failed or skipped or gone or recovered:
