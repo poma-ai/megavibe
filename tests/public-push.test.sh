@@ -298,6 +298,18 @@ rm -f "$HOME/.megavibe/personal/public-push.deny"; ( cd "$MV" && git checkout -q
 
 asks "an unparseable nested shell string with a push asks" "$MV" "bash -c \"git push origin 'main\"" "nested shell"
 
+# 10g. Round-3 findings.
+CM=$T/cm; mkrepo "$CM" https://github.com/acme/pub.git; commit "$CM" k.txt "AKIAABCDEFGHIJKLMNOP"
+asks "a trailing shell comment does not hide the push" "$CM" "git push # publish this branch" "[AWS key]"
+passes "a # inside quotes is not a comment (commit message)" "$CM" "git commit -m 'fix #12'"
+asks "a quoted # argument stays an argument" "$CM" "git push origin 'main' # c" "[AWS key]"
+( cd "$CM" && git reset -q --hard HEAD~1 )
+( cd "$CM" && echo x > "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-AKIAABCDEFGHIJKLMNOP.txt" && git add . && git commit -qm f )
+run "$CM" "git push"; lacks "a long file name is redacted before it is cut" "AKIAABCDE"
+case "$WHY" in *"AWS key"*) ok ;; *) bad "secret in a file name is reported" ;; esac
+( cd "$CM" && git reset -q --hard HEAD~1 )
+passes "clean PR with a home path earlier in the command" "$PR" "cd /Users/jsmith/project && gh pr create -R acme/pub --title Clean --body Done"
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 

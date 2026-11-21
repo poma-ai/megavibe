@@ -119,17 +119,26 @@ def ask(lines):
     sys.exit(0)
 
 # ---- command parsing (same family as the kill guard in block-dangerous-bash.sh) ----
+_QUOTED = re.compile(r"""('[^']*'|"(?:\\.|[^"\\])*")""")
+def strip_comment(line):
+    """drop a shell comment (an unquoted # at a word start) from one line"""
+    parts, res = _QUOTED.split(line), []
+    for i, part in enumerate(parts):
+        if i % 2: res.append(part); continue
+        m = re.search(r"(?:^|(?<=[\s;&|(]))#", part)
+        if m: res.append(part[:m.start()]); break
+        res.append(part)
+    return "".join(res)
 out, pending, HEREDOCS = [], [], []
 for line in CMD.split("\n"):
     if pending:
         if line.strip() == pending[0]: pending.pop(0)
         else: HEREDOCS.append(line)
         continue
-    out.append(line)
+    out.append(strip_comment(line))
     pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
 TEXT = "\n".join(out).replace("\\\n", "").replace("\n", " ; ")
 # redirections are not arguments: `2>&1`, `> file`, `< file`
-_QUOTED = re.compile(r"""('[^']*'|"(?:\\.|[^"\\])*")""")
 _REDIR = re.compile(r"(?:(?<=\s)|^)\d*(?:>>?|<)&?[ \t]*[^\s;&|()]*")
 TEXT = "".join(part if i % 2 else _REDIR.sub(" ", part) for i, part in enumerate(_QUOTED.split(TEXT)))   # quoted text is never a redirection
 
@@ -451,11 +460,11 @@ class Scanner:
         self.total += 1
         if len(self.hits) < MAX_HITS: self.hits.append("  %s  [%s] %s" % (loc, kind, val))
     def line(self, loc, text, trailer_ok=False, path_only=False):
-        if not path_only:
+        if True:
             for kind, rx in SECRET_RES:
                 m = rx.search(text)
                 if m and not PLACEHOLDER.search(text): self.hit(loc, kind, m.group(0)[:4] + "…")
-            for m in HOMEPATH.finditer(text):
+            for m in ([] if path_only else HOMEPATH.finditer(text)):
                 u = m.group(1).lower()
                 if u == REAL_USER or u not in PLACEHOLDER_USERS:
                     self.hit(loc, "home path", trunc(m.group(0), 18)); break
@@ -505,7 +514,7 @@ def scan_range(act, revargs, remote):
             inhunk = False
             m = re.match(r"diff --git a/(.*?) b/(.*)$", raw)
             path = m.group(2) if m else ""
-            if path: sc.line("commit %s path %s" % (sha, trunc(path, 40)), path, path_only=True)
+            if path: sc.line("commit %s path %s" % (sha, trunc(redact(path), 40)), path, path_only=True)
             continue
         if not inhunk and raw.startswith("+++ "):
             p = raw[4:]; path = p[2:] if p.startswith("b/") else path; continue
@@ -514,7 +523,7 @@ def scan_range(act, revargs, remote):
             m = re.search(r"\+(\d+)", raw); ln = int(m.group(1)) - 1 if m else 0; continue
         if inhunk and raw.startswith("+"):
             ln += 1
-            sc.line("%s:%d (%s)" % (trunc(path, 60), ln, sha), raw[1:])
+            sc.line("%s:%d (%s)" % (trunc(redact(path), 60), ln, sha), raw[1:])
         elif raw.startswith(" ") or raw.startswith("-"):
             if raw.startswith(" "): ln += 1
     return sc.hits, sc.total, truncated, sc
@@ -667,7 +676,8 @@ def handle_pr(act):
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
     if vis != "PUBLIC": return None
     if got and is_trusted(host + "/" + got): return None
-    texts = [TEXT.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
+    _m = re.search(r"\bpr\s+create\b", TEXT)
+    texts = [TEXT[_m.start():].replace(" ; ", "\n") if _m else ""] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
     for f in flag_value(argv, ["--body-file", "-F"]):
         p = f if os.path.isabs(f) else os.path.join(act["cwd"], f)
         try: texts.append(open(p, encoding="utf-8", errors="replace").read(1 << 20))
