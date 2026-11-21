@@ -248,9 +248,7 @@ if [[ "$TOOL_NAME" =~ ^(Edit|Write)$ ]] && [[ "$FILE_PATH" == *".agent/"*".md" ]
     poma-memory index --file "$FILE_PATH" &>/dev/null &
   fi
 
-  # --- Event emission for remote bot (replaces ntfy) ---
-  # Append structured events to events.jsonl. Bot watches this file.
-  # No network calls from hooks — fast, safe, no token exposure.
+  # Append task progress and completion events to the local events.jsonl.
   if [[ "$FILE_PATH" == *"TASKS.md" ]]; then
     DONE_COUNT=$(grep -cE "\| done" "$FILE_PATH" 2>/dev/null || echo "0")
     TOTAL=$(grep -cE "^\| [0-9R]" "$FILE_PATH" 2>/dev/null || echo "0")

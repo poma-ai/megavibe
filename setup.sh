@@ -248,7 +248,7 @@ elif [ -z "$PYTHON" ]; then
 fi
 
 if [ -z "$PYTHON" ]; then
-  # Fall back to any Python 3.8+ (telegram-bot works, but poma-memory won't)
+  # Fall back to Python 3.8+ with limited functionality
   for cmd in python3 python; do
     if command -v "$cmd" &>/dev/null && "$cmd" -c "import sys; assert sys.version_info >= (3, 8)" &>/dev/null; then
       PYTHON="$cmd"
@@ -259,7 +259,7 @@ if [ -z "$PYTHON" ]; then
     warn "Python $($PYTHON --version 2>&1 | cut -d' ' -f2) found but poma-memory requires 3.10+"
     warn "Install Python 3.10+ for full functionality (brew install python@3.12)"
   else
-    warn "Python 3.8+ not found — poma-memory and Telegram bot will be unavailable"
+    warn "Python 3.8+ not found — poma-memory will be unavailable"
   fi
 fi
 
@@ -326,7 +326,7 @@ if [ -n "$PYTHON" ]; then
   fi
 
   if [ -z "$PIP" ]; then
-    warn "pip not available — Python packages (poma-memory, telegram-bot) will be unavailable"
+    warn "pip not available — poma-memory will be unavailable"
   else
     # Upgrade pip if older than 22 (Xcode CLT ships 21.x which can't resolve modern packages)
     PIP_MAJOR=$($PIP --version 2>/dev/null | sed 's/pip \([0-9]*\).*/\1/')
@@ -818,16 +818,10 @@ if [ -d "$SCRIPT_DIR/scripts" ]; then
   done
 fi
 
-# Save detected Python command so hooks and MCP can use it
-if [ -n "$PYTHON" ]; then
-  echo "$PYTHON" > "$MEGAVIBE_HOME/python-cmd"
-fi
-
 # pip_install_with_fallback: --user, then plain, then a dedicated venv at
 # ~/.megavibe/venv. Handles PEP 668 / externally-managed-environment (Homebrew
 # Python 3.12+, recent Debian/Ubuntu) which rejects --user installs outright.
-# On venv fallback, switches PYTHON/PIP to the venv so subsequent installs and
-# the deployed python-cmd point at the right interpreter.
+# On venv fallback, switches PYTHON/PIP to the venv for subsequent commands.
 pip_install_with_fallback() {
   # Each attempt's output goes to one log; on total failure the tail is shown,
   # because a silent "install failed" cannot be diagnosed (network? PEP 668?).
@@ -845,7 +839,6 @@ pip_install_with_fallback() {
   fi
   "$VENV/bin/pip" install "$@" >>"$LOG" 2>&1 || { tail -n 4 "$LOG" 2>/dev/null | sed 's/^/    pip: /'; echo "    full log: $LOG"; return 1; }
 
-  echo "$VENV/bin/python" > "$MEGAVIBE_HOME/python-cmd"
   PYTHON="$VENV/bin/python"
   PIP="$PYTHON -m pip"
   return 0
@@ -902,52 +895,6 @@ else
   fi
 fi
 
-# Deploy Telegram bot (optional — only used if MEGAVIBE_TELEGRAM_TOKEN is set)
-telegram_bot_install() {
-  if [ -f "$SCRIPT_DIR/telegram-bot.py" ]; then
-    atomic_install "$SCRIPT_DIR/telegram-bot.py" "$MEGAVIBE_HOME/telegram-bot.py"
-    ok "telegram-bot.py deployed"
-
-    # Install python-telegram-bot if not already present (+ httpx for voice I/O)
-    if [ -n "$PYTHON" ] && [ -n "$PIP" ]; then
-      if $PYTHON -c "import telegram" &>/dev/null; then
-        skip "python-telegram-bot"
-      else
-        echo "  Installing python-telegram-bot (for Megavibe Remote)..."
-        pip_install_with_fallback "python-telegram-bot>=21" httpx \
-          || warn "Could not install python-telegram-bot — remote will be unavailable"
-        if $PYTHON -c "import telegram" &>/dev/null; then
-          ok "python-telegram-bot + httpx"
-        fi
-      fi
-    fi
-  fi
-}
-
-should_install_telegram() {
-  if [ "$UPDATE_MODE" -eq 1 ]; then
-    [ -f "$MEGAVIBE_HOME/telegram-bot.py" ]
-    return
-  fi
-  if [ "$NONINTERACTIVE_AUTO" -eq 1 ]; then
-    return 0
-  fi
-  if [ ! -t 0 ]; then
-    return 0
-  fi
-  read -r -p "  Install Telegram bot? [Y/n] " _telegram_ans || _telegram_ans=""
-  case "${_telegram_ans:-y}" in
-    [nN]|[nN][oO]) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
-if should_install_telegram; then
-  telegram_bot_install
-else
-  skip "Telegram bot (user skipped)"
-fi
-
 # Sync template bundle to ~/.megavibe/. Guard against an empty MEGAVIBE_HOME
 # (set -u would already catch it, but this is cheap belt-and-suspenders
 # given the rm -rf that follows).
@@ -963,12 +910,12 @@ if [ ! -d "$PERSONAL_DIR/.agent" ]; then
   cat > "$PERSONAL_DIR/CLAUDE.md" << 'PERSONAL_EOF'
 # Personal Assistant
 
-You are the user's personal assistant, responding via Telegram (often from Apple Watch).
+You are the user's personal assistant.
 
 ## Rules
 - Answer the question directly. No preamble, no status reports, no tool availability announcements.
 - NEVER say things like "Gemini is available" or report which tools/MCP servers are connected. Just answer.
-- Keep responses concise but complete. The user reads on a small screen (Watch/phone).
+- Keep responses concise but complete.
 - Plain text preferred. No code blocks, no markdown tables unless specifically asked.
 - Use the user's language (German if they write in German, English if English).
 
@@ -976,12 +923,10 @@ You are the user's personal assistant, responding via Telegram (often from Apple
 - Answer general questions (weather, facts, calculations, advice)
 - Remember personal preferences, goals, and context from .agent/ files
 - Help with life admin (scheduling, reminders, planning)
-- When asked about a specific coding project, mention that the user should ask about it by name (e.g. the project folder name) to route to that project
 
 ## Session & project visibility
 When asked about running sessions, active projects, or "what's going on":
 - Run: `bash ~/.megavibe/session-status.sh` — shows all active/idle megavibe sessions
-- The project registry is at `~/.megavibe/projects.json` (name → path mapping)
 - Each project's `.agent/TASKS.md` has its task status; `.agent/FULL_CONTEXT.md` has recent activity
 
 ## Context files
@@ -995,14 +940,6 @@ PERSONAL_EOF
   ok "~/.megavibe/personal/ (personal assistant project)"
 else
   skip "~/.megavibe/personal/ (already exists)"
-fi
-
-# Initialize projects registry
-if [ ! -f "$MEGAVIBE_HOME/projects.json" ]; then
-  echo '{}' > "$MEGAVIBE_HOME/projects.json"
-  ok "~/.megavibe/projects.json (project registry)"
-else
-  skip "~/.megavibe/projects.json (already exists)"
 fi
 
 # Remember source repo so the deployed CLI can sync from it later.
