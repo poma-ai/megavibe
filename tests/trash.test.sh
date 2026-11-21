@@ -8,6 +8,7 @@
 # ~/.megavibe or ~/.claude, and the real trash-empty.sh is never run from its
 # install path (the tests run copies installed under a scratch HOME).
 set -u
+ORIG_PATH=$PATH
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 HOOKS="$REPO/template/.claude/hooks"
 T=$(mktemp -d "${TMPDIR:-/tmp}/trash-test.XXXXXX") || exit 2
@@ -1564,6 +1565,198 @@ gt 2 "sed -i '' 's/x/PermissionRequest/' /tmp/proj/.claude/hooks.json" "bash rou
 gt 2 "grep PermissionRequest ~/.claude/settings.json" "bash route: reading it with grep is an over-block (use the Grep tool)"
 gt 0 "echo PermissionRequest" "bash route: the bare word allowed"
 gt 0 "git log --oneline" "bash route: unrelated command allowed"
+
+
+# 12. An item on a volume other than the boot disk goes to that volume's .Trashes/<uid>, not ~/.Trash. The record must
+# carry that location and the size, and the review, the status and the emptying script must treat it like a boot item.
+# A REAL second volume: a small disk image mounted under the scratch directory (hdiutil), and the real rmtrash, which is
+# what puts the item into <volume>/.Trashes/<uid>. Skipped (and said so) where either is missing.
+REAL_RMTRASH=$(PATH="$ORIG_PATH" command -v rmtrash 2>/dev/null || true)
+VOLIMG="$T/vol.sparseimage"; VOL="$T/vol"; mkdir -p "$VOL"
+VOL_OK=0
+if [ -n "$REAL_RMTRASH" ] && command -v hdiutil >/dev/null 2>&1 \
+   && hdiutil create -size 20m -fs APFS -volname MvTestVol -type SPARSE "$T/vol" >/dev/null 2>&1 \
+   && hdiutil attach -nobrowse -mountpoint "$VOL" "$VOLIMG" >/dev/null 2>&1; then
+  VOL=$(cd "$VOL" && pwd -P); VOL_OK=1
+fi
+vdetach() { hdiutil detach "$VOL" >/dev/null 2>&1 || hdiutil detach -force "$VOL" >/dev/null 2>&1; }
+vattach() { hdiutil attach -nobrowse -mountpoint "$VOL" "$VOLIMG" >/dev/null 2>&1; }
+trap 'vdetach 2>/dev/null; /bin/rm -rf "$T"' EXIT
+if [ "$VOL_OK" = 1 ]; then
+  mkdir -p "$T/vbin"; ln -sf "$REAL_RMTRASH" "$T/vbin/rmtrash"
+  HV="$T/thv"; mk_home "$HV"
+  trv() { env PATH="$T/vbin:$PATH" HOME="$HV" MEGAVIBE_TRASH_DIR="$HV/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$HV/.megavibe/trash" bash "$TR" "$@"; }
+  rv2() { env HOME="$HV" MEGAVIBE_TRASH_DIR="$HV/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$HV/.megavibe/trash" python3 "$HV/.megavibe/scripts/trash-review.py" "$@"; }
+  te2() { run_in "$HV" "$@"; }
+  led2() { cat "$HV/.megavibe/trash/ledger.jsonl"; }
+  VT="$VOL/.Trashes/$(id -u)"
+  mkdir -p "$VOL/proj/sub"; head -c 204800 /dev/zero > "$VOL/proj/sub/big.bin"; echo a > "$VOL/proj/a.txt"
+  echo dup > "$VOL/dupname"
+  trv -rf "$VOL/proj"; rc=$?
+  check "volume: rm of a path on another volume exits 0 and moves it" '[ $rc = 0 ] && [ ! -e "$VOL/proj" ]'
+  R=$(led2 | jq -c 'select(.path|endswith("/proj"))')
+  check "volume: the record carries the real Trash location (inside <volume>/.Trashes/<uid>)" '[ "$(printf "%s" "$R" | jq -r .trash_path | xargs dirname)" = "$VT" ] && [ -d "$(printf "%s" "$R" | jq -r .trash_path)" ]'
+  check "volume: the record names its Trash root, a device and an inode" '[ "$(printf "%s" "$R" | jq -r .trash_root)" = "$VT" ] && printf "%s" "$R" | jq -e "(.dev|type)==\"number\" and (.ino|type)==\"number\"" >/dev/null'
+  check "volume: the record carries the size (about 200 KB, not -1)" '[ "$(printf "%s" "$R" | jq .kb)" -ge 200 ]'
+  check "volume: status counts it as unreviewed in the Trash" 'rv2 status | grep -q "^1 unreviewed item(s) in the Trash"'
+  check "volume: pending lists it with its size" 'rv2 pending | grep -q "/proj$"'
+  # name clash inside the volume Trash: rmtrash renames the second one; the record must still find it
+  trv "$VOL/dupname"; echo other > "$VOL/dupname"; trv "$VOL/dupname"
+  check "volume: two items with one name get two different located Trash entries" '[ "$(led2 | jq -r "select(.path|endswith(\"/dupname\")) | .trash_path" | sort -u | wc -l | tr -d " ")" = 2 ] && led2 | jq -r "select(.path|endswith(\"/dupname\")) | .trash_path" | while read -r p; do [ -e "$p" ] || exit 1; done'
+  # review: keep, then restore, like a boot item
+  mkv() {  # mkv <action> <path suffix>...: one group, then apply
+    local act=$1 sfx; shift
+    local idl; idl=$(for sfx in "$@"; do rv2 pending --all --json | ids_ "$sfx"; done | tr '\n' ' ')
+    python3 -c 'import json,sys; print(json.dumps({"groups":[{"label":"t","ids":sys.argv[1:]}]}))' $idl > "$T/vg.json"
+    local code; code=$(rv2 group "$T/vg.json" | sed -n 's/^\[\(G[0-9a-f]*\)\].*/\1/p' | head -n 1)
+    printf '{"decisions":[{"group":"%s","action":"%s"}]}' "$code" "$act" > "$T/vd.json"
+    rv2 apply "$T/vd.json"
+  }
+  check "volume: group summary shows its size and path" 'rv2 pending --json | jq -e "select(.path|endswith(\"/proj\")) | .kb >= 200" >/dev/null'
+  out=$(mkv restore "/proj" 2>&1); rc=$?
+  check "volume: restore puts it back where it was, with its content" '[ $rc = 0 ] && [ "$(wc -c < "$VOL/proj/sub/big.bin" | tr -d " ")" = 204800 ] && [ ! -e "$VT/proj" ]'
+  check "volume: restore leaves no claim directory behind" '[ -z "$(ls -A "$VT/.megavibe-claim" 2>/dev/null)" ]'
+  # trash again, mark droppable, empty
+  trv -rf "$VOL/proj"; mkv droppable "/proj" >/dev/null
+  PTP=$(led2 | jq -r 'select(.path|endswith("/proj")) | .trash_path' | tail -n 1)
+  check "volume: droppable lists it" 'rv2 droppable | grep -q "/proj$" && rv2 status | grep -q "marked droppable"'
+  BOOT_BEFORE=$(ls -A "$HV/.Trash" | tr '\n' '|')
+  out=$(te2 2>&1); rc=$?
+  check "volume: the emptying script removes the droppable item from the volume Trash, exit 0" '[ $rc = 0 ] && [ ! -e "$PTP" ] && printf "%s" "$out" | grep -q "emptied=1 failed=0 skipped=0"'
+  check "volume: it recorded an emptied row, and the boot Trash and the other volume items were not touched" 'jq -e "select(.action==\"emptied\" and .ok==true)" "$HV/.megavibe/trash/reviewed.jsonl" >/dev/null && [ "$(ls -A "$HV/.Trash" | tr "\n" "|")" = "$BOOT_BEFORE" ] && [ "$(ls "$VT" | grep -c "^dupname")" -ge 2 ]'
+  check "volume: no quarantine directory is left in the volume Trash" '! ls -A "$VT" | grep -q "^.megavibe-empty-"'
+  # a missing volume: report, never crash, never delete
+  trv -rf "$VOL/proj" 2>/dev/null; echo again > "$VOL/gone.txt"; trv "$VOL/gone.txt"; mkv droppable "/gone.txt" >/dev/null
+  GTP=$(led2 | jq -r 'select(.path|endswith("/gone.txt")) | .trash_path' | tail -n 1)
+  vdetach
+  check "missing volume: the volume is really gone" '[ ! -e "$GTP" ]'
+  out=$(rv2 status 2>&1); rc=$?
+  check "missing volume: status does not crash and says the volume is not mounted" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "not mounted"'
+  check "missing volume: nothing from it is counted as in the Trash" '! rv2 pending | grep -q "/gone.txt"'
+  out=$(te2 2>&1); rc=$?
+  check "missing volume: emptying reports it, exits 1, and deletes nothing" '[ $rc = 1 ] && printf "%s" "$out" | grep -q "is not mounted"'
+  check "missing volume: no emptied row was written for it" '! jq -e "select(.action==\"emptied\" and (.path|endswith(\"/gone.txt\")))" "$HV/.megavibe/trash/reviewed.jsonl" >/dev/null 2>&1'
+  rv2 apply "$T/vd.json" >/dev/null 2>&1; rc=$?
+  check "missing volume: a later apply reports and does not crash" '[ $rc -le 1 ]'
+  vattach
+  check "missing volume: after the volume returns, the item is still there" '[ -e "$GTP" ]'
+  check "missing volume: after it returns, the item is back in status and droppable (device number may have changed)" 'rv2 droppable | grep -q "/gone.txt$"'
+  out=$(te2 2>&1); rc=$?
+  check "missing volume: after it returns the script empties it" '[ $rc = 0 ] && [ ! -e "$GTP" ]'
+  # forged roots: the ledger is a hint, never a path to trust
+  mkdir -p "$T/fakeroot/.Trashes/$(id -u)" "$T/notroot"; echo victim > "$T/fakeroot/.Trashes/$(id -u)/v mv-forged1"; echo victim2 > "$T/notroot/v2"
+  forge_v() {  # forge_v <id> <trash_path> <root>
+    local st; st=$(oid "$2"); jq -nc --arg id "$1" --arg tp "$2" --arg root "$3" --argjson dev "${st% *}" --argjson ino "${st#* }" \
+      '{ts:"t", id:$id, path:"/x/v", kind:"file", trash_path:$tp, trash_root:$root, dev:$dev, ino:$ino, kb:1, cwd:"/", session:""}' >> "$HV/.megavibe/trash/ledger.jsonl"
+    jq -nc --arg id "$1" '{id:$id, ts:"t", action:"droppable", ok:true, detail:"forged"}' >> "$HV/.megavibe/trash/reviewed.jsonl"
+  }
+  forge_v forged1 "$T/fakeroot/.Trashes/$(id -u)/v mv-forged1" "$T/fakeroot/.Trashes/$(id -u)"
+  forge_v forged2 "$T/notroot/v2" "$T/notroot"
+  forge_v forged3 "$HV/.Trash/../../notroot/v2" "$HV/.Trash/../../notroot"
+  out=$(te2 2>&1); rc=$?
+  check "forged roots: a Trash-shaped directory that is not on a mounted volume is refused" '[ -e "$T/fakeroot/.Trashes/$(id -u)/v mv-forged1" ] && printf "%s" "$out" | grep -q "not usable here"'
+  check "forged roots: a root of the wrong shape, and a non-normalized one, are refused" '[ -e "$T/notroot/v2" ]'
+  check "forged roots: the run exits 1" '[ $rc = 1 ]'
+  # a record from before this was tracked (no location): still handled as before, never crashing
+  jq -nc '{ts:"t", id:"oldrec1", path:"/old/x", kind:"file", cwd:"/", session:"", trash_path:null, kb:-1}' >> "$HV/.megavibe/trash/ledger.jsonl"
+  out=$(rv2 status 2>&1); rc=$?
+  check "old record without location: status stays quiet about crashes and names it" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "no Trash location"'
+  # two hard links with one name: rmtrash renames the second; each record must find ITS entry, never the older link
+  mkdir -p "$VOL/hl1" "$VOL/hl2"; echo hl > "$VOL/hl1/same"; ln "$VOL/hl1/same" "$VOL/hl2/same"
+  trv "$VOL/hl1/same"; trv "$VOL/hl2/same"
+  HL=$(led2 | jq -r 'select(.path|test("/hl[12]/same$")) | .trash_path // "null"')
+  check "volume: two hard links trashed one after the other are not recorded at one entry" '[ "$(printf "%s\n" "$HL" | wc -l | tr -d " ")" = 2 ] && { [ "$(printf "%s\n" "$HL" | sort -u | wc -l | tr -d " ")" = 2 ] || [ "$(printf "%s\n" "$HL" | grep -c "^null$")" -ge 1 ]; }'
+  # a symlink on the volume that points at the boot disk: the volume is the one holding the link, not its target
+  mkdir -p "$T/boot-target"; echo t > "$T/boot-target/f"; ln -s "$T/boot-target" "$VOL/lnk-to-boot"
+  trv "$VOL/lnk-to-boot"
+  LR=$(led2 | jq -c 'select(.path|endswith("/lnk-to-boot"))')
+  check "volume: a symlink operand is recorded in the Trash of the volume holding the link" '[ "$(printf "%s" "$LR" | jq -r .trash_root)" = "$VT" ] && [ -L "$(printf "%s" "$LR" | jq -r .trash_path)" ] && [ "$(cat "$T/boot-target/f")" = t ]'
+  # a claim directory that is a link (or a file): refused, nothing moved
+  echo c > "$VOL/claimme"; trv "$VOL/claimme"
+  mkdir -p "$T/claim-elsewhere"; [ -d "$VT/.megavibe-claim" ] && [ ! -L "$VT/.megavibe-claim" ] && mv "$VT/.megavibe-claim" "$VT/.claim-aside"
+  ln -s "$T/claim-elsewhere" "$VT/.megavibe-claim"
+  out=$(mkv keep "/claimme" 2>&1); out2=$(mkv restore "/claimme" 2>&1); rc=$?
+  check "volume: a symlinked claim directory is refused, the item stays in the Trash and nothing lands behind the link" '[ $rc = 1 ] && [ -e "$VT/claimme" ] && [ -z "$(ls -A "$T/claim-elsewhere")" ] && [ ! -e "$VOL/claimme" ]'
+  rm -f "$VT/.megavibe-claim"
+  out=$(rv2 status 2>&1); rc=$?
+  check "volume: status survives a claim directory that is not a directory" '[ $rc = 0 ]'
+  vdetach
+else
+  printf 'SKIP: section 12 needs hdiutil and a real rmtrash; other-volume Trash not exercised here\n'
+fi
+# The path logic without a second volume: where the Trash of a given path is, and what counts as a Trash root.
+cat > "$T/vol_paths.py" <<'EOF'
+import importlib.util, os, sys, json as _j, tempfile as _t, contextlib, io
+spec = importlib.util.spec_from_file_location("tr", sys.argv[1]); tr = importlib.util.module_from_spec(spec); spec.loader.exec_module(tr)
+bad = []
+def case(name, got, want):
+    if got != want: bad.append(f"{name}: got {got!r}, want {want!r}")
+uid = str(os.getuid())
+case("boot path: mount is not a volume Trash", tr.root_ok("/nonexistent/.Trashes/" + uid), False)
+case("a relative root is refused", tr.root_ok(".Trashes/" + uid), False)
+case("a root with .. is refused", tr.root_ok("/Volumes/x/.Trashes/../.Trashes/" + uid), False)
+case("another uid is refused", tr.root_ok("/Volumes/x/.Trashes/0"), False)
+case("not named .Trashes is refused", tr.root_ok("/Volumes/x/Trash/" + uid), False)
+case("the boot root is refused", tr.root_ok("/.Trashes/" + uid), False)
+case("None is refused", tr.root_ok(None), False)
+case("a NUL is refused", tr.root_ok("/Volumes/x/.Trashes/" + uid + "\0"), False)
+case("an unmounted-looking plain directory is refused", tr.root_ok(os.path.join(sys.argv[2], ".Trashes", uid)), False)
+case("mount_of a path on the boot volume is some ancestor of it", sys.argv[2].startswith(tr.mount_of(sys.argv[2])), True)
+case("ident_matches without root uses the device too", tr.ident_matches({"dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), False)
+case("ident_matches on a volume record uses the inode", tr.ident_matches({"trash_root": "/V/.Trashes/1", "dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), True)
+_d4 = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d4
+spec4 = importlib.util.spec_from_file_location("tr4", sys.argv[1]); tr4 = importlib.util.module_from_spec(spec4); spec4.loader.exec_module(tr4)
+_ghost = os.path.join(_d4, "former-mount", "sub")
+_ok, _msg = tr4.apply_one({"id": "r1", "path": os.path.join(_ghost, "f"), "trash_path": "/nonexistent-volume/.Trashes/%s/f" % uid, "trash_root": "/nonexistent-volume/.Trashes/%s" % uid, "dev": 1, "ino": 2}, "restore")
+case("restore from an unmounted volume is refused", _ok, False)
+case("restore from an unmounted volume creates nothing at the original path", os.path.exists(os.path.join(_d4, "former-mount")), False)
+case("an old record with no root means ~/.Trash", tr.root_of({}), tr.TRASH)
+# status keeps naming an unmounted volume while an item on it is kept or droppable (only restore/backup/emptied leave it)
+_d3 = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d3
+_gone = "/nonexistent-volume/.Trashes/%s" % uid
+open(os.path.join(_d3, "ledger.jsonl"), "w").write(_j.dumps({"id": "d1", "path": "/x", "trash_path": _gone + "/x", "trash_root": _gone, "dev": 1, "ino": 2, "kb": 1}) + "\n")
+open(os.path.join(_d3, "reviewed.jsonl"), "w").write(_j.dumps({"id": "d1", "ok": True, "action": "droppable"}) + "\n")
+spec3 = importlib.util.spec_from_file_location("tr3", sys.argv[1]); tr3 = importlib.util.module_from_spec(spec3); spec3.loader.exec_module(tr3)
+with contextlib.redirect_stdout(io.StringIO()) as _o3:
+    tr3.cmd_status()
+case("status names the unmounted volume holding a droppable item", "not mounted" in _o3.getvalue(), True)
+# a malformed root in a ledger row must not crash the paths that list claim directories
+_d = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d
+open(os.path.join(_d, "ledger.jsonl"), "w").write(_j.dumps({"id": "bad1", "path": "/x", "trash_path": "/y/z", "trash_root": "a\u0000b", "dev": 1, "ino": 2}) + "\n" + _j.dumps({"id": "bad2", "path": "/x", "trash_path": "/y/z", "trash_root": ["l"], "dev": 1, "ino": 2}) + "\n")
+spec2 = importlib.util.spec_from_file_location("tr2", sys.argv[1]); tr2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(tr2)
+try:
+    case("claim_dirs with malformed roots does not raise", tr2.claim_dirs(), [])
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()) as _o:
+        tr2.cmd_status()
+    case("status shows a malformed root escaped", "\\u0000" in _o.getvalue(), True)
+    case("same_entry with a NUL root is False", tr2.same_entry({"trash_path": "/y/z", "trash_root": "a\0b", "dev": 1, "ino": 2}), False)
+except Exception as e:
+    bad.append("malformed trash_root raised %r" % (e,))
+for bad_root in ("", 0, [], ["x"], {"a": 1}, 7):
+    r = tr.root_of({"trash_root": bad_root})
+    case("a trash_root of %r is never a Trash" % (bad_root,), (isinstance(r, str), tr.root_ok(r)), (True, False))
+print("\n".join(bad) if bad else "ok")
+EOF
+mkdir -p "$T/plain/.Trashes/$(id -u)"
+check "path logic: roots, shapes, identity" '[ "$(python3 -I "$T/vol_paths.py" "$REPO/scripts/trash-review.py" "$T/plain")" = ok ]'
+
+cat > "$T/conflict_test.py" <<'EOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("te", sys.argv[1]); te = importlib.util.module_from_spec(spec); spec.loader.exec_module(te)
+bad = []
+A = {"id": "a", "trash_path": "/V1/.Trashes/501/x", "trash_root": "/V1/.Trashes/501", "dev": 5, "ino": 9}
+B = {"id": "b", "trash_path": "/V2/.Trashes/501/y", "trash_root": "/V2/.Trashes/501", "dev": 5, "ino": 9}   # same dev and ino, another volume
+C = {"id": "c", "trash_path": "/V1/.Trashes/501/z", "trash_root": "/V1/.Trashes/501", "dev": 7, "ino": 9}   # same root and inode, device changed by a remount
+if te.conflict(A, [A, B], {"b": "keep"}) is not None: bad.append("another volume's record with the same dev and ino must not conflict")
+if te.conflict(A, [A, C], {"c": "keep"}) is not C: bad.append("a kept record for the same object after a remount must conflict")
+D = {"id": "d", "trash_path": A["trash_path"], "trash_root": A["trash_root"], "dev": 5, "ino": 77}   # a reused Trash name: another object
+if te.conflict(A, [A, D], {"d": "keep"}) is not None: bad.append("a stale kept record at a reused name with another inode must not conflict")
+E = {"id": "e", "trash_path": A["trash_path"]}                                                      # no identity recorded: stay conservative
+if te.conflict(A, [A, E], {"e": "keep"}) is not E: bad.append("a same-name record without identity must still conflict")
+print("\n".join(bad) if bad else "ok")
+EOF
+check "emptying: conflict detection is scoped to the checked Trash root on volumes" '[ "$(python3 -I "$T/conflict_test.py" "$TE_PROG")" = ok ]'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

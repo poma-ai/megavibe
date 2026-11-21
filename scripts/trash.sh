@@ -7,7 +7,8 @@
 # Trash entry, its inode), which the trash-watch.sh hook reads to ask the user what
 # to do with it. Options it does not handle (-i, -I, -x, ...), a missing python3,
 # or no Trash directory go to rmtrash unrecorded: the delete still lands in the
-# Trash, it just cannot be reviewed from the ledger.
+# Trash, it just cannot be reviewed from the ledger. An item on another volume goes to
+# that volume's own Trash (<mount>/.Trashes/<uid>); trash-review.py records where.
 set -u
 
 REVIEW="$(cd "$(dirname "$0")" && pwd)/trash-review.py"
