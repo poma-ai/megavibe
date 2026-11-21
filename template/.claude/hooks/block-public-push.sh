@@ -68,7 +68,10 @@ set -u
 #
 # Known gaps (not enforced here): a push through a git alias, a script or
 # $(...)/backtick substitution; `git push` inside a command run by another tool;
-# gh pr create does not scan commits (they were scanned when pushed); a denylist
+# gh pr create does not scan commits (they were scanned when pushed) and cannot read
+# a body that comes from $(...); binary content; the conflict-resolution lines of a merge
+# commit (git log -p shows no diff for merges); another gh operation that publishes
+# (gh gist create --public, gh release create); a denylist
 # written in a file the hook cannot read is silently empty (the reason says so only
 # for an invalid regex).
 
@@ -87,7 +90,7 @@ case "$COMMAND" in
 esac
 
 read -r -d '' _PROG <<'PYEOF'
-import fnmatch, json, os, re, shlex, subprocess, sys, time
+import fnmatch, hashlib, json, os, re, shlex, subprocess, sys, time
 
 try:
     DATA = json.load(sys.stdin)
@@ -103,6 +106,8 @@ try:
 except ValueError:
     TTL = 300
 MAX_COMMITS, MAX_BYTES, MAX_HITS = 500, 8 * 1024 * 1024, 20
+NONCE = hashlib.sha1(os.urandom(16)).hexdigest()[:12]
+M1, M2 = "\x01MV" + NONCE + "\x01", "\x02MV" + NONCE + "\x02"   # commit delimiters no content can predict
 
 def ask(lines):
     why = "Public-push guard: " + lines[0] + "\n" + "\n".join(lines[1:])
@@ -233,11 +238,17 @@ def scan_argv(argv, depth=0):
         elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
             ACTIONS.append({"kind": "repo-" + words[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
 
+GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|\bgh\s+(?:pr\s+create|repo\s+(?:create|edit))\b")
 toks = split_tokens(TEXT)
 if toks is None:
+    # the text cannot be tokenised (an unclosed quote, say): do not let that hide a push
+    if GITPUSH.search(TEXT): ask(["this command mentions a push or a public-repository operation but could not be parsed (unbalanced quotes?), so its target was not checked."])
     sys.exit(0)
 for c in commands(toks):
     scan_argv(c)
+SUBST = re.compile(r"(?:\$\(|`|\beval\b)[^)`]*" + GITPUSH.pattern)
+if not ACTIONS and SUBST.search(TEXT):
+    ask(["a push or public-repository operation sits inside a command substitution or eval, which this guard does not parse: its target was not checked."])
 if not ACTIONS:
     sys.exit(0)
 
@@ -299,7 +310,8 @@ def gh_visibility(host, nwo):
     """returns (VIS|None, nameWithOwner|None)"""
     cache = None
     if nwo:
-        cache = os.path.join(CACHE_DIR, re.sub(r"[^A-Za-z0-9._-]", "_", host + "_" + nwo.lower()))
+        key = host + "/" + nwo.lower()
+        cache = os.path.join(CACHE_DIR, hashlib.sha1(key.encode()).hexdigest())
         try:
             if time.time() - os.path.getmtime(cache) < TTL:
                 v = open(cache).read().strip()
@@ -406,32 +418,33 @@ def scan_range(act, revargs, remote):
     _, ue = git(act, "config", "user.email")
     sc = Scanner(ae.split() + ue.split())
     rc, o = git(act, "log", "--no-walk=unsorted", "--no-color", "--no-textconv", "--no-ext-diff", "-p", "-U0",
-                "--format=\x01%h%n%B\x02", *shas, timeout=60)
+                "--format=" + M1 + "%h%n%B" + M2, *shas, timeout=60)
     if rc != 0: return [], 0, False, None
     size = len(o.encode("utf-8", "replace"))
     if size > MAX_BYTES: truncated = True; o = o[:MAX_BYTES]
-    sha, mode, path, ln, k = "", "", "", 0, 0
+    sha, mode, path, ln, inhunk = "", "", "", 0, False
     for raw in o.split("\n"):
-        if raw.startswith("\x01"):
-            sha = raw[1:]; mode = "msg"; k = 0; continue
+        if raw.startswith(M1):
+            sha = raw[len(M1):]; mode = "msg"; continue
         if mode == "msg":
-            if raw.endswith("\x02") or raw == "\x02":
-                body = raw.rstrip("\x02")
-                if body: k += 1; sc.line("commit %s message" % sha, body, True)
-                mode = "diff"; continue
-            k += 1
+            if raw.endswith(M2):
+                body = raw[:-len(M2)]
+                if body: sc.line("commit %s message" % sha, body, True)
+                mode = "diff"; inhunk = False; continue
             sc.line("commit %s message" % sha, raw, True)
             continue
-        if raw.startswith("diff --git "):
+        if raw.startswith("diff --git "):   # content lines always carry a +/-/space prefix, so this is a header
+            inhunk = False
             m = re.match(r"diff --git a/(.*?) b/(.*)$", raw)
             path = m.group(2) if m else ""
             if path: sc.line("commit %s path %s" % (sha, trunc(path, 40)), path, path_only=True)
             continue
-        if raw.startswith("+++ "):
+        if not inhunk and raw.startswith("+++ "):
             p = raw[4:]; path = p[2:] if p.startswith("b/") else path; continue
         if raw.startswith("@@"):
+            inhunk = True
             m = re.search(r"\+(\d+)", raw); ln = int(m.group(1)) - 1 if m else 0; continue
-        if raw.startswith("+") and not raw.startswith("+++"):
+        if inhunk and raw.startswith("+"):
             ln += 1
             sc.line("%s:%d (%s)" % (trunc(path, 60), ln, sha), raw[1:])
         elif raw.startswith(" ") or raw.startswith("-"):
@@ -504,7 +517,10 @@ def handle_push(act):
     problems, hit_lines = [], []
     for u in urls:
         pu = parse_url(u)
-        if pu is None: continue   # local path: not a public host
+        if pu is None:
+            if u.startswith(("/", ".", "~", "file://")): continue   # local path: not a public host
+            problems.append("the push URL %s has a form this guard cannot parse (visibility unknown)." % trunc(u, 40))
+            continue
         host, parts = pu
         host = resolve_alias(host)
         slug = host + "/" + "/".join(parts)
@@ -530,8 +546,8 @@ def flag_value(argv, names):
             elif n.startswith("--") and a.startswith(n + "="): vals.append(a.split("=", 1)[1])
     return vals
 
-def local_history_scan(act, title):
-    hits, total, tr, sc = scan_range(act, ["HEAD"], None)
+def local_history_scan(act, title, revs=("HEAD",)):
+    hits, total, tr, sc = scan_range(act, list(revs), None)
     if total or tr: return report_hits(title, hits, total, tr, sc)
     return []
 
@@ -569,8 +585,13 @@ def handle_repo(act):
     if kind == "repo-edit":
         vis = flag_value(argv, ["--visibility"])
         if not any(v.lower() == "public" for v in vis): return None
-        words = [a for a in argv if not a.startswith("-")]
-        extra = local_history_scan(act, "the local history (HEAD) contains:") if len(words) <= 2 and act["known"] else []
+        valued = {"--visibility", "--description", "-d", "--homepage", "-h", "--default-branch", "--add-topic", "--remove-topic", "--template"}
+        words, skip = [], False
+        for a in argv:
+            if skip: skip = False; continue
+            if a in valued: skip = True; continue
+            if not a.startswith("-"): words.append(a)
+        extra = local_history_scan(act, "the local history (every branch and tag) contains:", ("--branches", "--tags", "HEAD")) if len(words) <= 2 and act["known"] else []
         return ["this makes a repository PUBLIC: its whole history, every branch and every fork-visible object, becomes readable by anyone. Read the history first."] + extra
     # create
     if "--public" not in argv: return None
@@ -591,5 +612,5 @@ if problems:
 sys.exit(0)
 PYEOF
 
-printf '%s' "$INPUT" | python3 -c "$_PROG" 2>/dev/null
+printf '%s' "$INPUT" | python3 -I -c "$_PROG" 2>/dev/null
 exit 0

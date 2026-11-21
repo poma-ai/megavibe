@@ -195,6 +195,37 @@ passes "repo edit --visibility private" "$PR" "gh repo edit acme/pub --visibilit
 passes "repo edit other flags" "$PR" "gh repo edit --description hi"
 passes "gh pr view is untouched" "$PR" "gh pr view 3"
 
+# 10b. Triage of the amass sweep: each was run with its exact input.
+X=$T/xtra; mkrepo "$X" https://github.com/acme/pub.git
+commit "$X" w.md "++ path /Users/jsmith/z is an added line that starts with three pluses"
+asks "added line '+++ ...' is content, not a file header" "$X" "git push" "[home path]" "w.md:"
+( cd "$X" && git reset -q --hard HEAD~1 )
+commit "$X" w.md "ok" $'subject\n\n\x01 \x02 literal delimiter bytes in a message'
+passes "literal control bytes in a message do not derail the parse" "$X" "git push"
+commit "$X" y.md "AKIAABCDEFGHIJKLMNOP"
+asks "unbalanced quote does not hide a push" "$X" "git commit -m 'oops && git push" "could not be parsed"
+asks "push inside $( ) is still parsed as a command" "$X" 'echo $(git push origin main)' "[AWS key]"
+asks "push inside eval is asked about" "$X" 'eval "git push origin main"' "eval"
+passes "unbalanced quote without a push stays silent" "$X" "echo 'unclosed"
+( cd "$X" && git remote set-url origin 'ext::sh -c foo' )
+asks "an ext:: remote is not silently passed" "$X" "git push" "not a GitHub host"
+( cd "$X" && git remote set-url origin https://github.com/acme/pub.git && git reset -q --hard HEAD~1 )
+mkdir -p "$X/sub" && printf 'import sys\nprint("PWNED", file=open("/dev/stderr","w"))\nsys.exit(0)\n' > "$X/json.py"
+commit "$X" y2.md "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+asks "a planted json.py in the project is not imported" "$X" "git push" "[GitHub token]"
+rm -f "$X/json.py"; ( cd "$X" && git reset -q --hard HEAD~1 )
+printf PUBLIC > "$T/vis/acme_a-b"; printf PRIVATE > "$T/vis/acme_a_b"
+rm -rf "$HOME/.megavibe/cache"
+Y=$T/coll1; mkrepo "$Y" https://github.com/acme/a-b.git; commit "$Y" l.md "token ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+Z=$T/coll2; mkrepo "$Z" https://github.com/acme/a_b.git; commit "$Z" l.md "token ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+passes "private repo a_b" "$Z" "git push"
+asks "public repo a-b is not served a_b's cached PRIVATE" "$Y" "git push" "[GitHub token]"
+EH=$T/edit; mkrepo "$EH" https://github.com/acme/pub.git; ( cd "$EH" && git checkout -q -b side && echo "tok ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm side && git checkout -q main )
+asks "repo edit public scans every branch" "$EH" "gh repo edit --visibility public" "every branch" "[GitHub token]"
+passes "placeholder token on an EXAMPLE line" "$X" "git push"
+commit "$X" ex.md "token: ghp_EXAMPLEexampleEXAMPLEexample01234567   # EXAMPLE placeholder"
+passes "a line marked EXAMPLE is a placeholder, not a secret" "$X" "git push"
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 
