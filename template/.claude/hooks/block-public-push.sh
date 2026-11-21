@@ -425,10 +425,13 @@ class Scanner:
 
 def scan_range(act, revargs, remote):
     """revargs: list of rev-list args selecting tips. Returns (hits_lines, total, truncated)."""
+    # a source that does not resolve cannot be pushed (git itself will fail): skip it
+    revargs = [r for r in revargs if r.startswith("--") or git(act, "rev-parse", "--verify", "-q", r + "^{commit}")[0] == 0]
+    if not revargs: return [], 0, False, None
     base = ["rev-list", "--max-count=%d" % (MAX_COMMITS + 1)] + revargs
     if remote: base += ["--not", "--remotes=" + remote]
     rc, o = git(act, *base)
-    if rc != 0: return [], 0, False, None
+    if rc != 0: raise ScanFailed()   # a resolvable ref whose walk fails is not a clean scan
     shas = o.split()
     truncated = len(shas) > MAX_COMMITS
     shas = shas[:MAX_COMMITS]
