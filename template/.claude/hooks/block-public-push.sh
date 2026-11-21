@@ -129,7 +129,9 @@ for line in CMD.split("\n"):
     pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
 TEXT = "\n".join(out).replace("\\\n", "").replace("\n", " ; ")
 # redirections are not arguments: `2>&1`, `> file`, `< file`
-TEXT = re.sub(r"(?<=\s)\d*(?:>>?|<)&?[ \t]*[^\s;&|()]*", " ", TEXT)
+_QUOTED = re.compile(r"""('[^']*'|"(?:\\.|[^"\\])*")""")
+_REDIR = re.compile(r"(?:(?<=\s)|^)\d*(?:>>?|<)&?[ \t]*[^\s;&|()]*")
+TEXT = "".join(part if i % 2 else _REDIR.sub(" ", part) for i, part in enumerate(_QUOTED.split(TEXT)))   # quoted text is never a redirection
 
 WRAP = {"sudo": {"-u","-g","-h","-p","-C","-T","-r","-t","-U","-D","-R"}, "doas": {"-u","-C"},
         "env": {"-u","-C","-S","-P"}, "nice": {"-n"}, "stdbuf": {"-i","-o","-e"},
@@ -192,8 +194,15 @@ def do_cd(argv):
     state["cwd"] = os.path.normpath(os.path.join(state["cwd"], expand(p)))
 
 SCOPES = []
+ENVSEL = {}   # inline GH_REPO= / GH_HOST= selections, which gh honours (the override variable is NOT honoured inline)
+def note_assign(a):
+    if a.startswith("MEGAVIBE_ALLOW_PUBLIC_PUSH="):
+        NOTES.append("an inline MEGAVIBE_ALLOW_PUBLIC_PUSH assignment in the command is ignored: only the session's launch environment counts")
+    elif a.startswith(("GH_REPO=", "GH_HOST=")):
+        ENVSEL[a.split("=", 1)[0]] = a.split("=", 1)[1]
 def scan_argv(argv, depth=0):
     if depth > 3 or not argv: return
+    ENVSEL.clear()
     if argv == ["__PUSH__"]: SCOPES.append((state["cwd"], state["cwd_known"])); return   # a subshell's cd must not leak out
     if argv == ["__POP__"]:
         if SCOPES: state["cwd"], state["cwd_known"] = SCOPES.pop()
@@ -202,8 +211,7 @@ def scan_argv(argv, depth=0):
     while i < len(argv):
         a = argv[i]; b = os.path.basename(a)
         if ASSIGN.match(a):
-            if a.startswith("MEGAVIBE_ALLOW_PUBLIC_PUSH="):
-                NOTES.append("an inline MEGAVIBE_ALLOW_PUBLIC_PUSH assignment in the command is ignored: only the session's launch environment counts")
+            note_assign(a)
             i += 1; continue
         if a in KEYWORDS: i += 1; continue
         if b in WRAP:
@@ -213,8 +221,7 @@ def scan_argv(argv, depth=0):
                 if opt == "--": break
                 if opt in WRAP[b] and i < len(argv): i += 1
             while i < len(argv) and ASSIGN.match(argv[i]):
-                if argv[i].startswith("MEGAVIBE_ALLOW_PUBLIC_PUSH="):
-                    NOTES.append("an inline MEGAVIBE_ALLOW_PUBLIC_PUSH assignment in the command is ignored: only the session's launch environment counts")
+                note_assign(argv[i])
                 i += 1
             if b == "timeout" and i < len(argv) and re.match(r"^[0-9.]+[smhd]?$", argv[i]): i += 1
             continue
@@ -262,7 +269,7 @@ def scan_argv(argv, depth=0):
             if x in ("-R", "--repo"): skip = True; continue
             if not x.startswith("-"): words.append(x)
         if len(words) >= 2 and words[0] == "pr" and words[1] == "create":
-            ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
+            ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL)})
         elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
             ACTIONS.append({"kind": "repo-" + words[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
 
@@ -529,6 +536,20 @@ def push_revs(argv):
         pos.append(a); i += 1
     return repo_opt, pos, flags
 
+def rewrite_url(act, u, push=True):
+    """git's url.<base>.pushInsteadOf / insteadOf for an explicit URL (longest prefix wins; pushInsteadOf first when pushing)"""
+    rc, o = git(act, "config", "--get-regexp", r"^url\..*\.(pushinsteadof|insteadof)$")
+    best = {"pushinsteadof": ("", ""), "insteadof": ("", "")}
+    for line in o.splitlines():
+        key, _, val = line.partition(" ")
+        m = re.match(r"^url\.(.*)\.(pushinsteadof|insteadof)$", key, re.I)
+        if m and val and u.startswith(val) and len(val) > len(best[m.group(2).lower()][0]):
+            best[m.group(2).lower()] = (val, m.group(1))
+    for kind in (("pushinsteadof", "insteadof") if push else ("insteadof",)):
+        val, base = best[kind]
+        if val: return base + u[len(val):]
+    return u
+
 def handle_push(act):
     repo_opt, pos, flags = push_revs(act["argv"])
     if "--dry-run" in flags or "-n" in flags: return None
@@ -545,7 +566,7 @@ def handle_push(act):
         if remote is None: remote = "origin"
     # push URLs
     if parse_url(remote) is not None or remote.startswith(("/", ".", "~", "file://")):
-        urls, remote_name = [remote], None
+        urls, remote_name = [rewrite_url(act, remote)], None
     else:
         rc, o = git(act, "remote", "get-url", "--push", "--all", remote)
         if rc != 0 or not o.strip():
@@ -613,10 +634,10 @@ def local_history_scan(act, title, revs=("HEAD",)):
 
 def handle_pr(act):
     argv = act["argv"]
-    repo = (flag_value(argv, ["--repo", "-R"]) or [None])[0]
+    repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[0]
     if not act["known"]:
         return ["the working directory is not statically known (cd into a variable), so the base repository cannot be resolved."]
-    host = os.environ.get("GH_HOST", "github.com").lower()
+    host = (act.get("env", {}).get("GH_HOST") or os.environ.get("GH_HOST", "github.com")).lower()
     nwo = None
     if repo:
         parts = repo.split("/")

@@ -271,6 +271,15 @@ asks "a subshell's cd does not leak into the next push" "$M" "(cd $T/otherdir &&
 asks "a child shell's cd does not leak either" "$M" "bash -c 'cd $T/otherdir'; git push origin release" "[GitHub token]"
 ( cd "$M" && git checkout -q main )
 
+# 10e. Round-2 reader findings.
+asks "angle brackets inside a quoted PR body are not a redirection" "$PR" "gh pr create --title t --body 'Contact <alice@internal-corp.biz> today'" "[email]"
+passes "a real redirection is still stripped from push args" "$PUB" "git push origin main > /dev/null"
+RW=$T/rw; mkrepo "$RW" https://github.com/acme/priv.git
+( cd "$RW" && git config "url.https://github.com/acme/pub.git.pushInsteadOf" https://github.com/acme/priv.git && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > t.txt && git add t.txt && git commit -qm t )
+asks "pushInsteadOf rewrites an explicit URL" "$RW" "git push https://github.com/acme/priv.git main" "[GitHub token]"
+asks "inline GH_REPO selects the public repo" "$T/otherdir" "GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
+asks "env GH_REPO= wrapper form" "$T/otherdir" "env GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 
