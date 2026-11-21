@@ -199,6 +199,10 @@
           },
           {
             "type": "command",
+            "command": ".claude/hooks/block-public-push.sh"
+          },
+          {
+            "type": "command",
             "command": ".claude/hooks/rm-to-trash.sh"
           },
           {
