@@ -690,6 +690,13 @@ def main():
                             print("emptied: %s (finished after an interrupted run)" % shown)
                             item_kb = 0
                             for r in drop:
+                                tp = r.get("trash_path")
+                                if isinstance(tp, str) and os.path.dirname(tp) == trash.path:
+                                    try:                     # a same-inode record whose own entry is still there stays open
+                                        os.stat(os.path.basename(tp), dir_fd=trash.fd, follow_symlinks=False)
+                                        continue
+                                    except OSError:
+                                        pass
                                 item_kb += row(r, True, "finished after an interrupted run")
                                 closed.add(r["id"])
                             kb += item_kb

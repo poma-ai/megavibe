@@ -1686,7 +1686,7 @@ else
 fi
 # The path logic without a second volume: where the Trash of a given path is, and what counts as a Trash root.
 cat > "$T/vol_paths.py" <<'EOF'
-import importlib.util, os, sys
+import importlib.util, os, sys, json as _j, tempfile as _t, contextlib, io
 spec = importlib.util.spec_from_file_location("tr", sys.argv[1]); tr = importlib.util.module_from_spec(spec); spec.loader.exec_module(tr)
 bad = []
 def case(name, got, want):
@@ -1704,8 +1704,13 @@ case("an unmounted-looking plain directory is refused", tr.root_ok(os.path.join(
 case("mount_of a path on the boot volume is some ancestor of it", sys.argv[2].startswith(tr.mount_of(sys.argv[2])), True)
 case("ident_matches without root uses the device too", tr.ident_matches({"dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), False)
 case("ident_matches on a volume record uses the inode", tr.ident_matches({"trash_root": "/V/.Trashes/1", "dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), True)
+_d4 = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d4
+spec4 = importlib.util.spec_from_file_location("tr4", sys.argv[1]); tr4 = importlib.util.module_from_spec(spec4); spec4.loader.exec_module(tr4)
+_ghost = os.path.join(_d4, "former-mount", "sub")
+_ok, _msg = tr4.apply_one({"id": "r1", "path": os.path.join(_ghost, "f"), "trash_path": "/nonexistent-volume/.Trashes/%s/f" % uid, "trash_root": "/nonexistent-volume/.Trashes/%s" % uid, "dev": 1, "ino": 2}, "restore")
+case("restore from an unmounted volume is refused", _ok, False)
+case("restore from an unmounted volume creates nothing at the original path", os.path.exists(os.path.join(_d4, "former-mount")), False)
 case("an old record with no root means ~/.Trash", tr.root_of({}), tr.TRASH)
-import json as _j, tempfile as _t, contextlib, io
 # status keeps naming an unmounted volume while an item on it is kept or droppable (only restore/backup/emptied leave it)
 _d3 = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d3
 _gone = "/nonexistent-volume/.Trashes/%s" % uid
@@ -1716,7 +1721,6 @@ with contextlib.redirect_stdout(io.StringIO()) as _o3:
     tr3.cmd_status()
 case("status names the unmounted volume holding a droppable item", "not mounted" in _o3.getvalue(), True)
 # a malformed root in a ledger row must not crash the paths that list claim directories
-import json as _j, tempfile as _t, contextlib, io
 _d = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d
 open(os.path.join(_d, "ledger.jsonl"), "w").write(_j.dumps({"id": "bad1", "path": "/x", "trash_path": "/y/z", "trash_root": "a\u0000b", "dev": 1, "ino": 2}) + "\n" + _j.dumps({"id": "bad2", "path": "/x", "trash_path": "/y/z", "trash_root": ["l"], "dev": 1, "ino": 2}) + "\n")
 spec2 = importlib.util.spec_from_file_location("tr2", sys.argv[1]); tr2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(tr2)

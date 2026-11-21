@@ -639,6 +639,8 @@ def apply_one(r, action):
         return True, "kept in the Trash" + (", marked droppable" if action == "droppable" else "")
     if action not in ("restore", "backup"):
         return False, f"unknown action {action!r}"
+    if not same_entry(r):              # before anything is created: an unmounted volume's mount point stays untouched
+        return False, "refused: the recorded Trash entry is gone or was replaced"
     # Everything that can fail before the move happens before the claim.
     if action == "restore":
         targets = [orig]
