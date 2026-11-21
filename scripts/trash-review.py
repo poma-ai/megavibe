@@ -164,29 +164,45 @@ def claim_dir(root):
     return CLAIM if root == TRASH else os.path.join(root, ".megavibe-claim")
 
 
-def locate_in(root, base, dev, ino, budget=3.0):
-    """The entry of `root` that is the object (dev, ino), or None. The likely name first, then a scan
-    that gives up after `budget` seconds (the item is then recorded without a location, as before)."""
+def snapshot(root, budget=3.0):
+    """The entry names of `root` right now (empty when it does not exist yet), or None when it cannot be listed
+    in time. Taken before rmtrash so the entry rmtrash adds is the one new name, never an older hard link."""
     end = time.monotonic() + budget
-    try:
-        st = os.lstat(os.path.join(root, base))
-        if (st.st_dev, st.st_ino) == (dev, ino):
-            return os.path.join(root, base)
-    except OSError:
-        pass
+    names = set()
     try:
         for e in os.scandir(root):
             if time.monotonic() > end:
-                break
+                return None
+            names.add(e.name)
+    except FileNotFoundError:
+        return names
+    except OSError:
+        return None
+    return names
+
+
+def locate_new(root, before, dev, ino, budget=3.0):
+    """The ONE entry of `root` that is new since `before` and is the object (dev, ino); None when there is none,
+    when it is ambiguous, or when `before` is unknown (the item is then recorded without a location)."""
+    if before is None:
+        return None
+    end = time.monotonic() + budget
+    found = []
+    try:
+        for e in os.scandir(root):
+            if time.monotonic() > end:
+                return None
+            if e.name in before:
+                continue
             try:
                 st = e.stat(follow_symlinks=False)
             except OSError:
                 continue
             if (st.st_dev, st.st_ino) == (dev, ino):
-                return os.path.join(root, e.name)
+                found.append(os.path.join(root, e.name))
     except OSError:
-        pass
-    return None
+        return None
+    return found[0] if len(found) == 1 else None
 
 
 # ---- moves that never replace -----------------------------------------------
@@ -364,10 +380,12 @@ def trash_one(o, opts, tdev, rows):
             root = volume_trash_of(path)
         except OSError:
             root = None
+    # The volume's Trash may not exist before this first delete (rmtrash makes it): snapshot reads that as empty.
+    before = snapshot(root) if root else None
     r1 = rmtrash_one(opts, stripped)
     if r1 == 0 and not os.path.lexists(path):
         rec = dict(row, id=uuid.uuid4().hex[:12], trash_path=None, kb=kb)
-        where = locate_in(root, base, st.st_dev, st.st_ino) if root and root_ok(root) else None
+        where = locate_new(root, before, st.st_dev, st.st_ino) if root and root_ok(root) else None
         if where:
             rec.update(trash_path=where, trash_root=root, dev=st.st_dev, ino=st.st_ino)
         rows.append(rec)
@@ -452,13 +470,14 @@ def cmd_status():
     if stuck:
         print(f"{len(stuck)} item(s) stranded in {len({d for d, _ in stuck})} claim director(ies) by an interrupted review: the next apply puts them back")
     closed = {r.get("id") for r in read(REVIEWED) if r.get("ok")}
+    left = {r.get("id") for r in read(REVIEWED) if r.get("ok") and r.get("action") in ("restore", "backup", "emptied")}
     lost = [r for r in ledger() if not r.get("trash_path") and r.get("id") not in closed]
     if lost:
         print(f"{len(lost)} older record(s) have no Trash location (an item on another volume, recorded before that was tracked): "
               f"they cannot be reviewed from here; look in <volume>/.Trashes/<uid> or Finder")
-    for root in sorted({root_of(r) for r in ledger() if r.get("trash_path") and r.get("id") not in closed} - {TRASH}):
+    for root in sorted({root_of(r) for r in ledger() if r.get("trash_path") and r.get("id") not in left} - {TRASH}):
         if not root_ok(root):
-            n = sum(1 for r in ledger() if root_of(r) == root and r.get("id") not in closed)
+            n = sum(1 for r in ledger() if root_of(r) == root and r.get("id") not in left)
             print(f"{n} item(s) in {json.dumps(root, ensure_ascii=True)} not counted: that volume is not mounted (or its Trash is not usable)")
     d = droppable()
     if d:

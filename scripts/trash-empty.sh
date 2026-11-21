@@ -389,13 +389,21 @@ def is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+def obj_key(r):
+    """What names one object: on a volume other than the home one the checked Trash root and the inode (a remount can
+    change the device number, and another volume can reuse one); otherwise device and inode."""
+    if r.get("trash_root") is not None:
+        return ("v", r.get("trash_root"), r.get("ino"))
+    return ("b", r.get("dev"), r.get("ino"))
+
+
 def conflict(c, recs, latest):
     """Another record for the same object (same inode, or same Trash name) whose latest decision is
     not a final one and not droppable: the review does not agree that this object may go."""
     for r in recs:
         if r is c:
             continue
-        if (r.get("dev"), r.get("ino")) == (c.get("dev"), c.get("ino")) or r.get("trash_path") == c.get("trash_path"):
+        if obj_key(r) == obj_key(c) or r.get("trash_path") == c.get("trash_path"):
             if latest.get(r.get("id")) not in ("droppable", "restore", "backup", "emptied"):
                 return r
     return None

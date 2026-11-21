@@ -1661,6 +1661,11 @@ if [ "$VOL_OK" = 1 ]; then
   jq -nc '{ts:"t", id:"oldrec1", path:"/old/x", kind:"file", cwd:"/", session:"", trash_path:null, kb:-1}' >> "$HV/.megavibe/trash/ledger.jsonl"
   out=$(rv2 status 2>&1); rc=$?
   check "old record without location: status stays quiet about crashes and names it" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "no Trash location"'
+  # two hard links with one name: rmtrash renames the second; each record must find ITS entry, never the older link
+  mkdir -p "$VOL/hl1" "$VOL/hl2"; echo hl > "$VOL/hl1/same"; ln "$VOL/hl1/same" "$VOL/hl2/same"
+  trv "$VOL/hl1/same"; trv "$VOL/hl2/same"
+  HL=$(led2 | jq -r 'select(.path|test("/hl[12]/same$")) | .trash_path // "null"')
+  check "volume: two hard links trashed one after the other are not recorded at one entry" '[ "$(printf "%s\n" "$HL" | wc -l | tr -d " ")" = 2 ] && { [ "$(printf "%s\n" "$HL" | sort -u | wc -l | tr -d " ")" = 2 ] || [ "$(printf "%s\n" "$HL" | grep -c "^null$")" -ge 1 ]; }'
   # a symlink on the volume that points at the boot disk: the volume is the one holding the link, not its target
   mkdir -p "$T/boot-target"; echo t > "$T/boot-target/f"; ln -s "$T/boot-target" "$VOL/lnk-to-boot"
   trv "$VOL/lnk-to-boot"
@@ -1700,8 +1705,18 @@ case("mount_of a path on the boot volume is some ancestor of it", sys.argv[2].st
 case("ident_matches without root uses the device too", tr.ident_matches({"dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), False)
 case("ident_matches on a volume record uses the inode", tr.ident_matches({"trash_root": "/V/.Trashes/1", "dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), True)
 case("an old record with no root means ~/.Trash", tr.root_of({}), tr.TRASH)
+import json as _j, tempfile as _t, contextlib, io
+# status keeps naming an unmounted volume while an item on it is kept or droppable (only restore/backup/emptied leave it)
+_d3 = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d3
+_gone = "/nonexistent-volume/.Trashes/%s" % uid
+open(os.path.join(_d3, "ledger.jsonl"), "w").write(_j.dumps({"id": "d1", "path": "/x", "trash_path": _gone + "/x", "trash_root": _gone, "dev": 1, "ino": 2, "kb": 1}) + "\n")
+open(os.path.join(_d3, "reviewed.jsonl"), "w").write(_j.dumps({"id": "d1", "ok": True, "action": "droppable"}) + "\n")
+spec3 = importlib.util.spec_from_file_location("tr3", sys.argv[1]); tr3 = importlib.util.module_from_spec(spec3); spec3.loader.exec_module(tr3)
+with contextlib.redirect_stdout(io.StringIO()) as _o3:
+    tr3.cmd_status()
+case("status names the unmounted volume holding a droppable item", "not mounted" in _o3.getvalue(), True)
 # a malformed root in a ledger row must not crash the paths that list claim directories
-import json as _j, tempfile as _t
+import json as _j, tempfile as _t, contextlib, io
 _d = _t.mkdtemp(); os.environ["MEGAVIBE_TRASH_LEDGER_DIR"] = _d
 open(os.path.join(_d, "ledger.jsonl"), "w").write(_j.dumps({"id": "bad1", "path": "/x", "trash_path": "/y/z", "trash_root": "a\u0000b", "dev": 1, "ino": 2}) + "\n" + _j.dumps({"id": "bad2", "path": "/x", "trash_path": "/y/z", "trash_root": ["l"], "dev": 1, "ino": 2}) + "\n")
 spec2 = importlib.util.spec_from_file_location("tr2", sys.argv[1]); tr2 = importlib.util.module_from_spec(spec2); spec2.loader.exec_module(tr2)
@@ -1721,6 +1736,19 @@ print("\n".join(bad) if bad else "ok")
 EOF
 mkdir -p "$T/plain/.Trashes/$(id -u)"
 check "path logic: roots, shapes, identity" '[ "$(python3 -I "$T/vol_paths.py" "$REPO/scripts/trash-review.py" "$T/plain")" = ok ]'
+
+cat > "$T/conflict_test.py" <<'EOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("te", sys.argv[1]); te = importlib.util.module_from_spec(spec); spec.loader.exec_module(te)
+bad = []
+A = {"id": "a", "trash_path": "/V1/.Trashes/501/x", "trash_root": "/V1/.Trashes/501", "dev": 5, "ino": 9}
+B = {"id": "b", "trash_path": "/V2/.Trashes/501/y", "trash_root": "/V2/.Trashes/501", "dev": 5, "ino": 9}   # same dev and ino, another volume
+C = {"id": "c", "trash_path": "/V1/.Trashes/501/z", "trash_root": "/V1/.Trashes/501", "dev": 7, "ino": 9}   # same root and inode, device changed by a remount
+if te.conflict(A, [A, B], {"b": "keep"}) is not None: bad.append("another volume's record with the same dev and ino must not conflict")
+if te.conflict(A, [A, C], {"c": "keep"}) is not C: bad.append("a kept record for the same object after a remount must conflict")
+print("\n".join(bad) if bad else "ok")
+EOF
+check "emptying: conflict detection is scoped to the checked Trash root on volumes" '[ "$(python3 -I "$T/conflict_test.py" "$TE_PROG")" = ok ]'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
