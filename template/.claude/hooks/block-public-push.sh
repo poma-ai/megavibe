@@ -119,10 +119,11 @@ def ask(lines):
     sys.exit(0)
 
 # ---- command parsing (same family as the kill guard in block-dangerous-bash.sh) ----
-out, pending = [], []
+out, pending, HEREDOCS = [], [], []
 for line in CMD.split("\n"):
     if pending:
         if line.strip() == pending[0]: pending.pop(0)
+        else: HEREDOCS.append(line)
         continue
     out.append(line)
     pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
@@ -374,6 +375,25 @@ def trunc(s, n=16):
     s = s.replace("\n", " ")
     return s if len(s) <= n else s[:n] + "…"
 
+class ScanFailed(Exception): pass
+
+def run_capped(cmd, cwd, cap, timeout=60):
+    """stdout up to cap+1 bytes, then the process is killed; raises ScanFailed on error/timeout"""
+    try:
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        raise ScanFailed()
+    import threading
+    t = threading.Timer(timeout, p.kill); t.start()
+    try:
+        data = p.stdout.read(cap + 1)
+        if len(data) > cap: p.kill()
+        p.wait()
+    finally:
+        t.cancel()
+    if len(data) <= cap and p.returncode != 0: raise ScanFailed()
+    return data
+
 class Scanner:
     def __init__(self, extra_emails):
         self.hits = []
@@ -417,11 +437,11 @@ def scan_range(act, revargs, remote):
     rc, ae = git(act, "log", "--no-walk=unsorted", "--format=%ae%n%ce", *shas)
     _, ue = git(act, "config", "user.email")
     sc = Scanner(ae.split() + ue.split())
-    rc, o = git(act, "log", "--no-walk=unsorted", "--no-color", "--no-textconv", "--no-ext-diff", "-p", "-U0",
-                "--format=" + M1 + "%h%n%B" + M2, *shas, timeout=60)
-    if rc != 0: return [], 0, False, None
-    size = len(o.encode("utf-8", "replace"))
-    if size > MAX_BYTES: truncated = True; o = o[:MAX_BYTES]
+    cwd = act["cwd"] if os.path.isdir(act["cwd"]) else None
+    data = run_capped(["git"] + act["gitopts"] + ["log", "--no-walk=unsorted", "--no-color", "--no-textconv", "--no-ext-diff", "-p", "-U0",
+                      "--format=" + M1 + "%h%n%B" + M2] + shas, cwd, MAX_BYTES)
+    if len(data) > MAX_BYTES: truncated = True; data = data[:MAX_BYTES]
+    o = data.decode("utf-8", "replace")
     sha, mode, path, ln, inhunk = "", "", "", 0, False
     for raw in o.split("\n"):
         if raw.startswith(M1):
@@ -568,7 +588,7 @@ def handle_pr(act):
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
     if vis != "PUBLIC": return None
     if got and is_trusted(host + "/" + got): return None
-    texts = flag_value(argv, ["--title", "-t", "--body", "-b"])
+    texts = flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # a heredoc body is how most PR bodies arrive
     for f in flag_value(argv, ["--body-file", "-F"]):
         p = f if os.path.isabs(f) else os.path.join(act["cwd"], f)
         try: texts.append(open(p, encoding="utf-8", errors="replace").read(1 << 20))
@@ -605,7 +625,7 @@ for act in ACTIONS:
     try:
         r = {"push": handle_push, "pr": handle_pr}.get(act["kind"], handle_repo)(act)
     except Exception as e:
-        r = None   # fail open on our own bug
+        r = ["the scan could not run (git failed or timed out), so the outgoing commits were not checked."] if isinstance(e, ScanFailed) else None   # any other bug fails open
     if r: problems += r
 if problems:
     ask(problems + NOTES)

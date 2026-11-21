@@ -188,6 +188,8 @@ ok'"
 passes "pr create to a private repo" "$PR" "gh pr create -R acme/priv --title '/Users/jsmith/x' --body y"
 asks "pr create -R public repo" "$PR" "gh pr create -R acme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"
 asks "pr create: gh cannot tell" "$PR" "gh pr create -R acme/mystery --title t --body b" "could not determine"
+asks "pr create: a heredoc body is scanned" "$PR" $'gh pr create --title t --body-file - <<\'EOF\'\n## Summary\nsee /Users/jsmith/proj\nEOF' "pull request text" "[home path]"
+asks "pr create: $(cat <<EOF) body idiom is scanned" "$PR" $'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\nkey AKIAABCDEFGHIJKLMNOP\nEOF\n)"' "[AWS key]"
 asks "repo create --public" "$PR" "gh repo create newthing --public" "creates a PUBLIC"
 passes "repo create --private" "$PR" "gh repo create newthing --private"
 asks "repo edit --visibility public" "$PR" "gh repo edit acme/priv --visibility public" "PUBLIC"
@@ -225,6 +227,12 @@ asks "repo edit public scans every branch" "$EH" "gh repo edit --visibility publ
 passes "placeholder token on an EXAMPLE line" "$X" "git push"
 commit "$X" ex.md "token: ghp_EXAMPLEexampleEXAMPLEexample01234567   # EXAMPLE placeholder"
 passes "a line marked EXAMPLE is a placeholder, not a secret" "$X" "git push"
+
+mkdir -p "$T/gitfail"; REALGIT=$(command -v git)
+printf '#!/bin/bash\ncase " $* " in *" -p "*) exit 1;; esac\nexec %s "$@"\n' "$REALGIT" > "$T/gitfail/git"; chmod +x "$T/gitfail/git"
+commit "$X" z.md "fine text"
+OUT=$(jq -n --arg c "git push" --arg d "$X" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}' | PATH="$T/gitfail:$PATH" bash "$HOOK" 2>/dev/null)
+case "$OUT" in *"scan could not run"*) ok ;; *) bad "a failing git log must ask, not pass (out=${OUT:0:120})" ;; esac
 
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
