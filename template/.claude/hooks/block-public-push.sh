@@ -621,7 +621,9 @@ def handle_repo(act):
     # create
     if "--public" not in argv: return None
     extra = []
-    if ("--push" in argv or flag_value(argv, ["--source"])) and act["known"]:
+    src = flag_value(argv, ["--source"])
+    if src: act = dict(act, cwd=os.path.normpath(os.path.join(act["cwd"], expand(src[0]))))
+    if ("--push" in argv or src) and act["known"]:
         extra = local_history_scan(act, "the local history (HEAD) that will be pushed contains:")
     return ["this creates a PUBLIC repository."] + extra
 
