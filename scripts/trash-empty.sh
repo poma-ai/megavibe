@@ -403,7 +403,9 @@ def conflict(c, recs, latest):
     for r in recs:
         if r is c:
             continue
-        if obj_key(r) == obj_key(c) or r.get("trash_path") == c.get("trash_path"):
+        same_name = r.get("trash_path") == c.get("trash_path")
+        known = is_int(r.get("ino")) and is_int(c.get("ino"))      # two known identities decide it: a reused name is another object
+        if obj_key(r) == obj_key(c) or (same_name and not known):
             if latest.get(r.get("id")) not in ("droppable", "restore", "backup", "emptied"):
                 return r
     return None

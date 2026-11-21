@@ -1750,6 +1750,10 @@ B = {"id": "b", "trash_path": "/V2/.Trashes/501/y", "trash_root": "/V2/.Trashes/
 C = {"id": "c", "trash_path": "/V1/.Trashes/501/z", "trash_root": "/V1/.Trashes/501", "dev": 7, "ino": 9}   # same root and inode, device changed by a remount
 if te.conflict(A, [A, B], {"b": "keep"}) is not None: bad.append("another volume's record with the same dev and ino must not conflict")
 if te.conflict(A, [A, C], {"c": "keep"}) is not C: bad.append("a kept record for the same object after a remount must conflict")
+D = {"id": "d", "trash_path": A["trash_path"], "trash_root": A["trash_root"], "dev": 5, "ino": 77}   # a reused Trash name: another object
+if te.conflict(A, [A, D], {"d": "keep"}) is not None: bad.append("a stale kept record at a reused name with another inode must not conflict")
+E = {"id": "e", "trash_path": A["trash_path"]}                                                      # no identity recorded: stay conservative
+if te.conflict(A, [A, E], {"e": "keep"}) is not E: bad.append("a same-name record without identity must still conflict")
 print("\n".join(bad) if bad else "ok")
 EOF
 check "emptying: conflict detection is scoped to the checked Trash root on volumes" '[ "$(python3 -I "$T/conflict_test.py" "$TE_PROG")" = ok ]'
