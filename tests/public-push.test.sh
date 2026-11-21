@@ -326,6 +326,16 @@ asks "denylist hits a git-quoted (non-ASCII) file name" "$DQ" "git push" "denyli
 asks "diff.noprefix does not hide a file name" "$DQ" "git push" "denylist"
 rm -f "$HOME/.megavibe/personal/public-push.deny"
 
+# 10i. Round-4 findings.
+asks "variable git -C directory asks" "$M" 'D=/nope; git -C "$D" push origin main' "not statically known"
+TG=$T/tg; mkrepo "$TG" https://github.com/acme/pub.git; ( cd "$TG" && git checkout -q -b tmp && echo "AKIAABCDEFGHIJKLMNOP" > t.txt && git add t.txt && git commit -qm t && git tag v9 && git checkout -q main && git branch -qD tmp )
+asks "refs/tags/* reaches a tag-only commit" "$TG" "git push origin 'refs/tags/*:refs/tags/*'" "[AWS key]"
+asks "variable PR body asks" "$PR" 'BODY=x; gh pr create -R acme/pub --title Clean --body "$BODY"' "unexpanded variable"
+mkdir -p "$T/Users/jsmith"; printf 'Clean summary\n' > "$T/Users/jsmith/body.md"
+passes "a body-file path is not published text" "$PR" "gh pr create -R acme/pub --title Fix --body-file $T/Users/jsmith/body.md"
+CL=$T/cl; mkrepo "$CL" https://github.com/acme/pub.git; commit "$CL" README.md "git clone git@github.com:acme/pub.git"
+passes "an ssh clone URL is not an email" "$CL" "git push"
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 

@@ -256,13 +256,16 @@ def scan_argv(argv, depth=0):
     if base == "git":
         gitopts, k = [], 1
         cwd = state["cwd"]
+        dir_known = state["cwd_known"]
         while k < len(argv) and argv[k].startswith("-"):
             o = argv[k]
             if len(o) > 2 and o[:2] == "-C" and not o.startswith("--"):
+                if "$" in o or "`" in o: dir_known = False
                 cwd = os.path.normpath(os.path.join(cwd, expand(o[2:]))); k += 1; continue
             if len(o) > 2 and o[:2] == "-c" and not o.startswith("--"):
                 gitopts += ["-c", o[2:]]; k += 1; continue
             if o in ("-C",) and k + 1 < len(argv):
+                if "$" in argv[k + 1] or "`" in argv[k + 1]: dir_known = False
                 cwd = os.path.normpath(os.path.join(cwd, expand(argv[k + 1]))); k += 2; continue
             if o in ("-c", "--git-dir", "--work-tree", "--namespace", "--exec-path") and k + 1 < len(argv):
                 gitopts += [o, argv[k + 1]]; k += 2; continue
@@ -270,7 +273,7 @@ def scan_argv(argv, depth=0):
                 gitopts.append(o)
             k += 1
         if k < len(argv) and argv[k] == "push":
-            ACTIONS.append({"kind": "push", "argv": argv[k + 1:], "cwd": cwd, "gitopts": gitopts, "known": state["cwd_known"]})
+            ACTIONS.append({"kind": "push", "argv": argv[k + 1:], "cwd": cwd, "gitopts": gitopts, "known": dir_known})
         return
     if base == "gh":
         rest = [x for x in argv[1:]]
@@ -404,7 +407,7 @@ PLACEHOLDER_USERS = {"user","username","you","your","yourname","your-name","name
 REAL_USER = os.path.basename(HOME.rstrip("/")).lower()
 EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 TRAILER = re.compile(r"^\s*[A-Za-z][A-Za-z-]*-by:", re.I)
-DEFAULT_EMAIL_ALLOW = ["*@users.noreply.github.com", "noreply@*", "no-reply@*", "*@example.com", "*@example.org",
+DEFAULT_EMAIL_ALLOW = ["git@*", "*@users.noreply.github.com", "noreply@*", "no-reply@*", "*@example.com", "*@example.org",
                        "*@example.net", "*@localhost", "*@*.example", "*@*.invalid", "*@*.test"]
 
 def load_deny():
@@ -617,7 +620,8 @@ def handle_push(act):
         if rs.startswith(":"): continue
         src = rs.split(":", 1)[0]
         if rs == "tag": continue
-        if "*" in src or src in ("refs/heads/*",): revargs.append("--branches")
+        if "*" in src:
+            revargs.append("--tags" if src.startswith("refs/tags/") else "--branches" if src.startswith("refs/heads/") else "--all")
         else: revargs.append(src)
     if "--all" in flags or "--mirror" in flags: revargs.append("--branches" if "--mirror" not in flags else "--all")
     if "--tags" in flags: revargs.append("--tags")
@@ -686,8 +690,12 @@ def handle_pr(act):
     if vis != "PUBLIC": return None
     if got and is_trusted(host + "/" + got): return None
     _m = re.search(r"\bpr\s+create\b", TEXT)
-    texts = [TEXT[_m.start():].replace(" ; ", "\n") if _m else ""] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
+    _whole = re.sub(r"(?:--body-file|-F)[ =]+\S+", " ", TEXT[_m.start():]) if _m else ""   # a body-file PATH is local metadata; its content is scanned below
+    texts = [_whole.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
     unread = []
+    _unres = [t for t in flag_value(argv, ["--title", "-t", "--body", "-b"]) if re.search(r"\$\{?[A-Za-z_]", t)]
+    if _unres:
+        return ["%s is PUBLIC and the pull request title/body contains an unexpanded variable, so its text cannot be scanned." % (got or "the base repository")]
     for f in flag_value(argv, ["--body-file", "-F"]):
         if f == "-":
             if not HEREDOCS: unread.append("standard input")
