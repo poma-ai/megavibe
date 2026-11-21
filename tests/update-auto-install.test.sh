@@ -280,7 +280,7 @@ fi
 # a real install to reach, so they are checked by text).
 check "the login pause is skipped under --update" 'grep -q "^  \[ \"\$UPDATE_MODE\" -eq 1 \] || \[ ! -t 0 \] || read -p \"  Press Enter to continue" "$REPO/setup.sh"'
 check "the Gemini key block is skipped under --update" 'grep -q "^if \[ \"\$UPDATE_MODE\" -eq 0 \] && \[ \"\$GEMINI_INSTALLED\" -eq 1 \]" "$REPO/setup.sh"'
-# Eight prompts: mode, four Install X?, the login pause, the key (tty and /dev/tty).
+# Seven prompts: mode, the Install X? prompts, the login pause, the key (tty and /dev/tty).
 check "every read in setup.sh is one of the seven known prompts" '[ "$(grep -c "[^a-z_]read \(-[rs] \)*-p \"" "$REPO/setup.sh")" = 7 ]'
 
 printf 'update-auto-install: %d passed, %d failed\n' "$PASS" "$FAIL"

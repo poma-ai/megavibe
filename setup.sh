@@ -940,6 +940,11 @@ PERSONAL_EOF
   ok "~/.megavibe/personal/ (personal assistant project)"
 else
   skip "~/.megavibe/personal/ (already exists)"
+  # The Telegram remote is gone; an older stock prompt still describes it. Never rewrite the
+  # user's file, only point at it.
+  if grep -qi 'telegram' "$PERSONAL_DIR/CLAUDE.md" 2>/dev/null; then
+    warn "~/.megavibe/personal/CLAUDE.md still mentions the removed Telegram remote; edit those lines out by hand"
+  fi
 fi
 
 # Remember source repo so the deployed CLI can sync from it later.

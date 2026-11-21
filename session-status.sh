@@ -5,6 +5,7 @@ set -euo pipefail
 # Used by the personal assistant to answer "what sessions are running?"
 
 MEGAVIBE_HOME="$HOME/.megavibe"
+# Legacy registry: only the removed Telegram bot wrote it; read when an old install still has one.
 PROJECTS_FILE="$MEGAVIBE_HOME/projects.json"
 
 GREEN='\033[0;32m'

@@ -942,8 +942,8 @@ fi
 
 # Subscription first: a launch that would bill per token is refused unless
 # MEGAVIBE_ALLOW_API_BILLING=1. Called on the main launch only, after ANTHROPIC_API_KEY is
-# masked. `megavibe assistant|remote` start Claude by other routes (tmux, a bot)
-# and are NOT covered yet, and neither is a key supplied through `--settings`
+# masked. `megavibe assistant` starts Claude by another route (tmux)
+# and is NOT covered yet, and neither is a key supplied through `--settings`
 # (your explicit choice; the login check cannot see it). $1 = `claude auth status` JSON.
 # authMethod is one of none | claude.ai | oauth_token | api_key | api_key_helper | third_party
 # (claude docs); oauth_token is a subscription token and stays allowed. Older CLIs report a
