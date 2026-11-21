@@ -23,7 +23,8 @@ cat > "$T/bin/gh" <<'EOF'
 echo "$*" >> "$STUB_LOG"
 [ "${GH_FAIL:-0}" = 1 ] && exit 1
 repo=""; [ "$1 $2" = "repo view" ] && repo=$3
-[ "${repo:0:2}" = "--" ] && repo="cur/rent"
+[ "${repo:0:2}" = "--" ] && repo=$(git remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+[ -z "$repo" ] && repo="nowhere/none"
 f="$STUB_DIR/$(printf '%s' "$repo" | tr / _)"
 [ -f "$f" ] || exit 1
 printf '{"visibility":"%s","nameWithOwner":"%s"}\n' "$(cat "$f")" "$repo"
@@ -187,6 +188,12 @@ passes "pr create: clean text" "$PR" "gh pr create --title 'Fix thing' --body '#
 ok'"
 passes "pr create to a private repo" "$PR" "gh pr create -R acme/priv --title '/Users/jsmith/x' --body y"
 asks "pr create -R public repo" "$PR" "gh pr create -R acme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"
+asks "pr create: attached short option -Racme/pub" "$PR" "gh pr create -Racme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"
+mkdir -p "$T/otherdir" && ( cd "$T/otherdir" && git init -q && git remote add origin https://github.com/cur/rent.git )
+printf PUBLIC > "$T/vis/acme_pub"
+printf PRIVATE > "$T/vis/cur_rent"
+passes "pr create resolves the base repo from the command's cd, not the hook's cwd" /tmp "cd $T/otherdir && gh pr create --title /Users/jsmith/x --body y"
+printf PUBLIC > "$T/vis/cur_rent"
 asks "pr create: gh cannot tell" "$PR" "gh pr create -R acme/mystery --title t --body b" "could not determine"
 asks "pr create: a heredoc body is scanned" "$PR" $'gh pr create --title t --body-file - <<\'EOF\'\n## Summary\nsee /Users/jsmith/proj\nEOF' "pull request text" "[home path]"
 asks "pr create: $(cat <<EOF) body idiom is scanned" "$PR" $'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\nkey AKIAABCDEFGHIJKLMNOP\nEOF\n)"' "[AWS key]"

@@ -307,7 +307,7 @@ def resolve_alias(host):
                 if h in GH_HOSTS: return h
     return host
 
-def gh_visibility(host, nwo):
+def gh_visibility(host, nwo, cwd=None):
     """returns (VIS|None, nameWithOwner|None)"""
     cache = None
     if nwo:
@@ -321,7 +321,7 @@ def gh_visibility(host, nwo):
             pass
     env = dict(os.environ); env["GH_HOST"] = host; env["GH_PROMPT_DISABLED"] = "1"
     cmd = ["gh", "repo", "view"] + ([nwo] if nwo else []) + ["--json", "visibility,nameWithOwner"]
-    rc, o = run(cmd, timeout=12, env=env)
+    rc, o = run(cmd, cwd=cwd if cwd and os.path.isdir(cwd) else None, timeout=12, env=env)
     if rc != 0: return None, None
     try:
         j = json.loads(o); v = str(j.get("visibility", "")).upper()
@@ -567,6 +567,8 @@ def flag_value(argv, names):
         for n in names:
             if a == n and i + 1 < len(argv): vals.append(argv[i + 1])
             elif n.startswith("--") and a.startswith(n + "="): vals.append(a.split("=", 1)[1])
+            elif not n.startswith("--") and len(a) > 2 and a.startswith(n) and not a.startswith("--"):
+                vals.append(a[2:].lstrip("="))   # -Rowner/repo, -R=owner/repo
     return vals
 
 def local_history_scan(act, title, revs=("HEAD",)):
@@ -586,7 +588,7 @@ def handle_pr(act):
         if len(parts) == 3: host, nwo = parts[0].lower(), "/".join(parts[1:])
         else: nwo = repo
         if is_trusted(host + "/" + nwo): return None
-    vis, got = gh_visibility(host, nwo)
+    vis, got = gh_visibility(host, nwo, act["cwd"])
     if vis is None:
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
     if vis != "PUBLIC": return None
