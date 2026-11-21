@@ -1661,6 +1661,20 @@ if [ "$VOL_OK" = 1 ]; then
   jq -nc '{ts:"t", id:"oldrec1", path:"/old/x", kind:"file", cwd:"/", session:"", trash_path:null, kb:-1}' >> "$HV/.megavibe/trash/ledger.jsonl"
   out=$(rv2 status 2>&1); rc=$?
   check "old record without location: status stays quiet about crashes and names it" '[ $rc = 0 ] && printf "%s" "$out" | grep -q "no Trash location"'
+  # a symlink on the volume that points at the boot disk: the volume is the one holding the link, not its target
+  mkdir -p "$T/boot-target"; echo t > "$T/boot-target/f"; ln -s "$T/boot-target" "$VOL/lnk-to-boot"
+  trv "$VOL/lnk-to-boot"
+  LR=$(led2 | jq -c 'select(.path|endswith("/lnk-to-boot"))')
+  check "volume: a symlink operand is recorded in the Trash of the volume holding the link" '[ "$(printf "%s" "$LR" | jq -r .trash_root)" = "$VT" ] && [ -L "$(printf "%s" "$LR" | jq -r .trash_path)" ] && [ "$(cat "$T/boot-target/f")" = t ]'
+  # a claim directory that is a link (or a file): refused, nothing moved
+  echo c > "$VOL/claimme"; trv "$VOL/claimme"
+  mkdir -p "$T/claim-elsewhere"; [ -d "$VT/.megavibe-claim" ] && [ ! -L "$VT/.megavibe-claim" ] && mv "$VT/.megavibe-claim" "$VT/.claim-aside"
+  ln -s "$T/claim-elsewhere" "$VT/.megavibe-claim"
+  out=$(mkv keep "/claimme" 2>&1); out2=$(mkv restore "/claimme" 2>&1); rc=$?
+  check "volume: a symlinked claim directory is refused, the item stays in the Trash and nothing lands behind the link" '[ $rc = 1 ] && [ -e "$VT/claimme" ] && [ -z "$(ls -A "$T/claim-elsewhere")" ] && [ ! -e "$VOL/claimme" ]'
+  rm -f "$VT/.megavibe-claim"
+  out=$(rv2 status 2>&1); rc=$?
+  check "volume: status survives a claim directory that is not a directory" '[ $rc = 0 ]'
   vdetach
 else
   printf 'SKIP: section 12 needs hdiutil and a real rmtrash; other-volume Trash not exercised here\n'
@@ -1686,6 +1700,9 @@ case("mount_of a path on the boot volume is some ancestor of it", sys.argv[2].st
 case("ident_matches without root uses the device too", tr.ident_matches({"dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), False)
 case("ident_matches on a volume record uses the inode", tr.ident_matches({"trash_root": "/V/.Trashes/1", "dev": 1, "ino": 2}, type("S", (), {"st_dev": 9, "st_ino": 2})()), True)
 case("an old record with no root means ~/.Trash", tr.root_of({}), tr.TRASH)
+for bad_root in ("", 0, [], ["x"], {"a": 1}, 7):
+    r = tr.root_of({"trash_root": bad_root})
+    case("a trash_root of %r is never a Trash" % (bad_root,), (isinstance(r, str), tr.root_ok(r)), (True, False))
 print("\n".join(bad) if bad else "ok")
 EOF
 mkdir -p "$T/plain/.Trashes/$(id -u)"

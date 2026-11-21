@@ -110,7 +110,7 @@ def size_kb(p):
 
 def mount_of(path):
     """The mount point of the volume holding `path`: the highest ancestor on the same device."""
-    p = os.path.realpath(path)
+    p = os.path.join(os.path.realpath(os.path.dirname(path) or "."), os.path.basename(path))
     dev = os.lstat(p).st_dev
     while p != "/":
         parent = os.path.dirname(p)
@@ -154,15 +154,20 @@ def ident_matches(r, st):
 
 
 def root_of(r):
-    return r.get("trash_root") or TRASH
+    v = r.get("trash_root")
+    if v is None:
+        return TRASH
+    return v if isinstance(v, str) and v else "\0not-a-root"
 
 
 def claim_dir(root):
     return CLAIM if root == TRASH else os.path.join(root, ".megavibe-claim")
 
 
-def locate_in(root, base, dev, ino):
-    """The entry of `root` that is the object (dev, ino), or None. The likely name first, then a scan."""
+def locate_in(root, base, dev, ino, budget=3.0):
+    """The entry of `root` that is the object (dev, ino), or None. The likely name first, then a scan
+    that gives up after `budget` seconds (the item is then recorded without a location, as before)."""
+    end = time.monotonic() + budget
     try:
         st = os.lstat(os.path.join(root, base))
         if (st.st_dev, st.st_ino) == (dev, ino):
@@ -171,6 +176,8 @@ def locate_in(root, base, dev, ino):
         pass
     try:
         for e in os.scandir(root):
+            if time.monotonic() > end:
+                break
             try:
                 st = e.stat(follow_symlinks=False)
             except OSError:
@@ -436,7 +443,12 @@ def totals(items):
 def cmd_status():
     n, mb = totals(pending())
     print(f"{n} unreviewed item(s) in the Trash, {mb} MB (review at {COUNT_MAX} items or {MB_MAX} MB)")
-    stuck = [(d, n) for d in claim_dirs() for n in os.listdir(d)]
+    stuck = []
+    for d in claim_dirs():
+        try:
+            stuck += [(d, n) for n in os.listdir(d)]
+        except OSError:
+            pass
     if stuck:
         print(f"{len(stuck)} item(s) stranded in {len({d for d, _ in stuck})} claim director(ies) by an interrupted review: the next apply puts them back")
     closed = {r.get("id") for r in read(REVIEWED) if r.get("ok")}
@@ -528,7 +540,11 @@ def claim_dirs():
     out = []
     for root in sorted({TRASH} | {root_of(r) for r in ledger()}):
         d = claim_dir(root)
-        if root_ok(root) and os.path.isdir(d):
+        try:
+            real = stat.S_ISDIR(os.lstat(d).st_mode)
+        except OSError:
+            real = False
+        if root_ok(root) and real:
             out.append(d)
     return out
 
@@ -542,6 +558,8 @@ def claim(r):
         return None
     cdir = claim_dir(root_of(r))
     os.makedirs(cdir, mode=0o700, exist_ok=True)
+    if not stat.S_ISDIR(os.lstat(cdir).st_mode):
+        return None                           # a link or a file where the claim directory belongs
     cp = os.path.join(cdir, r["id"])
     try:
         rename_noreplace(tp, cp)
