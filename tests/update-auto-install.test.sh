@@ -119,41 +119,41 @@ check "setup exits 1: the updater fails and records no version" '[ "$rc" != 0 ] 
 check "setup.sh, init.sh and the launcher have no bare mv or rm (every one is -f, or atomic_install)" '( for f in setup.sh init.sh megavibe; do [ "$(grep -c "^[[:space:]]*mv \"" "$REPO/$f")" = 0 ] && [ "$(grep -c "^[[:space:]]*rm \"" "$REPO/$f")" = 0 ] || exit 1; done )'
 
 # ---- part 2: setup.sh under --update asks nothing and keeps the selection ---
-# Lift section 0 (the mode question) and the four should_install_* functions.
+# Lift section 0 (the mode question) and the three should_install_* functions.
 # The prompt lines themselves are what is under test, so they stay verbatim.
 SH="$T/setup-lifted.sh"
 {
   echo 'set -u'
   sed -n '/^UPDATE_MODE=0$/,/UPDATE_MODE=1$/p' "$REPO/setup.sh"
   sed -n '/^# ─── 0\. Define installation mode/,/^# ─── 1\. Install tools/p' "$REPO/setup.sh"
-  for f in codex gemini telegram playwright; do sed -n "/^should_install_$f() {/,/^}/p" "$REPO/setup.sh"; done
+  for f in codex gemini playwright; do sed -n "/^should_install_$f() {/,/^}/p" "$REPO/setup.sh"; done
   cat <<'EOF'
-for f in codex gemini telegram playwright; do
+for f in codex gemini playwright; do
   if "should_install_$f"; then echo "$f: install"; else echo "$f: keep-out"; fi
 done
 echo "LIFTED-DONE"
 EOF
 } > "$SH"
-check "the --update parse, section 0 and the four should_install_* were lifted" '[ "$(grep -c "^should_install_" "$SH")" = 4 ] && grep -q "How do you want to install" "$SH" && grep -q "^UPDATE_MODE=0$" "$SH"'
+check "the --update parse, section 0 and the three should_install_* were lifted" '[ "$(grep -c "^should_install_" "$SH")" = 3 ] && grep -q "How do you want to install" "$SH" && grep -q "^UPDATE_MODE=0$" "$SH"'
 check "the lifted setup parses" 'bash -n "$SH" 2>/dev/null'
 
-# Nothing installed: an empty PATH dir, a MEGAVIBE_HOME without telegram-bot.py.
+# Nothing installed: an empty PATH dir and a fresh MEGAVIBE_HOME.
 mkdir -p "$T/empty" "$T/mvh2"
 if [ "$HAVE_TTY" -eq 1 ]; then
   ( cd "$T" && export PATH="$T/empty:$SYS" MEGAVIBE_HOME="$T/mvh2" && under_tty "$T/lift.out" bash "$SH" --update ); rc=$?
   check "--update on a tty: finished (no prompt blocked it)" '[ "$rc" = 0 ] && grep -q LIFTED-DONE "$T/lift.out" || { cat "$T/lift.out"; false; }'
   check "--update on a tty: never printed the mode question" '! grep -q "How do you want to install" "$T/lift.out"'
   check "--update on a tty: never printed an Install X? question" '! grep -q "Install .*? \[Y/n\]" "$T/lift.out"'
-  check "--update on a tty: absent components stay out" '[ "$(grep -c ": keep-out" "$T/lift.out")" = 4 ]'
+  check "--update on a tty: absent components stay out" '[ "$(grep -c ": keep-out" "$T/lift.out")" = 3 ]'
   # The control: without the flag the same tty run asks the mode question (the
   # pty's stdin ends here, so the read returns at once instead of blocking).
   ( cd "$T" && export PATH="$T/empty:$SYS" MEGAVIBE_HOME="$T/mvh2" && under_tty "$T/lift-ctl.out" bash "$SH" ); rc=$?
   check "control, no flag on a tty: the mode question is asked" 'grep -q "How do you want to install" "$T/lift-ctl.out"'
 fi
-# Present components are refreshed: a telegram-bot.py in MEGAVIBE_HOME, a codex on PATH.
-mkdir -p "$T/have"; printf '#!/bin/bash\nexit 0\n' > "$T/have/codex"; chmod +x "$T/have/codex"; : > "$T/mvh2/telegram-bot.py"
+# Present components are refreshed: put codex on PATH.
+mkdir -p "$T/have"; printf '#!/bin/bash\nexit 0\n' > "$T/have/codex"; chmod +x "$T/have/codex"
 ( cd "$T" && env PATH="$T/have:$SYS" MEGAVIBE_HOME="$T/mvh2" bash "$SH" --update ) >"$T/lift2.out" 2>&1 </dev/null
-check "--update: present codex and telegram are refreshed, absent gemini and playwright stay out" 'grep -qx "codex: install" "$T/lift2.out" && grep -qx "telegram: install" "$T/lift2.out" && grep -qx "gemini: keep-out" "$T/lift2.out" && grep -qx "playwright: keep-out" "$T/lift2.out"'
+check "--update: present codex is refreshed, absent gemini and playwright stay out" 'grep -qx "codex: install" "$T/lift2.out" && grep -qx "gemini: keep-out" "$T/lift2.out" && grep -qx "playwright: keep-out" "$T/lift2.out"'
 
 # ---- part 3: no sudo password, no npx confirmation under --update ---------
 # msudo is defined before any bootstrap can call it; lift the file head through
@@ -280,8 +280,8 @@ fi
 # a real install to reach, so they are checked by text).
 check "the login pause is skipped under --update" 'grep -q "^  \[ \"\$UPDATE_MODE\" -eq 1 \] || \[ ! -t 0 \] || read -p \"  Press Enter to continue" "$REPO/setup.sh"'
 check "the Gemini key block is skipped under --update" 'grep -q "^if \[ \"\$UPDATE_MODE\" -eq 0 \] && \[ \"\$GEMINI_INSTALLED\" -eq 1 \]" "$REPO/setup.sh"'
-# Eight prompts: mode, four Install X?, the login pause, the key (tty and /dev/tty).
-check "every read in setup.sh is one of the eight known prompts" '[ "$(grep -c "[^a-z_]read \(-[rs] \)*-p \"" "$REPO/setup.sh")" = 8 ]'
+# Seven prompts: mode, the Install X? prompts, the login pause, the key (tty and /dev/tty).
+check "every read in setup.sh is one of the seven known prompts" '[ "$(grep -c "[^a-z_]read \(-[rs] \)*-p \"" "$REPO/setup.sh")" = 7 ]'
 
 printf 'update-auto-install: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

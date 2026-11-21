@@ -754,8 +754,8 @@ fi
 # 2026-10-15 18:35: a review subagent cleaning up after a timeout test ran
 # `pkill -f 'perl -e' -P 1`. The pattern also matched the tmux server (its argv
 # carries the whole start command), and every tmux-hosted session died with it:
-# the remote-control sessions, the Telegram bot, the Personal Assistant, the
-# context watchers. A prose prohibition in the brief is not a sandbox
+# the remote-control sessions, the Personal Assistant, and the context
+# watchers. A prose prohibition in the brief is not a sandbox
 # (same class as the `git rm -f` incident of 2026-10-08).
 #
 # Blocked when they are the command: pkill, killall, `tmux kill-server|kill-session|

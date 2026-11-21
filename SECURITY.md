@@ -15,7 +15,7 @@ megavibe is a local-first framework — it installs shell scripts and configures
 - Shell scripts that run during install/setup (`install.sh`, `setup.sh`, `init.sh`, `megavibe`)
 - Hooks that execute on every tool call (`.claude/hooks/*.sh`)
 - MCP server configurations
-- Anything that handles external input (Telegram bot, remote-control)
+- Anything that handles external input (including Remote Control)
 
 Bugs in protocol text, documentation, or unused features are not security issues — report those as regular issues.
 

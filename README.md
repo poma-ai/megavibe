@@ -77,7 +77,7 @@ megavibe
 
 That's it. Claude now remembers everything you work on together. Run `megavibe` every time you start working — it's always safe to re-run.
 
-Every session automatically has **Remote Control** enabled — you can connect from your phone via the Claude app at any time (see [Remote Access](#remote-access-optional) below).
+Every session automatically has **Remote Control** enabled — you can connect from your phone via the Claude app at any time (see [Remote Control](#remote-control) below).
 
 ---
 
@@ -255,7 +255,6 @@ Every megavibe session has [Remote Control](https://code.claude.com/docs/en/remo
 | **Gemini CLI** | Set `GEMINI_API_KEY` (a key from a **billed** project — the free tier is 20 req/day and trains on prompts) | Codex's fallback reviewer; and, only on a machine without Codex, the metered backend for summaries and re-hydration (see below, inputs up to 300 KB) |
 | **Playwright** | Installed by setup | Browser automation, screenshots, UI testing |
 | **poma-memory** | Bundled (automatic) | Semantic search over project memory |
-| **Telegram bot** | Optional, see below | Personal assistant + project launcher from phone/Watch |
 
 Setup installs Gemini/Codex/Playwright CLIs and walks you through activation. You can skip any — megavibe adapts.
 
@@ -328,12 +327,9 @@ Inside a megavibe session:
 
 ---
 
-## Remote access (optional)
+## Remote Control
 
-Every session has `/rc` — connect from the Claude app on your phone, no setup.
-An optional Telegram bot adds a personal assistant and project launcher.
-
-Full detail: **`README-remote.md`**.
+Use `/rc` in a session to connect from the Claude app on your phone.
 
 ## Optional API Keys
 
@@ -342,7 +338,7 @@ Megavibe works without any API keys. Adding them unlocks extra capabilities:
 | Key | What it does | Cost | How to get it |
 |-----|-------------|------|---------------|
 | `GEMINI_API_KEY` | **Required for the Gemini backend** — Google-account OAuth was retired June 18, 2026 | Needs billing on the key's project (free tier: 20 req/day, prompts used for training) | [aistudio.google.com](https://aistudio.google.com/apikey) |
-| `OPENAI_API_KEY` | Better poma-memory search + voice transcription for Remote | ~$0.01/month search; ~$0.006/voice note | [platform.openai.com](https://platform.openai.com/api-keys) |
+| `OPENAI_API_KEY` | Better poma-memory search | ~$0.01/month | [platform.openai.com](https://platform.openai.com/api-keys) |
 
 ```bash
 # Add to your shell profile (~/.zshrc, ~/.bashrc, etc.) for persistence
@@ -354,7 +350,7 @@ export OPENAI_API_KEY="your-key-here"
 
 Megavibe prefers the subscriptions you already pay for over anything billed per token, and uses what they report about themselves to spend them sensibly.
 
-- **API billing is barred.** A launch that would bill per token (`claude auth status` reporting `api_key` or `api_key_helper`; a subscription OAuth token is fine; a Bedrock/Vertex/Foundry or other third-party provider only gets a notice, since that is a cloud bill, not a Claude one) stops with one line on the main `megavibe` launch; `MEGAVIBE_ALLOW_API_BILLING=1` accepts it. An exported `ANTHROPIC_API_KEY` is masked for that session, as before. `megavibe assistant` and `remote` start Claude by other routes (tmux, the Telegram bot) and are not covered yet, and neither is a key you pass yourself through `--settings`.
+- **API billing is barred.** A launch that would bill per token (`claude auth status` reporting `api_key` or `api_key_helper`; a subscription OAuth token is fine; a Bedrock/Vertex/Foundry or other third-party provider only gets a notice, since that is a cloud bill, not a Claude one) stops with one line on the main `megavibe` launch; `MEGAVIBE_ALLOW_API_BILLING=1` accepts it. An exported `ANTHROPIC_API_KEY` is masked for that session, as before. The billing guard does not cover `megavibe assistant` (which starts Claude through tmux) or keys passed through `--settings`.
 - **Usage history.** Claude Code has no usage API, but the statusline receives your account-wide five-hour and seven-day usage (`rate_limits`, subscribers only, after the first reply). `statusline.sh` appends a row to `~/.megavibe/usage/claude.jsonl` on a change or every five minutes. Nothing leaves the machine and nothing reads credentials.
 - **Launch.** `scripts/usage-route.sh` classifies the account as `over` (7-day use at 90% or projected past 100% of the week; in the first quarter of the week, before there is a projection, 30 points ahead of a straight-line pace, held until the projection takes over; or 5-hour use at 85%), `under` (week on pace to use less than 70%, or capacity about to reset unspent) or `normal`. `over` launches with `--model sonnet --effort medium` where your defaults are higher; `under` launches with `${MEGAVIBE_ROUTER_UP:-opus}` where your default is lower, but an upgrade to Opus (or Fable) only on a Max plan (`claude auth status` reports `subscriptionType`; a lower `MEGAVIBE_ROUTER_UP` target is not plan-gated): a lower or unknown plan keeps the model it chose, Sonnet unless it picked otherwise, because Opus spends a Pro limit several times faster. Hysteresis releases `over` 30 minutes after its leave thresholds first hold (the highest reading of a window is remembered, so a reading of 85% or more holds `over` until the window resets or the projection falls with elapsed time; delete `~/.megavibe/usage/route-state.json` or set `MEGAVIBE_ROUTER=0` to override), and requires two qualifying evaluations 30 minutes apart for `under`; `under` lasts only while its qualifying reading holds (the five-hour window that justified it resetting ends it), and with no live window both bands are `normal`. Which window is live is decided by its reset time, not by the order rows were logged. Concurrent sessions are merged by taking the highest reading of the current window, which the router also remembers in `route-state.json` so a flood of late, lower rows cannot hide it. No data or a reset window is `normal`, which changes nothing; a reading older than 6 hours inside a live window still counts toward `over` (usage only grows inside a window) but never toward `under`. `under` upgrades from the model in `~/.claude/settings.json`, so it needs one there. The history keeps its newest 5000 rows past 2 MB and does not tell accounts apart (one account per `~/.megavibe`).
 - **Your choice wins, per half.** `--model`/`--effort`/`--settings` on the command line, a resumed conversation (`--continue`, `--resume`, `--from-pr`) and `MEGAVIBE_ROUTER=0` switch the router off. A model set by `ANTHROPIC_MODEL`/`ANTHROPIC_DEFAULT_MODEL` or a project `model` is left alone, and so is an effort set by `CLAUDE_CODE_EFFORT_LEVEL` or a project `effortLevel`; the other half can still be routed. `megavibe route` prints what a launch would do.
@@ -452,7 +448,7 @@ curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | 
 
 Or if you have a local clone: `bash megavibe/setup.sh`
 
-`megavibe update` (which `/megavibe-restart` also runs) has two arms. On a copy installed by `install.sh` it downloads the latest version and runs its `setup.sh --update`: no questions at all, not "Automatic or Custom?", not "Install X?", not the login pause, not the Gemini key, no sudo password, no Homebrew, pip, git or npx confirmation (their non-interactive switches are set for the run, and an update installs no OS package for the optional Python/pip bootstrap, since dpkg's conffile question has no environment switch), so the setup phase of a restart never stops on a prompt, also over Remote Control. What this does not cover: a broken install, where a required tool is missing altogether (setup then re-runs that tool's own installer, with its own behaviour), and a sign-in a tool asks for on its own at launch. Update mode refreshes what is installed and leaves out what was never chosen on a Custom install (Codex, Gemini, the Telegram bot, the Playwright MCP server); `bash setup.sh` without the flag is the way to add one later. (Separately, the launcher's once-a-day background `npm i -g` keeps the Codex and Gemini CLIs current; it predates update mode and does not consult that choice.) On a git clone of this repo, `megavibe update` only fast-forwards the checkout: changes apply on the next launch, and `setup.sh` is not run.
+`megavibe update` (which `/megavibe-restart` also runs) has two arms. On a copy installed by `install.sh` it downloads the latest version and runs its `setup.sh --update`: no questions at all, not "Automatic or Custom?", not "Install X?", not the login pause, not the Gemini key, no sudo password, no Homebrew, pip, git or npx confirmation (their non-interactive switches are set for the run, and an update installs no OS package for the optional Python/pip bootstrap, since dpkg's conffile question has no environment switch), so the setup phase of a restart never stops on a prompt, also over Remote Control. What this does not cover: a broken install, where a required tool is missing altogether (setup then re-runs that tool's own installer, with its own behaviour), and a sign-in a tool asks for on its own at launch. Update mode refreshes what is installed and leaves out what was never chosen on a Custom install (Codex, Gemini, the Playwright MCP server); `bash setup.sh` without the flag is the way to add one later. (Separately, the launcher's once-a-day background `npm i -g` keeps the Codex and Gemini CLIs current; it predates update mode and does not consult that choice.) On a git clone of this repo, `megavibe update` only fast-forwards the checkout: changes apply on the next launch, and `setup.sh` is not run.
 
 **What changed?** `megavibe update` (which `/megavibe-restart` also runs) writes a short plain-language note of what the update changed, so the next session can show it. At update time it makes one call, `claude -p --model haiku --output-format json`, over the commit messages of the range: no tools, no settings or hooks (so no `apiKeyHelper` is loaded either), no MCP servers, a scratch working directory, and the variables that would point it at an API key or another provider (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the Bedrock, Vertex and Foundry switches) removed, so it uses your subscription. If your Claude login itself is a console API key, the call is billed to it: a few thousand Haiku tokens per update. `MEGAVIBE_UPDATE_SUMMARY=0` turns the call off. The wait is at most 25 seconds by default; `MEGAVIBE_UPDATE_SUMMARY_TIMEOUT=<seconds>` takes one to three digits and is clamped to 1-120, anything else means 25. An answer that is not one complete, successful JSON document (an error, a login message, a truncated or doubled output) is never used as a note.
 
@@ -478,10 +474,6 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 **Memory recall returns stale or off-topic hits** — An older index can be stale (built against a prior checkout) or cross-project-contaminated (an early `poma-memory index` run from a parent dir swept sibling `.agent/` dirs into one db). `poma-memory index` is additive and won't clear that. **Self-heal:** re-run `bash ~/.megavibe/setup.sh` (upgrades poma-memory to ≥0.3.7) and `bash ~/.megavibe/init.sh <project>` (or `/megavibe-restart`) — init does a one-time clean rebuild of that project's index, gated on `.agent/LOGS/.poma-heal-v1`. Force a re-heal anytime by deleting that marker and re-running init, or manually: `rm -f .agent/.poma-memory.db*; poma-memory index .agent/` from inside the project. **Never** run `poma-memory index` from a parent dir containing sub-project `.agent/` dirs — that is what causes the contamination.
 
-**Remote bot: "No response received"** — Check the tmux session: `tmux attach -t megavibe-personal`. Claude may be waiting for input or stuck on a prompt.
-
-**Remote bot: voice not working** — Requires `OPENAI_API_KEY` and `httpx`: `pip3 install httpx`
-
 **Debug hooks** — `claude --debug` shows hook execution details.
 
 ---
@@ -499,12 +491,6 @@ No, it complements it. Claude's auto-memory handles cross-session preferences. M
 
 **What if I don't have Gemini or ChatGPT?**
 Megavibe still works. Context recovery and reviews fall back to built-in Claude subagents on the same subscription. External backends improve quality but are never required.
-
-**Do I need Telegram for remote access?**
-No. Every session has `/rc` (Remote Control) built in — connect from the Claude app on your phone with no extra setup. Telegram adds a personal assistant and project launcher on top.
-
-**Does the Telegram bot need to run all the time?**
-No. It's optional. Run `megavibe remote` to spin it up in the background (it will persist across terminal closes). To make it automatically start when your computer boots up, run `megavibe remote --autostart on`. Your normal terminal sessions work exactly the same either way.
 
 **How do I uninstall?**
 ```bash
