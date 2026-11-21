@@ -495,7 +495,15 @@ def scan_range(act, revargs, remote):
     _, ue = git(act, "config", "user.email")
     sc = Scanner(ae.split() + ue.split())
     cwd = act["cwd"] if os.path.isdir(act["cwd"]) else None
-    data = run_capped(["git"] + act["gitopts"] + ["log", "--no-walk=unsorted", "--no-color", "--no-textconv", "--no-ext-diff", "-p", "-U0",
+    # changed paths straight from git, NUL-delimited: patch headers quote odd names and vary with diff.noprefix
+    names = run_capped(["git"] + act["gitopts"] + ["log", "--no-walk=unsorted", "-z", "--name-only", "--no-renames", "--format=" + M1 + "%h"] + shas, cwd, MAX_BYTES).decode("utf-8", "replace")
+    csha = ""
+    for tok in names.split("\0"):
+        tok = tok.strip("\n")
+        if not tok: continue
+        if tok.startswith(M1): csha = tok[len(M1):]; continue
+        sc.line("commit %s path %s" % (csha, trunc(redact(tok), 40)), tok, path_only=True)
+    data = run_capped(["git"] + act["gitopts"] + ["log", "--no-walk=unsorted", "--no-color", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-p", "-U0",
                       "--format=" + M1 + "%h%n%B" + M2] + shas, cwd, MAX_BYTES)
     if len(data) > MAX_BYTES: truncated = True; data = data[:MAX_BYTES]
     o = data.decode("utf-8", "replace")
@@ -514,7 +522,6 @@ def scan_range(act, revargs, remote):
             inhunk = False
             m = re.match(r"diff --git a/(.*?) b/(.*)$", raw)
             path = m.group(2) if m else ""
-            if path: sc.line("commit %s path %s" % (sha, trunc(redact(path), 40)), path, path_only=True)
             continue
         if not inhunk and raw.startswith("+++ "):
             p = raw[4:]; path = p[2:] if p.startswith("b/") else path; continue
@@ -585,7 +592,9 @@ def handle_push(act):
         for key in ([("branch.%s.pushRemote" % br)] if br else []) + ["remote.pushDefault"] + ([("branch.%s.remote" % br)] if br else []):
             rc, v = git(act, "config", "--get", key)
             if rc == 0 and v.strip(): remote = v.strip(); break
-        if remote is None: remote = "origin"
+        if remote is None:
+            names = git(act, "remote")[1].split()
+            remote = names[0] if len(names) == 1 else "origin"   # git's own fallback: the sole remote, else origin
     # push URLs
     if parse_url(remote) is not None or remote.startswith(("/", ".", "~", "file://")):
         urls, remote_name = [rewrite_url(act, remote)], None
@@ -678,10 +687,17 @@ def handle_pr(act):
     if got and is_trusted(host + "/" + got): return None
     _m = re.search(r"\bpr\s+create\b", TEXT)
     texts = [TEXT[_m.start():].replace(" ; ", "\n") if _m else ""] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
+    unread = []
     for f in flag_value(argv, ["--body-file", "-F"]):
-        p = f if os.path.isabs(f) else os.path.join(act["cwd"], f)
+        if f == "-":
+            if not HEREDOCS: unread.append("standard input")
+            continue
+        p = os.path.join(act["cwd"], expand(f.replace("$HOME", HOME).replace("${HOME}", HOME)))
+        if "$" in p: unread.append(trunc(f, 30)); continue
         try: texts.append(open(p, encoding="utf-8", errors="replace").read(1 << 20))
-        except OSError: pass
+        except OSError: unread.append(trunc(f, 30))
+    if unread:
+        return ["%s is PUBLIC and the pull request body source (%s) could not be read, so the body was not scanned." % (got or "the base repository", ", ".join(unread))]
     sc = Scanner([])
     for t in texts:
         for ln in t.split("\n"): sc.line("pull request text", ln, True)

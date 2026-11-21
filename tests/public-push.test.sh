@@ -310,6 +310,22 @@ case "$WHY" in *"AWS key"*) ok ;; *) bad "secret in a file name is reported" ;; 
 ( cd "$CM" && git reset -q --hard HEAD~1 )
 passes "clean PR with a home path earlier in the command" "$PR" "cd /Users/jsmith/project && gh pr create -R acme/pub --title Clean --body Done"
 
+# 10h. Round-3 (second reader) findings.
+SR=$T/sr; mkdir -p "$SR" && ( cd "$SR" && git init -q && git remote add upstream https://github.com/acme/pub.git && echo a > a.txt && git add a.txt && git commit -qm i && echo "AKIAABCDEFGHIJKLMNOP" > k.txt && git add k.txt && git commit -qm k )
+asks "the sole remote is used when it is not called origin" "$SR" "git -c push.default=current push" "[AWS key]"
+printf 'AKIAABCDEFGHIJKLMNOP\n' > "$HOME/pr.md"
+asks "--body-file ~/pr.md" "$PR" "gh pr create -R acme/pub --title Fix --body-file ~/pr.md" "[AWS key]"
+asks "--body-file \$HOME/pr.md" "$PR" 'gh pr create -R acme/pub --title Fix --body-file "$HOME/pr.md"' "[AWS key]"
+asks "--body-file - with no readable stdin source asks" "$PR" "cat x.md | gh pr create -R acme/pub --title Fix --body-file -" "could not be read"
+asks "--body-file that does not exist asks" "$PR" "gh pr create -R acme/pub --title Fix --body-file /nonexistent/x.md" "could not be read"
+rm -f "$HOME/pr.md"
+printf 'Customer-X\n' > "$HOME/.megavibe/personal/public-push.deny"
+DQ=$T/dq; mkrepo "$DQ" https://github.com/acme/pub.git; ( cd "$DQ" && echo ok > "Customer-X-ä.txt" && git add . && git commit -qm f )
+asks "denylist hits a git-quoted (non-ASCII) file name" "$DQ" "git push" "denylist"
+( cd "$DQ" && git config diff.noprefix true && git reset -q --hard HEAD~1 && echo ok > Customer-X.txt && git add . && git commit -qm g )
+asks "diff.noprefix does not hide a file name" "$DQ" "git push" "denylist"
+rm -f "$HOME/.megavibe/personal/public-push.deny"
+
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
 
