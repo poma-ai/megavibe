@@ -151,8 +151,8 @@ emit_pace() {
   ' <<<"$HISTORY" 2>/dev/null
 }
 
-# the target is a whole number from 1 to 1000, else 95
-TARGET=95; case "${MEGAVIBE_USAGE_TARGET:-}" in ""|*[!0-9]*|0*) ;; *) [ "${#MEGAVIBE_USAGE_TARGET}" -le 4 ] && [ "$MEGAVIBE_USAGE_TARGET" -le 1000 ] && TARGET=$MEGAVIBE_USAGE_TARGET ;; esac
+# the target is a whole number from 1 to 999, else 95
+TARGET=95; case "${MEGAVIBE_USAGE_TARGET:-}" in ""|*[!0-9]*|0*) ;; *) [ "${#MEGAVIBE_USAGE_TARGET}" -le 4 ] && [ "$MEGAVIBE_USAGE_TARGET" -le 999 ] && TARGET=$MEGAVIBE_USAGE_TARGET ;; esac
 # Recent-pace forecast of the selected weekly window: pace|forecast|spare|spend_per_h|basis (all empty when unknown).
 emit_forecast() {
   LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" --argjson target "$TARGET" '

@@ -26,6 +26,12 @@ CH="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 say() { printf '%s\n' "$*"; }
 die() { printf 'megavibe usage probe: %s\n' "$*" >&2; exit 1; }
 
+# the directory of the codex that install found (npm-global and user-local installs are outside the default PATH), then the usual ones
+probe_path() {
+  local c d=""; c=$(command -v "$CODEX" 2>/dev/null) && case "$c" in /*) d="$(dirname "$c"):" ;; esac
+  printf '%s/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' "$d"
+}
+
 plist_text() {
   local x; x() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
   local self; self="$MH/scripts/usage-probe.sh"
@@ -35,7 +41,7 @@ plist_text() {
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>/bin/bash</string><string>$(x "$self")</string><string>run</string></array>
-  <key>EnvironmentVariables</key><dict><key>MEGAVIBE_HOME</key><string>$(x "$MH")</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>EnvironmentVariables</key><dict><key>MEGAVIBE_HOME</key><string>$(x "$MH")</string><key>PATH</key><string>$(x "$(probe_path)")</string></dict>
   <key>RunAtLoad</key><false/>
   <key>StartInterval</key><integer>$(( ${1:-30} * 60 ))</integer>
   <key>StandardOutPath</key><string>$(x "$U/probe.launchd.log")</string>
@@ -76,7 +82,7 @@ cmd_uninstall() {
 }
 
 cmd_run() {
-  { command -v "$CODEX" >/dev/null 2>&1 && "$CODEX" exec --help >/dev/null 2>&1; } || { say "skip: codex exec not available"; return 0; }
+  { command -v "$CODEX" >/dev/null 2>&1 && perl -e 'alarm 20; exec @ARGV' "$CODEX" exec --help >/dev/null 2>&1; } || { say "skip: codex exec not available"; return 0; }
   mkdir -p "$U" 2>/dev/null || return 0
   LOCK="$U/probe.lock"; local lock="$LOCK"
   # a lock older than 10 min is a dead run's; never two probes at once
