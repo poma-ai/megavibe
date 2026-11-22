@@ -168,6 +168,20 @@ mkdir -p "$T/codex-none/sessions/2026/11/22"; : > "$T/codex-none/sessions/2026/1
 mv "$STUB_LOG" "$STUB_LOG.2"; touch -t 202001010000 "$T/mv/usage/probe.stamp"
 o=$(/bin/bash "$P" run --every 30 2>&1)
 check 'run with a Codex reading under 15 min old: skipped, no call' '[[ "$o" == *"under 15 min"* ]] && [ ! -e "$STUB_LOG" ]'
+# a Codex whose worker outlives it: the deadline ends the whole process group
+cat > "$T/bin/codex-slow" <<'STUB'
+#!/bin/bash
+[ "${1:-}" = exec ] && [ "${2:-}" = "--help" ] && exit 0
+( sleep 5; : > "$STUB_MARK" ) &
+wait
+STUB
+chmod +x "$T/bin/codex-slow"
+export STUB_MARK="$T/worker-marker"; rm -f "$STUB_MARK"
+touch -t 202001010000 "$T/mv/usage/probe.stamp"; rm -r "$T/codex-none/sessions/2026"
+sed 's/bounded 120/bounded 1/' "$P" > "$T/probe-fast.sh"
+MEGAVIBE_CODEX_BIN="$T/bin/codex-slow" /bin/bash "$T/probe-fast.sh" run >/dev/null 2>&1
+sleep 6
+check 'probe deadline: the worker the Codex left behind is ended too (no marker), rc 142 logged' '[ ! -e "$STUB_MARK" ] && grep -q "rc=142" "$T/mv/usage/probe.log"'
 o=$(/bin/bash "$P" run --every abc 2>&1); rc=$?
 check 'run --every with a bad value: usage error' '[ "$rc" = 2 ]'
 

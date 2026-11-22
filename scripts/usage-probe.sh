@@ -21,6 +21,16 @@ CODEX="${MEGAVIBE_CODEX_BIN:-codex}"
 CH="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}"
 say() { printf '%s\n' "$*"; }
 
+# bounded SECS CMD...: CMD in its own process group; at the deadline the whole group is ended (TERM, then KILL) and the
+# exit status is 142; after a normal exit anything CMD left behind is ended too. Never touches a process outside the group.
+bounded() {
+  perl -e 'my $t = shift; my $pid = fork(); exit 127 unless defined $pid;
+    if (!$pid) { setpgrp(0, 0); exec @ARGV; exit 127 }
+    $SIG{ALRM} = sub { kill "TERM", -$pid; select(undef, undef, undef, 1.5); kill "KILL", -$pid; waitpid($pid, 0); exit 142 };
+    alarm $t; waitpid($pid, 0); my $s = $?; alarm 0; kill "KILL", -$pid;
+    exit($s & 127 ? 128 + ($s & 127) : $s >> 8)' "$@"
+}
+
 cmd_status() {
   if [ -e "$MH/node/pa.on" ]; then say "probe: on (pa.on is set; the node runs it every 30 minutes)"; else say "probe: off (no PA on this Mac; the node does not run it)"; fi
   [ -f "$U/probe.log" ] && tail -n 3 "$U/probe.log"
@@ -36,7 +46,7 @@ cmd_run() {
   if [ -n "$every" ] && [ -f "$U/probe.stamp" ] && [ -z "$(find "$U/probe.stamp" -mmin +$((every - 1)) 2>/dev/null)" ]; then
     say "skip: last probe is under $every min old"; return 0
   fi
-  { command -v "$CODEX" >/dev/null 2>&1 && perl -e 'alarm 20; exec @ARGV' "$CODEX" exec --help >/dev/null 2>&1; } || { say "skip: codex exec not available"; return 0; }
+  { command -v "$CODEX" >/dev/null 2>&1 && bounded 20 "$CODEX" exec --help >/dev/null 2>&1; } || { say "skip: codex exec not available"; return 0; }
   LOCK="$U/probe.lock"; local lock="$LOCK"
   # a lock older than 10 min is a dead run's; never two probes at once
   if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$lock" 2>/dev/null; fi
@@ -48,12 +58,12 @@ cmd_run() {
   local d rc model="${MEGAVIBE_PROBE_MODEL:-gpt-6-luna}"
   d=$(mktemp -d "${TMPDIR:-/tmp}/usage-probe.XXXXXX") || return 0
   ( cd "$d" || exit 1
-    perl -e 'alarm 120; exec @ARGV' "$CODEX" exec -m "$model" -s read-only --skip-git-repo-check -c model_reasoning_effort=low "Reply with the single word ok." </dev/null >/dev/null 2>&1 ); rc=$?
+    bounded 120 "$CODEX" exec -m "$model" -s read-only --skip-git-repo-check -c model_reasoning_effort=low "Reply with the single word ok." </dev/null >/dev/null 2>&1 ); rc=$?
   # retry once with the configured model only when the first call failed fast (a model not on the plan); a timeout is not retried
   if [ "$rc" != 0 ] && [ "$rc" != 142 ] && [ "$rc" != 124 ]; then
     model=configured
     ( cd "$d" || exit 1
-      perl -e 'alarm 120; exec @ARGV' "$CODEX" exec -s read-only --skip-git-repo-check -c model_reasoning_effort=low "Reply with the single word ok." </dev/null >/dev/null 2>&1 ); rc=$?
+      bounded 120 "$CODEX" exec -s read-only --skip-git-repo-check -c model_reasoning_effort=low "Reply with the single word ok." </dev/null >/dev/null 2>&1 ); rc=$?
   fi
   rm -r "$d" 2>/dev/null
   : > "$U/probe.stamp"
