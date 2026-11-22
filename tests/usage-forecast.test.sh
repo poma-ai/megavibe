@@ -130,6 +130,15 @@ o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'probe-style history, 48 rollout files: the 24 h pace sees the rise' 'awk -v x="$(f 4)" "BEGIN{exit !(x > 60)}"'
 rm -r "$T/codex/sessions/p"
 
+# one busy rollout: 1.3 MB of tool output between the anchors and the recent readings must not hide the 24 h baseline
+mkdir -p "$T/codex/sessions/b"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+{ codex "$((NOW - 24 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"
+  head -c 1300000 /dev/zero | tr '\0' 'x' | fold -w 4000 | sed 's/^/{"type":"tool","out":"/; s/$/"}/'
+  for m in 50 40 30 20 10 0; do codex "$((NOW - m * 60))" "$((20 + (50 - m) / 5))" "$R"; done; } > "$T/codex/sessions/b/rollout-big.jsonl"
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'busy rollout over 1 MB: the forecast still sees the 24 h baseline (6h+24h basis)' '[ "$(f 7)" = "6h+24h" ]'
+rm -r "$T/codex/sessions/b"
+
 # balance leads with the forecast: Claude steady at 55 (forecast 97), Codex quiet at 20 -> lean on Codex, text shows the forecast
 { row 30 40 $R; row 24 43 $R; row 18 46 $R; row 12 49 $R; row 6 52 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
 { codex "$((NOW - 30 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
