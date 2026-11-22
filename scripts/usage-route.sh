@@ -72,7 +72,7 @@ fi
 codex_row() {
   local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6 nl=200 nb=1048576
   # the forecast needs 24 h of readings: a probe writes one rollout file per call, so six files are only about 3 h
-  [ "$MODE" != forecast ] || { nf=60 nl=3000 nb=67108864; cache="$MV/usage/codex-row-forecast.cache"; }
+  [ "$MODE" != forecast ] || { nf=60 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
   # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls.
   if [ -z "${MEGAVIBE_NOW:-}" ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
