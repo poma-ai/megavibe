@@ -84,3 +84,5 @@ Returning to the writer: when the writer boots, its node restarts its PA (`pa.on
 - Two Macs that both hold `memory.push` at the same time diverge; nothing merges automatically.
 
 Tests: `tests/node.test.sh` (stubbed tmux, scutil, launchctl and login check; real git on scratch repos).
+
+**Codex usage probe.** While `pa.on` is set, each run also calls `usage-probe.sh run --every 30` (one tiny Codex call at most every 30 minutes, skipped when a Codex reading under 15 minutes old exists) so the usage forecast has fresh Codex readings (README "Recent-pace forecast"). Without `pa.on` the node makes no such call.

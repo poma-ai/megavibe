@@ -1437,7 +1437,7 @@ fi
 
 # ─── Usage subcommand ────────────────────────────────────────────────
 #
-# megavibe usage probe ...: the opt-in Codex usage probe (scripts/usage-probe.sh).
+# megavibe usage probe run|status: the Codex usage probe (scripts/usage-probe.sh); the PA's node runs it, see README.
 # megavibe usage forecast: the recent-pace forecast for both subscriptions (usage-route.sh forecast).
 if [ "${1:-}" = "usage" ]; then
   shift
@@ -1447,7 +1447,7 @@ if [ "${1:-}" = "usage" ]; then
     probe) shift; [ -f "$_s" ] || { echo "megavibe usage: usage-probe.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }; exec bash "$_s" "$@" ;;
     forecast) [ -f "$_r" ] || { echo "megavibe usage: usage-route.sh not installed" >&2; exit 1; }
       for _p in claude codex; do MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" forecast --peek; done; exit 0 ;;
-    *) echo "usage: megavibe usage probe {install [MINUTES]|run|status|uninstall} | megavibe usage forecast" >&2; exit 2 ;;
+    *) echo "usage: megavibe usage probe {run [--every MIN]|status} | megavibe usage forecast" >&2; exit 2 ;;
   esac
 fi
 

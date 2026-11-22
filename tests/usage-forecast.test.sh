@@ -51,6 +51,11 @@ check 'sparse burst: both paces use only readings inside their horizon (2 points
 o=$(fc)
 check 'old reading outside both horizons: basis week' '[ "$(f 7)" = week ]'
 
+# horizons are measured from now, not from the newest reading: readings 29 h and 23 h ago are in neither horizon
+{ row 29 20 $R; row 23 32 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'aged readings only (Claude, stale after 6 h): unknown' '[ -z "$(f 4)" ]'
+
 # one reading
 row 0 55 $R > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
@@ -114,47 +119,57 @@ check 'codex, two readings an hour apart: basis week, not a zero pace' '[ "$(f 7
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && near "$(f 3)" 0.6 0.35'
 
+{ codex "$((NOW - 29 * 3600))" 20 "$R"; codex "$((NOW - 23 * 3600))" 32 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'codex readings 29 h and 23 h ago: in neither horizon, basis week (not a 6h+24h burst)' '[ "$(f 7)" = week ]'
+
+# probe-style history: one rollout file per half-hour reading over 24 h must all count (the forecast reads 60 files, not 6)
+mkdir -p "$T/codex/sessions/p"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+for i in $(seq 0 47); do m=$((i * 30)); u=44; [ "$m" -gt 360 ] && u=$((20 + (1440 - m) / 50)); codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/p/rollout-$(printf %02d $i).jsonl"; done
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'probe-style history, 48 rollout files: the 24 h pace sees the rise' 'awk -v x="$(f 4)" "BEGIN{exit !(x > 60)}"'
+rm -r "$T/codex/sessions/p"
+
 # balance leads with the forecast: Claude steady at 55 (forecast 97), Codex quiet at 20 -> lean on Codex, text shows the forecast
 { row 30 40 $R; row 24 43 $R; row 18 46 $R; row 12 49 $R; row 6 52 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
 { codex "$((NOW - 30 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=claude /bin/bash "$REPO/scripts/usage-route.sh" balance --peek)
 check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~96% by week end"* ]] || [[ "$o" == codex\|*"recent-pace forecast ~97% by week end"* ]]'
 
-# ---- the probe is opt-in --------------------------------------------------------------------------------------
+# ---- the probe: run by the PA's node only, throttled, never scheduled by itself -----------------------------------
 cat > "$T/bin/codex" <<'STUB'
 #!/bin/bash
 [ "${1:-}" = exec ] && [ "${2:-}" = "--help" ] && exit 0
 printf '%s\n' "$*" >> "$STUB_LOG"
 exit 0
 STUB
-cat > "$T/bin/launchctl" <<'STUB'
-#!/bin/bash
-printf '%s\n' "$*" >> "$STUB_LAUNCHCTL"
-exit 1
-STUB
-chmod +x "$T/bin/codex" "$T/bin/launchctl"
-export STUB_LOG="$T/codex.log" STUB_LAUNCHCTL="$T/launchctl.log" PATH="$T/bin:$PATH"
-export MEGAVIBE_CODEX_BIN="$T/bin/codex" MEGAVIBE_PROBE_PLIST="$T/home/Library/LaunchAgents/com.megavibe.usage-probe.plist"
+chmod +x "$T/bin/codex"
+export STUB_LOG="$T/codex.log" PATH="$T/bin:$PATH" MEGAVIBE_CODEX_BIN="$T/bin/codex"
 P="$REPO/scripts/usage-probe.sh"
 o=$(/bin/bash "$P" status 2>&1)
-check 'probe: not installed by default, no plist, no Codex call' '[[ "$o" == *"not installed (off"* ]] && [ ! -e "$MEGAVIBE_PROBE_PLIST" ] && [ ! -e "$STUB_LOG" ]'
-check 'nothing else in the repo installs or calls the probe: only the subcommand and the script sync lists name it' \
-  '! grep -rn "usage-probe" "$REPO/init.sh" "$REPO/template" "$REPO/scripts" --include=* 2>/dev/null | grep -v "^$REPO/scripts/usage-probe.sh" | grep -q .'
-if [ "$(uname -s)" = Darwin ]; then
-  o=$(/bin/bash "$P" install 45 2>&1)
-  check 'install: writes the plist (45 min = 2700 s, RunAtLoad false) and only prints the load line' \
-    '[ -f "$MEGAVIBE_PROBE_PLIST" ] && grep -q "<integer>2700</integer>" "$MEGAVIBE_PROBE_PLIST" && grep -q "<key>RunAtLoad</key><false/>" "$MEGAVIBE_PROBE_PLIST" && [[ "$o" == *"launchctl bootstrap"* ]] && ! grep -qE "bootstrap|bootout|load|kickstart" "$STUB_LAUNCHCTL"'
-  o=$(MEGAVIBE_PROBE_MODEL=my-model MEGAVIBE_CODEX_HOME="$T/codex home" /bin/bash "$P" install 45 2>&1)
-  check 'install: the chosen probe model and Codex home are kept in the plist' 'grep -q "<key>MEGAVIBE_PROBE_MODEL</key><string>my-model</string>" "$MEGAVIBE_PROBE_PLIST" && grep -q "<key>CODEX_HOME</key><string>$T/codex home</string>" "$MEGAVIBE_PROBE_PLIST"'
-  check 'install: a bad interval is refused and nothing is written' '! /bin/bash "$P" install 5 >/dev/null 2>&1 && ! /bin/bash "$P" install abc >/dev/null 2>&1'
-fi
+check 'probe: status says off without pa.on, no Codex call' '[[ "$o" == *"probe: off"* ]] && [ ! -e "$STUB_LOG" ]'
+mkdir -p "$T/mv/node"; : > "$T/mv/node/pa.on"
+o=$(/bin/bash "$P" status 2>&1)
+check 'probe: status says on with pa.on' '[[ "$o" == *"probe: on"* ]]'
+mv "$T/mv/node/pa.on" "$T/mv/node/pa.was"
+check 'no installer: install is refused and the code has no scheduler calls' '! /bin/bash "$P" install >/dev/null 2>&1 && ! grep -vE "^[[:space:]]*#" "$P" | grep -qE "launchctl|LaunchAgent|plist"'
+check 'only the node, the wrapper and the setup lists name the probe' \
+  '! grep -rln "usage-probe" "$REPO/init.sh" "$REPO/template" "$REPO/scripts" 2>/dev/null | grep -vE "scripts/usage-probe.sh|template/node/node.sh" | grep -q .'
 export MEGAVIBE_CODEX_HOME="$T/codex-none"; mkdir -p "$T/codex-none/sessions"
-/bin/bash "$P" run >/dev/null 2>&1
-check 'run with no recent reading: one cheap read-only Codex call, logged' '[ "$(wc -l < "$STUB_LOG" | tr -d " ")" = 1 ] && grep -q -- "-s read-only" "$STUB_LOG" && grep -q -- "gpt-6-luna" "$STUB_LOG" && grep -q "rc=0" "$T/mv/usage/probe.log"'
+/bin/bash "$P" run --every 30 >/dev/null 2>&1
+check 'run with no recent reading: one cheap read-only Codex call, logged, stamped' '[ "$(wc -l < "$STUB_LOG" | tr -d " ")" = 1 ] && grep -q -- "-s read-only" "$STUB_LOG" && grep -q -- "gpt-6-luna" "$STUB_LOG" && grep -q "rc=0" "$T/mv/usage/probe.log" && [ -e "$T/mv/usage/probe.stamp" ]'
+mv "$STUB_LOG" "$STUB_LOG.1"
+o=$(/bin/bash "$P" run --every 30 2>&1)
+check 'run --every 30 right after a probe: throttled, no call' '[[ "$o" == *"under 30 min"* ]] && [ ! -e "$STUB_LOG" ]'
+touch -t 202001010000 "$T/mv/usage/probe.stamp"
+/bin/bash "$P" run --every 30 >/dev/null 2>&1
+check 'run --every 30 with an old stamp: probes again' '[ "$(wc -l < "$STUB_LOG" | tr -d " ")" = 1 ]'
 mkdir -p "$T/codex-none/sessions/2026/11/22"; : > "$T/codex-none/sessions/2026/11/22/rollout-1.jsonl"
-rm -f "$STUB_LOG"
-o=$(/bin/bash "$P" run 2>&1)
+mv "$STUB_LOG" "$STUB_LOG.2"; touch -t 202001010000 "$T/mv/usage/probe.stamp"
+o=$(/bin/bash "$P" run --every 30 2>&1)
 check 'run with a Codex reading under 15 min old: skipped, no call' '[[ "$o" == *"under 15 min"* ]] && [ ! -e "$STUB_LOG" ]'
+o=$(/bin/bash "$P" run --every abc 2>&1); rc=$?
+check 'run --every with a bad value: usage error' '[ "$rc" = 2 ]'
 
 printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

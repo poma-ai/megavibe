@@ -120,6 +120,13 @@ if [ "$arc" -eq 1 ] && [ -z "$(find "$N/.login-warned" -mtime -1 2>/dev/null)" ]
   fi
 fi
 
+# Keep the Codex usage reading fresh for the forecast (usage-route.sh forecast): one tiny Codex call at most every
+# 30 minutes. PA only: a Mac without pa.on, and plain megavibe use, never run it. The helper skips itself when
+# a reading under 15 minutes old exists or codex is unavailable, and never raises: a failed probe is only logged by it.
+if [ -e "$N/pa.on" ] && [ -x "$MH/scripts/usage-probe.sh" ]; then
+  bounded 300 "$MH/scripts/usage-probe.sh" run --every 30 >/dev/null 2>&1 9>&- </dev/null || true
+fi
+
 # PA memory: a git repo in the personal folder whose origin is a bare repo on the writing Mac.
 # memory.push: this Mac writes it (commit what changed, push). memory.pull: standby copy, fast-forward
 # only, and only while no PA runs here. Neither file: nothing happens.

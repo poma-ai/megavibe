@@ -133,6 +133,14 @@ check "unusable host name: exit 1, nothing started" '[ "$RC" = 1 ] && ! grep -q 
 fresh 3c; ctl install; touch "$N/node.off"; node
 check "node.off: nothing at all" '[ "$RC" = 0 ] && [ ! -e "$TMUXSTATE/calls" ]'
 
+# the Codex usage probe: run by the node on a PA Mac only, at most every 30 minutes
+fresh 4p; ctl install
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/probe.calls"\n' "$T" > "$MEGAVIBE_HOME/scripts/usage-probe.sh"; chmod +x "$MEGAVIBE_HOME/scripts/usage-probe.sh"
+node
+check "node without pa.on: the usage probe is not run" '[ ! -e "$T/probe.calls" ]'
+touch "$N/pa.on"; node
+check "node with pa.on: the usage probe runs with --every 30" '[ "$(cat "$T/probe.calls" 2>/dev/null)" = "run --every 30" ]'
+
 fresh 4; ctl install
 for i in 1 2 3 4; do rm -f "$TMUXSTATE/w.main"; mkdir -p "$TMUXSTATE/s"; touch "$TMUXSTATE/s/main"; node; done
 check "start cap: 3 node starts per hour" '[ "$(grep -c "^new-window" "$TMUXSTATE/calls")" = 3 ] && log | grep -q "3 starts in the last hour"'

@@ -70,7 +70,9 @@ fi
 # Every usable row is kept (a slice could drop the window's highest reading). Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
 # future; a window listed twice keeps the HIGHER usage, so entry order can never turn 95% into spare capacity.
 codex_row() {
-  local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache"
+  local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6
+  # the forecast needs 24 h of readings: a probe writes one rollout file per call, so six files are only about 3 h
+  [ "$MODE" != forecast ] || { nf=60; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
   # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls.
   if [ -z "${MEGAVIBE_NOW:-}" ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
@@ -82,7 +84,7 @@ codex_row() {
   # print "mtime path" per file and sort the whole list instead.
   local rows
   rows=$(perl -e 'alarm 3; exec @ARGV' find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
-    | sort -rn | head -6 | cut -d' ' -f2- | while IFS= read -r f; do
+    | sort -rn | head -n "$nf" | cut -d' ' -f2- | while IFS= read -r f; do
     [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n 200
   done | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
@@ -173,12 +175,12 @@ emit_forecast() {
             ($rows | [.[] | .p] | . as $ps | [range(1; length) | select($ps[.] < $ps[. - 1])] | length == 0) as $mono
             | ($reset - $now) / 3600 as $left
             | ((604800 - ($reset - $now)) / 3600) as $el
-            # pace over the last h hours: from the earliest reading inside those h hours, 2 h or more before the newest
+            # pace over the last h hours before now: from the earliest reading inside those h hours, 2 h or more before the newest
             # (a sparse history must not stretch the 6 h pace over days); none such is unknown, never zero
             | def pace($h):
                 if ($mono | not) then null
-                else ([$rows[] | select(.t >= $last.t - $h * 3600)] | first) as $b   # the earliest reading inside the horizon, never one from before it
-                  | if $last.t - $b.t < 7200 then null else (($last.p - $b.p) / (($last.t - $b.t) / 3600)) end
+                else ([$rows[] | select(.t >= $now - $h * 3600)] | first) as $b   # the earliest reading inside the horizon, never one from before it
+                  | if $b == null or $last.t - $b.t < 7200 then null else (($last.p - $b.p) / (($last.t - $b.t) / 3600)) end
                 end;
               pace(6) as $r6 | pace(24) as $r24
             | (if $el >= 1 then $w.used / $el else null end) as $wk
