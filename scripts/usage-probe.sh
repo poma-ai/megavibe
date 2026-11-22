@@ -90,7 +90,9 @@ cmd_run() {
   d=$(mktemp -d "${TMPDIR:-/tmp}/usage-probe.XXXXXX") || return 0
   ( cd "$d" || exit 1
     perl -e 'alarm 120; exec @ARGV' "$CODEX" exec -m "$model" -s read-only --skip-git-repo-check -c model_reasoning_effort=low "Reply with the single word ok." </dev/null >/dev/null 2>&1 ); rc=$?
-  if [ "$rc" != 0 ]; then
+  # retry once with the configured model only when the first call failed fast (a model not on the plan); a timeout is not retried
+  if [ "$rc" != 0 ] && [ "$rc" != 142 ] && [ "$rc" != 124 ]; then
+    model=configured
     ( cd "$d" || exit 1
       perl -e 'alarm 120; exec @ARGV' "$CODEX" exec -s read-only --skip-git-repo-check -c model_reasoning_effort=low "Reply with the single word ok." </dev/null >/dev/null 2>&1 ); rc=$?
   fi

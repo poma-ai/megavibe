@@ -104,7 +104,7 @@ codex_row() {
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
-  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; forecast) printf '%s|||||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
+  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; forecast) printf '%s||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
   exit 0
 }
 # Pace has no routing fallback: without jq it is silent, and never blocks a caller.
@@ -151,9 +151,11 @@ emit_pace() {
   ' <<<"$HISTORY" 2>/dev/null
 }
 
+# the target is a whole number from 1 to 1000, else 95
+TARGET=95; case "${MEGAVIBE_USAGE_TARGET:-}" in ""|*[!0-9]*|0*) ;; *) [ "${#MEGAVIBE_USAGE_TARGET}" -le 4 ] && [ "$MEGAVIBE_USAGE_TARGET" -le 1000 ] && TARGET=$MEGAVIBE_USAGE_TARGET ;; esac
 # Recent-pace forecast of the selected weekly window: pace|forecast|spare|spend_per_h|basis (all empty when unknown).
 emit_forecast() {
-  LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" --argjson target "${MEGAVIBE_USAGE_TARGET:-95}" '
+  LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" --argjson target "$TARGET" '
     def sec: if . > 100000000000 then . / 1000 else . end;
     def r1: . * 10 | round / 10;
     $decision.wk as $w | ($decision.mx.sd.r // 0) as $reset
@@ -162,11 +164,11 @@ emit_forecast() {
         | {t, p: .sd.p, r: (.sd.r | sec)}
         | select((.r - $reset | fabs) <= 180)
         | select(.t > 0 and .t <= $now and .t >= $reset - 604800 and .p >= 0 and .p <= 1000) ] | sort_by(.t) as $rows
-    | if $w == null or ($rows | length) == 0 or $w.stale or $reset <= $now or $reset > $now + 604800 then "|||||"
+    | if $w == null or ($rows | length) == 0 or $w.stale or $reset <= $now or $reset > $now + 604800 then "||||"
       else
         ($rows | last) as $last
         | # like the straight line, nothing before 5 percent of the window has elapsed (8.4 h): whole-percent readings are too coarse
-        if $now - $last.t > $stale or $last.p != $w.used or ((604800 - ($reset - $now)) < 30240) then "|||||"
+        if $now - $last.t > $stale or $last.p != $w.used or ((604800 - ($reset - $now)) < 30240) then "||||"
           else
             ($rows | [.[] | .p] | . as $ps | [range(1; length) | select($ps[.] < $ps[. - 1])] | length == 0) as $mono
             | ($reset - $now) / 3600 as $left
@@ -185,7 +187,7 @@ emit_forecast() {
                elif $r6 != null then {v: $r6, b: "6h"}
                elif $r24 != null then {v: $r24, b: "24h"}
                elif $wk != null then {v: $wk, b: "week"} else null end) as $pc
-            | if $pc == null then "|||||"
+            | if $pc == null then "||||"
               else ([$pc.v, 0] | max) as $rate
                 | ($w.used + $rate * $left) as $fc
                 | [($rate * 1000 | round / 1000), ([$fc, 999] | min | r1), ($target - $fc | r1),

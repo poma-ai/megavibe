@@ -71,12 +71,20 @@ check 'stale reading: empty forecast' '[ -z "$(f 4)" ]'
 # no data / missing file
 rm -f "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'no history: provider and empty fields, exit 0' '[ "$o" = "claude|||||||||" ] || [ "$o" = "claude|||||||" ] || [ -z "$(f 4)" ]'
+check 'no history: provider and empty fields, exit 0' '[ "$o" = "claude||||||" ]'
 
 # target override
 { row 30 40 $R; row 24 43 $R; row 18 46 $R; row 12 49 $R; row 6 52 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(MEGAVIBE_USAGE_TARGET=100 fc)
 check 'target 100: spare 3.3' 'near "$(f 5)" 3.3'
+
+# every output has exactly seven fields, also for no evidence; a junk target falls back to 95
+{ row 30 40 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(MEGAVIBE_USAGE_TARGET=abc fc)
+check 'forecast with evidence: seven fields; junk target uses 95' '[ "$(printf "%s" "$o" | tr -cd "|" | wc -c | tr -d " ")" = 6 ] && near "$(f 5)" "$(awk -v x="$(f 4)" "BEGIN{print 95-x}")" 0.2'
+row 0 30 $((NOW + 604800 - 3600)) > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'early window (empty forecast) still has seven fields' '[ "$(printf "%s" "$o" | tr -cd "|" | wc -c | tr -d " ")" = 6 ]'
 
 # status and pace lines are unchanged by the forecast mode (field counts)
 o=$(/bin/bash "$REPO/scripts/usage-route.sh" pace)
