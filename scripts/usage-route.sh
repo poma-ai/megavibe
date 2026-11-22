@@ -173,12 +173,11 @@ emit_forecast() {
             ($rows | [.[] | .p] | . as $ps | [range(1; length) | select($ps[.] < $ps[. - 1])] | length == 0) as $mono
             | ($reset - $now) / 3600 as $left
             | ((604800 - ($reset - $now)) / 3600) as $el
-            # pace over the last h hours: from the newest reading at least h old, else (a window younger than h)
-            # the window start (0% at its first instant) is NOT assumed; the first reading is used if 2 h or more back
+            # pace over the last h hours: from the earliest reading inside those h hours, 2 h or more before the newest
+            # (a sparse history must not stretch the 6 h pace over days); none such is unknown, never zero
             | def pace($h):
                 if ($mono | not) then null
-                else ([$rows[] | select(.t <= $last.t - $h * 3600)] | last) as $old
-                  | (if $old != null then $old else $rows[0] end) as $b
+                else ([$rows[] | select(.t >= $last.t - $h * 3600)] | first) as $b   # the earliest reading inside the horizon, never one from before it
                   | if $last.t - $b.t < 7200 then null else (($last.p - $b.p) / (($last.t - $b.t) / 3600)) end
                 end;
               pace(6) as $r6 | pace(24) as $r24

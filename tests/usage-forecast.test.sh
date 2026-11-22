@@ -42,6 +42,15 @@ check 'quiet: zero pace is a real zero (readings exist), forecast equals used' '
 o=$(fc)
 check 'two readings an hour apart: no 6 h / 24 h pace, basis week' '[ "$(f 7)" = week ] && near "$(f 3)" 0.65 0.01'
 
+# sparse burst: a 48 h old reading must not stretch the recent pace (readings 48, 4, 2, 0 h ago)
+{ row 48 20 $R; row 4 20 $R; row 2 24 $R; row 0 28 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'sparse burst: both paces use only readings inside their horizon (2 points per hour)' 'near "$(f 3)" 2 0.01 && [ "$(f 7)" = "6h+24h" ]'
+# only an old reading plus a fresh one: no pace inside either horizon, the week average stands in
+{ row 48 20 $R; row 0 28 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'old reading outside both horizons: basis week' '[ "$(f 7)" = week ]'
+
 # one reading
 row 0 55 $R > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
@@ -135,6 +144,8 @@ if [ "$(uname -s)" = Darwin ]; then
   o=$(/bin/bash "$P" install 45 2>&1)
   check 'install: writes the plist (45 min = 2700 s, RunAtLoad false) and only prints the load line' \
     '[ -f "$MEGAVIBE_PROBE_PLIST" ] && grep -q "<integer>2700</integer>" "$MEGAVIBE_PROBE_PLIST" && grep -q "<key>RunAtLoad</key><false/>" "$MEGAVIBE_PROBE_PLIST" && [[ "$o" == *"launchctl bootstrap"* ]] && ! grep -qE "bootstrap|bootout|load|kickstart" "$STUB_LAUNCHCTL"'
+  o=$(MEGAVIBE_PROBE_MODEL=my-model MEGAVIBE_CODEX_HOME="$T/codex home" /bin/bash "$P" install 45 2>&1)
+  check 'install: the chosen probe model and Codex home are kept in the plist' 'grep -q "<key>MEGAVIBE_PROBE_MODEL</key><string>my-model</string>" "$MEGAVIBE_PROBE_PLIST" && grep -q "<key>CODEX_HOME</key><string>$T/codex home</string>" "$MEGAVIBE_PROBE_PLIST"'
   check 'install: a bad interval is refused and nothing is written' '! /bin/bash "$P" install 5 >/dev/null 2>&1 && ! /bin/bash "$P" install abc >/dev/null 2>&1'
 fi
 export MEGAVIBE_CODEX_HOME="$T/codex-none"; mkdir -p "$T/codex-none/sessions"

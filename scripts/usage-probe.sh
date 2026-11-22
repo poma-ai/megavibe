@@ -32,6 +32,13 @@ probe_path() {
   printf '%s/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' "$d"
 }
 
+# settings chosen at install time that the scheduled run must see too: the probe model and the Codex home
+probe_env_extra() {
+  local x; x() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+  [ -z "${MEGAVIBE_PROBE_MODEL:-}" ] || printf '<key>MEGAVIBE_PROBE_MODEL</key><string>%s</string>' "$(x "$MEGAVIBE_PROBE_MODEL")"
+  [ -z "${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-}}" ] || printf '<key>CODEX_HOME</key><string>%s</string>' "$(x "${MEGAVIBE_CODEX_HOME:-$CODEX_HOME}")"
+}
+
 plist_text() {
   local x; x() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
   local self; self="$MH/scripts/usage-probe.sh"
@@ -41,7 +48,7 @@ plist_text() {
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>/bin/bash</string><string>$(x "$self")</string><string>run</string></array>
-  <key>EnvironmentVariables</key><dict><key>MEGAVIBE_HOME</key><string>$(x "$MH")</string><key>PATH</key><string>$(x "$(probe_path)")</string></dict>
+  <key>EnvironmentVariables</key><dict><key>MEGAVIBE_HOME</key><string>$(x "$MH")</string><key>PATH</key><string>$(x "$(probe_path)")</string>$(probe_env_extra)</dict>
   <key>RunAtLoad</key><false/>
   <key>StartInterval</key><integer>$(( ${1:-30} * 60 ))</integer>
   <key>StandardOutPath</key><string>$(x "$U/probe.launchd.log")</string>
