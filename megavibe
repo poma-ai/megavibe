@@ -1435,6 +1435,22 @@ for r in bad[:15]:
   exit 0
 fi
 
+# ─── Usage subcommand ────────────────────────────────────────────────
+#
+# megavibe usage probe ...: the opt-in Codex usage probe (scripts/usage-probe.sh).
+# megavibe usage forecast: the recent-pace forecast for both subscriptions (usage-route.sh forecast).
+if [ "${1:-}" = "usage" ]; then
+  shift
+  _s="$MEGAVIBE_HOME/scripts/usage-probe.sh"; _r="$MEGAVIBE_HOME/scripts/usage-route.sh"
+  [ -f "$_s" ] || _s="$SCRIPT_DIR/scripts/usage-probe.sh"; [ -f "$_r" ] || _r="$SCRIPT_DIR/scripts/usage-route.sh"
+  case "${1:-}" in
+    probe) shift; [ -f "$_s" ] || { echo "megavibe usage: usage-probe.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }; exec bash "$_s" "$@" ;;
+    forecast) [ -f "$_r" ] || { echo "megavibe usage: usage-route.sh not installed" >&2; exit 1; }
+      for _p in claude codex; do MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" forecast --peek; done; exit 0 ;;
+    *) echo "usage: megavibe usage probe {install [MINUTES]|run|status|uninstall} | megavibe usage forecast" >&2; exit 2 ;;
+  esac
+fi
+
 # ─── Node subcommand ─────────────────────────────────────────────────
 #
 # megavibe node ...: the opt-in node (scripts/megavibe-node.sh, README-node.md).
@@ -1673,7 +1689,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \

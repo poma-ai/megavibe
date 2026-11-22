@@ -13,7 +13,17 @@
 #   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
 #   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
 #                             display only; linear from 5% elapsed, recent from samples within the last 6h that span at least 2h
+#   usage-route.sh forecast   provider|used|fc_pace_per_h|forecast|spare|spend_per_h|basis (recent-pace forecast, see below; read-only)
 #   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
+#
+# Recent-pace forecast (added 2026-11-22; extra trailing fields, nothing existing changed): pace = 0.6 x the 6-hour
+# pace + 0.4 x the 24-hour pace inside the current window (whichever has no readings is "unknown", never zero;
+# both unknown: the window average, basis "week"); forecast = used + pace x hours_left; spare = target - forecast
+# (target 95, MEGAVIBE_USAGE_TARGET); spend = points per hour that would reach the target exactly. Reported by the
+# new `forecast` mode only: status and pace lines are byte-identical to before.
+# A pace span needs readings at least 2 h apart (whole-percent resolution), a drop in the window makes it
+# unreliable (unknown), a stale reading or a missing window means no forecast at all. The bands still decide on the
+# straight-line projection (hysteresis and the `under` guard were tuned on it); balance and the advisory use the forecast.
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
 # statusline's account-wide rate_limits (five_hour / seven_day used_percentage and
@@ -47,7 +57,7 @@ NOW="${MEGAVIBE_NOW:-$(date +%s 2>/dev/null)}"
 SETTINGS="${MEGAVIBE_USER_SETTINGS:-$HOME/.claude/settings.json}"
 UP="${MEGAVIBE_ROUTER_UP:-opus}"
 MODE="${1:-claude}"; PEEK=0; [ "${2:-}" = "--peek" ] && PEEK=1   # --peek: report, never advance the hysteresis state
-[ "$MODE" != pace ] || PEEK=1   # display must never update routing state or trim history
+[ "$MODE" != pace ] && [ "$MODE" != forecast ] || PEEK=1   # display must never update routing state or trim history
 PROVIDER="${MEGAVIBE_ROUTER_PROVIDER:-claude}"; STALE=21600
 case "$MODE" in codex|codex-band) PROVIDER=codex ;; esac
 if [ "$PROVIDER" = codex ]; then
@@ -94,11 +104,11 @@ codex_row() {
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
-  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
+  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; forecast) printf '%s|||||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
   exit 0
 }
 # Pace has no routing fallback: without jq it is silent, and never blocks a caller.
-[ "$MODE" != pace ] || command -v jq >/dev/null 2>&1 || exit 0
+[ "$MODE" != pace ] && [ "$MODE" != forecast ] || command -v jq >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
 
@@ -141,6 +151,52 @@ emit_pace() {
   ' <<<"$HISTORY" 2>/dev/null
 }
 
+# Recent-pace forecast of the selected weekly window: pace|forecast|spare|spend_per_h|basis (all empty when unknown).
+emit_forecast() {
+  LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" --argjson target "${MEGAVIBE_USAGE_TARGET:-95}" '
+    def sec: if . > 100000000000 then . / 1000 else . end;
+    def r1: . * 10 | round / 10;
+    $decision.wk as $w | ($decision.mx.sd.r // 0) as $reset
+    | [ .[] | select(type == "object")
+        | select((.t | type) == "number" and (.sd.p? | type) == "number" and (.sd.r? | type) == "number")
+        | {t, p: .sd.p, r: (.sd.r | sec)}
+        | select((.r - $reset | fabs) <= 180)
+        | select(.t > 0 and .t <= $now and .t >= $reset - 604800 and .p >= 0 and .p <= 1000) ] | sort_by(.t) as $rows
+    | if $w == null or ($rows | length) == 0 or $w.stale or $reset <= $now or $reset > $now + 604800 then "|||||"
+      else
+        ($rows | last) as $last
+        | # like the straight line, nothing before 5 percent of the window has elapsed (8.4 h): whole-percent readings are too coarse
+        if $now - $last.t > $stale or $last.p != $w.used or ((604800 - ($reset - $now)) < 30240) then "|||||"
+          else
+            ($rows | [.[] | .p] | . as $ps | [range(1; length) | select($ps[.] < $ps[. - 1])] | length == 0) as $mono
+            | ($reset - $now) / 3600 as $left
+            | ((604800 - ($reset - $now)) / 3600) as $el
+            # pace over the last h hours: from the newest reading at least h old, else (a window younger than h)
+            # the window start (0% at its first instant) is NOT assumed; the first reading is used if 2 h or more back
+            | def pace($h):
+                if ($mono | not) then null
+                else ([$rows[] | select(.t <= $last.t - $h * 3600)] | last) as $old
+                  | (if $old != null then $old else $rows[0] end) as $b
+                  | if $last.t - $b.t < 7200 then null else (($last.p - $b.p) / (($last.t - $b.t) / 3600)) end
+                end;
+              pace(6) as $r6 | pace(24) as $r24
+            | (if $el >= 1 then $w.used / $el else null end) as $wk
+            | (if $r6 != null and $r24 != null then {v: (0.6 * $r6 + 0.4 * $r24), b: "6h+24h"}
+               elif $r6 != null then {v: $r6, b: "6h"}
+               elif $r24 != null then {v: $r24, b: "24h"}
+               elif $wk != null then {v: $wk, b: "week"} else null end) as $pc
+            | if $pc == null then "|||||"
+              else ([$pc.v, 0] | max) as $rate
+                | ($w.used + $rate * $left) as $fc
+                | [($rate * 1000 | round / 1000), ([$fc, 999] | min | r1), ($target - $fc | r1),
+                   (if $left > 0 then ([($target - $w.used) / $left, 0] | max | . * 100 | round / 100) else 0 end), $pc.b]
+                | map(tostring) | join("|")
+              end
+          end
+      end
+  ' <<<"$HISTORY" 2>/dev/null
+}
+
 if [ "$MODE" = balance ]; then
   # Where should OPTIONAL work (digests, exploration, second opinions) lean? Each subscription's weekly
   # window projects its end-of-window use; spend the one with room. The reviewer floor never moves.
@@ -149,10 +205,13 @@ if [ "$MODE" = balance ]; then
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
   IFS='|' read -r cb cu cp _ cs _ _ _ _ clp crate crp _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status-pace $pk 2>/dev/null) || true
   IFS='|' read -r xb xu xp _ xs _ _ _ _ xlp xrate xrp _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status-pace $pk 2>/dev/null) || true
-  LC_ALL=C awk -v clp="${clp:-}" -v crp="${crp:-}" -v crate="${crate:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" -v xrate="${xrate:-}" \
+  IFS='|' read -r _ _ _ cff _ _ _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" forecast 2>/dev/null) || true
+  IFS='|' read -r _ _ _ xff _ _ _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" forecast 2>/dev/null) || true
+  LC_ALL=C awk -v cff="${cff:-}" -v xff="${xff:-}" -v clp="${clp:-}" -v crp="${crp:-}" -v crate="${crate:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" -v xrate="${xrate:-}" \
     -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" '
-  function estimate(label, used, proj, linear, recent, rate, stale, text) {
+  function estimate(label, used, proj, linear, recent, rate, stale, fc, text) {
     text = sprintf("%s %d%% used", label, used)
+    if (fc != "") text = text sprintf(" (recent-pace forecast ~%d%% by week end)", fc)
     if (proj != "") text = text sprintf(" (linear estimate ~%d%% by week end)", proj)
     else if (linear != "") text = text sprintf(" [linear estimate ~%d%%]", linear)
     else text = text " [linear estimate unavailable]"
@@ -166,8 +225,10 @@ if [ "$MODE" = balance ]; then
     # window), else the used percent. The straight-line estimate matters early in a window, where the router
     # has no projection yet: used percent alone made a subscription 0.6 days into its week look like headroom.
     if (clp !~ /^[0-9]+([.][0-9]+)?$/) clp = ""; if (xlp !~ /^[0-9]+([.][0-9]+)?$/) xlp = ""   # numbers only
-    cj = (cp != "" ? cp : (clp != "" ? clp : cu)) + 0; xj = (xp != "" ? xp : (xlp != "" ? xlp : xu)) + 0
-    known = ((cp != "" || clp != "") && (xp != "" || xlp != ""))
+    # The recent-pace forecast (usage-route.sh forecast) leads when it exists: it follows the current pace, not the week average.
+    if (cff !~ /^[0-9]+([.][0-9]+)?$/) cff = ""; if (xff !~ /^[0-9]+([.][0-9]+)?$/) xff = ""
+    cj = (cff != "" ? cff : (cp != "" ? cp : (clp != "" ? clp : cu))) + 0; xj = (xff != "" ? xff : (xp != "" ? xp : (xlp != "" ? xlp : xu))) + 0
+    known = ((cff != "" || cp != "" || clp != "") && (xff != "" || xp != "" || xlp != ""))
     pref = "-"
     if (cb == "over" && xb == "over") { print "-|"; exit }          # nowhere to lean
     if (cb == "over" && xb != "over") pref = "codex"
@@ -180,7 +241,7 @@ if [ "$MODE" = balance ]; then
     # whose figure is stale, only away from one.
     if ((pref == "codex" && xs == 1) || (pref == "claude" && cs == 1)) pref = "-"
     if (pref == "-") { print "-|"; exit }
-    st = estimate("Claude", cu, cp, clp, crp, crate, cs) "; " estimate("Codex", xu, xp, xlp, xrp, xrate, xs)
+    st = estimate("Claude", cu, cp, clp, crp, crate, cs, cff) "; " estimate("Codex", xu, xp, xlp, xrp, xrate, xs, xff)
     hot = (cb == "over" || xb == "over") ? " (one is running hot)" : ""
     to = (pref == "codex" ? "Codex" : "the Claude subagents")
     printf "%s|usage balance: %s%s. Lean optional work (digests, exploration, second opinions) on %s; the review floor does not move.\n", pref, st, hot, to
@@ -192,7 +253,7 @@ ROW=""; HISTORY="[]"
 if [ "$PROVIDER" = codex ]; then
   ROW=$(codex_row); HISTORY="${ROW:-[]}"
 elif [ -f "$FILE" ] && [ -r "$FILE" ]; then
-  if [ "$MODE" = pace ] || [ "$MODE" = status-pace ]; then
+  if [ "$MODE" = pace ] || [ "$MODE" = status-pace ] || [ "$MODE" = forecast ]; then
     # One read for both outputs. Slice raw lines before parsing, exactly as status
     # does, so malformed rows cannot change which 50 lines the router considers.
     RAW=$(tail -n 5000 "$FILE" 2>/dev/null && printf 'x') || none
@@ -290,6 +351,11 @@ if [ "$PEEK" = 0 ] && { [ ! -e "$STATE" ] || [ -f "$STATE" ]; } && [ "$NEWSTATE"
   fi
 fi
 
+if [ "$MODE" = forecast ]; then
+  FC=$(emit_forecast) || FC=""; [ -n "$FC" ] || FC="||||"
+  printf '%s|%s|%s\n' "$PROVIDER" "$(jq -r '(.wk.used // "")' <<<"$DECISION")" "$FC"
+  exit 0
+fi
 if [ "$MODE" = pace ]; then
   PACE=$(emit_pace) || none
   [ -n "$PACE" ] || none

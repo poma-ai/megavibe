@@ -42,11 +42,20 @@ proj() {   # provider -> "value|basis" or "unknown"
     MEGAVIBE_ROUTER_PROVIDER="$1" perl -e 'alarm 3; exec @ARGV' bash "$UR" pace >"$f" 2>/dev/null </dev/null
   fi
   IFS='|' read -r _ u _ lp _ rp _ <"$f" 2>/dev/null
+  # the recent-pace forecast (usage-route.sh forecast: provider|used|pace|forecast|spare|spend|basis); a stub or an
+  # old script without the mode prints nothing usable and the headline stays the linear projection
+  : >"$f"
+  if command -v perl &>/dev/null; then
+    MEGAVIBE_ROUTER_PROVIDER="$1" perl -e 'alarm 3; exec @ARGV' bash "$UR" forecast >"$f" 2>/dev/null </dev/null
+  fi
+  IFS='|' read -r _ _ _ fc _ <"$f" 2>/dev/null
   rm -f "$f"
   num() { case "$1" in ''|*[!0-9.]*|*.*.*|.) return 1 ;; esac; }
-  if num "$lp"; then v=$lp; basis=linear; elif num "$u"; then v=$u; basis=used; elif num "$rp"; then v=$rp; basis=recent; fi
+  if num "$fc"; then v=$fc; basis=forecast
+  elif num "$lp"; then v=$lp; basis=linear; elif num "$u"; then v=$u; basis=used; elif num "$rp"; then v=$rp; basis=recent; fi
   [ -n "$v" ] || { echo unknown; return; }
-  if [ "$basis" != recent ] && num "$rp"; then extra="; recent $(awk -v v="$rp" 'BEGIN { printf "%d", v }')"; fi
+  if [ "$basis" = forecast ] && num "$lp"; then extra="; linear $(awk -v v="$lp" 'BEGIN { printf "%d", v }')"
+  elif [ "$basis" != recent ] && num "$rp"; then extra="; recent $(awk -v v="$rp" 'BEGIN { printf "%d", v }')"; fi
   echo "$(awk -v v="$v" 'BEGIN { printf "%d", v }')|$basis$extra"
 }
 # 10-point buckets, everything at 100 or more in one (it is over either way), so a projection that
