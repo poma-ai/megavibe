@@ -138,6 +138,8 @@ cmd_install() {
 # NODE_PREFIX=NODE-
 # COMMIT_NAME=megavibe node
 # COMMIT_EMAIL=megavibe-node@localhost
+# PROBE_MODEL=              model of the Codex usage probe (PA Macs only; default gpt-6-luna)
+# PROBE_CODEX_HOME=          absolute path of the Codex home the probe reads and writes
 EOF
     say "  wrote   node.conf"
   fi
