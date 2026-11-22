@@ -70,9 +70,9 @@ fi
 # Every usable row is kept (a slice could drop the window's highest reading). Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
 # future; a window listed twice keeps the HIGHER usage, so entry order can never turn 95% into spare capacity.
 codex_row() {
-  local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6
+  local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6 nl=200
   # the forecast needs 24 h of readings: a probe writes one rollout file per call, so six files are only about 3 h
-  [ "$MODE" != forecast ] || { nf=60; cache="$MV/usage/codex-row-forecast.cache"; }
+  [ "$MODE" != forecast ] || { nf=60 nl=3000; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
   # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls.
   if [ -z "${MEGAVIBE_NOW:-}" ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
@@ -85,7 +85,7 @@ codex_row() {
   local rows
   rows=$(perl -e 'alarm 3; exec @ARGV' find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
     | sort -rn | head -n "$nf" | cut -d' ' -f2- | while IFS= read -r f; do
-    [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n 200
+    [ -f "$f" ] && tail -c 1048576 "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n "$nl"
   done | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
       | ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) as $t

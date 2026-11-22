@@ -140,6 +140,9 @@ node
 check "node without pa.on: the usage probe is not run" '[ ! -e "$T/probe.calls" ]'
 touch "$N/pa.on"; node
 check "node with pa.on: the usage probe runs with --every 30" '[ "$(cat "$T/probe.calls" 2>/dev/null)" = "run --every 30" ]'
+printf '#!/bin/bash\nprintf "%%s|%%s|%%s\\n" "$*" "${MEGAVIBE_PROBE_MODEL:-}" "${CODEX_HOME:-}" >> "%s/probe.calls"\n' "$T" > "$MEGAVIBE_HOME/scripts/usage-probe.sh"
+rm -f "$T/probe.calls"; printf 'PROBE_MODEL=my-model\nPROBE_CODEX_HOME=/tmp/some codex\n' >> "$N/node.conf"; node
+check "node with pa.on: probe model and Codex home from node.conf reach the probe" '[ "$(cat "$T/probe.calls" 2>/dev/null)" = "run --every 30|my-model|/tmp/some codex" ]'
 
 fresh 4; ctl install
 for i in 1 2 3 4; do rm -f "$TMUXSTATE/w.main"; mkdir -p "$TMUXSTATE/s"; touch "$TMUXSTATE/s/main"; node; done
