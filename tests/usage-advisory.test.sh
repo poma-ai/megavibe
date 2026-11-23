@@ -205,6 +205,11 @@ usage sprint-unknown: Codex"
 o=$(ev PreToolUse | run | ctx)
 check 'Claude still sprinting, Codex unknown and never announced: flag stays sc, no withdrawal' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u:sc" ]'
 unset STUB_SPRINT
+# a failed band lookup checks nothing: the sprint state the session was told stands (no false withdrawal)
+reset; export STUB_BAND_FAIL=1; printf 'over:-:9:u:sc' > "$FLAG"
+o=$(ev PreToolUse | run | ctx)
+check 'band call fails while a sprint is active: no sprint withdrawal' '[[ "$o" != *"sprint advice"* ]] && [[ "$(cat "$FLAG")" == *:sc ]]'
+unset STUB_BAND_FAIL
 check 'no temp files left behind (sprint)' '[ -z "$(ls "$TMPDIR" | grep usage-)" ]'
 printf 'usage-advisory: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

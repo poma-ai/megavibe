@@ -29,7 +29,7 @@ R=$((NOW + 9000))   # 2.5 h left in the weekly window
 o=$(sp)
 check 'sprint: 2.5 h left, forecast ~90.6 -> state sprint, nine fields' '[ "$(f 1)" = claude ] && [ "$(f 2)" = sprint ] && [ "$(nf)" = 8 ] && [ "$(f 9)" = ok ]'
 check 'sprint: hours left 2.5, used 90' 'near "$(f 3)" 2.5 0.05 && [ "$(f 4)" = 90 ]'
-check 'sprint: spare is 99 minus the forecast, spend is (99-90)/2.5 = 3.6 per hour' 'near "$(f 6)" "$(awk -v x="$(f 5)" "BEGIN{print 99-x}")" 0.11 && near "$(f 7)" 3.6 0.01 && awk -v s="$(f 6)" "BEGIN{exit !(s > 7 && s < 9)}"'
+check 'sprint: spare is 99 minus the forecast, spend is (99-estimated use now)/2.5 = 3.59 per hour' 'near "$(f 6)" "$(awk -v x="$(f 5)" "BEGIN{print 99-x}")" 0.11 && near "$(f 7)" 3.59 0.02 && awk -v s="$(f 6)" "BEGIN{exit !(s > 7 && s < 9)}"'
 check 'sprint mode writes no routing state' '[ ! -e "$MEGAVIBE_USAGE_STATE" ]'
 fo=$(/bin/bash "$UR" forecast)
 check 'forecast mode still measures against 95 (spare about 4.4), untouched by the sprint target' 'near "$(printf "%s" "$fo" | cut -d"|" -f5)" "$(awk -v x="$(printf "%s" "$fo" | cut -d"|" -f4)" "BEGIN{print 95-x}")" 0.11'
@@ -78,12 +78,12 @@ check 'newest reading 90 minutes old: no sprint (reason no-forecast)' '[ "$(f 2)
 fo=$(/bin/bash "$UR" forecast)
 check 'the same history still has an ordinary forecast (the one-hour rule is the sprint'"'"'s own)' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
 
-{ row 1500 84 $R; row 360 89 $R; row 50 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+{ row 1500 84 $R; row 360 89 $R; row 25 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'newest reading 50 minutes old: no sprint (45 minutes is the limit)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
-{ row 1500 84 $R; row 360 89 $R; row 40 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+check 'newest reading 25 minutes old: no sprint (20 minutes is the limit)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+{ row 1500 84 $R; row 360 89 $R; row 15 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'newest reading 40 minutes old: sprint' '[ "$(f 2)" = sprint ]'
+check 'newest reading 15 minutes old: sprint' '[ "$(f 2)" = sprint ]'
 { row 1500 84 $R; row 360 89 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 fo=$(FSTALE=60 /bin/bash "$UR" forecast)
 check 'an FSTALE in the environment does not reach the ordinary forecast' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
@@ -117,9 +117,9 @@ o=$(sp)
 check '94, a dip to 93, then 96 five minutes ago: still no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
 # usage between the newest reading and now is projected: 93 -> 95 over 30 minutes, 40 minutes ago, 30 minutes left
 RP=$((NOW + 1800))
-{ row 100 93 $RP; row 70 93 $RP; row 40 95 $RP; } > "$MEGAVIBE_USAGE_FILE"
+{ row 78 93 $RP; row 48 93 $RP; row 18 95 $RP; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'last reading 40 minutes old at 95 after a 2-point rise, 30 minutes left: no sprint (projected from the reading, not from now)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+check 'last reading 18 minutes old at 95 after a 2-point rise, 30 minutes left: no sprint (projected from the reading, not from now)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
 # a one-point rise in five minutes near the limit can be 95.0 -> 96.9
 { row 85 95 $RJ; row 60 95 $RJ; row 35 95 $RJ; row 15 95 $RJ; row 10 95 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -130,6 +130,13 @@ RH=$((NOW + 3600))
 check 'readings 94 (89 min ago) and 96 (40 min ago), 60 minutes left: no sprint' '[ "$(f 2)" = "-" ]'
 { row 91 94 $RH; row 42 96 $RH; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'the same readings two minutes older: still no sprint (the lookback is anchored to the newest reading)' '[ "$(f 2)" = "-" ]'
+# the advertised rate starts from the estimated use now, not from the old reading
+{ row 80 91 $RP; row 18 92 $RP; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check '30 minutes left, 91 then 92 eighteen minutes ago: spend per hour is below (99-92)/0.5 = 14 (it starts from estimated use now)' 'awk -v s="$(f 7)" "BEGIN{exit !(s > 0 && s < 13.5)}"'
+# flat 97 with a reading 25 minutes old is not fresh enough near the cap; 15 minutes old is
+{ row 1500 97 $R; row 360 97 $R; row 25 97 $R; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'flat 97, newest reading 25 minutes old: no sprint (no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
@@ -159,11 +166,11 @@ check 'drop in the window: basis week, decided on it' '[ "$(f 8)" = week ] && [ 
 o=$(MEGAVIBE_SPRINT=0 sp)
 check 'MEGAVIBE_SPRINT=0: off' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = off ] && [ "$(nf)" = 8 ]'
 o=$(MEGAVIBE_SPRINT_TARGET=97 sp)
-check 'MEGAVIBE_SPRINT_TARGET=97: spare and spend measured against 97' 'near "$(f 7)" 2.8 0.01 && [ "$(f 2)" = sprint ]'
+check 'MEGAVIBE_SPRINT_TARGET=97: spare and spend measured against 97' 'near "$(f 7)" 2.79 0.02 && [ "$(f 2)" = sprint ]'
 o=$(MEGAVIBE_SPRINT_TARGET=150 sp)
-check 'a sprint target over 100 is refused (falls back to 99): the backstop stays at 100' 'near "$(f 7)" 3.6 0.01'
+check 'a sprint target over 100 is refused (falls back to 99): the backstop stays at 100' 'near "$(f 7)" 3.59 0.02'
 o=$(MEGAVIBE_SPRINT_TARGET=100 sp)
-check 'a sprint target of 100 is refused too (99): the sprint never aims at the limit itself' 'near "$(f 7)" 3.6 0.01'
+check 'a sprint target of 100 is refused too (99): the sprint never aims at the limit itself' 'near "$(f 7)" 3.59 0.02'
 o=$(MEGAVIBE_USAGE_TARGET=99 sp)
 check 'ordinary target already at the sprint target: nothing to add (reason no-room)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
 
@@ -212,7 +219,7 @@ adv() { /bin/bash "$UR" sprint-advice; }
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(adv)
 check 'advice: one line, for Claude only (the Codex reading is old)' '[ "$(printf "%s\n" "$o" | grep -c .)" = 1 ] && [[ "$o" == "usage sprint: Claude "* ]]'
-check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.6 points per hour"* ]] && [[ "$o" == *"95%"* ]] && [[ "$o" == *"whole account"* ]]'
+check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.59 points per hour"* ]] && [[ "$o" == *"95%"* ]] && [[ "$o" == *"whole account"* ]]'
 check 'advice says what to do and what does not move' '[[ "$o" == *"top model tier"* ]] && [[ "$o" == *"hardest open work"* ]] && [[ "$o" == *"100% backstop"* ]] && [[ "$o" == *"review floor"* ]]'
 { codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 6 * 3600))" 55 "$R"; codex "$((NOW - 600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(adv)

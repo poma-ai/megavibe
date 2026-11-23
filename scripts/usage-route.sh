@@ -32,7 +32,7 @@
 # the week-long 95 target allows. state is `sprint` when ALL hold, else `-` with the reason in the last field:
 #   outside      the weekly window has more than MEGAVIBE_SPRINT_HOURS (4) hours left, under 10 minutes left
 #                (nothing useful can start, and the per-hour figure would be absurd), or no live window
-#   no-forecast  no recent-pace forecast, or the newest reading is over 45 minutes old (Codex writes one only
+#   no-forecast  no recent-pace forecast, or the newest reading is over 20 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
 #   5h-hot       the five-hour window is at 85 or more: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
@@ -244,7 +244,11 @@ emit_forecast() {
                    # the sprint rounds the forecast up and the spare down: a margin must not be rounded into existence
                    (if $burst == 1 then ([$fc, 999] | min | . * 10 | ceil / 10) else ([$fc, 999] | min | r1) end),
                    (if $burst == 1 then ($target - $fc | . * 10 | floor / 10) else ($target - $fc | r1) end),
-                   (if $left > 0 then ([($target - $w.used) / $left, 0] | max | . * 100 | round / 100) else 0 end), $pc.b]
+                   (if $left > 0 then
+                      # the sprint starts from the estimated use NOW (the newest reading plus the pace since it) and rounds down
+                      (if $burst == 1 then ($w.used + $rate * (([($now - $last.t), 0] | max) / 3600)) else $w.used end) as $cur
+                      | [($target - $cur) / $left, 0] | max | . * 100 | (if $burst == 1 then floor else round end) / 100
+                    else 0 end), $pc.b]
                 | map(tostring) | join("|")
               end
           end
@@ -269,7 +273,7 @@ if [ "$MODE" = sprint-advice ]; then
     [ "${st:-}" = sprint ] || continue
     LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
       printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points). ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend
-      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `usage-route.sh sprint` reports sprint for this subscription, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, ot
+      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `usage-route.sh sprint` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, ot
       printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
   done
   exit 0
@@ -445,7 +449,7 @@ if [ "$MODE" = sprint ]; then
     fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
     case "$fresh" in codex\|*) printf '%s\n' "$fresh"; exit 0 ;; esac   # a re-run that printed nothing falls through to this pass
   fi
-  OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2700; [ "$STALE" -ge 2700 ] || FSTALE=$STALE
+  OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=1200; [ "$STALE" -ge 1200 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v t="$STARGET" -v ot="$OT" 'BEGIN {

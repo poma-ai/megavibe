@@ -94,6 +94,9 @@ if [ -n "$BAND" ]; then
   # last told (no sentence, no withdrawal) instead of reading silence as "the sprint is over".
   if [ "$src" != 0 ]; then SPR=""; SK=""; case "${PS:-}" in sc|sx|scx) SK="$PS" ;; esac; fi
   [ -z "$SK" ] || KEY="$KEY:$SK"
+else
+  # No band answer: nothing was checked, so the sprint state the session was last told stands.
+  case "${PS:-}" in sc|sx|scx) SK="$PS"; KEY="$KEY:$SK" ;; esac
 fi
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal state: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the state changed.
