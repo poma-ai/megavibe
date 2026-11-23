@@ -101,6 +101,9 @@ if [ -e "$N/pa.on" ] && [ "$PA_UP" = no ]; then
     log_once pa-launcher "pa.on is set but pa-start.sh is missing or not executable; the PA is NOT being restarted"
   elif [ ! -d "$MH/personal" ]; then
     log_once pa-folder "pa.on is set but $MH/personal does not exist; the PA is NOT being started"
+  elif ! grep -q -- '--running' "$N/pa-start.sh" 2>/dev/null; then
+    # An older launcher would take --running for a start. Never ask it; say what to do instead.
+    log_once pa-old-launcher "pa-start.sh is older than node.sh and cannot be asked whether a PA runs; the PA is NOT being started. Run: megavibe node install"
   elif bounded 15 "$N/pa-start.sh" --running 9>&- < /dev/null; then
     # The tmux session is gone but a PA process still runs from the personal folder (resumed by hand in
     # another terminal, say): a second one would resume the same conversation underneath it.

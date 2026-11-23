@@ -173,6 +173,10 @@ check "node: an inherited LC_ALL=C is not passed on either ($(tr '\n' ';' < "$TM
 check "pa.on: PA started in megavibe-personal through pa-start.sh" '[ -e "$TMUXSTATE/s/megavibe-personal" ] && grep -q "$N/pa-start.sh" "$TMUXSTATE/cmd.megavibe-personal"'
 fresh 5b; ctl install --pa; chmod -x "$N/pa-start.sh"; node
 check "pa.on, launcher not executable: logged, not started" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "pa-start.sh is missing or not executable"'
+fresh 5d; ctl install --pa; git -C "$REPO" show main:template/node/pa-start.sh > "$N/pa-start.sh"; node
+check "pa.on with a launcher older than node.sh: never asked --running, not started, logged" '[ ! -e "$T/megavibe.calls" ] && [ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "older than node.sh"'
+fresh 5e; ctl install; echo "# old" >> "$N/pa-start.sh"; echo "# old" >> "$N/node.sh"; cp "$N/node.sh" "$T/node.old"; chmod 500 "$N"; ctl install; chmod 700 "$N"
+check "install that cannot write the launcher: exits non-zero and leaves node.sh alone ($o)" '[ "$RC" != 0 ] && cmp -s "$N/node.sh" "$T/node.old"'
 fresh 5c; ctl install --pa; TMUX_FAIL=list-sessions node
 check "session listing failed: PA not started, logged" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "could not list sessions"'
 
@@ -282,11 +286,12 @@ check "pull: ignored local file is not overwritten" '[ "$(cat "$M/.agent/LOGS/ke
 rm -f "$M/.agent/LOGS/keep.log"; rm -f "$N"/.once-*; node   # catch up for the takeover below
 
 # takeover / handback on the standby
-touch "$N/memory.pull"
+touch "$N/memory.pull"; echo 11111111-2222-4333-8444-555555555555 > "$N/pa.session"
 ( cd "$STUDIO_M" && echo n5 > .agent/events/e5.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm e5 && git push -q )
 ctl takeover
 check "takeover: memory.pull gone, memory.push and pa.on set, PA started ($o)" '[ "$RC" = 0 ] && [ ! -e "$N/memory.pull" ] && [ -e "$N/memory.push" ] && [ -e "$N/pa.on" ] && [ -e "$TMUXSTATE/s/megavibe-personal" ]'
 check "takeover: fast-forwarded to origin before starting" '[ -f "$M/.agent/events/e5.md" ]'
+check "takeover that pulled newer notes: the conversation recorded here is forgotten" '[ ! -e "$N/pa.session" ]'
 ( cd "$STUDIO_M" && git pull -q --ff-only && echo n5b > .agent/events/e5b.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm e5b && git push -q )
 ctl takeover
 check "takeover with a running PA behind origin: refused, asks to end it" '[ "$RC" = 1 ] && [[ "$o" == *"/exit"* ]] && [ ! -f "$M/.agent/events/e5b.md" ]'
@@ -294,11 +299,12 @@ rm -f "$TMUXSTATE/s/megavibe-personal"; ctl takeover
 check "takeover after the PA ended: fast-forwards and starts it" '[ "$RC" = 0 ] && [ -f "$M/.agent/events/e5b.md" ] && [ -e "$TMUXSTATE/s/megavibe-personal" ]'
 ctl handback
 check "handback while the PA runs: refused, pa.on removed, still push" '[ "$RC" = 1 ] && [ ! -e "$N/pa.on" ] && [ -e "$N/memory.push" ] && [[ "$o" == *"/exit"* ]]'
-rm -f "$TMUXSTATE/s/megavibe-personal"; echo standby-note > "$M/.agent/events/s1.md"
+rm -f "$TMUXSTATE/s/megavibe-personal"; echo standby-note > "$M/.agent/events/s1.md"; echo 11111111-2222-4333-8444-555555555555 > "$N/pa.session"
 mv "$M/.git/index" "$M/.git/index.good"; echo garbage > "$M/.git/index"; ctl handback
 check "handback with a failing git status: refused, nothing switched ($o)" '[ "$RC" = 1 ] && [ -e "$N/memory.push" ] && [ ! -e "$N/memory.pull" ]'
 mv -f "$M/.git/index.good" "$M/.git/index"
 ctl handback
+check "handback: the conversation recorded on this Mac is forgotten" '[ ! -e "$N/pa.session" ]'
 check "handback: pushed, then memory.pull ($o)" '[ "$RC" = 0 ] && git -C "$O" ls-tree -r main --name-only | grep -q s1.md && [ -e "$N/memory.pull" ] && [ ! -e "$N/memory.push" ]'
 # handback publishes even when the switch was none
 ctl memory none; echo unpublished > "$M/.agent/events/u1.md"; ctl handback
