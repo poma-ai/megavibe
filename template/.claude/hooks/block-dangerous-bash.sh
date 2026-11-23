@@ -850,9 +850,11 @@ def user_agent_bootstrap(argv):
     rest = argv[2:]
     cut = next((k for k, x in enumerate(rest) if re.match(r"^[0-9]*[<>&]", x)), None)
     if cut is not None:
-        if not all(re.match(r"^([0-9]*[<>&]+|/dev/null|[0-9]+)$", x) for x in rest[cut:]): return False
+        if cut > 0 and re.match(r"^[0-9]$", rest[cut - 1]): cut -= 1     # the 2 of 2>/dev/null
+        tail = " ".join(rest[cut:])
+        redir = r"([0-9]? ?>>? ?/dev/null|[0-9]? ?>& ?[0-9])"
+        if not re.fullmatch(redir + "( " + redir + ")*", tail): return False
         rest = rest[:cut]
-        if rest and re.match(r"^[0-9]+$", rest[-1]): rest = rest[:-1]    # the 2 of 2>/dev/null
     if len(rest) != 2 or any(x.startswith("-") for x in rest): return False
     dom, path = rest
     m = re.match(r"^(gui|user)/([0-9]+)$", dom)
@@ -879,7 +881,7 @@ def scan(argv, depth=0):
             i += 1
             while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
                 opt = argv[i]; i += 1
-                if b == "env" and re.match(r"^(-[A-Za-z]*S|--split-string)", opt) and any("launchctl" in x for x in argv[i:]): return True   # env -S runs a split string: not parsed here, so blocked
+                if b == "env" and re.match(r"^(-[A-Za-z]*S|--split-string)", opt) and any("launchctl" in x for x in [opt] + argv[i:]): return True   # env -S runs a split string: not parsed here, so blocked
                 if opt == "--": break
                 if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
             while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
