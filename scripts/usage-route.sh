@@ -40,8 +40,10 @@
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
 #                account; or the ordinary target is not below the sprint target
 #   off          MEGAVIBE_SPRINT=0
-# The pace also includes a burst: the steepest rise of 2 points or more from any reading in the last 90 minutes to
-# the newest (counted one point short, an earlier dip does not switch it off), basis suffix `+burst`.
+# The sprint's pace is conservative: it also includes the steepest rise of 1 point or more from any reading in the
+# 90 minutes before the newest reading to that reading, rated (rise + 1) over its span (whole-percent readings; an
+# earlier dip does not switch it off; basis suffix `+burst`), and the forecast is projected from the newest reading
+# to the reset, not from now.
 # Known gap: a Codex history whose uncached scan takes over 2 s (the advice's per-provider alarm) reports `unknown`
 # for Codex, and the hook then keeps the state it last told (fails closed: no new advice, no false advice).
 # With no usage data at all the line is `provider|-|||||||` (no reason either); a provider without a five-hour
@@ -225,15 +227,19 @@ emit_forecast() {
             # paces need readings 2 h apart and miss a burst that has just started, which is what a session spending
             # in the sprint looks like), raises the pace to that rate.
             | (if $burst == 1 and $pc0 != null then
-                 # a rise of 2 points or more from any reading in the last 90 minutes to the newest, whatever came before
-                 # it (an earlier dip does not switch this off); whole-percent readings, so the rise is counted one short
-                 ([$rows[] | select(.t >= $now - 5400 and .t < $last.t and ($last.p - .p) >= 2)
-                   | (($last.p - .p - 1) / (($last.t - .t) / 3600))] | max)
+                 # Conservative sprint pace. Whole-percent readings: a displayed rise of r points can be anywhere from r-1
+                 # to r+1, so every rise of 1 point or more from a reading in the 90 minutes before the NEWEST reading to
+                 # that reading is rated (r+1) over its span, whatever came before it (an earlier dip does not switch this
+                 # off) and however long ago the newest reading was taken (the evidence ages with new readings only).
+                 ([$rows[] | select(.t >= $last.t - 5400 and .t < $last.t and ($last.p - .p) >= 1)
+                   | (($last.p - .p + 1) / (($last.t - .t) / 3600))] | max)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"
               else ([$pc.v, 0] | max) as $rate
-                | ($w.used + $rate * $left) as $fc
+                # The sprint projects from the newest reading, not from now: usage between the two is not in any reading.
+                | (if $burst == 1 then (($reset - $last.t) / 3600) else $left end) as $span
+                | ($w.used + $rate * $span) as $fc
                 | [($rate * 1000 | round / 1000),
                    # the sprint rounds the forecast up and the spare down: a margin must not be rounded into existence
                    (if $burst == 1 then ([$fc, 999] | min | . * 10 | ceil / 10) else ([$fc, 999] | min | r1) end),

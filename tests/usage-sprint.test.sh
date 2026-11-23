@@ -96,7 +96,7 @@ fo=$(/bin/bash "$UR" forecast)
 check 'the ordinary forecast of the same history is untouched by the burst rule (basis 24h)' '[ "$(printf "%s" "$fo" | cut -d"|" -f7)" = 24h ]'
 { row 1200 84 $R; row 360 88 $R; row 80 89 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'one point in the last 90 minutes is not a burst (whole-percent noise): sprint on the blended pace' '[ "$(f 2)" = sprint ] && [[ "$(f 8)" != *burst* ]]'
+check 'one point in 75 minutes with 2.5 h left is still a sprint (rated 2 points over 75 minutes, a small pace)' '[ "$(f 2)" = sprint ]'
 # the last minutes: nothing useful can start, and the per-hour figure would be absurd
 RL=$((NOW + 300)); { row 1500 84 $RL; row 360 89 $RL; row 5 90 $RL; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -115,6 +115,21 @@ check '94 then 96 five minutes ago, 25 minutes left: no sprint' '[ "$(f 2)" = "-
 { row 85 94 $RJ; row 60 93 $RJ; row 35 93 $RJ; row 15 93 $RJ; row 10 93 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check '94, a dip to 93, then 96 five minutes ago: still no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+# usage between the newest reading and now is projected: 93 -> 95 over 30 minutes, 40 minutes ago, 30 minutes left
+RP=$((NOW + 1800))
+{ row 100 93 $RP; row 70 93 $RP; row 40 95 $RP; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'last reading 40 minutes old at 95 after a 2-point rise, 30 minutes left: no sprint (projected from the reading, not from now)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+# a one-point rise in five minutes near the limit can be 95.0 -> 96.9
+{ row 85 95 $RJ; row 60 95 $RJ; row 35 95 $RJ; row 15 95 $RJ; row 10 95 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'flat 95 then 96 five minutes ago, 25 minutes left: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+# burst evidence does not age out of the lookback while the history is unchanged
+RH=$((NOW + 3600))
+{ row 89 94 $RH; row 40 96 $RH; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'readings 94 (89 min ago) and 96 (40 min ago), 60 minutes left: no sprint' '[ "$(f 2)" = "-" ]'
+{ row 91 94 $RH; row 42 96 $RH; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'the same readings two minutes older: still no sprint (the lookback is anchored to the newest reading)' '[ "$(f 2)" = "-" ]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
