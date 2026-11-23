@@ -20,7 +20,11 @@
 # SHORTCUT: the login warning is typed into the node window whatever it shows; if the session is not at
 # its prompt the line is lost or mangled for that day. Upgrade to SendMessage-from-outside if one exists.
 # MEGAVIBE_NODE_TEST_BIN: tests put stub binaries first on PATH. Nothing else reads it.
-export PATH="${MEGAVIBE_NODE_TEST_BIN:+$MEGAVIBE_NODE_TEST_BIN:}/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin" LANG=en_US.UTF-8 LC_ALL=C
+export PATH="${MEGAVIBE_NODE_TEST_BIN:+$MEGAVIBE_NODE_TEST_BIN:}/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin" LANG=en_US.UTF-8
+# Locale: this script matches byte-wise (LC_ALL=C for bash's own patterns, and on each text tool below),
+# but LC_ALL is NOT exported: a tmux server this script starts, and every session in it, would
+# otherwise run in the C locale and draw replacement characters for anything that is not ASCII.
+LC_ALL=C; export -n LC_ALL
 MH="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 N="$MH/node"
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$N/node.log"; }
@@ -30,7 +34,7 @@ log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$N/node.log"; }
 # (whole value) is logged and replaced by DEFAULT, so a typo cannot reach a command line.
 conf() {
   local v
-  v=$(awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); f = 1 } END { if (f) print v }' "$N/node.conf" 2>/dev/null)
+  v=$(LC_ALL=C awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); f = 1 } END { if (f) print v }' "$N/node.conf" 2>/dev/null)
   if [ -z "$v" ]; then printf '%s' "$2"
   elif [[ $v =~ ^$3$ ]]; then printf '%s' "$v"
   else log "node.conf: $1 has an unusable value; using the default"; printf '%s' "$2"; fi
@@ -65,11 +69,11 @@ tmux has-session -t "=$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$HOME
 # One successful listing decides what exists. If tmux cannot list, nothing is started: a failed
 # listing is not proof that a window is gone, and starting on it would duplicate a paid session.
 WINDOWS=$(tmux list-windows -t "=$TS" -F '#{window_name}' 2>/dev/null) || { log "tmux could not list windows; nothing started"; exit 0; }
-have() { printf '%s\n' "$WINDOWS" | grep -qxF -- "$1"; }
+have() { printf '%s\n' "$WINDOWS" | LC_ALL=C grep -qxF -- "$1"; }
 # At most 3 successful starts per window per hour, so a session that dies at start-up cannot crashloop.
 may_start() {
   local n
-  n=$(awk -v t=$(( $(date +%s) - 3600 )) '$1 ~ /^[0-9]+$/ && $1 > t' "$N/.starts-$1" 2>/dev/null | wc -l)
+  n=$(LC_ALL=C awk -v t=$(( $(date +%s) - 3600 )) '$1 ~ /^[0-9]+$/ && $1 > t' "$N/.starts-$1" 2>/dev/null | wc -l)
   [ "$n" -lt 3 ] && return 0
   [ -n "$(find "$N/.capped-$1" -mmin -60 2>/dev/null)" ] || { log "$1: 3 starts in the last hour, not starting again"; touch "$N/.capped-$1"; }
   return 1
@@ -88,7 +92,7 @@ fi
 # Is a PA running here? As with the windows, only a successful listing proves its session is absent.
 # PA_UP: yes, no, or unknown (listing failed).
 if SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null); then
-  if printf '%s\n' "$SESSIONS" | grep -qxF megavibe-personal; then PA_UP=yes; else PA_UP=no; fi
+  if printf '%s\n' "$SESSIONS" | LC_ALL=C grep -qxF megavibe-personal; then PA_UP=yes; else PA_UP=no; fi
 else
   PA_UP=unknown; log_once pa-list "tmux could not list sessions; PA not checked, memory not pulled"
 fi
@@ -116,7 +120,7 @@ if [ "$arc" -ne 0 ] && [ "$arc" -ne 1 ] && [ -z "$(find "$N/.auth-unknown" -mtim
 fi
 # Under 7 days: renewing needs the user at a Mac, so they get a week of daily reminders.
 if [ "$arc" -eq 1 ] && [ -z "$(find "$N/.login-warned" -mtime -1 2>/dev/null)" ] && have "$NAME"; then
-  msg=$(head -1 "$N/.auth-check" 2>/dev/null | tr -cd 'A-Za-z0-9 .,:()>-' | cut -c1-200)
+  msg=$(head -1 "$N/.auth-check" 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z0-9 .,:()>-' | LC_ALL=C cut -c1-200)
   if tmux send-keys -t "=$TS:=$NAME" -l "Claude login warning on $NAME: ${msg:-login check failed}. Tell the Personal Assistant session now, so the user can renew the login." \
     && tmux send-keys -t "=$TS:=$NAME" Enter; then
     touch "$N/.login-warned"; log "login warning sent: $msg"

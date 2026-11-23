@@ -17,6 +17,8 @@ B="$T/bin"; mkdir -p "$B"
 cat > "$B/tmux" <<'EOF'
 #!/bin/bash
 S="$TMUXSTATE"; mkdir -p "$S/s"; printf '%s\n' "$*" >> "$S/calls"
+# The locale a real tmux server (and every pane in it) would inherit from this call.
+case "$1" in new-session|new-window) printf '%s LC_ALL=%s LANG=%s\n' "$1" "${LC_ALL-unset}" "${LANG-unset}" >> "$S/locale" ;; esac
 v="$1"; shift
 [ "${TMUX_FAIL:-}" = "$v" ] && exit 1
 tgt() { local t="$1"; t="${t#=}"; printf '%s' "${t%%:*}"; }
@@ -165,6 +167,9 @@ check "start cap: 3 node starts per hour" '[ "$(grep -c "^new-window" "$TMUXSTAT
 
 fresh 5; ctl install --pa
 node
+check "node: what it starts in tmux gets a UTF-8 locale, never LC_ALL=C ($(tr '\n' ';' < "$TMUXSTATE/locale"))" '[ "$(grep -c "LC_ALL=unset LANG=en_US.UTF-8$" "$TMUXSTATE/locale")" = 3 ] && [ "$(wc -l < "$TMUXSTATE/locale" | tr -d " ")" = 3 ]'
+( export LC_ALL=C; node ); rm -f "$TMUXSTATE/w.main" "$TMUXSTATE/s/megavibe-personal"; : > "$TMUXSTATE/locale"; ( export LC_ALL=C; AUTH_RC=$AUTH_RC AUTH_MSG=$AUTH_MSG bash "$N/node.sh" )
+check "node: an inherited LC_ALL=C is not passed on either ($(tr '\n' ';' < "$TMUXSTATE/locale"))" '[ -s "$TMUXSTATE/locale" ] && ! grep -q "LC_ALL=C" "$TMUXSTATE/locale"'
 check "pa.on: PA started in megavibe-personal through pa-start.sh" '[ -e "$TMUXSTATE/s/megavibe-personal" ] && grep -q "$N/pa-start.sh" "$TMUXSTATE/cmd.megavibe-personal"'
 fresh 5b; ctl install --pa; chmod -x "$N/pa-start.sh"; node
 check "pa.on, launcher not executable: logged, not started" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "pa-start.sh is missing or not executable"'
