@@ -2412,6 +2412,7 @@ record_launch() {
   (
     umask 077
     mkdir -p "$dir" 2>/dev/null || exit 0
+    chmod 700 "$dir" 2>/dev/null || true
     for f in "$dir"/*.json; do
       [ -e "$f" ] || continue
       p=$(basename "$f" .json)

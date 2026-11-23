@@ -335,7 +335,7 @@ Inside a megavibe session:
 
 ## Launch records
 
-Every session the `megavibe` wrapper starts is recorded in `~/.megavibe/launches/<claude pid>.json` (owner-only; dead processes are pruned at the next launch): `{pid, launcher: "megavibe", parentSessionId, startedAt}`. Claude Code's own session registry (`~/.claude/sessions`) has no parent field, so tools that list sessions join this record by pid. `parentSessionId` is `MEGAVIBE_PARENT_SESSION` when set, else the launching session's `CLAUDE_CODE_SESSION_ID`, else null (a session you started yourself). A launch from a session's Bash tool is linked automatically; a detached launch (tmux, `setsid`, ssh) must pass `MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID`, because the new process does not inherit the caller's environment. Recording never blocks or fails a launch. Test: `tests/launch-record.test.sh`.
+Every session the `megavibe` wrapper starts is recorded in `$MEGAVIBE_HOME/launches/<claude pid>.json` (default `~/.megavibe/launches/`; owner-only; dead processes are pruned at the next launch): `{pid, launcher: "megavibe", parentSessionId, startedAt}`. Claude Code's own session registry (`~/.claude/sessions`) has no parent field, so tools that list sessions join this record by pid. `parentSessionId` is `MEGAVIBE_PARENT_SESSION` when set, else the launching session's `CLAUDE_CODE_SESSION_ID`, else null (a session you started yourself). A launch from a session's Bash tool is linked automatically; a detached launch (tmux, `setsid`, ssh) must pass `MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID`, because the new process does not inherit the caller's environment. Recording never blocks or fails a launch. Test: `tests/launch-record.test.sh`.
 
 ## Remote Control
 

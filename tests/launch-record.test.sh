@@ -15,7 +15,7 @@ sed -n '/^record_launch() {/,/^}/p' "$REPO/megavibe" > "$T/fn.sh"
 
 run() { # run <pid> [env assignments...]: source the function in a clean shell
   local pid="$1"; shift
-  env -i PATH="$PATH" MEGAVIBE_HOME="$T/home" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid"
+  (cd "$T" && env -i PATH="$PATH" MEGAVIBE_HOME="$T/home" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid")
 }
 field() { jq -r "$1" "$T/home/launches/$2.json"; }
 
@@ -25,7 +25,7 @@ run 4001 MEGAVIBE_PARENT_SESSION=aaaa-1111 CLAUDE_CODE_SESSION_ID=bbbb-2222
 [ "$(field .launcher 4001)" = "megavibe" ] || fail "launcher field"
 [ "$(field '.startedAt|type' 4001)" = "number" ] || fail "startedAt type"
 # Owner-only permissions (checked now: later runs prune these fake, dead pids).
-mode() { stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"; }
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # GNU first: `stat -f` succeeds on GNU with other output
 [ "$(mode "$T/home/launches")" = 700 ] || fail "launches dir mode"
 [ "$(mode "$T/home/launches/4001.json")" = 600 ] || fail "record mode"
 
@@ -40,6 +40,7 @@ run 4003
 # A parent that is not a session id is dropped, never written.
 run 4004 'MEGAVIBE_PARENT_SESSION=x"; touch pwned #'
 [ "$(field .parentSessionId 4004)" = "null" ] || fail "invalid parent must be dropped"
+[ ! -e "$T/pwned" ] || fail "parent id was executed"
 
 # A bad pid writes nothing.
 run 'abc' MEGAVIBE_PARENT_SESSION=aaaa-1111
