@@ -11,8 +11,9 @@
 # the pid the record holds, else by session id: a session's id changes on /clear while its pid stays,
 # so an id alone would call a live parent ended. Only sessions megavibe launched with a parent are
 # linked: a session you started yourself has none, and `claude -p` workers leave no record. Read-only.
-# Names and paths are reduced to a safe character set before they are printed, and further (no spaces,
-# short) in --status, because that line is read by a model. One unreadable file is skipped, never the list.
+# Names and paths are reduced to a safe character set before they are printed. --status, injected into every
+# session start and read by a model, carries no names or paths at all: counts and pids only. One unreadable
+# file is skipped, never the list.
 set -euo pipefail
 
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
@@ -24,7 +25,7 @@ case "${1:-}" in
   ""|list) mode=list ;;
   --orphans) mode=orphans ;;
   --status) mode=status ;;
-  -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
   *) echo "usage: megavibe sessions [--orphans|--status]" >&2; exit 2 ;;
 esac
 
@@ -60,10 +61,8 @@ launches=$(printf '%s' "$launchlines" | jq -s 'map({key: (.pid | tostring), valu
 
 out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" --argjson now "$(date +%s)" --arg mode "$mode" '
   def clean: tostring | gsub("[^A-Za-z0-9._ -]"; "?") | .[0:40];
-  def terse: tostring | gsub("[^A-Za-z0-9._-]"; "") | .[0:24];
   def path: tostring | (if ($home | length) > 0 and startswith($home) then "~" + .[($home | length):] else . end)
     | gsub("[^A-Za-z0-9._/~ -]"; "?") | .[0:60];
-  def base: split("/") | map(select(length > 0)) | (last // "");
   def age: if . == 0 then "-" else
       (($now - (. / 1000 | floor)) | if . < 0 then 0 else . end) as $s
       | if $s < 60 then "\($s)s" elif $s < 3600 then "\($s / 60 | floor)m" elif $s < 86400 then "\($s / 3600 | floor)h" else "\($s / 86400 | floor)d" end
@@ -79,7 +78,7 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
         ppid: (if $par != null and (($r.parentPid | type) == "number") then $r.parentPid else null end) } ] as $base
   | ($base | map(
       . as $x
-      | (if $x.ppid != null then ($base | map(select(.pid == $x.ppid and .id != $x.id)) | .[0].id)
+      | (if $x.ppid != null then ($base | map(select(.pid == $x.ppid and .id != $x.id and .started <= $x.started + 5000)) | .[0].id)   # a parent started before its child: a reused pid did not
          elif $x.parent != null then ($base | map(select(.id == $x.parent and .id != $x.id)) | .[0].id)
          else null end) as $up
       | $x + {up: $up, orphan: ($x.parent != null and $up == null)})) as $rows
@@ -90,7 +89,7 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
       (if $d < 8 then ($rows | map(select(.up == $n.id)) | sort_by(.started) | .[] | tree($d + 1)) else empty end);
     if $mode == "status" then
       (if ($orph | length) == 0 then empty
-       else "\($orph | length) running session(s) were started by a session that has ended: " + ($orph | map("\(.name | terse) (pid \(.pid), \(.dir | base | terse))") | join("; ")) + ". Tell the user; do not stop them yourself."
+       else "\($orph | length) running session(s) were started by a session that has ended (pids: \($orph | map(.pid | tostring) | join(", "))). Tell the user; `megavibe sessions --orphans` lists them. Do not stop them yourself."
        end)
     elif $mode == "orphans" then
       (if ($orph | length) == 0 then "no orphaned sessions" else ($orph[] | "\(.name)\t\(.pid)\t\(.dir)\tstarted by \(.parent[0:8]), which has ended") end)
