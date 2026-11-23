@@ -2402,17 +2402,21 @@ update_lock_pid() {
 # (e.g. megavibe-observer) join this record to a live session by claude's PID. Parent = the
 # explicit MEGAVIBE_PARENT_SESSION (set, even empty = "no parent"; a launcher that is not the
 # session's own child, like tmux or ssh, must pass it), else CLAUDE_CODE_SESSION_ID, believed only
-# while a `claude` process is among this wrapper's ancestors: a tmux server hands every later
-# window the environment of whoever started it, so a bare env value can name an unrelated session.
+# while an ancestor process of this wrapper is that session's registered process (its registry
+# file <pid>.json names that exact id): a tmux server hands every later window the environment of
+# whoever started it, so a bare env value can name an unrelated session. Matching the registry,
+# not a process name, works for any install layout (native binary, node-hosted, versioned path).
 # A launch with no parent still gets a record, so "started by megavibe" can be told apart from a
 # bare `claude`. Never blocks or fails a launch.
-has_claude_ancestor() {
-  local x=$$ n=0 c
+is_session_ancestor() { # is_session_ancestor <session id>
+  local want="$1" x=$$ n=0 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions" got
   while [ "$n" -lt 12 ]; do
     x=$(ps -o ppid= -p "$x" 2>/dev/null | tr -d ' ')
     [[ "$x" =~ ^[0-9]+$ ]] && [ "$x" -gt 1 ] || return 1
-    c=$(ps -o comm= -p "$x" 2>/dev/null)
-    [ "$(basename "${c:-}")" = claude ] && return 0
+    if [ -f "$dir/$x.json" ]; then
+      got=$(jq -r '.sessionId // empty' "$dir/$x.json" 2>/dev/null) || got=""
+      [ "$got" = "$want" ] && return 0
+    fi
     n=$((n + 1))
   done
   return 1
@@ -2424,7 +2428,7 @@ record_launch() {
   command -v jq &>/dev/null || return 0
   if [ -n "${MEGAVIBE_PARENT_SESSION+x}" ]; then
     parent="$MEGAVIBE_PARENT_SESSION"
-  elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && has_claude_ancestor; then
+  elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && is_session_ancestor "$CLAUDE_CODE_SESSION_ID"; then
     parent="$CLAUDE_CODE_SESSION_ID"
   fi
   [[ "$parent" =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
@@ -2435,6 +2439,7 @@ record_launch() {
     for f in "$dir"/*.json; do
       [ -e "$f" ] || continue
       p=$(basename "$f" .json)
+      [[ "$p" =~ ^[0-9]+$ ]] || continue
       kill -0 "$p" 2>/dev/null || rm -f "$f"
     done
     jq -n --argjson pid "$pid" --arg parent "$parent" --argjson at "$(date +%s)" \

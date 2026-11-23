@@ -8,29 +8,27 @@ trap 'rm -rf "$T"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-{ sed -n '/^has_claude_ancestor() {/,/^}/p' "$REPO/megavibe"; sed -n '/^record_launch() {/,/^}/p' "$REPO/megavibe"; } > "$T/fn.sh"
-grep -q '^record_launch() {' "$T/fn.sh" && grep -q '^has_claude_ancestor() {' "$T/fn.sh" || fail "functions not found in megavibe"
+{ sed -n '/^is_session_ancestor() {/,/^}/p' "$REPO/megavibe"; sed -n '/^record_launch() {/,/^}/p' "$REPO/megavibe"; } > "$T/fn.sh"
+grep -q '^record_launch() {' "$T/fn.sh" && grep -q '^is_session_ancestor() {' "$T/fn.sh" || fail "functions not found in megavibe"
 
-# A stub `ps` gives the recording shell a fixed ancestry: <shell> -> 50001 (named $FAKE_COMM) -> 50002 -> init.
-# The real chain is not usable here: this test normally runs under a real claude session.
-mkdir -p "$T/bin"
+# A stub `ps` gives the recording shell a fixed ancestry: <shell> -> 50001 -> 50002 -> init. The real chain is
+# not usable here: this test normally runs under a real claude session. Pid 50001 plays the launching session;
+# its registry file lives in a fake config dir ($T/cfg) and is written per case.
+mkdir -p "$T/bin" "$T/cfg/sessions"
 cat > "$T/bin/ps" <<'EOF'
 #!/bin/bash
-field=$2; pid=$4
-case "$field" in
-  ppid=) case "$pid" in 50001) echo 50002;; 50002) echo 1;; *) echo 50001;; esac ;;
-  comm=) case "$pid" in 50001) echo "${FAKE_COMM:-zsh}";; 50002) echo login;; esac ;;
-esac
+pid=$4
+case "$pid" in 50001) echo 50002;; 50002) echo 1;; *) echo 50001;; esac
 EOF
 chmod +x "$T/bin/ps"
+registry() { printf '{"pid":50001,"sessionId":"%s"}\n' "$1" > "$T/cfg/sessions/50001.json"; }
 # Both claude launch sites must record, or sessions started on that path are unmarked.
 [ "$(grep -c '^  record_launch "\$CLAUDE_PID"$' "$REPO/megavibe")" = 2 ] || fail "expected record_launch after both claude launches"
 
 run() { # run <pid> [env assignments...]: source the function in a clean shell
   local pid="$1"; shift
-  (cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid")
+  (cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" CLAUDE_CONFIG_DIR="$T/cfg" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid")
 }
-run_c() { run "$1" FAKE_COMM=/Users/x/.local/bin/claude "${@:2}"; }  # the launching shell is a child of a claude process
 field() { jq -r "$1" "$T/home/launches/$2.json"; }
 
 # Explicit parent wins over the inherited session id.
@@ -43,16 +41,24 @@ mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # GNU first: `stat 
 [ "$(mode "$T/home/launches")" = 700 ] || fail "launches dir mode"
 [ "$(mode "$T/home/launches/4001.json")" = 600 ] || fail "record mode"
 
-# Inherited session id is used when no explicit parent is set and a claude process is an ancestor.
-run_c 4002 CLAUDE_CODE_SESSION_ID=bbbb-2222
+# Inherited session id is used when no explicit parent is set and an ancestor is that session's registered process.
+registry bbbb-2222
+run 4002 CLAUDE_CODE_SESSION_ID=bbbb-2222
 [ "$(field .parentSessionId 4002)" = "bbbb-2222" ] || fail "inherited parent"
 
-# The same value with no claude ancestor (a stale id from a shared tmux server) is ignored.
+# An id the ancestor does not own (a stale value handed on by a shared tmux server) is ignored.
+registry cccc-3333
 run 4010 CLAUDE_CODE_SESSION_ID=bbbb-2222
-[ "$(field .parentSessionId 4010)" = "null" ] || fail "stale inherited id must be ignored"
+[ "$(field .parentSessionId 4010)" = "null" ] || fail "foreign inherited id must be ignored"
 
-# An explicitly empty MEGAVIBE_PARENT_SESSION means "no parent", even under claude with an inherited id.
-run_c 4011 MEGAVIBE_PARENT_SESSION= CLAUDE_CODE_SESSION_ID=bbbb-2222
+# No registered ancestor at all: also ignored.
+rm -f "$T/cfg/sessions/50001.json"
+run 4012 CLAUDE_CODE_SESSION_ID=bbbb-2222
+[ "$(field .parentSessionId 4012)" = "null" ] || fail "unregistered ancestry must be ignored"
+
+# An explicitly empty MEGAVIBE_PARENT_SESSION means "no parent", even with a matching ancestor and inherited id.
+registry bbbb-2222
+run 4011 MEGAVIBE_PARENT_SESSION= CLAUDE_CODE_SESSION_ID=bbbb-2222
 [ "$(field .parentSessionId 4011)" = "null" ] || fail "empty explicit parent must mean none"
 
 # No parent: still recorded, parent null (tells "started by megavibe" from a bare claude).
@@ -73,9 +79,13 @@ sleep 0 & dead=$!; wait "$dead" || true
 printf '{"pid":%s}\n' "$dead" > "$T/home/launches/$dead.json"
 live=$$
 printf '{"pid":%s}\n' "$live" > "$T/home/launches/$live.json"
+printf '{}\n' > "$T/home/launches/notes.json"
 run 4005
-[ ! -e "$T/home/launches/$dead.json" ] || fail "dead record not pruned"
+if ! kill -0 "$dead" 2>/dev/null; then  # skip if the OS already reused the pid
+  [ ! -e "$T/home/launches/$dead.json" ] || fail "dead record not pruned"
+fi
 [ -e "$T/home/launches/$live.json" ] || fail "live record was pruned"
+[ -e "$T/home/launches/notes.json" ] || fail "a non-pid file was pruned"
 
 # An unwritable home never fails the launch.
 : > "$T/notadir"
