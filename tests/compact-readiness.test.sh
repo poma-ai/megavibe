@@ -46,6 +46,7 @@ for index, (label, filename, old, new) in enumerate(mutations):
     shutil.copytree(repo / "template/.claude/hooks", root / "template/.claude/hooks")
     shutil.copytree(repo / "scripts", root / "scripts")
     shutil.copy2(repo / "README.md", root / "README.md")
+    shutil.copy2(repo / "README-compaction-readiness.md", root / "README-compaction-readiness.md")
     shutil.copy2(repo / "template/CLAUDE.md", root / "template/CLAUDE.md")
     (root / "tests").mkdir()
     shutil.copy2(repo / "tests/compact-readiness.test.sh", root / "tests")

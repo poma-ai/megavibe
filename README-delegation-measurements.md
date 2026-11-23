@@ -1,6 +1,6 @@
 # Delegation: measurements and history
 
-Evidence behind the rules in `template/.claude/rules/delegation.md`. Moved out of that file on 2026-11-23 because it is loaded eagerly into every session and the instruction-file total passed the 150k-char limit; the rules there stay authoritative. This file is evidence and history: imperatives in the quoted text below are the original wording of rules that live in `delegation.md`. Text is verbatim as moved, except for bracketed notes added to repair references.
+Evidence behind the rules in `template/CLAUDE.md` and `template/.claude/rules/` (mostly `delegation.md`, also `spinouts.md`). Moved out of those files on 2026-11-23 because they are loaded eagerly into every session and the instruction-file total passed the 150k-char limit; the rules there stay authoritative. This file is evidence and history: imperatives in the quoted text below are the original wording of rules that live in those files. Text is as moved, apart from bracketed notes and small edits that repair references.
 
 ## Reasoning-effort/timeout asymmetry (2026-10-04)
 
