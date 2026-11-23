@@ -8,11 +8,11 @@ A node keeps a Mac reachable for other Claude sessions and keeps the Personal As
 |---|---|---|
 | LaunchAgent `com.megavibe.node` | `~/Library/LaunchAgents/com.megavibe.node.plist` | Runs `node.sh` at login and every 300 s, only in a logged-in GUI session (`Aqua`). |
 | `node.sh` | `~/.megavibe/node/` | Keeps a node session in tmux session `main` (`TMUX_SESSION`), in a window named after the Mac's `LocalHostName`; the Claude session inside it is named `NODE-<host>` (model `sonnet`). Where `pa.on` exists, starts the PA in tmux session `megavibe-personal`. Syncs the PA's memory repo. Types a warning into the node window once a day when the Claude login expires within 168 h, has expired, or is logged out. It starts things; it never stops or kills anything. |
-| `pa-start.sh` | `~/.megavibe/node/` | The one PA launcher: `megavibe --name "Personal Assistant"` in `~/.megavibe/personal`, with a first prompt that makes the PA run `/rehydrate` and read its `megavibe-deliverables/`. `megavibe assistant` uses the same launcher (the installed copy, else the template). |
+| `pa-start.sh` | `~/.megavibe/node/` | The one PA launcher: `megavibe --name "Personal Assistant"` in `~/.megavibe/personal`. A first start chooses the session id, records it in `pa.session`, and makes the PA run `/rehydrate` and read its `megavibe-deliverables/`; every later start resumes that conversation under the same name (see "When the PA or a session dies"). `megavibe assistant` uses the same launcher (the installed copy, else the template; without a node folder every start is fresh). |
 | `CLAUDE.md` | `~/.megavibe/node/` | The node session's role: takes no work, relays to the PA, never runs setup for another session. |
 | `node.conf` | `~/.megavibe/node/` | Settings, `KEY=value`, read by the scripts and never sourced; a value that fails its pattern is logged to `node.log` and replaced by the default. |
 
-Settings and defaults: `NODE_MODEL=sonnet`, `PA_MODEL=` (empty: megavibe's own choice; set `opus` to pin the PA), `TMUX_SESSION=main`, `NODE_PREFIX=NODE-`, `COMMIT_NAME=megavibe node`, `COMMIT_EMAIL=megavibe-node@localhost` (the memory repo's automatic commits).
+Settings and defaults: `NODE_MODEL=sonnet`, `PA_MODEL=` (empty: Claude's own default; set `opus` to pin the PA), `TMUX_SESSION=main`, `NODE_PREFIX=NODE-`, `COMMIT_NAME=megavibe node`, `COMMIT_EMAIL=megavibe-node@localhost` (the memory repo's automatic commits).
 
 Switch files in `~/.megavibe/node/` (set them with the commands, not by hand):
 
@@ -24,6 +24,30 @@ Switch files in `~/.megavibe/node/` (set them with the commands, not by hand):
 | `memory.pull` | `megavibe node memory pull` | This Mac keeps a standby copy: fetch and fast-forward only, never while a PA runs or is set to run here. |
 
 `megavibe node status` shows all of it, plus whether the installed scripts differ from the template (re-run `install` after an update to refresh them; `node.conf` and the switches are kept).
+
+## When the PA or a session dies
+
+Everything here lives in tmux, so one dead tmux server takes the PA, the node and every repo session with it. The node's LaunchAgent brings the node back within five minutes; the rest is this section.
+
+**The PA comes back as itself.** With `pa.on` set, the node starts the PA when tmux session `megavibe-personal` is gone, through `pa-start.sh`, which resumes the conversation recorded in `~/.megavibe/node/pa.session` (`megavibe --resume <id>`): context and session-scoped schedules return, and the first prompt tells the PA to check its schedules and run `megavibe node session check`. The session name is always `Personal Assistant`, fresh or resumed, so sessions that report to it by name keep reaching it. `megavibe node pa session` shows the recorded conversation, `megavibe node pa session <id>` records one (for a PA that was started another way, or after `/clear`, which begins a conversation the file does not know), `megavibe node pa session none` makes the next start fresh. The file is per Mac and not part of the memory repo: a standby that takes over starts fresh from the notes.
+
+Two gotchas:
+- A resume that ends within 30 s counts as "that conversation is gone": the id moves to `pa.session.failed` and a fresh PA starts in its place. A PA you end within 30 s of a resume is replaced by a fresh one too.
+- No second PA: where the wrapper's session lock in the personal folder names a live Claude process (a PA resumed by hand in another terminal), neither the node nor `megavibe assistant` starts another; `node.log` says so. That check needs `jq`.
+
+**Repo sessions are registered, and a vanished one is reported.** Start them through the register instead of a bare `tmux new-window`:
+
+```
+megavibe node session start NAME --dir DIR --task FILE [--model M] [--window W] [--prompt TEXT]
+megavibe node session check        # exit 0 all present, 1 some vanished (listed), 2 tmux could not say
+megavibe node session resume NAME  # a vanished one: its conversation again; --fresh: a new one from the task file
+megavibe node session done NAME    # it reported; drop NAME forgets it; list shows all
+megavibe node session add NAME --window TARGET --task FILE [--dir DIR] [--sid ID]   # one that already runs
+```
+
+`start` opens a window in the node's tmux session running `megavibe --name NAME --session-id <new id> "<prompt>"` in `DIR` (default prompt: read the task file, carry it out, report to the session named `Personal Assistant`), and writes `~/.megavibe/node/sessions/NAME` (state, window, folder, task file, started, conversation id). Liveness is a tmux user option on the window (`@mv_session`): it goes when the window goes, cannot survive a server restart, and survives a rename. `check` lists every session still registered as running whose window is gone, with its task file and the resume command, on every run until it is resumed, marked `done` or dropped; run it from the PA's recurring tick. A failed tmux listing is "unknown" (exit 2), never "all vanished"; "no server running" is the one failure that counts as gone. `resume` uses `megavibe --resume <id>`; if that window closes at once the conversation no longer exists, and `--fresh` starts a new one with a brief to reconstruct the state from the task file and the repo.
+
+Give each session its own folder (a worktree): the wrapper asks an interactive question when another session holds the folder's lock, and a detached window cannot answer it. A session started with a chosen id gets no model from the usage router; pass `--model`.
 
 ## Install
 
@@ -75,7 +99,9 @@ Returning to the writer: when the writer boots, its node restarts its PA (`pa.on
 
 ## Known limits (SHORTCUTs in the code)
 
-- Liveness is "the tmux window exists": a hung session keeps its window and is not restarted.
+- Liveness is "the tmux window exists", for the node, the PA and registered sessions alike: a hung session keeps its window and is neither restarted nor reported. A session registered with `session add` that runs from a shell prompt leaves its window open when it ends.
+- `/clear` inside the PA begins a conversation `pa.session` does not know; until it is recorded (`megavibe node pa session <id>`) a restart resumes the conversation from before the `/clear`.
+- With a session id chosen by `pa-start.sh`, an unset `PA_MODEL` means Claude's own default model, not the usage router's choice.
 - The login warning is typed into the node window; if the session is not at its prompt, that day's line is lost or mangled.
 - The pull checks for a running PA at the start of the run; a PA started by another route in the seconds before the merge is not seen (`takeover` avoids this for its own start).
 - Each helper runs under a deadline that ends the helper, not its children.
@@ -83,6 +109,6 @@ Returning to the writer: when the writer boots, its node restarts its PA (`pa.on
 - The secret scan runs once, before the first commit; the node's later automatic commits are not scanned, so keep secrets out of the PA's folder (the allow-list `.gitignore` is the main guard).
 - Two Macs that both hold `memory.push` at the same time diverge; nothing merges automatically.
 
-Tests: `tests/node.test.sh` (stubbed tmux, scutil, launchctl and login check; real git on scratch repos).
+Tests: `tests/node.test.sh` (stubbed tmux, scutil, launchctl and login check; real git on scratch repos) and `tests/node-sessions.test.sh` (the session register against a real tmux on a private `-L` server, never the live one).
 
 **Codex usage probe.** While `pa.on` is set, each run also calls `usage-probe.sh run --every 30` (one tiny Codex call at most every 30 minutes, skipped when a Codex reading under 15 minutes old exists) so the usage forecast has fresh Codex readings (README "Recent-pace forecast"). Without `pa.on` the node makes no such call.

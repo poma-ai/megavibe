@@ -331,7 +331,7 @@ Inside a megavibe session:
 
 `megavibe assistant` attaches to the Personal Assistant (PA) in tmux session `megavibe-personal`, starting it when it is not running. **Changed:** it now starts the PA through the megavibe wrapper with the launcher `pa-start.sh` instead of plain `claude`, so hooks, the style prompt, the usage router and the billing guard apply, and a freshly started PA is told to run `/rehydrate` and read its `megavibe-deliverables/` before it says it is back. A PA that is already running is only attached to, as before.
 
-`megavibe node install` (opt-in, nothing runs before it) adds a LaunchAgent that keeps a thin node session alive on the Mac, restarts the PA where `megavibe node pa on` is set, and keeps the PA's notes in a git repo between a writing Mac and a standby (`megavibe node memory init|clone`, `takeover`, `handback`). megavibe never runs `launchctl` for you: `install` prints the one line to run in Terminal. Full detail: **`README-node.md`**.
+`megavibe node install` (opt-in, nothing runs before it) adds a LaunchAgent that keeps a thin node session alive on the Mac, restarts the PA where `megavibe node pa on` is set (resuming its last conversation under its fixed session name), keeps a register of the repo sessions it started so one that vanishes is reported (`megavibe node session start|check|resume`), and keeps the PA's notes in a git repo between a writing Mac and a standby (`megavibe node memory init|clone`, `takeover`, `handback`). megavibe never runs `launchctl` for you: `install` prints the one line to run in Terminal. Full detail: **`README-node.md`**.
 
 ## Remote Control
 

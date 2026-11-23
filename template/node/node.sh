@@ -8,8 +8,9 @@
 # off, create the file node.off in this folder (`megavibe node off`); to keep only the PA off, remove
 # pa.on (`megavibe node pa off`).
 # The PA lives where `megavibe assistant` looks for it: tmux session megavibe-personal. Both start it
-# through the same launcher, pa-start.sh: fresh, rebuilding from its notes; nothing depends on resuming
-# an old conversation.
+# through the same launcher, pa-start.sh, which resumes the PA's recorded conversation under its fixed
+# session name (node/pa.session; a first start, or one whose conversation is gone, is fresh and rebuilds
+# from its notes). A PA that already runs somewhere else from the personal folder is never doubled.
 # The node runs in tmux session TMUX_SESSION (main by default), in a window named after the host; its
 # Claude session is named <NODE_PREFIX><host> (NODE- by default), so nobody mistakes it for a session
 # to give work to.
@@ -96,6 +97,10 @@ if [ -e "$N/pa.on" ] && [ "$PA_UP" = no ]; then
     log_once pa-launcher "pa.on is set but pa-start.sh is missing or not executable; the PA is NOT being restarted"
   elif [ ! -d "$MH/personal" ]; then
     log_once pa-folder "pa.on is set but $MH/personal does not exist; the PA is NOT being started"
+  elif bounded 15 "$N/pa-start.sh" --running 9>&- < /dev/null; then
+    # The tmux session is gone but a PA process still runs from the personal folder (resumed by hand in
+    # another terminal, say): a second one would resume the same conversation underneath it.
+    log_once pa-elsewhere "pa.on is set and a PA already runs outside tmux session megavibe-personal (its session lock names a live process); not starting a second one"
   elif may_start pa; then
     tmux new-session -d -s megavibe-personal -c "$MH/personal" env MEGAVIBE_HOME="$MH" "$N/pa-start.sh" && { started pa; PA_UP=yes; }
   fi
