@@ -211,6 +211,11 @@ printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":62,"r":%s}}\n{"t":%s,"sd":{"p":65
   "$((NOW - 720))" "$R2" "$FR" "$((NOW - 480))" "$R2" "$FR" "$((NOW - 240))" "$R2" "$((FR * 1000))" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'the live five-hour reset in milliseconds on one row, seconds on the others: still 5h-hot' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# flat-then-surge in the five-hour window: 76 at -30 and -5 minutes, 80 now: the recent slope (4 points in 5 minutes), not the 30-minute
+# average, decides
+{ rowfh 30 72 $R2 76; rowfh 5 72 $R2 76; rowfh 0 72 $R2 80; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 76, 76, then 80 in the last five minutes: 5h-hot (the recent slope counts)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
