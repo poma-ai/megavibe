@@ -71,19 +71,19 @@ check 'quiet at 97, two points to 99: sprint' '[ "$(f 2)" = sprint ] && near "$(
 o=$(sp)
 check 'at 97 with a pace that leaves 1.6 points: no sprint (no rounding up to the minimum)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
 
-# a reading older than an hour is no basis for spending the last points (Claude counts as stale only after 6 h)
+# a reading older than 35 minutes is no basis for spending the last points (Claude counts as stale only after 6 h)
 { row 1500 84 $R; row 360 89 $R; row 90 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'newest reading 90 minutes old: no sprint (reason no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
 fo=$(/bin/bash "$UR" forecast)
 check 'the same history still has an ordinary forecast (the one-hour rule is the sprint'"'"'s own)' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
 
-{ row 1500 84 $R; row 360 89 $R; row 25 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+{ row 1500 84 $R; row 360 89 $R; row 40 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'newest reading 25 minutes old: no sprint (20 minutes is the limit)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
-{ row 1500 84 $R; row 360 89 $R; row 15 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+check 'newest reading 40 minutes old: no sprint (35 minutes is the limit)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+{ row 1500 84 $R; row 360 89 $R; row 30 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'newest reading 15 minutes old: sprint' '[ "$(f 2)" = sprint ]'
+check 'newest reading 30 minutes old: sprint (a 30-minute probe cadence must not flap)' '[ "$(f 2)" = sprint ]'
 { row 1500 84 $R; row 360 89 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 fo=$(FSTALE=60 /bin/bash "$UR" forecast)
 check 'an FSTALE in the environment does not reach the ordinary forecast' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
@@ -125,7 +125,7 @@ check 'last reading 18 minutes old at 95 after a 2-point rise, 30 minutes left: 
 o=$(sp)
 check 'flat 95 then ONE point to 96 five minutes ago, 25 minutes left: a single tick is noise, so no burst term (known limit, decided: a burst that has not produced a two-point rise is invisible)' '[[ "$(f 8)" != *burst* ]]'
 { row 85 95 $RJ; row 60 95 $RJ; row 35 95 $RJ; row 15 95 $RJ; row 10 95 $RJ; row 5 97 $RJ; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
-check 'flat 95 then TWO points to 97 five minutes ago: a burst (rated 3 points over the 15-minute floor), no sprint' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
+check 'flat 95 then TWO points to 97 five minutes ago: a burst (rated 3 points over the 30-minute floor), no sprint' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
 # burst evidence does not age out of the lookback while the history is unchanged
 RH=$((NOW + 3600))
 { row 89 94 $RH; row 40 96 $RH; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
@@ -136,9 +136,9 @@ check 'the same readings two minutes older: still no sprint (the lookback is anc
 { row 80 90 $RP; row 18 92 $RP; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check '30 minutes left, 90 then 92 eighteen minutes ago: spend per hour is below (99-92)/0.5 = 14 (it starts from estimated use now)' 'awk -v s="$(f 7)" "BEGIN{exit !(s > 0 && s < 13.5)}"'
-# flat 97 with a reading 25 minutes old is not fresh enough near the cap; 15 minutes old is
-{ row 1500 97 $R; row 360 97 $R; row 25 97 $R; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
-check 'flat 97, newest reading 25 minutes old: no sprint (no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+# flat 97 with a reading 40 minutes old is not fresh enough near the cap
+{ row 1500 97 $R; row 360 97 $R; row 40 97 $R; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'flat 97, newest reading 40 minutes old: no sprint (no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
 # an idle gap before the newest reading: the jump to the newest reading counts whatever the gap (no wall-clock cliff)
 RG=$((NOW + 10800))
 { row 1440 70 $RG; row 360 80 $RG; row 300 80 $RG; row 100 80 $RG; row 0 88 $RG; } > "$MEGAVIBE_USAGE_FILE"
@@ -156,6 +156,22 @@ check 'a rise that ended hours ago and is flat since is not a burst (the endpoin
 check 'the line carries the five-hour used percent as its tenth field' '[ "$(f 10)" = 40 ]'
 o=$(/bin/bash "$UR" sprint-advice)
 check 'the advice names the five-hour window when there is one' '[[ "$o" == *"five-hour window is at 40%"* ]]'
+# steady use at 3 points per hour with 5-minute heartbeat rows and 3.8 h left is not a burst (the rise is rated over the
+# time since the lower reading): true end about 84, so the sprint must stay on
+RS=$((NOW + 13680))
+: > "$MEGAVIBE_USAGE_FILE"
+for m in $(seq 360 -5 0); do awk -v t=$((NOW - m * 60)) -v m=$m -v r=$RS 'BEGIN { printf "{\"t\":%d,\"sd\":{\"p\":%d,\"r\":%d}}\n", t, int(73.2 - 3 * m / 60), r }' >> "$MEGAVIBE_USAGE_FILE"; done
+o=$(sp)
+check 'steady 3 points/h at 73 with 3.8 h left: sprint (it read no-room, forecast 100.4, with a 15-minute floor and the span to the anchor)' '[ "$(f 2)" = sprint ]'
+: > "$MEGAVIBE_USAGE_FILE"
+for m in $(seq 360 -5 0); do awk -v t=$((NOW - m * 60)) -v m=$m -v r=$RS 'BEGIN { printf "{\"t\":%d,\"sd\":{\"p\":%d,\"r\":%d}}\n", t, int(79.2 - 2 * m / 60), r }' >> "$MEGAVIBE_USAGE_FILE"; done
+o=$(sp)
+check 'steady 2 points/h at 79 with 3.8 h left: sprint' '[ "$(f 2)" = sprint ]'
+# two readings in the same epoch second (two sessions writing): the jump between them is still seen
+RX=$((NOW + 1800))
+printf '{"t":%s,"sd":{"p":90,"r":%s}}\n{"t":%s,"sd":{"p":94,"r":%s}}\n' "$((NOW - 300))" "$RX" "$((NOW - 300))" "$RX" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'same-second 90 then 94 with 30 minutes left: a burst, no sprint' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
@@ -232,6 +248,14 @@ check 'six hours left, cold cache: not a sprint' '[ "$(f 2)" = "-" ]'
 codex "$RN" 77 "$RO" >> "$T/codex2/sessions/x/rollout-1.jsonl"
 fo=$(cx forecast)
 check 'a sprint call on a cold cache left nothing behind: the next ordinary forecast sees the new 77' '[ "$(printf "%s" "$fo" | cut -d"|" -f2)" = 77 ]'
+# an EMPTY cached Codex result must not hide readings written since (the sprint re-reads once past the cache)
+rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"
+: > "$T/codex2/sessions/x/rollout-1.jsonl"
+cx forecast > /dev/null
+RQ=$((RN + 7200))
+{ codex "$((RN - 25 * 3600))" 60 "$RQ"; codex "$((RN - 5 * 3600))" 66 "$RQ"; codex "$((RN - 120))" 70 "$RQ"; } > "$T/codex2/sessions/x/rollout-1.jsonl"
+o=$(cx sprint)
+check 'codex: an empty cache from a moment ago, readings written since: sprint is found' '[ "$(f 2)" = sprint ]'
 
 # ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
 adv() { /bin/bash "$UR" sprint-advice; }

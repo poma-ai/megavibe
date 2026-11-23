@@ -32,7 +32,7 @@
 # the week-long 95 target allows. state is `sprint` when ALL hold, else `-` with the reason in the last field:
 #   outside      the weekly window has more than MEGAVIBE_SPRINT_HOURS (4) hours left, under 10 minutes left
 #                (nothing useful can start, and the per-hour figure would be absurd), or no live window
-#   no-forecast  no recent-pace forecast, or the newest reading is over 20 minutes old (Codex writes one only
+#   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
 #   5h-hot       the five-hour window is at 85 or more: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
@@ -41,12 +41,12 @@
 #                account; or the ordinary target is not below the sprint target
 #   off          MEGAVIBE_SPRINT=0
 # The sprint's pace is conservative: it also includes the steepest rise of 2 points or more from any reading in the
-# 90 minutes before the newest reading to that reading, rated (rise + 1) over its span floored at 15 minutes
+# 90 minutes before the newest reading to that reading, rated (rise + 1) over its span floored at 30 minutes
 # (whole-percent readings; a single one-point tick is noise; an earlier dip does not switch it off; basis suffix
 # `+burst`), and the forecast is projected from the newest reading to the reset, not from now.
 # Known gap: a Codex history whose uncached scan takes over 2 s (the advice's per-provider alarm) reports `unknown`
 # for Codex, and the hook then keeps the state it last told (fails closed: no new advice, no false advice).
-# With no usage data at all the line is `provider|-|||||||` (no reason either); a provider without a five-hour
+# With no usage data at all the line is `provider|-||||||||` (ten fields, empty); a provider without a five-hour
 # reading is not held back by the 5h-hot rule.
 # spare = sprint target - forecast; spend = points per hour from now, for the whole account, that would reach the
 # sprint target. Both are estimates. Inside the window the Codex reading is re-read past the two-minute cache, so
@@ -137,6 +137,12 @@ codex_row() {
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
+  # Sprint, Codex: an EMPTY cached read (written moments ago, before any reading existed) must not hide readings written
+  # since: look once more past the cache (the re-run is marked, so it cannot recurse).
+  if [ "$MODE" = sprint ] && [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ]; then
+    fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
+    case "$fresh" in codex\|*) printf '%s\n' "$fresh"; exit 0 ;; esac
+  fi
   case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; forecast) printf '%s||||||\n' "$PROVIDER" ;; sprint) printf '%s|-||||||||\n' "$PROVIDER" ;; sprint-advice) ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
   exit 0
 }
@@ -230,17 +236,22 @@ emit_forecast() {
                  # Conservative sprint pace. Whole-percent readings: a displayed rise of r points can be anywhere from r-1
                  # to r+1, so every rise of 2 points or more (a single one-point tick is noise: the statusline writes a row
                  # on every whole-percent change) from a reading in the 90 minutes before the NEWEST reading to
-                 # that reading is rated (r+1) over its span, the span floored at 15 minutes, whatever came before it (an earlier dip does not switch this
+                 # that reading is rated (r+1) over the time since the lower reading, floored at 30 minutes, whatever came before it (an earlier dip does not switch this
                  # off) and however long ago the newest reading was taken (the evidence ages with new readings only).
                  # the reading just before the newest counts whatever its age: after an idle gap the first new reading can carry a jump
                  # Equal repeat readings at the current level do not erase a burst: the rise is measured to the FIRST reading
                  # at that level (the trailing run of equal readings starts there) and counts while that reading is recent.
+                 # Order is by position, not by time: two rows in the same second (two sessions writing) keep their order.
+                 # The rise is rated over the time from the LOWER reading to NOW (floored at 30 minutes), so a steady climb
+                 # is not read as a burst by pairing a tick with the heartbeat row just after the previous one (a 30-minute floor: whole-percent readings make a shorter span meaningless).
                  (([range(0; $rows | length) | select($rows[.].p != $last.p)] | last) as $li
-                  | (if $li == null then $rows[0] else $rows[$li + 1] end) as $anc
+                  | (if $li == null then 0 else $li + 1 end) as $ai
+                  | $rows[$ai] as $anc
                   | if $anc.t < $now - 5400 then null
-                    else (([$rows[] | select(.t < $anc.t)] | last) as $before
-                      | [$rows[] | select((.t >= $anc.t - 5400 or .t == $before.t) and .t < $anc.t and ($anc.p - .p) >= 2)
-                        | (($anc.p - .p + 1) / (([($anc.t - .t), 900] | max) / 3600))] | max) end)
+                    else ([range(0; $ai) as $i | $rows[$i]
+                           | select(($anc.t - .t) <= 5400 or $i == $ai - 1)
+                           | select(($anc.p - .p) >= 2)
+                           | (($anc.p - .p + 1) / (([($now - .t), 1800] | max) / 3600))] | max) end)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"
@@ -457,7 +468,7 @@ if [ "$MODE" = sprint ]; then
     fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
     case "$fresh" in codex\|*) printf '%s\n' "$fresh"; exit 0 ;; esac   # a re-run that printed nothing falls through to this pass
   fi
-  OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=1200; [ "$STALE" -ge 1200 ] || FSTALE=$STALE
+  OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2100; [ "$STALE" -ge 2100 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v t="$STARGET" -v ot="$OT" 'BEGIN {
