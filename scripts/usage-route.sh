@@ -40,6 +40,10 @@
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
 #                account; or the ordinary target is not below the sprint target
 #   off          MEGAVIBE_SPRINT=0
+# The pace also includes a burst: the steepest rise of 2 points or more from any reading in the last 90 minutes to
+# the newest (counted one point short, an earlier dip does not switch it off), basis suffix `+burst`.
+# Known gap: a Codex history whose uncached scan takes over 2 s (the advice's per-provider alarm) reports `unknown`
+# for Codex, and the hook then keeps the state it last told (fails closed: no new advice, no false advice).
 # With no usage data at all the line is `provider|-|||||||` (no reason either); a provider without a five-hour
 # reading is not held back by the 5h-hot rule.
 # spare = sprint target - forecast; spend = points per hour from now, for the whole account, that would reach the
