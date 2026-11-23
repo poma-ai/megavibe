@@ -82,8 +82,9 @@ if [ -n "$SID" ]; then
   T0=$SECONDS
   megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" --resume "$SID" "Your session ended (a crash, a tmux restart or an exit) and was restarted: this is your previous conversation, resumed under the same session name. Check that your scheduled ticks and watches are back and set them up again if not, run 'megavibe node session check' to find repo sessions that vanished meanwhile, then tell the user in one line that you are back and what was interrupted."
   [ $((SECONDS - T0)) -ge "$MIN" ] && exit 0
-  mv -f "$SF" "$SF.failed" 2>/dev/null
-  nlog "pa-start: conversation $SID could not be resumed (it ended within $MIN s); starting a fresh PA, the id is kept in pa.session.failed"
+  # Appended, one id per line: a second failure must not erase the first id.
+  printf '%s\n' "$SID" >> "$SF.failed" 2>/dev/null; : > "$SF" 2>/dev/null
+  nlog "pa-start: conversation $SID could not be resumed (it ended within $MIN s); starting a fresh PA, the id is added to pa.session.failed"
 fi
 NEW=""
 if [ -d "$N" ]; then

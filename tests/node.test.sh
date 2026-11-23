@@ -347,7 +347,10 @@ check "pa-start resume: PA_MODEL still passed" 'grep -qx opus "$T/megavibe.args"
 bash "$N/pa-start.sh"
 SID2=$(cat "$N/pa.session" 2>/dev/null)
 check "pa-start: a resume that ends at once falls back to a fresh start with a new id" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 2 ] && sed -n 1p "$T/megavibe.calls" | grep -q -- "--resume $SID1" && sed -n 2p "$T/megavibe.calls" | grep -q -- "--session-id $SID2" && [[ "$SID2" =~ ^$UUID_RE$ ]] && [ "$SID2" != "$SID1" ]'
-check "pa-start: the id that could not be resumed is kept aside and logged" '[ "$(cat "$N/pa.session.failed" 2>/dev/null)" = "$SID1" ] && log | grep -q "could not be resumed"'
+bash "$N/pa-start.sh"
+check "pa-start: a second failed resume keeps both ids" '[ "$(sed -n 1p "$N/pa.session.failed")" = "$SID1" ] && [ "$(sed -n 2p "$N/pa.session.failed")" = "$SID2" ] && [ "$(wc -l < "$N/pa.session.failed" | tr -d " ")" = 2 ]'
+SID2=$(cat "$N/pa.session")
+check "pa-start: the id that could not be resumed is kept aside and logged" '[ "$(sed -n 1p "$N/pa.session.failed" 2>/dev/null)" = "$SID1" ] && log | grep -q "could not be resumed"'
 printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
 check "pa-start: an unusable pa.session is never passed on; fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && ! grep -q "pwned" "$T/megavibe.calls" && [ ! -e "$T/pwned" ] && grep -qx -- --session-id "$T/megavibe.args"'
 # Without a node folder (plain `megavibe assistant`, no node installed) nothing changes: no id, no file.

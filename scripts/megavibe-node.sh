@@ -130,7 +130,8 @@ cmd_install() {
     plutil -lint -s "$PLIST.tmp" || { rm -f "$PLIST.tmp"; die "the generated plist does not pass plutil -lint (a path with characters a plist cannot hold?); nothing installed"; }
     rm -f "$PLIST.tmp"
   fi
-  for a in node.sh pa-start.sh CLAUDE.md; do
+  # pa-start.sh first: a node run between the two copies must not meet a new node.sh with an old launcher.
+  for a in pa-start.sh node.sh CLAUDE.md; do
     if cmp -s "$TPL/$a" "$N/$a"; then say "  skip    $a (current)"
     else
       # The copy being replaced (a hand edit, an older version) is kept once as <file>.prev.
