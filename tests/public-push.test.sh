@@ -335,6 +335,9 @@ printf 'clean\n' > "$PC/template.md"
 asks "a template written earlier in the call is scanned from that text" "$PC" "printf 'AKIAABCDEFGHIJKLMNOP' > template.md && gh pr create -R acme/pub --title Config --template template.md" "[AWS key]"   # EXAMPLE: fixture
 mkdir -p "$T$USERS_DIR/jsmith"; printf 'clean template\n' > "$T$USERS_DIR/jsmith/tpl-ok.md"
 passes "the local path of a clean template is not published text" "$PC" "gh pr create -R acme/pub --title Clean --template $T$USERS_DIR/jsmith/tpl-ok.md"
+head -c 1100000 /dev/zero | tr '\0' 'a' > "$T/big.md"
+asks "pr create --body-file over 1 MiB asks instead of scanning part" "$PC" "gh pr create -R acme/pub --title Fix --body-file $T/big.md" "could not be read"
+asks "pr create --template over 1 MiB asks" "$PC" "gh pr create -R acme/pub --title Fix --template $T/big.md" "could not be read"
 printf 'clean template\n' > "$T/tpl-ok.md"
 passes "pr create --template with clean text passes" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl-ok.md"
 

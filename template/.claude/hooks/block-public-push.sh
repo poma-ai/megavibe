@@ -80,7 +80,7 @@ set -u
 # $(...)/backtick substitution; `git push` inside a command run by another tool;
 # gh pr create scans only the commits of HEAD that no remote holds (not another --head
 # branch; a commit that only a PRIVATE remote holds counts as published and is not scanned),
-# reads at most 1 MiB of a body or template file, and cannot read a body that comes from $(...); binary content; the conflict-resolution lines of a merge
+# asks about a body or template file over 1 MiB (it is not read), and cannot read a body that comes from $(...); binary content; the conflict-resolution lines of a merge
 # commit (git log -p shows no diff for merges); another gh operation that publishes
 # (gh gist create --public, gh release create); a denylist
 # written in a file the hook cannot read is silently empty (the reason says so only
@@ -841,7 +841,8 @@ def handle_pr(act):
         p = os.path.join(act["cwd"], expand(f.replace("$HOME", HOME).replace("${HOME}", HOME)))
         if "$" in p: unread.append(trunc(f, 30)); continue
         try:
-            if not stat.S_ISREG(os.stat(p).st_mode): unread.append(trunc(f, 30)); continue   # a FIFO or device could block the hook
+            _st = os.stat(p)
+            if not stat.S_ISREG(_st.st_mode) or _st.st_size > (1 << 20): unread.append(trunc(f, 30)); continue   # a FIFO or device could block the hook; a file over 1 MiB would be scanned only in part
             texts.append(open(p, encoding="utf-8", errors="replace").read(1 << 20))
         except OSError: unread.append(trunc(f, 30))
     if unread:
