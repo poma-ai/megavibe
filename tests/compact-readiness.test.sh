@@ -687,6 +687,10 @@ OUT=$(cat "$REPO/template/CLAUDE.md")
 has 'Advisory: run `.claude/hooks/compact-readiness.sh' 'short rule: advisory contract'
 has 'MEGAVIBE_READY_TASKS_MIN_EVENTS' 'short rule: event threshold'
 has '--mark' 'short rule: mark step'
+has 'only membership in that list establishes coverage' 'short rule: membership'
+has 'never certifies readiness or acknowledges pending rows' 'short rule: mark scope'
+has 'backtick-fenced examples are ignored' 'short rule: fenced examples'
+has 'MEGAVIBE_READY_ADVISORY_LIMIT' 'short rule: advisory limit'
 has 'README-compaction-readiness.md' 'short rule: pointer to full semantics'
 lacks '--staged-handled' 'short rule: acknowledgement instructions removed'
 
