@@ -17,7 +17,7 @@ PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 
 B="$T/bin"; mkdir -p "$B"
-printf '#!/bin/bash\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\n[ -z "${TMUX_NOSERVER:-}" ] || { echo "no server running on /nowhere" >&2; exit 1; }\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
+printf '#!/bin/bash\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\n[ -z "${TMUX_NOSERVER:-}" ] || { echo "no server running on /nowhere" >&2; exit 1; }\n[ "${TMUX_FAIL_VERB:-}" != "$1" ] || exit 1\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
 # megavibe stub: one line per call, then it stays alive like a session would.
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nexec sleep 600\n' "$T" > "$B/megavibe"
 printf '#!/bin/bash\necho testmac\n' > "$B/scutil"
@@ -126,6 +126,19 @@ ctl session resume beta; check "resume of a done session: refused" '[ "$RC" = 1 
 ctl session start beta --dir "$D" --task "$TASK"; check "a done name can be started again" '[ "$RC" = 0 ] && [ "$(rec beta state)" = running ] && [ -z "$(rec beta ended)" ]'
 ctl session drop beta; check "drop: state dropped, no longer checked" '[ "$(rec beta state)" = dropped ]'
 ctl session done nosuch; check "done for an unknown name: refused" '[ "$RC" = 1 ]'
+
+# A start that got as far as its record but not its window is not forgotten.
+TMUX_FAIL_VERB=new-window ctl session start eta --dir "$D" --task "$TASK"
+check "start whose window cannot be opened: exit 1, record left as starting ($o)" '[ "$RC" = 1 ] && [ "$(rec eta state)" = starting ]'
+ctl session check; check "check lists the unfinished start with its task" '[ "$RC" = 1 ] && [[ "$o" == *eta* ]]'
+ctl session start eta --dir "$D" --task "$TASK"; check "a second start of it: refused, points to resume or drop" '[ "$RC" = 1 ] && [[ "$o" == *"resume eta"* ]]'
+ctl session resume eta
+check "resume of an unfinished start: a new conversation (there is none to resume), now running" '[ "$RC" = 0 ] && called "^--name eta --session-id $(rec eta sid) A previous session" && [ "$(rec eta state)" = running ]'
+TMUX_FAIL_VERB=set-option ctl session start theta --dir "$D" --task "$TASK"
+check "start whose window cannot be stamped: exit 1, but recorded with its process ($o)" '[ "$RC" = 1 ] && [ "$(rec theta state)" = running ] && [ -n "$(rec theta pid)" ]'
+ctl session check; check "  check shows it as UNSEEN, not absent" '[[ "$o" == *UNSEEN*theta* ]]'
+ctl session start theta --dir "$D" --task "$TASK"; check "  and it cannot be started twice" '[ "$RC" = 1 ]'
+kill "$(rec theta pid)"; ctl session drop theta; kill "$(pane_of eta)"; gone eta; ctl session drop eta
 
 # ── add: a session that already runs in a window ──────────────────────
 tmux new-window -d -t main: -n manual -c "$D" sleep 600
