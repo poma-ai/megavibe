@@ -106,7 +106,7 @@ A subagent's prompt cache lives 5 minutes by default (the main thread's usually
 single tool call that blocks past that — `sleep`, an `until grep …` poll, a long
 test run in the foreground — makes the next request re-write the whole context
 as a cache write (1.25x input price) instead of a read (0.1x). Measured once (2026-10-14, one project): long foreground
-waits made cache re-writes about 63% of a day's price-weighted tokens; the weights are API list-price ratios, not plan metering, and `delegation.md` ("Cache heartbeat") shows the raw-token count can point the other way. Numbers: https://github.com/poma-ai/megavibe/blob/main/README-delegation-measurements.md
+waits made cache re-writes plus cache reads about 63% of a day's price-weighted tokens; the weights are API list-price ratios, not plan metering, and `delegation.md` ("Cache heartbeat") shows the raw-token count can point the other way. Numbers: https://github.com/poma-ai/megavibe/blob/main/README-delegation-measurements.md
 
 - **Brief every spin-out with the wait rule** (it is in the template above) and,
   for a job that needs waiting on, paste the recipe below with a unique NAME.
