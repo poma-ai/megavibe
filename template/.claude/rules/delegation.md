@@ -108,7 +108,7 @@ Formalizing what the measurements (recorded in **`README-delegation-measurements
 | Role | Model | Effort | Note |
 |---|---|---|---|
 | Main/captain session | Opus for most work; Fable for one deep, continuous thread; Sonnet for routine work | session default | Fable is 2.5x Opus per token: avoid using it to fan out across many project contexts at once (each pays its own fresh floor); each fan-out step runs the cheapest model adequate for its judgment, not automatically the cheapest and not the priciest. The cost audit behind this is a lead, not settled fact |
-| `reviewer` subagent | Sonnet | **high** | under-thinking here costs missed blockers; review quality not A/B'd: record and revisit if a same-diff medium vs high comparison is ever run |
+| `reviewer` subagent | Sonnet | **high** | under-thinking here costs missed blockers; review quality not A/B'd: record and revisit if a same-diff medium vs high comparison is ever run, with findings diffed against a known-blocker set |
 | `summarizer` subagent | Sonnet | session default | Haiku matched it once (n=1, promising); not switched until a second confirming run |
 | Explore / Plan / general-purpose, judgment-heavy | inherit parent | — | architecture tradeoffs, ambiguous debugging: state why when inheriting |
 | Explore / Plan / general-purpose, moderate research/search | **Sonnet** | — | 76% of subagent calls had silently ridden an Opus/Fable parent (fixed 2026-10-04) |

@@ -672,7 +672,7 @@ has '[report truncated;' 'large helper failure bounded'
 eq "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext | length < 7000')" true 'tier payload bounded'
 
 echo "== Documented advisory protocol"
-for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
+for doc in "$REPO/README.md" "$REPO/README-compaction-readiness.md"; do
   OUT=$(cat "$doc")
   has 'This check is advisory' 'advisory contract'
   has 'covered-through <newest filename>' 'coverage format'
@@ -681,6 +681,13 @@ for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
   has 'It never certifies readiness or acknowledges pending rows' 'mark scope'
   lacks '--staged-handled' 'acknowledgement instructions removed'
 done
+# template/CLAUDE.md keeps the short rule and points at README-compaction-readiness.md for the full semantics
+OUT=$(cat "$REPO/template/CLAUDE.md")
+has 'Advisory: run `.claude/hooks/compact-readiness.sh' 'short rule: advisory contract'
+has 'MEGAVIBE_READY_TASKS_MIN_EVENTS' 'short rule: event threshold'
+has '--mark' 'short rule: mark step'
+has 'README-compaction-readiness.md' 'short rule: pointer to full semantics'
+lacks '--staged-handled' 'short rule: acknowledgement instructions removed'
 
 echo "compact-readiness tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
