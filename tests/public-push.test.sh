@@ -309,7 +309,8 @@ asks "a quoted # argument stays an argument" "$CM" "git push origin 'main' # c" 
 run "$CM" "git push"; lacks "a long file name is redacted before it is cut" "AKIAABCDE"
 case "$WHY" in *"AWS key"*) ok ;; *) bad "secret in a file name is reported" ;; esac
 ( cd "$CM" && git reset -q --hard HEAD~1 )
-passes "clean PR with a home path earlier in the command" "$PR" "cd /Users/jsmith/project && gh pr create -R acme/pub --title Clean --body Done"   # EXAMPLE: fixture
+HP="$T$USERS_DIR/jsmith/project"; mkrepo "$HP" https://github.com/acme/pub.git   # a real repository whose path holds a home-path-looking part
+passes "clean PR with a home path earlier in the command" "$PR" "cd $HP && gh pr create -R acme/pub --title Clean --body Done"   # EXAMPLE: fixture
 
 # 10g. gh pr create can push the current branch itself: unpushed commits are scanned; --template is read.
 PU=$T/pu; mkrepo "$PU" https://github.com/acme/pub.git
@@ -333,7 +334,9 @@ asks "pr create after git commit (staged secret) in the same call" "$PC" "git co
 asks "pr create after a remote change in the same call" "$PC" "git remote set-url origin https://github.com/acme/pub.git && gh pr create -R acme/pub --title Fix --body Done" "separate call"
 PV=$T/pv; mkrepo "$PV" git@github.com:acme/priv.git; commit "$PV" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 asks "pr create after a remote retarget from a private origin asks" "$PV" "git remote set-url origin https://github.com/acme/pub.git && gh pr create --title Fix --body Done" "separate call"
-printf 'clean\n' > "$PC/template.md"
+printf 'clean\n' > "$PC/template.md"; printf 'AKIAABCDEFGHIJKLMNOP\n' > "$PC/secret.md"   # EXAMPLE: fixture
+asks "a copy over the body file earlier in the call asks to be run separately" "$PC" "cp secret.md template.md && gh pr create -R acme/pub --title Fix --body-file template.md" "separate call"
+asks "a copy over the template earlier in the call asks to be run separately" "$PC" "cp secret.md template.md && gh pr create -R acme/pub --title Fix --template template.md" "separate call"
 asks "a template written earlier in the call is scanned from that text" "$PC" "printf 'AKIAABCDEFGHIJKLMNOP' > template.md && gh pr create -R acme/pub --title Config --template template.md" "[AWS key]"   # EXAMPLE: fixture
 mkdir -p "$T$USERS_DIR/jsmith"; printf 'clean template\n' > "$T$USERS_DIR/jsmith/tpl-ok.md"
 passes "the local path of a clean template is not published text" "$PC" "gh pr create -R acme/pub --title Clean --template $T$USERS_DIR/jsmith/tpl-ok.md"

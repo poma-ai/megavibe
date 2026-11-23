@@ -833,10 +833,12 @@ def handle_pr(act):
     _whole = re.sub(r"\s+(?=--?[A-Za-z])", "\n", re.sub(r"(?:--body-file|-F|--template|-T)[ =]+\S+", " ", _cut(TEXT[_m.start():]))) if _m else ""   # one chunk per flag, so a word in --title cannot excuse --body
     texts = [_whole.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
     unread = []
+    _early = False
     _bf = [x for x in flag_value(argv, ["--body-file", "-F", "--template", "-T"]) if x != "-"]   # a template written earlier in the call is read too
     _cut = CMD.find("pr create") if "pr create" in CMD else CMD.find("pr  create")
     if _m and _bf and _cut > 0 and any(os.path.basename(x) in CMD[:_cut] for x in _bf):
         texts.append(TEXT[:_m.start()].replace(" ; ", "\n"))   # the body file is named earlier in this command, so it may be written there: scan that text too
+        _early = True   # ... but what an earlier command (cp, sed, tee, a script) puts in it is unknown: ask below
     _unres = [t for t in flag_value(argv, ["--title", "-t", "--body", "-b"]) if re.search(r"\$\{?[A-Za-z_]", t)]
     if _unres:
         return ["%s is PUBLIC and the pull request title/body contains an unexpanded variable, so its text cannot be scanned." % (got or "the base repository")]
@@ -857,6 +859,8 @@ def handle_pr(act):
     for t in texts:
         for ln in t.split("\n"): sc.line("pull request text", ln, True)
     out = []
+    if _early:
+        out.append("%s is PUBLIC and a pull request body or template file is named earlier in this command, so what it holds when the pull request is created is not known. Write the file in a separate call." % (got or "the base repository"))
     if sc.total:
         out += report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
     # gh pr create pushes the current branch itself when no remote holds it yet, and the push is not a `git push` this hook sees:
