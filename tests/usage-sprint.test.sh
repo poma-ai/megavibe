@@ -1,0 +1,142 @@
+#!/bin/bash
+# /bin/bash tests/usage-sprint.test.sh — fixtures only: scratch HOME, synthetic usage histories, no real quota files.
+# Covers `usage-route.sh sprint` and `sprint-advice` (the end-of-window exception to the 95% target) and that the
+# existing modes are untouched by it.
+set -u
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+T=$(mktemp -d "${TMPDIR:-/tmp}/usage-sprint.XXXXXX") || exit 2
+trap 'rm -rf "$T"' EXIT
+PASS=0; FAIL=0
+check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
+NOW=1793109600
+mkdir -p "$T/home" "$T/mv/usage" "$T/codex/sessions/x"
+export HOME="$T/home" MEGAVIBE_HOME="$T/mv" MEGAVIBE_NOW=$NOW
+export MEGAVIBE_USAGE_FILE="$T/mv/usage/claude.jsonl" MEGAVIBE_USAGE_STATE="$T/mv/usage/state.json"
+export MEGAVIBE_CODEX_HOME="$T/codex" MEGAVIBE_CODEX_STATE="$T/mv/usage/codex-state.json"
+export MEGAVIBE_USER_SETTINGS="$T/settings.json" MEGAVIBE_ROUTER_PROVIDER=claude
+unset MEGAVIBE_USAGE_TARGET MEGAVIBE_SPRINT MEGAVIBE_SPRINT_TARGET MEGAVIBE_SPRINT_HOURS
+UR="$REPO/scripts/usage-route.sh"
+row() { printf '{"t":%s,"sd":{"p":%s,"r":%s}}\n' "$((NOW - $1 * 60))" "$2" "$3"; }          # MINUTES_AGO USED RESET
+rowfh() { printf '{"t":%s,"sd":{"p":%s,"r":%s},"fh":{"p":%s,"r":%s}}\n' "$((NOW - $1 * 60))" "$2" "$3" "$4" "$((NOW + 3600))"; }
+sp() { /bin/bash "$UR" sprint; }
+f() { printf '%s\n' "$o" | cut -d'|' -f"$1"; }   # 1 provider 2 state 3 hours_left 4 used 5 forecast 6 spare 7 spend 8 basis 9 reason
+near() { awk -v a="$1" -v b="$2" -v e="${3:-0.15}" 'BEGIN {exit !(a != "" && a-b <= e && b-a <= e)}'; }
+nf() { printf '%s' "$o" | tr -cd '|' | wc -c | tr -d ' '; }
+R=$((NOW + 9000))   # 2.5 h left in the weekly window
+
+# the case the rule was written for: 2.5 h left, 90 used, slow pace -> about 8 points spare below 99
+{ row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'sprint: 2.5 h left, forecast ~90.6 -> state sprint, nine fields' '[ "$(f 1)" = claude ] && [ "$(f 2)" = sprint ] && [ "$(nf)" = 8 ] && [ "$(f 9)" = ok ]'
+check 'sprint: hours left 2.5, used 90' 'near "$(f 3)" 2.5 0.05 && [ "$(f 4)" = 90 ]'
+check 'sprint: spare is 99 minus the forecast, spend is (99-90)/2.5 = 3.6 per hour' 'near "$(f 6)" "$(awk -v x="$(f 5)" "BEGIN{print 99-x}")" 0.11 && near "$(f 7)" 3.6 0.01 && awk -v s="$(f 6)" "BEGIN{exit !(s > 7 && s < 9)}"'
+check 'sprint mode writes no routing state' '[ ! -e "$MEGAVIBE_USAGE_STATE" ]'
+fo=$(/bin/bash "$UR" forecast)
+check 'forecast mode still measures against 95 (spare about 4.4), untouched by the sprint target' 'near "$(printf "%s" "$fo" | cut -d"|" -f5)" "$(awk -v x="$(printf "%s" "$fo" | cut -d"|" -f4)" "BEGIN{print 95-x}")" 0.11'
+
+# more than 4 hours left: no sprint, whatever the room
+R6=$((NOW + 6 * 3600))
+{ row 1500 60 $R6; row 360 61 $R6; row 5 62 $R6; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'six hours left: not a sprint (reason outside), still nine fields' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ] && [ "$(nf)" = 8 ] && [ -z "$(f 6)" ]'
+o=$(MEGAVIBE_SPRINT_HOURS=8 sp)
+check 'MEGAVIBE_SPRINT_HOURS=8 widens the window' '[ "$(f 2)" = sprint ]'
+o=$(MEGAVIBE_SPRINT_HOURS=abc sp)
+check 'a junk hours value falls back to 4' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ]'
+
+# exactly at the edge: 4 h left counts
+R4=$((NOW + 4 * 3600))
+{ row 1500 60 $R4; row 360 61 $R4; row 5 62 $R4; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'exactly four hours left: sprint' '[ "$(f 2)" = sprint ]'
+
+# no room: the forecast already reaches 99 (fast pace), or used is there
+{ row 1500 60 $R; row 360 80 $R; row 120 92 $R; row 5 96 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'fast pace, forecast over 99: no sprint (reason no-room)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+{ row 1500 97 $R; row 360 98 $R; row 5 99 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'used already 99: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+{ row 1500 97 $R; row 360 97 $R; row 5 98 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'less than one point of room (whole-percent readings): no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+
+# a reading older than an hour is no basis for spending the last points (Claude counts as stale only after 6 h)
+{ row 1500 84 $R; row 360 89 $R; row 90 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'newest reading 90 minutes old: no sprint (reason no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+fo=$(/bin/bash "$UR" forecast)
+check 'the same history still has an ordinary forecast (the one-hour rule is the sprint'"'"'s own)' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
+
+# the five-hour window is hot: top-tier work would only hit that limit
+{ row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour window at 88: no sprint (reason 5h-hot)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+{ row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 40; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour window at 40: sprint' '[ "$(f 2)" = sprint ]'
+
+# a drop inside the window: trend unreliable, the week average stands in and is still a forecast
+{ row 1500 80 $R; row 720 70 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'drop in the window: basis week, decided on it' '[ "$(f 8)" = week ] && [ "$(f 2)" = sprint ]'
+
+# knobs
+{ row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(MEGAVIBE_SPRINT=0 sp)
+check 'MEGAVIBE_SPRINT=0: off' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = off ] && [ "$(nf)" = 8 ]'
+o=$(MEGAVIBE_SPRINT_TARGET=97 sp)
+check 'MEGAVIBE_SPRINT_TARGET=97: spare and spend measured against 97' 'near "$(f 7)" 2.8 0.01 && [ "$(f 2)" = sprint ]'
+o=$(MEGAVIBE_SPRINT_TARGET=150 sp)
+check 'a sprint target over 100 is refused (falls back to 99): the backstop stays at 100' 'near "$(f 7)" 3.6 0.01'
+o=$(MEGAVIBE_SPRINT_TARGET=100 sp)
+check 'a sprint target of 100 is refused too (99): the sprint never aims at the limit itself' 'near "$(f 7)" 3.6 0.01'
+o=$(MEGAVIBE_USAGE_TARGET=99 sp)
+check 'ordinary target already at the sprint target: nothing to add (reason no-room)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+
+# no evidence
+rm -f "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'no history: provider, dash, empty fields, exit 0' '[ "$o" = "claude|-|||||||" ]'
+: > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'empty history: same shape' '[ "$o" = "claude|-|||||||" ]'
+row 5 90 $((NOW - 60)) > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'window already reset: no sprint' '[ "$(f 2)" = "-" ]'
+
+# Codex: same rule on its own records; a reading from hours ago (stale only after 24 h there) is no basis
+ts() { jq -nr --argjson t "$1" '$t | todateiso8601'; }
+codex() { printf '{"timestamp":"%s","payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":%s,"window_minutes":10080,"resets_at":%s}}}}\n' "$(ts "$1")" "$2" "$3"; }
+{ codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 6 * 3600))" 55 "$R"; codex "$((NOW - 600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex sp)
+check 'codex, fresh reading, 2.5 h left at 56: sprint with about 42 points spare' '[ "$(f 1)" = codex ] && [ "$(f 2)" = sprint ] && awk -v s="$(f 6)" "BEGIN{exit !(s > 40 && s < 43.1)}"'
+{ codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 5 * 3600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex sp)
+check 'codex, newest reading five hours old: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+
+# ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
+adv() { /bin/bash "$UR" sprint-advice; }
+{ row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(adv)
+check 'advice: one line, for Claude only (the Codex reading is old)' '[ "$(printf "%s\n" "$o" | grep -c .)" = 1 ] && [[ "$o" == "usage sprint: Claude "* ]]'
+check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.6 points per hour"* ]] && [[ "$o" == *"95%"* ]]'
+check 'advice says what to do and what does not move' '[[ "$o" == *"top model tier"* ]] && [[ "$o" == *"hardest open work"* ]] && [[ "$o" == *"100% backstop"* ]] && [[ "$o" == *"review floor"* ]]'
+{ codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 6 * 3600))" 55 "$R"; codex "$((NOW - 600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(adv)
+check 'both sprinting: two lines, Claude then Codex' '[ "$(printf "%s\n" "$o" | grep -c .)" = 2 ] && [[ "$(printf "%s\n" "$o" | sed -n 2p)" == "usage sprint: Codex "* ]]'
+o=$(MEGAVIBE_SPRINT=0 adv)
+check 'advice with MEGAVIBE_SPRINT=0: silent' '[ -z "$o" ]'
+{ row 1500 60 $R6; row 360 61 $R6; row 5 62 $R6; } > "$MEGAVIBE_USAGE_FILE"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+o=$(adv); rc=$?
+check 'advice outside the window: silent, exit 0' '[ -z "$o" ] && [ "$rc" = 0 ]'
+check 'sprint-advice writes no routing state either' '[ ! -e "$MEGAVIBE_USAGE_STATE" ] && [ ! -e "$MEGAVIBE_CODEX_STATE" ]'
+
+# ---- the existing modes are unchanged inside a sprint window ------------------------------------------------------
+{ row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+check 'band is still over at 90 used (the launch model choice does not sprint)' '[ "$(/bin/bash "$UR" band --peek)" = over ]'
+o=$(/bin/bash "$UR" claude --peek)
+check 'launch line unchanged: over|sonnet|medium' '[[ "$o" == "over|sonnet|medium|"* ]]'
+o=$(/bin/bash "$UR" advisory --peek)
+check 'the band advisory is the same sentence as before, no sprint text in it' '[[ "$o" == "usage router: Claude "*"reviewer subagent stays as pinned." ]] && [[ "$o" != *sprint* ]]'
+
+printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
+[ "$FAIL" = 0 ]

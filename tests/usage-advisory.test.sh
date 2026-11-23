@@ -18,6 +18,9 @@ case "$1" in
   band) [ -n "${STUB_BAND_FAIL:-}" ] && exit 3; echo "${STUB_BAND:-normal}" ;;
   balance) echo "${STUB_BALANCE:--|}" ;;
   advisory) echo "${STUB_ADVISORY:-}" ;;
+  sprint-advice)
+    [ -n "${STUB_SPRINT_SLEEP:-}" ] && { { sleep "$STUB_SPRINT_SLEEP" & }; sleep "$STUB_SPRINT_SLEEP"; }
+    [ -n "${STUB_SPRINT:-}" ] && printf '%s\n' "$STUB_SPRINT" ;;
   forecast) if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = codex ]; then echo "${STUB_FC_CODEX:-}"; else echo "${STUB_FC_CLAUDE:-}"; fi ;;
   pace)
     if [ -n "${STUB_SLEEP:-}" ]; then
@@ -28,7 +31,7 @@ case "$1" in
 esac
 STUB
 FLAG="$P/.agent/LOGS/.usage-band.s1"
-reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
+reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_SPRINT STUB_SPRINT_SLEEP STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
 # pace line: provider|used|elapsed|linear|recent_rate|recent_proj|remaining
 claude_pace() { export STUB_PACE_CLAUDE="claude|$1|$2|$3|$4|$5|3"; }
 codex_pace() { export STUB_PACE_CODEX="codex|$1|$2|$3|$4|$5|3"; }
@@ -129,5 +132,46 @@ if [ -n "$OLD_HOOK" ] && [ -f "$OLD_HOOK" ]; then
     done
   done
 fi
+
+# ---- end-of-window sprint advice (usage-route.sh sprint-advice) ---------------------------------------------------
+SC='usage sprint: Claude weekly window resets in 2.5 h. Top model tier on the hardest open work.'
+SX='usage sprint: Codex weekly window resets in 1.0 h. Top model tier on the hardest open work.'
+reset; claude_pace 90 98 91 '' ''; codex_pace 60 30 75 '' ''
+ev PreToolUse | run | ctx >/dev/null; k0=$(cat "$FLAG")
+check 'no sprint: the flag keeps its four fields (nothing changes for a session that never sprints)' '[ "$k0" = "normal:-:9:7" ]'
+export STUB_SPRINT="$SC"
+o=$(ev PreToolUse | run | ctx)
+check 'sprint starts mid-session: the advice is spoken, with the projections line' '[[ "$o" == *"$SC"* ]] && [[ "$o" == *"projections claude 91"* ]]'
+check 'sprint state is in the flag' '[ "$(cat "$FLAG")" = "normal:-:9:7:sc" ]'
+o=$(ev PreToolUse | run)
+check 'same sprint state: silent' '[ -z "$o" ]'
+claude_pace 90 98 81 '' ''
+o=$(ev PreToolUse | run | ctx)
+check 'bucket move inside a sprint: projections line only' '[ "$o" = "usage router: projections claude 81 (linear), codex 75 (linear)" ]'
+o=$(ev SessionStart | run | ctx)
+check 'SessionStart restates the sprint advice' '[[ "$o" == *"$SC"* ]]'
+export STUB_SPRINT="$SC
+$SX"
+o=$(ev PreToolUse | run | ctx)
+check 'second subscription joins: both sentences' '[[ "$o" == *"$SC"* ]] && [[ "$o" == *"$SX"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:scx" ]'
+unset STUB_SPRINT
+o=$(ev PreToolUse | run | ctx)
+check 'sprint over (reset or target reached): withdrawn once, in words' '[[ "$o" == *"end-of-window sprint advice no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7" ]'
+o=$(ev PreToolUse | run)
+check 'after the withdrawal: silent' '[ -z "$o" ]'
+reset; export STUB_BAND=over STUB_ADVISORY='over advice.' STUB_SPRINT="$SC"; claude_pace 90 98 91 '' ''
+o=$(ev SessionStart | run | ctx)
+check 'over band and sprint together: band advice first, then the sprint sentence' '[[ "$o" == "over advice. $SC"* ]]'
+reset; export STUB_SPRINT='something else entirely'; claude_pace 90 98 91 '' ''
+o=$(ev SessionStart | run | ctx)
+check 'output that is not a sprint sentence is never relayed' '[[ "$o" != *"something else"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u" ]'
+reset; export STUB_SPRINT="$SC" STUB_SPRINT_SLEEP=30; claude_pace 90 98 91 '' ''
+s=$SECONDS; o=$(ev SessionStart | run | ctx); e=$((SECONDS - s))
+check "slow sprint call with a child holding stdout: under 10 s ($e s), no sprint text" '[ "$e" -lt 10 ] && [[ "$o" != *"usage sprint"* ]]'
+reset; export STUB_SPRINT="$SC" STUB_BAND_FAIL=1
+o=$(ev SessionStart | run)
+check 'failed band call: silent, sprint included' '[ -z "$o" ]'
+unset STUB_BAND_FAIL
+check 'no temp files left behind (sprint)' '[ -z "$(ls "$TMPDIR" | grep usage-)" ]'
 printf 'usage-advisory: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

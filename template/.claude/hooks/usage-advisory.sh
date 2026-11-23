@@ -23,7 +23,8 @@ FLAG=".agent/LOGS/.usage-band.$SID"
 PREVKEY=""; [ -f "$FLAG" ] && PREVKEY=$(cat "$FLAG" 2>/dev/null)   # regular files only: a FIFO here must not hang a hook
 case "$PREVKEY" in *:*) ;; ?*) PREVKEY="$PREVKEY:-" ;; esac     # a flag from before the balance existed is a bare band
 # Flag = band:prefer:claude-bucket:codex-bucket. A flag with fewer fields is a legacy one and counts as changed.
-IFS=: read -r PB PP _ <<<"$PREVKEY"
+# A fifth field (s + c and/or x) is there only while a subscription is in its end-of-window sprint.
+IFS=: read -r PB PP _ _ PS _ <<<"$PREVKEY"
 # Which subscription should optional work lean on? "prefer|sentence", prefer = claude | codex | -
 # (the last preference goes in, so the rule can hold it until the gap really closes)
 BAL=$(MEGAVIBE_BALANCE_PREV="$PP" bash "$UR" balance 2>/dev/null); PREF="${BAL%%|*}"; BALMSG="${BAL#*|}"
@@ -68,6 +69,20 @@ if [ -n "$BAND" ]; then
   PROJMSG="usage router: projections claude $(fmt "$CP"), codex $(fmt "$XP")"
   { [ "$CP" != unknown ] || [ "$XP" != unknown ]; } && PROJKNOWN=1
 fi
+# End-of-window sprint (usage-route.sh sprint-advice): one sentence per subscription whose weekly window is in
+# its last hours with room below the sprint target; nothing otherwise, and then the flag keeps its four fields.
+# Bounded and written to a file like the pace calls. Only lines that are sprint sentences are relayed.
+SPR=""; SK=""
+if [ -n "$BAND" ] && command -v perl &>/dev/null; then
+  sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null) && {
+    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; : ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
+    SPR=$(grep -E '^usage sprint: (Claude|Codex) ' "$sf" 2>/dev/null | head -n 2 | cut -c1-900)
+    rm -f "$sf"
+  }
+  case "$SPR" in *"usage sprint: Claude "*) SK="c" ;; esac
+  case "$SPR" in *"usage sprint: Codex "*) SK="${SK}x" ;; esac
+  [ -z "$SK" ] || { SK="s$SK"; KEY="$KEY:$SK"; SPR=$(printf '%s' "$SPR" | tr '\n' ' '); SPR="${SPR% }"; }
+fi
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal state: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the state changed.
 if [ "$EVENT" != "SessionStart" ] && [ "$KEY" = "$PREVKEY" ]; then exit 0; fi
@@ -75,18 +90,20 @@ mkdir -p .agent/LOGS 2>/dev/null
 { [ ! -e "$FLAG" ] || [ -f "$FLAG" ]; } && printf '%s' "$KEY" > "$FLAG" 2>/dev/null
 # Only a projection bucket moved (band and preference as before): the advice is unchanged, so
 # say just the new numbers.
-if [ "$EVENT" != "SessionStart" ] && [ "$BAND:$PREF" = "$PB:${PP%%:*}" ] && [ -n "$PROJMSG" ]; then
+if [ "$EVENT" != "SessionStart" ] && [ "$BAND:$PREF" = "$PB:${PP%%:*}" ] && [ "$SK" = "${PS:-}" ] && [ -n "$PROJMSG" ]; then
   jq -n --arg ev "$EVENT" --arg ctx "$PROJMSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null
   exit 0
 fi
 MSG=""
 case "$BAND" in over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;; esac
 [ -n "$BALMSG" ] && MSG="${MSG:+$MSG }$BALMSG"
+[ -n "$SPR" ] && MSG="${MSG:+$MSG }$SPR"
 # Retract what no longer holds, band and balance independently: a band that just ended (or a balance
 # preference that is gone) must not linger in the session. A flag from before the balance existed is a bare band.
 RETRACT=""
 case "$PB" in over|under) [ "$BAND" = normal ] && RETRACT="Claude usage is back in the normal range; the earlier subagent model advice no longer applies." ;; esac
 case "$PP" in claude|codex) [ "$PREF" = "-" ] && RETRACT="${RETRACT:+$RETRACT }The earlier balance advice (which subscription optional work should lean on) no longer applies." ;; esac
+case "${PS:-}" in s?*) [ -z "$SK" ] && RETRACT="${RETRACT:+$RETRACT }The earlier end-of-window sprint advice no longer applies: the usual usage target and model advice are back." ;; esac
 [ -n "$RETRACT" ] && MSG="usage router: $RETRACT${MSG:+ $MSG}"
 # The projections line rides along whenever the hook speaks, and alone when at least one is known.
 if [ -n "$PROJMSG" ] && { [ -n "$MSG" ] || [ "$PROJKNOWN" = 1 ]; }; then MSG="${MSG:+$MSG }$PROJMSG"; fi
