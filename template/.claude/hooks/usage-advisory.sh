@@ -71,12 +71,13 @@ if [ -n "$BAND" ]; then
 fi
 # End-of-window sprint (usage-route.sh sprint-advice): one sentence per subscription whose weekly window is in
 # its last hours with room below the sprint target; nothing otherwise, and then the flag keeps its four fields.
-# Bounded and written to a file like the pace calls. Only lines that are sprint sentences are relayed.
+# Bounded (2 s) and written to a file like the pace calls, and skipped when the calls above already took 5 s, so
+# the whole hook stays inside its 10 s deadline. Only lines that are sprint sentences are relayed.
 SPR=""; SK=""
 if [ -n "$BAND" ]; then
   src=1
-  if command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
-    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
+  if [ "$SECONDS" -lt 5 ] && command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
+    ( perl -e 'alarm 2; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
     src=$?
     # whole sentences only: a line cut off by the deadline, or longer than any real one, lacks the closing words
     SPR=$(cut -c1-1200 "$sf" 2>/dev/null | grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' | head -n 2)

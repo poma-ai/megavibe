@@ -60,6 +60,16 @@ check 'used already 99: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]
 { row 1500 97 $R; row 360 97 $R; row 5 98 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'less than one point of room (whole-percent readings): no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+# margin: a whole-percent reading of 98 can be 98.9, and other sessions are spending too: two points of room are the minimum
+{ row 1500 98 $R; row 360 98 $R; row 5 98 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'quiet at 98, exactly one point to 99: no sprint (two points are the minimum)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+{ row 1500 97 $R; row 360 97 $R; row 5 97 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'quiet at 97, two points to 99: sprint' '[ "$(f 2)" = sprint ] && near "$(f 6)" 2 0.05'
+{ row 1500 96 $R; row 360 96 $R; row 5 97 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'at 97 with a pace that leaves 1.6 points: no sprint (no rounding up to the minimum)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
 
 # a reading older than an hour is no basis for spending the last points (Claude counts as stale only after 6 h)
 { row 1500 84 $R; row 360 89 $R; row 90 90 $R; } > "$MEGAVIBE_USAGE_FILE"
@@ -67,6 +77,30 @@ o=$(sp)
 check 'newest reading 90 minutes old: no sprint (reason no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
 fo=$(/bin/bash "$UR" forecast)
 check 'the same history still has an ordinary forecast (the one-hour rule is the sprint'"'"'s own)' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
+
+{ row 1500 84 $R; row 360 89 $R; row 50 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'newest reading 50 minutes old: no sprint (45 minutes is the limit)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+{ row 1500 84 $R; row 360 89 $R; row 40 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'newest reading 40 minutes old: sprint' '[ "$(f 2)" = sprint ]'
+{ row 1500 84 $R; row 360 89 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+fo=$(FSTALE=60 /bin/bash "$UR" forecast)
+check 'an FSTALE in the environment does not reach the ordinary forecast' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
+
+# a burst the 6 h / 24 h paces cannot see yet (readings under 2 h apart): 20 points in 95 minutes is not room to spend
+{ row 1200 60 $R; row 100 70 $R; row 60 80 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'burst in the last 90 minutes: the short pace counts, no sprint (reason no-room, basis says burst)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
+fo=$(/bin/bash "$UR" forecast)
+check 'the ordinary forecast of the same history is untouched by the burst rule (basis 24h)' '[ "$(printf "%s" "$fo" | cut -d"|" -f7)" = 24h ]'
+{ row 1200 84 $R; row 360 88 $R; row 80 89 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'one point in the last 90 minutes is not a burst (whole-percent noise): sprint on the blended pace' '[ "$(f 2)" = sprint ] && [[ "$(f 8)" != *burst* ]]'
+# the last minutes: nothing useful can start, and the per-hour figure would be absurd
+RL=$((NOW + 300)); { row 1500 84 $RL; row 360 89 $RL; row 5 90 $RL; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five minutes left: not a sprint (reason outside)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ]'
 
 # the five-hour window is hot: top-tier work would only hit that limit
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"
@@ -113,12 +147,22 @@ check 'codex, fresh reading, 2.5 h left at 56: sprint with about 42 points spare
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex sp)
 check 'codex, newest reading five hours old: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
 
+# the two-minute Codex cache must not hide a fresh reading from the sprint decision (real clock: the cache is off under MEGAVIBE_NOW)
+RN=$(date +%s); RR=$((RN + 7200)); mkdir -p "$T/codex2/sessions/x"
+{ codex "$((RN - 25 * 3600))" 80 "$RR"; codex "$((RN - 5 * 3600))" 89 "$RR"; codex "$((RN - 120))" 90 "$RR"; } > "$T/codex2/sessions/x/rollout-1.jsonl"
+cx() { env -u MEGAVIBE_NOW MEGAVIBE_CODEX_HOME="$T/codex2" MEGAVIBE_ROUTER_PROVIDER=codex /bin/bash "$UR" "$1"; }
+cx forecast >/dev/null; o=$(cx sprint)
+check 'codex on the real clock, 90 used, 2 h left: sprint' '[ "$(f 2)" = sprint ]'
+codex "$RN" 100 "$RR" >> "$T/codex2/sessions/x/rollout-1.jsonl"
+o=$(cx sprint)
+check 'a 100 reading written seconds later ends the sprint at once (the cache is not trusted inside the window)' '[ "$(f 2)" = "-" ] && [ "$(f 4)" = 100 ]'
+
 # ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
 adv() { /bin/bash "$UR" sprint-advice; }
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(adv)
 check 'advice: one line, for Claude only (the Codex reading is old)' '[ "$(printf "%s\n" "$o" | grep -c .)" = 1 ] && [[ "$o" == "usage sprint: Claude "* ]]'
-check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.6 points per hour"* ]] && [[ "$o" == *"95%"* ]]'
+check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.6 points per hour"* ]] && [[ "$o" == *"95%"* ]] && [[ "$o" == *"whole account"* ]]'
 check 'advice says what to do and what does not move' '[[ "$o" == *"top model tier"* ]] && [[ "$o" == *"hardest open work"* ]] && [[ "$o" == *"100% backstop"* ]] && [[ "$o" == *"review floor"* ]]'
 { codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 6 * 3600))" 55 "$R"; codex "$((NOW - 600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(adv)

@@ -30,16 +30,21 @@
 # End-of-window sprint (added 2026-11-23; advice only, no band, launch or balance decision reads it): quota left at a
 # reset is lost, and in the last hours the forecast is short-range enough to spend down to a tighter margin than
 # the week-long 95 target allows. state is `sprint` when ALL hold, else `-` with the reason in the last field:
-#   outside      the weekly window has more than MEGAVIBE_SPRINT_HOURS (4) hours left, or no live window
-#   no-forecast  no recent-pace forecast, or the newest reading is over an hour old (Codex writes one only when
-#                called; an old reading under-states use and is no basis for spending the last points)
+#   outside      the weekly window has more than MEGAVIBE_SPRINT_HOURS (4) hours left, under 10 minutes left
+#                (nothing useful can start, and the per-hour figure would be absurd), or no live window
+#   no-forecast  no recent-pace forecast, or the newest reading is over 45 minutes old (Codex writes one only
+#                when called; an old reading under-states use and is no basis for spending the last points)
 #   5h-hot       the five-hour window is at 85 or more: top-tier work would only hit that limit
-#   no-room      forecast within one point of the sprint target (MEGAVIBE_SPRINT_TARGET, 99; a whole number
-#                below 100, so the 100 backstop is never the aim), or the ordinary target is not below it
+#   no-room      less than two points between the forecast, or the used percent, and the sprint target
+#                (MEGAVIBE_SPRINT_TARGET, 99; a whole number below 100, so the 100 backstop is never the aim):
+#                a whole-percent reading can be almost a point low and other sessions spend from the same
+#                account; or the ordinary target is not below the sprint target
 #   off          MEGAVIBE_SPRINT=0
 # With no usage data at all the line is `provider|-|||||||` (no reason either); a provider without a five-hour
 # reading is not held back by the 5h-hot rule.
-# spare = sprint target - forecast; spend = points per hour from now that would reach the sprint target.
+# spare = sprint target - forecast; spend = points per hour from now, for the whole account, that would reach the
+# sprint target. Both are estimates. Inside the window the Codex reading is re-read past the two-minute cache, so
+# a reading written since (100 included) ends the state at the next call.
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
 # statusline's account-wide rate_limits (five_hour / seven_day used_percentage and
@@ -75,6 +80,8 @@ UP="${MEGAVIBE_ROUTER_UP:-opus}"
 MODE="${1:-claude}"; PEEK=0; [ "${2:-}" = "--peek" ] && PEEK=1   # --peek: report, never advance the hysteresis state
 case "$MODE" in pace|forecast|sprint|sprint-advice) PEEK=1 ;; esac   # display must never update routing state or trim history
 FCMODE=0; case "$MODE" in forecast|sprint) FCMODE=1 ;; esac          # modes that read the long history a forecast needs
+FSTALE=""                                                            # set by sprint mode only, never taken from the environment
+SPRINT_FRESH=0; [ "$MODE" = sprint ] && [ "${_MEGAVIBE_SPRINT_FRESH:-}" = 1 ] && SPRINT_FRESH=1   # internal: sprint re-running itself past the Codex cache
 PROVIDER="${MEGAVIBE_ROUTER_PROVIDER:-claude}"; STALE=21600
 case "$MODE" in codex|codex-band) PROVIDER=codex ;; esac
 if [ "$PROVIDER" = codex ]; then
@@ -91,8 +98,9 @@ codex_row() {
   # the forecast needs 24 h of readings: a probe writes one rollout file per call, so six files are only about 3 h
   [ "$FCMODE" != 1 ] || { nf=60 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
-  # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls.
-  if [ -z "${MEGAVIBE_NOW:-}" ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
+  # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls. It is also
+  # skipped for the sprint decision inside the window (SPRINT_FRESH): a reading written since must count.
+  if [ -z "${MEGAVIBE_NOW:-}" ] && [ "$SPRINT_FRESH" != 1 ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
     local at; at=$(head -n 1 "$cache" 2>/dev/null)
     case "$at" in ''|*[!0-9]*) ;; *) if [ "$((NOW - at))" -ge 0 ] && [ "$((NOW - at))" -lt 120 ]; then tail -n +2 "$cache" 2>/dev/null; return 0; fi ;; esac
   fi
@@ -178,7 +186,7 @@ SHOURS=4; case "${MEGAVIBE_SPRINT_HOURS:-}" in ""|*[!0-9]*|0*) ;; *) [ "${#MEGAV
 # Recent-pace forecast of the selected weekly window: pace|forecast|spare|spend_per_h|basis (all empty when unknown).
 # FSTALE (sprint mode) tightens how old the newest reading may be; TARGET is whatever the caller measures against.
 emit_forecast() {
-  LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "${FSTALE:-$STALE}" --argjson decision "$DECISION" --argjson target "$TARGET" '
+  LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "${FSTALE:-$STALE}" --argjson burst "${SPRINT_BURST:-0}" --argjson decision "$DECISION" --argjson target "$TARGET" '
     def sec: if . > 100000000000 then . / 1000 else . end;
     def r1: . * 10 | round / 10;
     $decision.wk as $w | ($decision.mx.sd.r // 0) as $reset
@@ -208,7 +216,16 @@ emit_forecast() {
             | (if $r6 != null and $r24 != null then {v: (0.6 * $r6 + 0.4 * $r24), b: "6h+24h"}
                elif $r6 != null then {v: $r6, b: "6h"}
                elif $r24 != null then {v: $r24, b: "24h"}
-               elif $wk != null then {v: $wk, b: "week"} else null end) as $pc
+               elif $wk != null then {v: $wk, b: "week"} else null end) as $pc0
+            # Sprint mode only: a rise of 3 points or more inside the last 90 minutes, over whatever span (the blended
+            # paces need readings 2 h apart and miss a burst that has just started, which is what a session spending
+            # in the sprint looks like), raises the pace to that rate.
+            | (if $burst == 1 and $mono and $pc0 != null then
+                 ([$rows[] | select(.t >= $now - 5400)] | first) as $bb
+                 | if $bb != null and $last.t > $bb.t and ($last.p - $bb.p) >= 3
+                   then (($last.p - $bb.p) / (($last.t - $bb.t) / 3600)) else null end
+               else null end) as $rb
+            | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"
               else ([$pc.v, 0] | max) as $rate
                 | ($w.used + $rate * $left) as $fc
@@ -229,7 +246,7 @@ if [ "$MODE" = sprint-advice ]; then
     IFS='|' read -r _ st hl u fc spare spend _ _ < <(MEGAVIBE_ROUTER_PROVIDER=$p bash "$0" sprint 2>/dev/null) || true
     [ "${st:-}" = sprint ] || continue
     LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
-      printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: %s points spare to %d%% (%s points per hour from now would reach it). ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend
+      printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points). ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend
       printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) until its forecast reaches %d%%, and re-read `usage-route.sh sprint` before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, t, ot
       printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
   done
@@ -395,19 +412,24 @@ if [ "$MODE" = forecast ]; then
   printf '%s|%s|%s\n' "$PROVIDER" "$(jq -r '(.wk.used // "")' <<<"$DECISION")" "$FC"
   exit 0
 fi
+SPRINT_BURST=0
 if [ "$MODE" = sprint ]; then
   IFS='|' read -r s_used s_rem s_fh < <(jq -r '[(.wk.used // ""), (.wk.rem // ""), (.mx.fh.p // "")] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || true
-  s_in=$(LC_ALL=C awk -v r="${s_rem:-}" -v h="$SHOURS" 'BEGIN { if (r !~ /^[0-9]+([.][0-9]+)?$/ || r + 0 <= 0) print "none"; else if (r + 0 <= h * 3600) print "in"; else print "out" }')
+  s_in=$(LC_ALL=C awk -v r="${s_rem:-}" -v h="$SHOURS" 'BEGIN { if (r !~ /^[0-9]+([.][0-9]+)?$/ || r + 0 <= 0) print "none"; else if (r + 0 < 600) print "out"; else if (r + 0 <= h * 3600) print "in"; else print "out" }')
   s_hl=""; [ "$s_in" = none ] || s_hl=$(LC_ALL=C awk -v r="$s_rem" 'BEGIN { printf "%.1f", r / 3600 }')
   if [ "${MEGAVIBE_SPRINT:-1}" = 0 ]; then printf '%s|-|%s|%s|||||off\n' "$PROVIDER" "$s_hl" "${s_used:-}"; exit 0; fi
   if [ "$s_in" != in ]; then printf '%s|-|%s|%s|||||outside\n' "$PROVIDER" "$s_hl" "${s_used:-}"; exit 0; fi
-  OT=$TARGET; TARGET=$STARGET; FSTALE=3600; [ "$STALE" -ge 3600 ] || FSTALE=$STALE
+  # inside the window a cached Codex reading is not good enough: run once more past the cache
+  if [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ]; then
+    _MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex exec bash "$0" sprint
+  fi
+  OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2700; [ "$STALE" -ge 2700 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
-  s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v fh="${s_fh:-}" -v t="$STARGET" -v ot="$OT" 'BEGIN {
+  s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"
     else if (fh ~ /^[0-9]+([.][0-9]+)?$/ && fh + 0 >= 85) print "5h-hot"
-    else if (spare + 0 < 1 || ot + 0 >= t + 0) print "no-room"
+    else if (spare + 0 < 2 || used + 0 > t - 2 || ot + 0 >= t + 0) print "no-room"
     else print "ok" }')
   s_state="-"; [ "$s_reason" != ok ] || s_state=sprint
   printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$PROVIDER" "$s_state" "$s_hl" "${s_used:-}" "$s_fc" "$s_spare" "$s_spend" "$s_basis" "$s_reason"

@@ -192,6 +192,9 @@ check 'no perl mid-sprint: the sprint state is unknown, not over (no withdrawal,
 reset; claude_pace 90 98 91 '' ''; export STUB_SPRINT="${SC% the 100*} $(printf 'x%.0s' $(seq 1 1300)) the 100% backstop and the review floor are unchanged."
 o=$(ev SessionStart | run | ctx)
 check 'an overlong line is not relayed, in part or whole' '[[ "$o" != *"usage sprint"* ]]'
+reset; claude_pace 50 40 147 '' ''; codex_pace 60 30 222 '' ''; export STUB_SLEEP=30 STUB_SPRINT_SLEEP=30 STUB_SPRINT="$SC"
+s=$SECONDS; o=$(ev SessionStart | run); e=$((SECONDS - s))
+check "slow pace calls AND a slow sprint call: still under the 10 s hook deadline ($e s)" '[ "$e" -lt 9 ]'
 check 'no temp files left behind (sprint)' '[ -z "$(ls "$TMPDIR" | grep usage-)" ]'
 printf 'usage-advisory: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
