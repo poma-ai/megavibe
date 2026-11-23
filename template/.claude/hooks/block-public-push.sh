@@ -339,7 +339,7 @@ def scan_argv(argv, depth=0):
             if x in ("-R", "--repo"): skip = True; continue
             if not x.startswith("-"): words.append(x)
         if len(words) >= 2 and words[0] == "pr" and words[1] == "create":
-            ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL)})
+            ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL), "pre": {"mutators": list(PRE["mutators"]), "retarget": list(PRE["retarget"])}})
         elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
             ACTIONS.append({"kind": "repo-" + words[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
 
@@ -824,10 +824,10 @@ def handle_pr(act):
             if m: res.append(part[:m.start()]); break
             res.append(part)
         return "".join(res)
-    _whole = re.sub(r"\s+(?=--?[A-Za-z])", "\n", re.sub(r"(?:--body-file|-F)[ =]+\S+", " ", _cut(TEXT[_m.start():]))) if _m else ""   # one chunk per flag, so a word in --title cannot excuse --body
+    _whole = re.sub(r"\s+(?=--?[A-Za-z])", "\n", re.sub(r"(?:--body-file|-F|--template|-T)[ =]+\S+", " ", _cut(TEXT[_m.start():]))) if _m else ""   # one chunk per flag, so a word in --title cannot excuse --body
     texts = [_whole.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
     unread = []
-    _bf = [x for x in flag_value(argv, ["--body-file", "-F"]) if x != "-"]
+    _bf = [x for x in flag_value(argv, ["--body-file", "-F", "--template", "-T"]) if x != "-"]   # a template written earlier in the call is read too
     _cut = CMD.find("pr create") if "pr create" in CMD else CMD.find("pr  create")
     if _m and _bf and _cut > 0 and any(os.path.basename(x) in CMD[:_cut] for x in _bf):
         texts.append(TEXT[:_m.start()].replace(" ; ", "\n"))   # the body file is named earlier in this command, so it may be written there: scan that text too
@@ -854,6 +854,10 @@ def handle_pr(act):
         out += report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
     # gh pr create pushes the current branch itself when no remote holds it yet, and the push is not a `git push` this hook sees:
     # scan what no remote ref holds (the same range a push of HEAD would send), so an unpushed secret is asked about here.
+    if act["pre"]["retarget"]:
+        return ["an earlier command in this call (git %s) changes where the pull request's push goes, so its target was not checked. Run the pull request in a separate call." % act["pre"]["retarget"][0]]
+    if act["pre"]["mutators"]:   # same rule as a push: a state-changing git command earlier in the call changes what would be pushed
+        out.append("%s is PUBLIC and this command runs `git %s` before the pull request, which changes the commits it may push; this guard does not simulate that. Run the pull request in a separate call so it can be checked." % (got or "the base repository", act["pre"]["mutators"][0]))
     try:
         _h, _t, _tr, _sc = scan_range(act, ["HEAD"], None, notall=True)
     except Exception:   # keep the body hits found above, and ask: an unscanned push must not pass
