@@ -559,7 +559,11 @@ class Scanner:
 def scan_range(act, revargs, remote, notall=False):
     """revargs: list of rev-list args selecting tips. Returns (hits_lines, total, truncated)."""
     # a source that does not resolve cannot be pushed (git itself will fail): skip it
-    revargs = [r for r in revargs if r.startswith("--") or git(act, "rev-parse", "--verify", "-q", r + "^{commit}")[0] == 0]
+    def _resolves(r):
+        rc_ = git(act, "rev-parse", "--verify", "-q", r + "^{commit}")[0]
+        if rc_ not in (0, 1): raise ScanFailed()   # -q gives 1 for a revision that does not exist; anything else is git failing or timing out
+        return rc_ == 0
+    revargs = [r for r in revargs if r.startswith("--") or _resolves(r)]
     if not revargs: return [], 0, False, None
     base = ["rev-list", "--max-count=%d" % (MAX_COMMITS + 1)] + revargs
     if remote: base += ["--not", "--remotes=" + remote]
@@ -800,6 +804,8 @@ def local_history_scan(act, title, revs=("HEAD",)):
 
 def handle_pr(act):
     argv = act["argv"]
+    if act["pre"]["retarget"]:   # before any visibility lookup: the lookup would see the target as it is now, not as the call leaves it
+        return ["an earlier command in this call (git %s) changes where the pull request's push goes, so its target was not checked. Run the pull request in a separate call." % act["pre"]["retarget"][0]]
     repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[0]
     if not act["known"]:
         return ["the working directory is not statically known (cd into a variable), so the base repository cannot be resolved."]
@@ -855,8 +861,6 @@ def handle_pr(act):
         out += report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
     # gh pr create pushes the current branch itself when no remote holds it yet, and the push is not a `git push` this hook sees:
     # scan what no remote ref holds (the same range a push of HEAD would send), so an unpushed secret is asked about here.
-    if act["pre"]["retarget"]:
-        return ["an earlier command in this call (git %s) changes where the pull request's push goes, so its target was not checked. Run the pull request in a separate call." % act["pre"]["retarget"][0]]
     if act["pre"]["mutators"]:   # same rule as a push: a state-changing git command earlier in the call changes what would be pushed
         out.append("%s is PUBLIC and this command runs `git %s` before the pull request, which changes the commits it may push; this guard does not simulate that. Run the pull request in a separate call so it can be checked." % (got or "the base repository", act["pre"]["mutators"][0]))
     try:

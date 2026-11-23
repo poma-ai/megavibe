@@ -331,6 +331,8 @@ asks "pr create after a commit in the same call asks to be run separately" "$PC"
 passes "pr create after a commit in the same call to a private base passes" "$PC" "git add a.txt && git commit -qm x && gh pr create -R acme/priv --title Fix --body Done"
 asks "pr create after git commit (staged secret) in the same call" "$PC" "git commit -m Config && gh pr create -R acme/pub --title Config --body Done" "separate call"
 asks "pr create after a remote change in the same call" "$PC" "git remote set-url origin https://github.com/acme/pub.git && gh pr create -R acme/pub --title Fix --body Done" "separate call"
+PV=$T/pv; mkrepo "$PV" git@github.com:acme/priv.git; commit "$PV" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
+asks "pr create after a remote retarget from a private origin asks" "$PV" "git remote set-url origin https://github.com/acme/pub.git && gh pr create --title Fix --body Done" "separate call"
 printf 'clean\n' > "$PC/template.md"
 asks "a template written earlier in the call is scanned from that text" "$PC" "printf 'AKIAABCDEFGHIJKLMNOP' > template.md && gh pr create -R acme/pub --title Config --template template.md" "[AWS key]"   # EXAMPLE: fixture
 mkdir -p "$T$USERS_DIR/jsmith"; printf 'clean template\n' > "$T$USERS_DIR/jsmith/tpl-ok.md"
