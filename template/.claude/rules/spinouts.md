@@ -48,7 +48,7 @@ The **Files** column is the coordination mechanism. Before spawning, verify: **n
 
 2. **Pre-spawn overlap check.** For each wave, confirm no file appears in two tasks. If overlap exists, move one task to the next wave.
 
-3. **Spawn subagents, pinned to Sonnet by default.** `Explore`, `Plan` and `general-purpose` carry no `model` field of their own — the Agent tool inherits whatever model the parent session is running (measured over September 2026: 76% of all subagent API calls that month ran on Opus/Fable because the calling sessions did, at 2-5x Sonnet's per-token price, for work — file search, mechanical research — that doesn't need it). Pass `model: "sonnet"` explicitly on every spin-out unless the task itself needs top-tier judgment (architecture tradeoffs, ambiguous debugging, anything you'd hesitate to delegate to a human junior) — in that case say so and let it inherit. For a pure read-and-summarize or mechanical-extraction task with no judgment call in it (digest this context, extract these facts, not decide anything), try `model: "haiku"` instead — measured once (2026-10-04, see the backend comparison in `README-delegation-measurements.md` (megavibe source checkout)) at comparable quality to the sonnet subagent, fewer tokens, half the per-token price; escalate to sonnet if the output comes back thin. This is a default to override, not a hard rule: when in doubt, Sonnet first, re-run on the parent's model only if the result is visibly thin. For each task in the current wave, launch a `Task` subagent with this prompt structure. Keep the project context brief — summarize `WORKING_CONTEXT.md` to only what's relevant for this specific task, don't paste the whole file:
+3. **Spawn subagents, pinned to Sonnet by default.** `Explore`, `Plan` and `general-purpose` carry no `model` field of their own — the Agent tool inherits whatever model the parent session is running (76% of subagent calls in September 2026 ran on Opus/Fable because the calling sessions did, for work that doesn't need it). Pass `model: "sonnet"` explicitly on every spin-out unless the task itself needs top-tier judgment (architecture tradeoffs, ambiguous debugging, anything you'd hesitate to delegate to a human junior) — in that case say so and let it inherit. For a pure read-and-summarize or mechanical-extraction task with no judgment call in it (digest this context, extract these facts, not decide anything), try `model: "haiku"` instead — matched the sonnet subagent once (n=1, 2026-10-04; backend comparison in `README-delegation-measurements.md`) at fewer tokens and half the price; escalate to sonnet if the output comes back thin. This is a default to override, not a hard rule: when in doubt, Sonnet first, re-run on the parent's model only if the result is visibly thin. For each task in the current wave, launch a `Task` subagent with this prompt structure. Keep the project context brief — summarize `WORKING_CONTEXT.md` to only what's relevant for this specific task, don't paste the whole file:
 
    ```
    You are implementing a single task in a larger plan. Edit ONLY the files listed.
@@ -97,15 +97,7 @@ When one job walks many items that are each judged on their own (checking labels
 - **Count reads, not items.** In the job below, each item took about 34 image reads (author-counted from the transcript), about 100K tokens per item, so the simulated 250K batches averaged about 1.5 items; real batches split between items, never inside one. Per-call growth varied about 4x within the job: medians of about 8K per call in the first 32 calls and about 29K after (22K median, 32K mean overall), so do not size from a per-call figure.
 - **Run one small pilot batch first** (one or two items, well under 250K, so nothing in it has been trimmed yet; if its context ever fell between requests, the figure is a floor). Its context size is the sum of `input_tokens`, `cache_creation_input_tokens` and `cache_read_input_tokens` on its last request, not a sum over the transcript. Subtract its starting context and divide by the items it handled: that is the tokens per item to size the rest from, with headroom.
 
-**Why, measured 2026-10-11 on one real job** (one Sonnet subagent, 109 image pairs and 3,744 image reads as counted by the author from the transcript, 387 requests; input tokens only, parent orchestration not counted):
-- **No re-caching at first.** The context grew to 394K tokens without one.
-- **Then repeated resets.** From there, 107 requests read only the 17.6K-token system prefix from cache and re-sent the rest as fresh input. 104 of those came with a shrinking context, most likely Claude Code trimming old tool results; that mechanism is inferred, not confirmed. 19 of them followed a pause of over 5 minutes, so cache expiry explains some too. Later resets came at 375-918K, so the trigger is not one fixed size.
-- **Result: 66.5M fresh input tokens and 131M cache reads.** Ordinary calls added 8.8M tokens of new content; about 11M is the estimate counting the reset calls.
-- **Projection.** A simulation over the same requests, with a new subagent before 250K (74 subagents, each paying the job's 74K first call again), gives 16.7M fresh and 54M reads. That is 2.8x fewer raw tokens, or 3.7x cheaper weighted by API price (cache read about 0.1x, 5-minute write 1.25x; at the 1-hour write's 2x it is 3.8x). How either maps onto subscription limits is not documented.
-- **Checks, one assumption changed at a time.** Weighted savings: 3.3x keeping the observed cache expiries; 2.2x keeping every observed reset; 2.8x with all per-call growth scaled 1.4x (mean over median); 2.0x with per-call growth doubled; 2.1x with the briefing doubled.
-- **Stacked worst case.** Doubled growth plus doubled briefing gives 1.1x, and adding the expiries and resets gives 0.9x.
-
-This is a projection from one job on one Claude Code build, not a measured re-run; re-measure if a later build behaves differently. Across the single-assumption checks the saving is about 2-4x; it holds only while each batch's fixed cost stays small next to the context it saves. At this job's 74K first call, a 350K cap instead of 250K changes the simulated saving by only about 0.1x; with a large briefing the higher cap recovers much more (2.1x against 1.1x at 200K), so a bulky briefing is a reason to batch closer to 350K, at the cost of less margin below the first reset.
+**Why (measured 2026-10-11 on one real job; a projection, not a re-run):** splitting before 250K was projected to cut input cost about 2-4x across single-assumption checks (3.7x price-weighted in the base case), but a stacked worst case (doubled per-call growth plus doubled briefing) falls to about break-even (0.9-1.1x), so it pays only while each batch's fixed cost stays small next to the context it saves; a bulky briefing is a reason to batch closer to 350K, at the cost of less margin below the first reset. Mechanics, numbers and checks: https://github.com/poma-ai/megavibe/blob/main/README-delegation-measurements.md
 
 ## Subagents: keep the cache warm while waiting
 
@@ -113,15 +105,8 @@ A subagent's prompt cache lives 5 minutes by default (the main thread's usually
 1 hour; both depend on billing and settings, so check the effective ones). Any
 single tool call that blocks past that — `sleep`, an `until grep …` poll, a long
 test run in the foreground — makes the next request re-write the whole context
-as a cache write (1.25x input price) instead of a read (0.1x). Measured
-2026-10-14 in one project: three long subagents (contexts of 790-970K) each sat
-in 34-38 foreground waits of 5-9 minutes and re-wrote about 500K tokens every
-time: 51M cache-written tokens (about 64M weighted at 1.25x) plus 548M cache
-reads (about 55M at 0.1x) made about 119M of that session's 190M price-weighted
-tokens that day (63%). The weights are API list-price ratios, an assumption: how
-plan limits meter cache reads and writes is not documented, and `delegation.md`
-("Cache heartbeat") shows the raw-token count can point the other way. Not
-reproduced on another project.
+as a cache write (1.25x input price) instead of a read (0.1x). Measured once (2026-10-14, one project): long foreground
+waits made cache re-writes about 63% of a day's price-weighted tokens; the weights are API list-price ratios, not plan metering, and `delegation.md` ("Cache heartbeat") shows the raw-token count can point the other way. Numbers: https://github.com/poma-ai/megavibe/blob/main/README-delegation-measurements.md
 
 - **Brief every spin-out with the wait rule** (it is in the template above) and,
   for a job that needs waiting on, paste the recipe below with a unique NAME.
