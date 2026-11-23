@@ -468,7 +468,7 @@ if [ "$MODE" = forecast ]; then
   exit 0
 fi
 if [ "$MODE" = sprint ]; then
-  IFS='|' read -r s_used s_rem s_fh < <(jq -r '[(.wk.used // ""), (.wk.rem // ""), (.mx.fh.p // "")] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || true
+  IFS='|' read -r s_used s_rem s_fh s_flr < <(jq -r '[(.wk.used // ""), (.wk.rem // ""), (.mx.fh.p // ""), (.mx.fh.r // "")] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || true
   s_in=$(LC_ALL=C awk -v r="${s_rem:-}" -v h="$SHOURS" 'BEGIN { if (r !~ /^[0-9]+([.][0-9]+)?$/ || r + 0 <= 0) print "none"; else if (r + 0 < 600) print "out"; else if (r + 0 <= h * 3600) print "in"; else print "out" }')
   s_hl=""; [ "$s_in" = none ] || s_hl=$(LC_ALL=C awk -v r="$s_rem" 'BEGIN { printf "%.1f", r / 3600 }')
   if [ "${MEGAVIBE_SPRINT:-1}" = 0 ]; then printf '%s|-|%s|%s|||||off|%s\n' "$PROVIDER" "$s_hl" "${s_used:-}" "${s_fh:-}"; exit 0; fi
@@ -483,9 +483,10 @@ if [ "$MODE" = sprint ]; then
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
   # The five-hour window climbing fast: its rise over the last 30 minutes (at least 5 minutes of span), continued for a
   # 30-minute unit, is added to its used percent before the 85 check.
-  s_fhadd=$(jq -r --argjson now "$NOW" '[.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now and .t >= $now - 1800)] | sort_by(.t)
-      | (if length == 0 then null else (last | .fh.r) end) as $lr
-      | map(select(($lr | type) == "number" and (.fh.r | type) == "number" and ((.fh.r - $lr) | fabs) <= 180))
+  case "$s_flr" in ''|*[!0-9.]*) s_flr=null ;; esac
+  s_fhadd=$(jq -r --argjson now "$NOW" --argjson lr "${s_flr:-null}" 'def sec: if . > 100000000000 then . / 1000 else . end;
+      [.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now and .t >= $now - 1800)] | sort_by(.t)
+      | map(select(($lr | type) == "number" and (.fh.r | type) == "number" and (((.fh.r | sec) - $lr) | fabs) <= 180))
       | if length < 2 then 0 else (first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * 1800) end) end' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {

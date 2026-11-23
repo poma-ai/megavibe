@@ -76,7 +76,7 @@ check 'at 97 with a pace that leaves 1.6 points: no sprint (no rounding up to th
 o=$(sp)
 check 'newest reading 90 minutes old: no sprint (reason no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
 fo=$(/bin/bash "$UR" forecast)
-check 'the same history still has an ordinary forecast (the one-hour rule is the sprint'"'"'s own)' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
+check 'the same history still has an ordinary forecast (the 35-minute rule is the sprint'"'"'s own)' '[ -n "$(printf "%s" "$fo" | cut -d"|" -f4)" ]'
 
 { row 1500 84 $R; row 360 89 $R; row 40 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -200,6 +200,17 @@ printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":96,"r":%s}}\n{"t":%s,"sd":{"p":72
   "$((NOW - 1500))" "$R2" "$FO" "$((NOW - 720))" "$R2" "$FR" "$((NOW - 480))" "$R2" "$FR" "$((NOW - 240))" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour reset in the last 30 minutes (96 expired, then 62, 82, 84): 5h-hot, the surge in the live window is counted' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# a delayed sample of the EXPIRED five-hour window logged after the live rows must not become "the window": the live reset is the one
+# the router selected, not the one on the newest row
+printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":62,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":84,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":80,"r":%s}}\n' \
+  "$((NOW - 720))" "$R2" "$FR" "$((NOW - 480))" "$R2" "$FR" "$((NOW - 240))" "$R2" "$FR" "$((NOW - 60))" "$R2" "$FO" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'a late sample with the expired window'"'"'s reset after the live rows: still 5h-hot' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# the same live reset written in milliseconds on one row is still the same window
+printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":62,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":84,"r":%s}}\n' \
+  "$((NOW - 720))" "$R2" "$FR" "$((NOW - 480))" "$R2" "$FR" "$((NOW - 240))" "$R2" "$((FR * 1000))" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'the live five-hour reset in milliseconds on one row, seconds on the others: still 5h-hot' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
