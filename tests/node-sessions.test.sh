@@ -20,7 +20,7 @@ check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf
 B="$T/bin"; mkdir -p "$B"
 printf '#!/bin/bash\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\n[ -z "${TMUX_NOSERVER:-}" ] || { echo "no server running on /nowhere" >&2; exit 1; }\n[ "${TMUX_FAIL_VERB:-}" != "$1" ] || exit 1\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
 # megavibe stub: one line per call, then it stays alive like a session would.
-printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nexec sleep 600\n' "$T" > "$B/megavibe"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nprintf "%%s %%s\\n" "$3" "${MEGAVIBE_PARENT_SESSION-unset}" >> "%s/megavibe.parents"\nexec sleep 600\n' "$T" "$T" > "$B/megavibe"
 printf '#!/bin/bash\necho testmac\n' > "$B/scutil"
 printf '#!/bin/bash\necho Darwin\n' > "$B/uname"
 printf '#!/bin/bash\n[ "$1" = print ] && exit 113\nexit 0\n' > "$B/launchctl"
@@ -185,6 +185,15 @@ check "resume with no server: the node's tmux session is created again; no known
 SP=$(tmux display-message -p '#{socket_path}')
 check "the server that came back is the private one" '[[ "$SP" == */"$SOCK" ]]'
 ctl session check; check "check: gamma back, alpha still vanished" '[ "$RC" = 1 ] && [[ "$o" == "VANISHED (1 of 2)"* ]] && [[ "$o" != *gamma* ]]'
+
+# A registered session is linked to the session that started it: the wrapper gets that session's id, or the
+# empty value ("no parent") when none runs the command, never an inherited-looking absent variable.
+export CLAUDE_CODE_SESSION_ID=parent-sess-1
+ctl session start linked --dir "$D" --task "$TASK" --window w-linked
+unset CLAUDE_CODE_SESSION_ID
+ctl session start unlinked --dir "$D" --task "$TASK" --window w-unlinked
+check "start from a session: the wrapper is told that session is the parent" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "linked parent-sess-1" "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "linked parent-sess-1" "$T/megavibe.parents"'
+check "start with no session around: the wrapper gets the empty value, not an absent one" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "unlinked " "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "unlinked " "$T/megavibe.parents"'
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
