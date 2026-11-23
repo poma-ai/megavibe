@@ -15,7 +15,7 @@
 #                             display only; linear from 5% elapsed, recent from samples within the last 6h that span at least 2h
 #   usage-route.sh forecast   provider|used|fc_pace_per_h|forecast|spare|spend_per_h|basis (recent-pace forecast, see below; read-only)
 #   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
-#   usage-route.sh sprint     provider|state|hours_left|used|forecast|spare|spend_per_h|basis|reason|five_hour_used (end-of-window sprint, see below; read-only)
+#   usage-route.sh sprint     provider|state|hours_left|used|forecast|spare|spend_per_h|basis|reason|five_hour_projected (end-of-window sprint, see below; read-only)
 #   usage-route.sh sprint-advice  one sentence per subscription in the sprint state (Claude, then Codex), else nothing
 #
 # Recent-pace forecast (added 2026-11-22; extra trailing fields, nothing existing changed): pace = 0.6 x the 6-hour
@@ -292,8 +292,8 @@ if [ "$MODE" = sprint-advice ]; then
     if [ "${pp:-}" != "$p" ]; then printf 'usage sprint-unknown: %s\n' "$([ "$p" = codex ] && echo Codex || echo Claude)"; continue; fi
     [ "${st:-}" = sprint ] || continue
     LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v fhu="${fhu:-}" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
-      printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is at %d%%, and a unit must fit that too", fhu) : "")
-      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", (who == "codex" ? "MEGAVIBE_ROUTER_PROVIDER=codex usage-route.sh sprint" : "usage-route.sh sprint"), t, ot
+      printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is projected at %d%% (used plus its recent climb over a 30-minute unit), and a unit must fit that too", fhu) : "")
+      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", "megavibe usage sprint", t, ot
       printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
   done
   exit 0
@@ -484,6 +484,8 @@ if [ "$MODE" = sprint ]; then
   # The five-hour window climbing fast: its rise over the last 30 minutes (at least 5 minutes of span), continued for a
   # 30-minute unit, is added to its used percent before the 85 check.
   s_fhadd=$(jq -r --argjson now "$NOW" '[.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now and .t >= $now - 1800)] | sort_by(.t)
+      | (if length == 0 then null else (last | .fh.r) end) as $lr
+      | map(select(($lr | type) == "number" and (.fh.r | type) == "number" and ((.fh.r - $lr) | fabs) <= 180))
       | if length < 2 then 0 else (first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * 1800) end) end' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
@@ -492,7 +494,8 @@ if [ "$MODE" = sprint ]; then
     else if (spare + 0 < 2 || used + 0 > t - 2 || ot + 0 >= t + 0) print "no-room"
     else print "ok" }')
   s_state="-"; [ "$s_reason" != ok ] || s_state=sprint
-  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$PROVIDER" "$s_state" "$s_hl" "${s_used:-}" "$s_fc" "$s_spare" "$s_spend" "$s_basis" "$s_reason" "${s_fh:-}"
+  s_fhp=$(LC_ALL=C awk -v fh="${s_fh:-}" -v add="$s_fhadd" 'BEGIN { if (fh !~ /^[0-9]+([.][0-9]+)?$/) exit; v = sprintf("%.1f", fh + add); sub(/\.0$/, "", v); print v }')
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$PROVIDER" "$s_state" "$s_hl" "${s_used:-}" "$s_fc" "$s_spare" "$s_spend" "$s_basis" "$s_reason" "${s_fhp:-}"
   exit 0
 fi
 if [ "$MODE" = pace ]; then

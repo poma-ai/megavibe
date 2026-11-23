@@ -155,7 +155,8 @@ check 'a rise that ended hours ago and is flat since is not a burst (the endpoin
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 40; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'the line carries the five-hour used percent as its tenth field' '[ "$(f 10)" = 40 ]'
 o=$(/bin/bash "$UR" sprint-advice)
-check 'the advice names the five-hour window when there is one' '[[ "$o" == *"five-hour window is at 40%"* ]]'
+check 'the advice names the projected five-hour window when there is one' '[[ "$o" == *"five-hour window is projected at 40%"* ]]'
+check 'the advice names the public command to re-read, not the uninstalled script path' '[[ "$o" == *"megavibe usage sprint"* ]] && [[ "$o" != *"usage-route.sh sprint"* ]]'
 # steady use at 3 points per hour with 5-minute heartbeat rows and 3.8 h left is not a burst (the rise is rated over the
 # time since the lower reading): true end about 84, so the sprint must stay on
 RS=$((NOW + 13680))
@@ -192,6 +193,17 @@ check 'five-hour 65 -> 84 in four minutes: no sprint (5h-hot, the projected five
 { rowfh 1500 72 $R2 30; rowfh 360 72 $R2 40; rowfh 30 72 $R2 50; rowfh 8 72 $R2 52; rowfh 4 72 $R2 54; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour 52 -> 54 in four minutes (a slow climb, projected under the cap): still a sprint' '[ "$(f 2)" = sprint ]'
+
+# a five-hour RESET inside the last 30 minutes must not hide a surge in the new window: 96 from the expired window, then 62, 82, 84
+FR=$((NOW + 16800)); FO=$((NOW - 1200))
+printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":96,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":62,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":82,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":84,"r":%s}}\n' \
+  "$((NOW - 1500))" "$R2" "$FO" "$((NOW - 720))" "$R2" "$FR" "$((NOW - 480))" "$R2" "$FR" "$((NOW - 240))" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour reset in the last 30 minutes (96 expired, then 62, 82, 84): 5h-hot, the surge in the live window is counted' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
+{ rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 78 -> 81 over 29 minutes: the tenth field is the projection (about 84), not 81' 'awk -v x="$(f 10)" "BEGIN{exit !(x > 83 && x < 86)}"'
 
 # the five-hour window is hot: top-tier work would only hit that limit
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"
