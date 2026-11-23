@@ -8,8 +8,13 @@ trap 'rm -rf "$T"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-{ sed -n '/^is_session_ancestor() {/,/^}/p' "$REPO/megavibe"; sed -n '/^record_launch() {/,/^}/p' "$REPO/megavibe"; } > "$T/fn.sh"
-grep -q '^record_launch() {' "$T/fn.sh" && grep -q '^is_session_ancestor() {' "$T/fn.sh" || fail "functions not found in megavibe"
+for fn in capture_launch_parent restore_launch_parent is_session_ancestor record_launch; do
+  sed -n "/^$fn() {/,/^}/p" "$REPO/megavibe" >> "$T/fn.sh"
+  grep -q "^$fn() {" "$T/fn.sh" || fail "$fn not found in megavibe"
+done
+# The wrapper must capture the variable once at the top, and put it back before each of its own re-execs.
+[ "$(grep -c '^capture_launch_parent$' "$REPO/megavibe")" = 1 ] || fail "capture_launch_parent must be called once, at the top"
+[ "$(grep -c '^ *restore_launch_parent$' "$REPO/megavibe")" = 2 ] || fail "restore_launch_parent must precede both self re-execs"
 
 # A stub `ps` gives the recording shell a fixed ancestry: <shell> -> 50001 -> 50002 -> init. The real chain is
 # not usable here: this test normally runs under a real claude session. Pid 50001 plays the launching session;
@@ -27,7 +32,11 @@ registry() { printf '{"pid":50001,"sessionId":"%s"}\n' "$1" > "$T/cfg/sessions/5
 
 run() { # run <pid> [env assignments...]: source the function in a clean shell
   local pid="$1"; shift
-  (cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" CLAUDE_CONFIG_DIR="$T/cfg" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid")
+  (cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" CLAUDE_CONFIG_DIR="$T/cfg" "$@" bash -c 'set -euo pipefail; source "$1"; capture_launch_parent; record_launch "$2"' _ "$T/fn.sh" "$pid")
+}
+probe() { # probe <snippet> [env assignments...]: run a snippet after capture_launch_parent, print what it prints
+  local snippet="$1"; shift
+  (cd "$T" && env -i PATH="$T/bin:$PATH" "$@" bash -c 'set -eu; source "$1"; capture_launch_parent; eval "$2"' _ "$T/fn.sh" "$snippet")
 }
 field() { jq -r "$1" "$T/home/launches/$2.json"; }
 
@@ -69,6 +78,19 @@ run 4003
 run 4004 'MEGAVIBE_PARENT_SESSION=x"; touch pwned #'
 [ "$(field .parentSessionId 4004)" = "null" ] || fail "invalid parent must be dropped"
 [ ! -e "$T/pwned" ] || fail "parent id was executed"
+
+# The variable must not reach claude or its tools, or a grandchild gets linked to its grandparent (found in review).
+[ -z "$(probe 'bash -c "printf %s \"\${MEGAVIBE_PARENT_SESSION+leaked}\""' MEGAVIBE_PARENT_SESSION=grandparent-A)" ] || fail "MEGAVIBE_PARENT_SESSION leaked into the launched environment"
+registry child-C
+run 4020 MEGAVIBE_PARENT_SESSION=grandparent-A CLAUDE_CODE_SESSION_ID=child-C
+[ "$(field .parentSessionId 4020)" = "grandparent-A" ] || fail "C's own launch keeps the explicit parent"
+# ... so a launch G from C's tool (inherited env now has no MEGAVIBE_PARENT_SESSION) links to C.
+run 4021 CLAUDE_CODE_SESSION_ID=child-C
+[ "$(field .parentSessionId 4021)" = "child-C" ] || fail "grandchild must link to its parent"
+# The wrapper's own re-exec gets the value back, set-but-empty included, and nothing when it was never set.
+[ "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION-}"' MEGAVIBE_PARENT_SESSION=grandparent-A)" = "grandparent-A" ] || fail "restore"
+[ "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION+set}"' MEGAVIBE_PARENT_SESSION=)" = "set" ] || fail "restore of an empty value"
+[ -z "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION+set}"')" ] || fail "restore invented a value"
 
 # A bad pid writes nothing.
 run 'abc' MEGAVIBE_PARENT_SESSION=aaaa-1111
