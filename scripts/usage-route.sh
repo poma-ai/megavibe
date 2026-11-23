@@ -40,10 +40,10 @@
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
 #                account; or the ordinary target is not below the sprint target
 #   off          MEGAVIBE_SPRINT=0
-# The sprint's pace is conservative: it also includes the steepest rise of 1 point or more from any reading in the
-# 90 minutes before the newest reading to that reading, rated (rise + 1) over its span (whole-percent readings; an
-# earlier dip does not switch it off; basis suffix `+burst`), and the forecast is projected from the newest reading
-# to the reset, not from now.
+# The sprint's pace is conservative: it also includes the steepest rise of 2 points or more from any reading in the
+# 90 minutes before the newest reading to that reading, rated (rise + 1) over its span floored at 15 minutes
+# (whole-percent readings; a single one-point tick is noise; an earlier dip does not switch it off; basis suffix
+# `+burst`), and the forecast is projected from the newest reading to the reset, not from now.
 # Known gap: a Codex history whose uncached scan takes over 2 s (the advice's per-provider alarm) reports `unknown`
 # for Codex, and the hook then keeps the state it last told (fails closed: no new advice, no false advice).
 # With no usage data at all the line is `provider|-|||||||` (no reason either); a provider without a five-hour
@@ -228,8 +228,9 @@ emit_forecast() {
             # in the sprint looks like), raises the pace to that rate.
             | (if $burst == 1 and $pc0 != null then
                  # Conservative sprint pace. Whole-percent readings: a displayed rise of r points can be anywhere from r-1
-                 # to r+1, so every rise of 1 point or more from a reading in the 90 minutes before the NEWEST reading to
-                 # that reading is rated (r+1) over its span, whatever came before it (an earlier dip does not switch this
+                 # to r+1, so every rise of 2 points or more (a single one-point tick is noise: the statusline writes a row
+                 # on every whole-percent change) from a reading in the 90 minutes before the NEWEST reading to
+                 # that reading is rated (r+1) over its span, the span floored at 15 minutes, whatever came before it (an earlier dip does not switch this
                  # off) and however long ago the newest reading was taken (the evidence ages with new readings only).
                  # the reading just before the newest counts whatever its age: after an idle gap the first new reading can carry a jump
                  # Equal repeat readings at the current level do not erase a burst: the rise is measured to the FIRST reading
@@ -238,8 +239,8 @@ emit_forecast() {
                   | (if $li == null then $rows[0] else $rows[$li + 1] end) as $anc
                   | if $anc.t < $now - 5400 then null
                     else (([$rows[] | select(.t < $anc.t)] | last) as $before
-                      | [$rows[] | select((.t >= $anc.t - 5400 or .t == $before.t) and .t < $anc.t and ($anc.p - .p) >= 1)
-                        | (($anc.p - .p + 1) / (($anc.t - .t) / 3600))] | max) end)
+                      | [$rows[] | select((.t >= $anc.t - 5400 or .t == $before.t) and .t < $anc.t and ($anc.p - .p) >= 2)
+                        | (($anc.p - .p + 1) / (([($anc.t - .t), 900] | max) / 3600))] | max) end)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"

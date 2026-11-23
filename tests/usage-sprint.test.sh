@@ -123,7 +123,9 @@ check 'last reading 18 minutes old at 95 after a 2-point rise, 30 minutes left: 
 # a one-point rise in five minutes near the limit can be 95.0 -> 96.9
 { row 85 95 $RJ; row 60 95 $RJ; row 35 95 $RJ; row 15 95 $RJ; row 10 95 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'flat 95 then 96 five minutes ago, 25 minutes left: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+check 'flat 95 then ONE point to 96 five minutes ago, 25 minutes left: a single tick is noise, so no burst term (known limit, decided: a burst that has not produced a two-point rise is invisible)' '[[ "$(f 8)" != *burst* ]]'
+{ row 85 95 $RJ; row 60 95 $RJ; row 35 95 $RJ; row 15 95 $RJ; row 10 95 $RJ; row 5 97 $RJ; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'flat 95 then TWO points to 97 five minutes ago: a burst (rated 3 points over the 15-minute floor), no sprint' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
 # burst evidence does not age out of the lookback while the history is unchanged
 RH=$((NOW + 3600))
 { row 89 94 $RH; row 40 96 $RH; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
@@ -131,9 +133,9 @@ check 'readings 94 (89 min ago) and 96 (40 min ago), 60 minutes left: no sprint'
 { row 91 94 $RH; row 42 96 $RH; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'the same readings two minutes older: still no sprint (the lookback is anchored to the newest reading)' '[ "$(f 2)" = "-" ]'
 # the advertised rate starts from the estimated use now, not from the old reading
-{ row 80 91 $RP; row 18 92 $RP; } > "$MEGAVIBE_USAGE_FILE"
+{ row 80 90 $RP; row 18 92 $RP; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check '30 minutes left, 91 then 92 eighteen minutes ago: spend per hour is below (99-92)/0.5 = 14 (it starts from estimated use now)' 'awk -v s="$(f 7)" "BEGIN{exit !(s > 0 && s < 13.5)}"'
+check '30 minutes left, 90 then 92 eighteen minutes ago: spend per hour is below (99-92)/0.5 = 14 (it starts from estimated use now)' 'awk -v s="$(f 7)" "BEGIN{exit !(s > 0 && s < 13.5)}"'
 # flat 97 with a reading 25 minutes old is not fresh enough near the cap; 15 minutes old is
 { row 1500 97 $R; row 360 97 $R; row 25 97 $R; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'flat 97, newest reading 25 minutes old: no sprint (no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
