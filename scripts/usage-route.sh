@@ -421,7 +421,8 @@ if [ "$MODE" = sprint ]; then
   if [ "$s_in" != in ]; then printf '%s|-|%s|%s|||||outside\n' "$PROVIDER" "$s_hl" "${s_used:-}"; exit 0; fi
   # inside the window a cached Codex reading is not good enough: run once more past the cache
   if [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ]; then
-    _MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex exec bash "$0" sprint
+    fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
+    case "$fresh" in codex\|*) printf '%s\n' "$fresh"; exit 0 ;; esac   # a re-run that printed nothing falls through to this pass
   fi
   OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2700; [ "$STALE" -ge 2700 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
