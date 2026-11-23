@@ -1076,12 +1076,14 @@ if [ "${1:-}" = "route" ]; then
 fi
 
 # megavibe tick [--name N] [org/repo ...]: one unattended watch tick (scripts/tick.sh);
-# megavibe auth [HOURS]: how long the Claude login lasts (scripts/claude-auth-check.sh).
-if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ]; then
+# megavibe auth [HOURS]: how long the Claude login lasts (scripts/claude-auth-check.sh);
+# megavibe sessions [--orphans]: live Claude sessions as a tree (scripts/sessions.sh).
+if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ] || [ "${1:-}" = "sessions" ]; then
   _sub="$1"; shift
   case "$_sub" in
     tick) _s="$MEGAVIBE_HOME/scripts/tick.sh" ;;
     auth) _s="$MEGAVIBE_HOME/scripts/claude-auth-check.sh" ;;
+    sessions) _s="$MEGAVIBE_HOME/scripts/sessions.sh" ;;
   esac
   [ -f "$_s" ] || { echo "megavibe $_sub: $_s not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
   exec bash "$_s" "$@"
@@ -2414,7 +2416,7 @@ update_lock_pid() {
 
 # Helper: record that THIS wrapper started claude, and on behalf of which session.
 # The session registry (~/.claude/sessions) has no parent field, so tools that list sessions
-# (e.g. megavibe-observer) join this record to a live session by claude's PID. Parent = the
+# (`megavibe sessions`, or any other session viewer) join this record to a live session by claude's PID. Parent = the
 # explicit MEGAVIBE_PARENT_SESSION (set, even empty = "no parent"; a launcher that is not the
 # session's own child, like tmux or ssh, must pass it), else CLAUDE_CODE_SESSION_ID, believed only
 # while an ancestor process of this wrapper is that session's registered process (its registry
