@@ -79,7 +79,8 @@ set -u
 # Known gaps (not enforced here): a push through a git alias, a script or
 # $(...)/backtick substitution; `git push` inside a command run by another tool;
 # gh pr create scans only the commits of HEAD that no remote holds (not another --head
-# branch) and cannot read a body that comes from $(...); binary content; the conflict-resolution lines of a merge
+# branch; a commit that only a PRIVATE remote holds counts as published and is not scanned),
+# reads at most 1 MiB of a body or template file, and cannot read a body that comes from $(...); binary content; the conflict-resolution lines of a merge
 # commit (git log -p shows no diff for merges); another gh operation that publishes
 # (gh gist create --public, gh release create); a denylist
 # written in a file the hook cannot read is silently empty (the reason says so only
@@ -853,7 +854,10 @@ def handle_pr(act):
         out += report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
     # gh pr create pushes the current branch itself when no remote holds it yet, and the push is not a `git push` this hook sees:
     # scan what no remote ref holds (the same range a push of HEAD would send), so an unpushed secret is asked about here.
-    _h, _t, _tr, _sc = scan_range(act, ["HEAD"], None, notall=True)
+    try:
+        _h, _t, _tr, _sc = scan_range(act, ["HEAD"], None, notall=True)
+    except Exception:   # keep the body hits found above, and ask: an unscanned push must not pass
+        return out + ["%s is PUBLIC and the commits this pull request may push could not be scanned (git failed or timed out)." % (got or "the base repository")]
     if _t or _tr: out += report_hits("%s is PUBLIC and this pull request may push local commits that no remote holds yet; they contain:" % (got or "the base repository"), _h, _t, _tr, _sc)
     return out or None
 

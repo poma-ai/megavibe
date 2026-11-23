@@ -325,6 +325,8 @@ printf 'AKIAABCDEFGHIJKLMNOP\n' > "$T/tpl.md"   # EXAMPLE: fixture
 asks "pr create --template file is scanned" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl.md" "[AWS key]"
 asks "pr create -T file is scanned" "$PC" "gh pr create -R acme/pub --title Fix -T $T/tpl.md" "[AWS key]"
 asks "pr create --template that cannot be read asks" "$PC" "gh pr create -R acme/pub --title Fix --template /nonexistent/t.md" "could not be read"
+PD=$T/pd; mkrepo "$PD" https://github.com/acme/pub.git; commit "$PD" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
+asks "pr create: text hit and unpushed commit hit are both reported" "$PD" "gh pr create -R acme/pub --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body Done" "pull request text" "may push local commits"   # EXAMPLE: fixture
 printf 'clean template\n' > "$T/tpl-ok.md"
 passes "pr create --template with clean text passes" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl-ok.md"
 
