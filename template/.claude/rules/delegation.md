@@ -114,7 +114,7 @@ Formalizing what the measurements (recorded in **`README-delegation-measurements
 | Explore / Plan / general-purpose, moderate research/search | **Sonnet** | — | 76% of subagent calls had silently ridden an Opus/Fable parent (fixed 2026-10-04) |
 | Explore / Plan / general-purpose, pure digest/extraction | **Haiku** | — | matched the Sonnet subagent once (n=1, promising) |
 | `fork` | inherit; **don't override** | n/a | reuses the parent's warm, matching prefix only; new reasoning, new output and cache reads on top are not free, and changing the model invalidates the reuse: override only when the judgment need justifies losing the cache |
-| Codex, reviews | `gpt-6.1-sol` | **high** | was `low` (a misconfiguration, fixed); one A/B against `gpt-6-astra` was a tie, so `sol` stays; revisit the model choice if more review trials show a consistent gap |
+| Codex, reviews | `gpt-6.1-sol` | the user's setting (leave `--effort` off) | **high** on the measured machine (was `low`, a misconfiguration, fixed); one A/B against `gpt-6-astra` was a tie, so `sol` stays; revisit the model choice if more review trials show a consistent gap |
 | Codex, summarize/rehydrate | `gpt-6.1-sol` | `low` | effort does not help digesting a log; established for this task shape only |
 | Codex, research memos | `gpt-6.1-sol` | judge per task | the low-effort finding covers log digests, not memos: don't extend it |
 | Gemini | eligible, off as a peer, never a reviewer on **this machine** | — | a personal `MEGAVIBE_REVIEWERS=reviewer codex` pin, not a protocol change; elsewhere Gemini stays Codex's configurable fallback |
