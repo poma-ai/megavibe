@@ -1220,8 +1220,11 @@ check "the real gate from this test: refused with exit 5, nothing deleted" '[ $r
 run_in "$H18" --all >/dev/null 2>&1; rc=$?
 check "the real gate, --all: refused with exit 5" '[ $rc = 5 ] && [ -e "$H18/.Trash/k" ]'
 if [ -x /usr/bin/script ]; then
-  /usr/bin/script -q /dev/null env -u CLAUDE_CONFIG_DIR HOME="$H18" "$H18/.megavibe/scripts/trash-empty.sh" --all >/dev/null 2>&1; rc=$?
-  check "even with a terminal on stdin the gate refuses (a process started outside Claude Code is never approved)" '[ $rc = 5 ] && [ -e "$H18/.Trash/k" ]'
+  # script(1) gets /dev/null, not the inherited stdin: Claude Code runs a Bash call that contains a heredoc with
+  # its own socket as stdin (other calls get /dev/null), and macOS script exits 1 on a socket ("tcgetattr/ioctl:
+  # Operation not supported on socket") before the gate runs. The child still gets the pty as its stdin.
+  out=$(/usr/bin/script -q /dev/null env -u CLAUDE_CONFIG_DIR HOME="$H18" "$H18/.megavibe/scripts/trash-empty.sh" --all </dev/null 2>&1); rc=$?
+  check "even with a terminal on stdin the gate refuses (a process started outside Claude Code is never approved) [rc=$rc: ${out:0:160}]" '[ $rc = 5 ] && [ -e "$H18/.Trash/k" ] && printf "%s" "$out" | grep -q "Finder"'
 fi
 env -i HOME="$H18" /bin/bash -c '"$0" --all' "$H18/.megavibe/scripts/trash-empty.sh" >/dev/null 2>&1; rc=$?
 check "a shell with an empty environment: refused with exit 5" '[ $rc = 5 ] && [ -e "$H18/.Trash/k" ]'
