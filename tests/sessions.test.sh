@@ -16,9 +16,9 @@ sess() { env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"
 
 live() { sleep 120 >/dev/null 2>&1 & LIVE=$!; pids+=("$LIVE"); }   # sets $LIVE (a command substitution would wait for the sleep and lose pids)
 now=$(date +%s)
-register() { # register <pid> <session id> <name> [started seconds ago]
+register() { # register <pid> <session id> <name> [started seconds ago] [cwd]
   local ms=$(( (now - ${4:-60}) * 1000 ))
-  jq -n --argjson pid "$1" --arg id "$2" --arg name "$3" --arg cwd "$HOME/proj" --argjson ms "$ms" \
+  jq -n --argjson pid "$1" --arg id "$2" --arg name "$3" --arg cwd "${5:-$HOME/proj}" --argjson ms "$ms" \
     '{pid: $pid, sessionId: $id, name: $name, cwd: $cwd, status: "idle", startedAt: $ms}' > "$T/cfg/sessions/$1.json"
 }
 launched() { # launched <pid> <parent id or ""> [started seconds ago] [parent pid] [parent cwd]
@@ -122,16 +122,40 @@ register "$Q2" resumed-child resumedchild 400; launched "$Q2" resumed-parent 400
 sess | grep resumedchild | grep -vq ORPHAN || fail "a resumed parent (new pid, same id) must not make an orphan"
 sess | grep -q '└ resumedchild' || fail "the child must still nest under the resumed parent"
 
-# /clear AND resume: the parent's pid is dead and its id changed (found by neither lookup). A live session
-# started later in the parent's recorded cwd makes it "not found", never ended; without one it is an orphan.
+# /clear AND resume: the parent's pid is dead and its id changed (found by neither lookup). A newer live
+# session in the parent's recorded cwd makes it "not found": listed by --orphans and counted separately in
+# --status, never reported as ended. Without one it is an orphan.
 live; Z1=$LIVE; live; Z2=$LIVE
 register "$Z1" clear-new-id resumedclear 100
 register "$Z2" combo-child comboChild 400; launched "$Z2" clear-old-id 400 999998 "$HOME/proj"
 out=$(sess); echo "$out" | grep comboChild | grep -q ORPHAN && fail "/clear plus resume must not report an ended parent"
 echo "$out" | grep comboChild | grep -q 'not found' || fail "/clear plus resume must say the parent was not found"
-sess --status | grep -Eq "(pids|, )$Z2([,)]|$)" && fail "status must not alarm on a possibly resumed parent"
+sess --status | grep 'which has ended\|ended (pids' | grep -q "$Z2" && fail "status must not call a possibly resumed parent ended"
+sess --status | grep 'not found, possibly resumed' | grep -q "$Z2" || fail "status must count the not-found row separately, with its pid"
+sess --status | grep 'not found' | grep -qi 'tell the user' && fail "the not-found status line must carry no instruction"
+sess --orphans | grep comboChild | grep -q 'not found' || fail "--orphans must list a not-found row (no silent false negative)"
 launched "$Z2" clear-old-id 400 999998 "$HOME/elsewhere"
 sess | grep comboChild | grep -q ORPHAN || fail "no live session in the parent's cwd: orphan"
+
+# Siblings in the parent's cwd must not hide each other: with the parent ended for good, both helpers stay reported.
+live; S1=$LIVE; live; S2=$LIVE
+register "$S1" sib-a siblinga 250 "$HOME/sibdir"; launched "$S1" ended-sib-parent 250 999996 "$HOME/sibdir"
+register "$S2" sib-b siblingb 240 "$HOME/sibdir"; launched "$S2" ended-sib-parent 240 999996 "$HOME/sibdir"
+so=$(sess --orphans)
+echo "$so" | grep siblinga | grep -q 'which has ended' || fail "sibling a must be reported as an orphan"
+echo "$so" | grep siblingb | grep -q 'which has ended' || fail "sibling b must be reported too (siblings must not hide each other)"
+
+# A parent that ended for good while an UNRELATED newer session runs in its directory: still reported by --orphans
+# and --status (as "not found"), never silently.
+live; U1=$LIVE; live; U2=$LIVE
+register "$U1" unrelated-new unrelatedsess 30 "$HOME/udir"
+register "$U2" lone-child lonechild 300 "$HOME/udir"; launched "$U2" ended-for-good 300 999997 "$HOME/udir"
+sess --orphans | grep lonechild | grep -q 'not found' || fail "--orphans must list a child whose parent may have ended, even with an unrelated session in its cwd"
+sess --status | grep 'not found' | grep -q "$U2" || fail "--status must carry that pid"
+
+# A legacy record (no parentCwd) behaves as before: parent not found means orphan.
+live; L1=$LIVE; register "$L1" legacy-child legacychild 200; launched "$L1" legacy-gone 200 999995
+sess --orphans | grep legacychild | grep -q 'which has ended' || fail "a record without parentCwd is an orphan when its parent is not found"
 
 # Both script lists the wrapper installs from must carry sessions.sh (a missed list leaves existing installs without it).
 [ "$(grep -c 'scripts/sessions.sh' "$REPO/setup.sh")" -ge 1 ] || fail "setup.sh does not install sessions.sh"

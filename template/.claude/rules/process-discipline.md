@@ -106,7 +106,7 @@ orphan. Before killing anything:
 - Confirm the parent: `ps -p <pid> -o ppid=`. PPID 1 (launchd/init) = orphaned.
 - If PPID is alive, trace it (`ps -p <ppid> -o command=`) — a live parent means the process is still owned. Leave it.
 - Never batch-kill by `etime` or a name match alone. Match each candidate against the expected set first.
-- A Claude session started by another session (tmux, ssh) is not PPID 1: its parent is the tmux server. `megavibe sessions --orphans` lists live sessions whose launcher session has ended (from the wrapper's launch records), and the session-start table shows an "Orphaned sessions" row when there are any. Tell the user; ending them is their call.
+- A Claude session started by another session on this machine (tmux) is not PPID 1: its parent is the tmux server. `megavibe sessions --orphans` lists live sessions whose launcher session has ended (from the wrapper's launch records), and the session-start table shows an "Orphaned sessions" row when there are any. Tell the user about orphans; a "parent not found" row may be a resumed parent, so it is not an alarm. Ending any of them is their call.
 
 This is a real footgun: "kill the oldest `node`/`gemini-mcp`/`python` process"
 will happily take down a multi-day session that is still in active use.

@@ -9,9 +9,12 @@
 # `megavibe` wrapper writes ($MEGAVIBE_HOME/launches/<pid>.json). A record is joined to a session by pid
 # and accepted only when its start time agrees with the registry's (pid reuse). The parent is found by
 # the pid the record holds, else by session id: a session's id changes on /clear while its pid stays,
-# so an id alone would call a live parent ended. A parent found by neither (/clear, then resumed under a new
-# pid) is reported as "not found", never as ended, while a newer live session runs in the parent's recorded cwd. Only sessions megavibe launched with a parent are
-# linked: a session you started yourself has none, and `claude -p` workers leave no record. Read-only.
+# so an id alone would call a live parent ended. A parent found by neither (/clear, then resumed under a
+# new pid) cannot be told from one that ended for good, so when a newer live session that is not a sibling
+# runs in the parent's recorded cwd the child is listed as "not found" (shown by --orphans and as a separate
+# pids-only count in --status, without the "tell the user" instruction); otherwise it is an orphan. Only
+# sessions megavibe launched with a parent are linked: a session you started yourself has none, and
+# `claude -p` workers leave no record. Read-only.
 # Names and paths are reduced to a safe character set before they are printed. --status, injected into every
 # session start and read by a model, carries no names or paths at all: counts and pids only. One unreadable
 # file is skipped, never the list.
@@ -83,18 +86,24 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
       | ((if $x.ppid != null then ($base | map(select(.pid == $x.ppid and .id != $x.id and .started <= $x.started + 5000)) | .[0].id) else null end)   # a parent started before its child: a reused pid did not
          // (if $x.parent != null then ($base | map(select(.id == $x.parent and .id != $x.id)) | .[0].id) else null end)) as $up   # a parent resumed under a new pid keeps its id
       | $x + {up: $up, orphan: ($x.parent != null and $up == null)})) as $rows
-  | ($rows | map(. as $x | if .orphan and .pcwd != null and ($rows | any(.cwd == $x.pcwd and .id != $x.id and .started > $x.started)) then . + {orphan: false, maybe: true} else . end)) as $rows
+  | ($rows | map(. as $x | if .orphan and .pcwd != null and ($rows | any(.cwd == $x.pcwd and .id != $x.id and .started > $x.started and .parent != $x.parent)) then . + {orphan: false, maybe: true} else . end)) as $rows
   | ($rows | map(select(.orphan))) as $orph
+  | ($rows | map(select(.maybe))) as $maybe
   | def line($d): (("  " * $d) + (if $d > 0 then "└ " else "" end) + .name) + "\t\(.pid)\t\(.state)\t\(.started | age)\t\(.by)\t\(.dir)"
       + (if .orphan then "\tORPHAN: started by \(.parent[0:8]), which has ended" elif .maybe then "\tparent not found (resumed under a new id?)" else "" end);
     def tree($d): . as $n | line($d),
       (if $d < 8 then ($rows | map(select(.up == $n.id)) | sort_by(.started) | .[] | tree($d + 1)) else empty end);
     if $mode == "status" then
-      (if ($orph | length) == 0 then empty
-       else "\($orph | length) running session(s) were started by a session that has ended (pids: \($orph | map(.pid | tostring) | join(", "))). Tell the user; `megavibe sessions --orphans` lists them. Do not stop them yourself."
-       end)
+      ([ (if ($orph | length) == 0 then empty
+          else "\($orph | length) running session(s) were started by a session that has ended (pids: \($orph | map(.pid | tostring) | join(", "))). Tell the user; `megavibe sessions --orphans` lists them. Do not stop them yourself."
+          end),
+         (if ($maybe | length) == 0 then empty
+          else "\($maybe | length) more running session(s) have a launcher that was not found, possibly resumed under a new id (pids: \($maybe | map(.pid | tostring) | join(", "))). `megavibe sessions --orphans` lists them."
+          end) ] | join("\n"))
     elif $mode == "orphans" then
-      (if ($orph | length) == 0 then "no orphaned sessions" else ($orph[] | "\(.name)\t\(.pid)\t\(.dir)\tstarted by \(.parent[0:8]), which has ended") end)
+      (if ($orph | length) + ($maybe | length) == 0 then "no orphaned sessions"
+       else (($orph[] | "\(.name)\t\(.pid)\t\(.dir)\tstarted by \(.parent[0:8]), which has ended"),
+             ($maybe[] | "\(.name)\t\(.pid)\t\(.dir)\tparent \(.parent[0:8]) not found (resumed under a new id?)")) end)
     else
       "NAME\tPID\tSTATE\tAGE\tSTARTED BY\tDIR",
       ($rows | map(select(.up == null)) | sort_by(.started) | .[] | tree(0))

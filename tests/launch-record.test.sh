@@ -88,11 +88,13 @@ run 4020 MEGAVIBE_PARENT_SESSION=grandparent-A CLAUDE_CODE_SESSION_ID=child-C
 run 4021 CLAUDE_CODE_SESSION_ID=child-C
 [ "$(field .parentSessionId 4021)" = "child-C" ] || fail "grandchild must link to its parent"
 # The parent's pid is recorded while a live session is registered under that id: /clear changes the id, not the pid.
-printf '{"pid":%s,"sessionId":"dddd-4444"}\n' "$$" > "$T/cfg/sessions/$$.json"
+printf '{"pid":%s,"sessionId":"dddd-4444","cwd":"/some/parent/dir"}\n' "$$" > "$T/cfg/sessions/$$.json"
 run 4030 MEGAVIBE_PARENT_SESSION=dddd-4444
 [ "$(field .parentPid 4030)" = "$$" ] || fail "parentPid of a live registered parent"
+[ "$(field .parentCwd 4030)" = "/some/parent/dir" ] || fail "parentCwd of a live registered parent"
 run 4031 MEGAVIBE_PARENT_SESSION=unknown-5555
 [ "$(field .parentPid 4031)" = "null" ] || fail "parentPid of an unregistered parent"
+[ "$(field .parentCwd 4031)" = "null" ] || fail "parentCwd of an unregistered parent"
 sleep 0 & gone=$!; wait "$gone" || true
 if ! kill -0 "$gone" 2>/dev/null; then  # skip if the OS already reused the pid
   printf '{"pid":%s,"sessionId":"eeee-5555"}\n' "$gone" > "$T/cfg/sessions/$gone.json"
@@ -101,6 +103,7 @@ if ! kill -0 "$gone" 2>/dev/null; then  # skip if the OS already reused the pid
 fi
 run 4033
 [ "$(field .parentPid 4033)" = "null" ] || fail "no parent, no parentPid"
+[ "$(field .parentCwd 4033)" = "null" ] || fail "no parent, no parentCwd"
 rm -f "$T/cfg/sessions/$$.json"
 
 # The wrapper's own re-exec gets the value back, set-but-empty included, and nothing when it was never set.

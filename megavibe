@@ -2418,14 +2418,14 @@ update_lock_pid() {
 # The session registry (~/.claude/sessions) has no parent field, so tools that list sessions
 # (`megavibe sessions`, or any other session viewer) join this record to a live session by claude's PID. Parent = the
 # explicit MEGAVIBE_PARENT_SESSION (set, even empty = "no parent"; a launcher that is not the
-# session's own child, like tmux or ssh, must pass it), else CLAUDE_CODE_SESSION_ID, believed only
+# session's own child, like tmux, must pass it), else CLAUDE_CODE_SESSION_ID, believed only
 # while an ancestor process of this wrapper is that session's registered process (its registry
 # file <pid>.json names that exact id): a tmux server hands every later window the environment of
 # whoever started it, so a bare env value can name an unrelated session. Matching the registry,
 # not a process name, works for any install layout (native binary, node-hosted, versioned path).
 # A launch with no parent still gets a record, so "started by megavibe" can be told apart from a
 # bare `claude`. Never blocks or fails a launch. The record is
-# {pid, launcher, parentSessionId, parentPid, startedAt}; parentPid is the live parent's pid when the
+# {pid, launcher, parentSessionId, parentPid, parentCwd, startedAt}; parentPid is the live parent's pid when the
 # registry knows the parent (see session_pid), so a viewer can follow a parent across /clear.
 is_session_ancestor() { # is_session_ancestor <session id>
   local want="$1" x=$$ n=0 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions" got
