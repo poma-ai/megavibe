@@ -73,21 +73,22 @@ fi
 # its last hours with room below the sprint target; nothing otherwise, and then the flag keeps its four fields.
 # Bounded and written to a file like the pace calls. Only lines that are sprint sentences are relayed.
 SPR=""; SK=""
-if [ -n "$BAND" ] && command -v perl &>/dev/null; then
-  sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null) && {
+if [ -n "$BAND" ]; then
+  src=1
+  if command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
     ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
     src=$?
-    # whole sentences only: a line cut off by the deadline lacks the closing words
-    SPR=$(grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' "$sf" 2>/dev/null | head -n 2 | cut -c1-900)
+    # whole sentences only: a line cut off by the deadline, or longer than any real one, lacks the closing words
+    SPR=$(cut -c1-1200 "$sf" 2>/dev/null | grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' | head -n 2)
     rm -f "$sf"
     case "$SPR" in *"usage sprint: Claude "*) SK="c" ;; esac
     case "$SPR" in *"usage sprint: Codex "*) SK="${SK}x" ;; esac
     [ -z "$SK" ] || { SK="s$SK"; SPR=$(printf '%s' "$SPR" | tr '\n' ' '); SPR="${SPR% }"; }
-    # A call that timed out or failed says nothing about the sprint: keep the state the session was last told
-    # (no sentence, no withdrawal) instead of reading silence as "the sprint is over".
-    if [ "$src" != 0 ]; then SPR=""; SK=""; case "${PS:-}" in sc|sx|scx) SK="$PS" ;; esac; fi
-    [ -z "$SK" ] || KEY="$KEY:$SK"
-  }
+  fi
+  # A call that could not run, timed out or failed says nothing about the sprint: keep the state the session was
+  # last told (no sentence, no withdrawal) instead of reading silence as "the sprint is over".
+  if [ "$src" != 0 ]; then SPR=""; SK=""; case "${PS:-}" in sc|sx|scx) SK="$PS" ;; esac; fi
+  [ -z "$SK" ] || KEY="$KEY:$SK"
 fi
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal state: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the state changed.

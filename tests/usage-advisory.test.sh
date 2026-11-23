@@ -186,6 +186,12 @@ reset; export STUB_SPRINT="$SC" STUB_BAND_FAIL=1
 o=$(ev SessionStart | run)
 check 'failed band call: silent, sprint included' '[ -z "$o" ]'
 unset STUB_BAND_FAIL
+reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:sc' > "$FLAG"
+o=$(ev PreToolUse | (cd "$P" && PATH="$T/nobin" /bin/bash "$HOOK") | ctx)
+check 'no perl mid-sprint: the sprint state is unknown, not over (no withdrawal, flag kept)' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:u:u:sc" ]'
+reset; claude_pace 90 98 91 '' ''; export STUB_SPRINT="${SC% the 100*} $(printf 'x%.0s' $(seq 1 1300)) the 100% backstop and the review floor are unchanged."
+o=$(ev SessionStart | run | ctx)
+check 'an overlong line is not relayed, in part or whole' '[[ "$o" != *"usage sprint"* ]]'
 check 'no temp files left behind (sprint)' '[ -z "$(ls "$TMPDIR" | grep usage-)" ]'
 printf 'usage-advisory: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
