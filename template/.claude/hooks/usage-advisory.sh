@@ -77,7 +77,7 @@ SPR=""; SK=""
 if [ -n "$BAND" ]; then
   src=1
   if [ "$SECONDS" -lt 3 ] && command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
-    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
+    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice --peek >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
     src=$?
     # whole sentences only: a line cut off by the deadline, or longer than any real one, lacks the closing words
     SPR=$(cut -c1-1200 "$sf" 2>/dev/null | grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' | head -n 2)

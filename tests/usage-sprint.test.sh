@@ -183,6 +183,16 @@ check 'SPRINT_BURST in the environment does not reach the ordinary forecast' '[ 
 fo=$(SPRINT_BURST=junk /bin/bash "$UR" forecast)
 check 'a junk SPRINT_BURST does not blank it either' '[ "$fo" = "$fo0" ]'
 
+# a five-hour surge: weekly flat at 72, five-hour 65 -> 84 within four minutes, 2 h left: the five-hour window projected over a
+# 30-minute unit is over its cap, so no sprint (it advised the top tier, then withdrew when the window hit 100)
+R2=$((NOW + 7200))
+{ rowfh 1500 72 $R2 30; rowfh 360 72 $R2 40; rowfh 30 72 $R2 50; rowfh 8 72 $R2 65; rowfh 4 72 $R2 84; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 65 -> 84 in four minutes: no sprint (5h-hot, the projected five-hour use is over the cap)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+{ rowfh 1500 72 $R2 30; rowfh 360 72 $R2 40; rowfh 30 72 $R2 50; rowfh 8 72 $R2 52; rowfh 4 72 $R2 54; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 52 -> 54 in four minutes (a slow climb, projected under the cap): still a sprint' '[ "$(f 2)" = sprint ]'
+
 # the five-hour window is hot: top-tier work would only hit that limit
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -248,6 +258,15 @@ check 'six hours left, cold cache: not a sprint' '[ "$(f 2)" = "-" ]'
 codex "$RN" 77 "$RO" >> "$T/codex2/sessions/x/rollout-1.jsonl"
 fo=$(cx forecast)
 check 'a sprint call on a cold cache left nothing behind: the next ordinary forecast sees the new 77' '[ "$(printf "%s" "$fo" | cut -d"|" -f2)" = 77 ]'
+# a cold cache is scanned ONCE by a sprint call (a second, "fresh" scan after a scan that already came from disk doubled the
+# time and could cross the 2 s alarm)
+mkdir -p "$T/shim"; REALFIND=$(command -v find)
+printf '#!/bin/sh\necho x >> "%s/find.log"\nexec "%s" "$@"\n' "$T" "$REALFIND" > "$T/shim/find"; chmod +x "$T/shim/find"
+rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache" "$T/find.log"
+RR=$((RN + 7200))
+{ codex "$((RN - 25 * 3600))" 60 "$RR"; codex "$((RN - 5 * 3600))" 66 "$RR"; codex "$((RN - 120))" 70 "$RR"; } > "$T/codex2/sessions/x/rollout-1.jsonl"
+o=$(PATH="$T/shim:$PATH" cx sprint)
+check 'cold cache, in the window: one scan only (find ran once), and it is a sprint' '[ "$(wc -l < "$T/find.log" | tr -d " ")" = 1 ] && [ "$(f 2)" = sprint ]'
 # an EMPTY cached Codex result must not hide readings written since (the sprint re-reads once past the cache)
 rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"
 : > "$T/codex2/sessions/x/rollout-1.jsonl"

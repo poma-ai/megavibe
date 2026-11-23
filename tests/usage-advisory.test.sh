@@ -19,6 +19,7 @@ case "$1" in
   balance) echo "${STUB_BALANCE:--|}" ;;
   advisory) echo "${STUB_ADVISORY:-}" ;;
   sprint-advice)
+    printf '%s' "${2:-}" > "${STUB_ARGLOG:-/dev/null}"
     [ -n "${STUB_SPRINT_SLEEP:-}" ] && { { sleep "$STUB_SPRINT_SLEEP" & }; sleep "$STUB_SPRINT_SLEEP"; }
     [ -n "${STUB_SPRINT:-}" ] && printf '%s\n' "$STUB_SPRINT"
     exit "${STUB_SPRINT_RC:-0}" ;;
@@ -195,6 +196,11 @@ check 'an overlong line is not relayed, in part or whole' '[[ "$o" != *"usage sp
 reset; claude_pace 50 40 147 '' ''; codex_pace 60 30 222 '' ''; export STUB_SLEEP=30 STUB_SPRINT_SLEEP=30 STUB_SPRINT="$SC"
 s=$SECONDS; o=$(ev SessionStart | run); e=$((SECONDS - s))
 check "slow pace calls AND a slow sprint call: still under the 10 s hook deadline ($e s)" '[ "$e" -lt 9 ]'
+# the hook asks for sprint-advice with --peek: an older installed router has no such mode and would run its state-writing default
+reset; export STUB_ARGLOG="$T/sprint-arg" STUB_SPRINT="$SC"; claude_pace 90 98 91 '' ''
+ev PreToolUse | run >/dev/null
+check 'the hook calls sprint-advice with --peek' '[ "$(cat "$T/sprint-arg" 2>/dev/null)" = "--peek" ]'
+unset STUB_ARGLOG STUB_SPRINT
 # per-provider unknown: one provider's check failing does not hide the other one's change
 reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:scx' > "$FLAG"
 export STUB_SPRINT='usage sprint-unknown: Codex'

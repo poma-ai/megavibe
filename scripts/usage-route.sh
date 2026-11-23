@@ -34,7 +34,8 @@
 #                (nothing useful can start, and the per-hour figure would be absurd), or no live window
 #   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
-#   5h-hot       the five-hour window is at 85 or more: top-tier work would only hit that limit
+#   5h-hot       the five-hour window is at 85 or more, counting its climb over the last 30 minutes continued for a
+#                30-minute unit: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
 #                (MEGAVIBE_SPRINT_TARGET, 99; a whole number below 100, so the 100 backstop is never the aim):
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
@@ -139,7 +140,7 @@ codex_row() {
 none() {   # no evidence: the normal band, in the shape of the mode asked for
   # Sprint, Codex: an EMPTY cached read (written moments ago, before any reading existed) must not hide readings written
   # since: look once more past the cache (the re-run is marked, so it cannot recurse).
-  if [ "$MODE" = sprint ] && [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ]; then
+  if [ "$MODE" = sprint ] && [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ] && [ "${CODEX_CACHED:-0}" = 1 ]; then
     fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
     case "$fresh" in codex\|*) printf '%s\n' "$fresh"; exit 0 ;; esac
   fi
@@ -284,7 +285,7 @@ if [ "$MODE" = sprint-advice ]; then
     # never as "not sprinting", so a slow Codex read cannot hide that Claude's sprint ended (or the reverse)
     pf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint-adv.XXXXXX" 2>/dev/null) || pf=""
     pp=""; st=""
-    if [ -n "$pf" ] && command -v perl >/dev/null 2>&1 && ( MEGAVIBE_ROUTER_PROVIDER=$p perl -e 'alarm 2; exec @ARGV' bash "$0" sprint >"$pf" 2>/dev/null </dev/null ) 2>/dev/null; then
+    if [ -n "$pf" ] && command -v perl >/dev/null 2>&1 && ( MEGAVIBE_ROUTER_PROVIDER=$p perl -e 'alarm 2; exec @ARGV' bash "$0" sprint >"$pf" 2>/dev/null </dev/null; exit $? ) 2>/dev/null; then
       IFS='|' read -r pp st hl u fc spare spend _ _ fhu <"$pf" || true
     fi
     [ -z "$pf" ] || rm -f "$pf"
@@ -352,6 +353,15 @@ fi
 
 ROW=""; HISTORY="[]"
 if [ "$PROVIDER" = codex ]; then
+  # Sprint: was this read served from the (2-minute) cache? Only then is a fresh re-read past the cache worth a second scan.
+  CODEX_CACHED=0
+  if [ "$MODE" = sprint ] && [ -z "${MEGAVIBE_NOW:-}" ]; then
+    _cc="$MV/usage/codex-row-forecast.cache"
+    if [ -f "$_cc" ] && [ ! -L "$_cc" ]; then
+      _at=$(head -n 1 "$_cc" 2>/dev/null)
+      case "$_at" in ''|*[!0-9]*) ;; *) [ "$((NOW - _at))" -ge 0 ] && [ "$((NOW - _at))" -lt 120 ] && CODEX_CACHED=1 ;; esac
+    fi
+  fi
   ROW=$(codex_row); HISTORY="${ROW:-[]}"
 elif [ -f "$FILE" ] && [ -r "$FILE" ]; then
   if [ "$MODE" = pace ] || [ "$MODE" = status-pace ] || [ "$FCMODE" = 1 ]; then
@@ -464,16 +474,21 @@ if [ "$MODE" = sprint ]; then
   if [ "${MEGAVIBE_SPRINT:-1}" = 0 ]; then printf '%s|-|%s|%s|||||off|%s\n' "$PROVIDER" "$s_hl" "${s_used:-}" "${s_fh:-}"; exit 0; fi
   if [ "$s_in" != in ]; then printf '%s|-|%s|%s|||||outside|%s\n' "$PROVIDER" "$s_hl" "${s_used:-}" "${s_fh:-}"; exit 0; fi
   # inside the window a cached Codex reading is not good enough: run once more past the cache
-  if [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ]; then
+  if [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ] && [ "${CODEX_CACHED:-0}" = 1 ]; then
     fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
     case "$fresh" in codex\|*) printf '%s\n' "$fresh"; exit 0 ;; esac   # a re-run that printed nothing falls through to this pass
   fi
   OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2100; [ "$STALE" -ge 2100 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
-  s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v t="$STARGET" -v ot="$OT" 'BEGIN {
+  # The five-hour window climbing fast: its rise over the last 30 minutes (at least 5 minutes of span), continued for a
+  # 30-minute unit, is added to its used percent before the 85 check.
+  s_fhadd=$(jq -r --argjson now "$NOW" '[.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now and .t >= $now - 1800)] | sort_by(.t)
+      | if length < 2 then 0 else (first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * 1800) end) end' <<<"$HISTORY" 2>/dev/null)
+  case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
+  s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"
-    else if (fh ~ /^[0-9]+([.][0-9]+)?$/ && fh + 0 >= 85) print "5h-hot"
+    else if (fh ~ /^[0-9]+([.][0-9]+)?$/ && fh + fhadd >= 85) print "5h-hot"
     else if (spare + 0 < 2 || used + 0 > t - 2 || ot + 0 >= t + 0) print "no-room"
     else print "ok" }')
   s_state="-"; [ "$s_reason" != ok ] || s_state=sprint
