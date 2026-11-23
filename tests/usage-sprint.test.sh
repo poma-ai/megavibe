@@ -257,6 +257,20 @@ RQ=$((RN + 7200))
 o=$(cx sprint)
 check 'codex: an empty cache from a moment ago, readings written since: sprint is found' '[ "$(f 2)" = sprint ]'
 
+# `megavibe usage sprint` against an OLDER installed router (it has no sprint mode and runs its default, state-writing mode)
+mkdir -p "$T/mvold/scripts" "$T/mvold/usage"
+cat > "$T/mvold/scripts/usage-route.sh" <<'OLDR'
+#!/bin/bash
+[ "${2:-}" = "--peek" ] || echo touched > "${MEGAVIBE_HOME:-/nonexistent}/usage/route-state.json"
+echo "over|sonnet|medium|7d 90% used"
+OLDR
+chmod +x "$T/mvold/scripts/usage-route.sh"
+oe=$(HOME="$T/home" MEGAVIBE_HOME="$T/mvold" /bin/bash "$REPO/megavibe" usage sprint 2>&1 >/dev/null); orc=$?
+check 'megavibe usage sprint with an older installed router: refuses with an upgrade message, exit 1, no state written' '[ "$orc" = 1 ] && [[ "$oe" == *"sprint"* ]] && [ ! -e "$T/mvold/usage/route-state.json" ]'
+{ row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+ne=$(HOME="$T/home" MEGAVIBE_HOME="$T/mv" /bin/bash "$REPO/megavibe" usage sprint 2>/dev/null); nrc=$?
+check 'megavibe usage sprint with the current router: both provider lines, the advice, exit 0, no routing state written' '[ "$nrc" = 0 ] && [[ "$ne" == claude\|sprint\|* ]] && [[ "$ne" == *$'"'"'\ncodex|'"'"'* ]] && [[ "$ne" == *"usage sprint: Claude"* ]] && [ ! -e "$MEGAVIBE_USAGE_STATE" ]'
+
 # ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
 adv() { /bin/bash "$UR" sprint-advice; }
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"

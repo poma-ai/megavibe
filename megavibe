@@ -1449,7 +1449,14 @@ if [ "${1:-}" = "usage" ]; then
     forecast) [ -f "$_r" ] || { echo "megavibe usage: usage-route.sh not installed" >&2; exit 1; }
       for _p in claude codex; do MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" forecast --peek; done; exit 0 ;;
     sprint) [ -f "$_r" ] || { echo "megavibe usage: usage-route.sh not installed" >&2; exit 1; }
-      for _p in claude codex; do MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" sprint; done; bash "$_r" sprint-advice; exit 0 ;;
+      # --peek and a shape check: an older installed router has no sprint mode and would run its default, state-writing one
+      _out=""
+      for _p in claude codex; do
+        _l=$(MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" sprint --peek 2>/dev/null)
+        case "$_l" in "$_p|sprint|"*|"$_p|-|"*) _out="$_out$_l"$'\n' ;;
+          *) echo "megavibe usage: $_r has no sprint state (an older install); run bash ~/.megavibe/setup.sh to update it" >&2; exit 1 ;; esac
+      done
+      printf '%s' "$_out"; bash "$_r" sprint-advice --peek; exit 0 ;;
     *) echo "usage: megavibe usage probe {run [--every MIN]|status} | megavibe usage forecast | megavibe usage sprint" >&2; exit 2 ;;
   esac
 fi
