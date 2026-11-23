@@ -852,6 +852,7 @@ def user_agent_bootstrap(argv):
     if cut is not None:
         if not all(re.match(r"^([0-9]*[<>&]+|/dev/null|[0-9]+)$", x) for x in rest[cut:]): return False
         rest = rest[:cut]
+        if rest and re.match(r"^[0-9]+$", rest[-1]): rest = rest[:-1]    # the 2 of 2>/dev/null
     if len(rest) != 2 or any(x.startswith("-") for x in rest): return False
     dom, path = rest
     m = re.match(r"^(gui|user)/([0-9]+)$", dom)
