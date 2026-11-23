@@ -375,7 +375,7 @@ def is_regular(path):   # a FIFO or device at a config/cache path would block th
     try: return stat.S_ISREG(os.stat(path).st_mode)
     except OSError: return False
 
-NOEXEC = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "log.showSignature=false", "-c", "diff.external=", "-c", "core.pager=cat"]   # a configured fsmonitor program would run on status/diff
+NOEXEC = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "log.showSignature=false", "-c", "diff.external=", "-c", "core.pager=cat", "-c", "diff.relative=false"]   # a configured fsmonitor program would run on status/diff
 def git(act, *a, timeout=10):
     return run(["git"] + act["gitopts"] + NOEXEC + list(a), cwd=act["cwd"] if os.path.isdir(act["cwd"]) else None, timeout=timeout)
 
@@ -834,6 +834,8 @@ def handle_pr(act):
     texts = [_whole.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
     unread = []
     _early = False
+    if flag_value(argv, ["--recover"]):   # restores a saved title and body the hook cannot see
+        return ["%s is PUBLIC and the pull request is created with --recover, which restores saved title and body text that was not scanned. Create it without --recover." % (got or "the base repository")]
     _bf = [x for x in flag_value(argv, ["--body-file", "-F", "--template", "-T"]) if x != "-"]   # a template written earlier in the call is read too
     _cut = CMD.find("pr create") if "pr create" in CMD else CMD.find("pr  create")
     if _m and _bf and _cut > 0 and any(os.path.basename(x) in CMD[:_cut] for x in _bf):

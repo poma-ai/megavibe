@@ -334,6 +334,11 @@ asks "pr create after git commit (staged secret) in the same call" "$PC" "git co
 asks "pr create after a remote change in the same call" "$PC" "git remote set-url origin https://github.com/acme/pub.git && gh pr create -R acme/pub --title Fix --body Done" "separate call"
 PV=$T/pv; mkrepo "$PV" git@github.com:acme/priv.git; commit "$PV" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 asks "pr create after a remote retarget from a private origin asks" "$PV" "git remote set-url origin https://github.com/acme/pub.git && gh pr create --title Fix --body Done" "separate call"
+asks "pr create --recover asks" "$PC" "gh pr create -R acme/pub --recover /tmp/saved.json" "--recover"
+PRL=$T/prl; mkrepo "$PRL" https://github.com/acme/pub.git; mkdir -p "$PRL/sub"; commit "$PRL" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
+( cd "$PRL" && git config diff.relative true )
+asks "push from a subdirectory with diff.relative=true still sees the whole commit" "$PRL" "cd sub && git push" "[AWS key]"
+asks "pr create from a subdirectory with diff.relative=true still sees the whole commit" "$PRL" "cd sub && gh pr create --title Fix --body Done" "[AWS key]"
 printf 'clean\n' > "$PC/template.md"; printf 'AKIAABCDEFGHIJKLMNOP\n' > "$PC/secret.md"   # EXAMPLE: fixture
 asks "a copy over the body file earlier in the call asks to be run separately" "$PC" "cp secret.md template.md && gh pr create -R acme/pub --title Fix --body-file template.md" "separate call"
 asks "a copy over the template earlier in the call asks to be run separately" "$PC" "cp secret.md template.md && gh pr create -R acme/pub --title Fix --template template.md" "separate call"
