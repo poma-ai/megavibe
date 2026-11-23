@@ -149,7 +149,7 @@ Enforcement is in the scripts, not only here — under `--as-reviewer` they exit
 
 ## Cache heartbeat: unresolved
 
-Pinging an idle session to keep its cache warm moves 6.57x more raw tokens than a cold resume, but raw tokens may not be what plan limits meter (cache reads are priced about 0.1x, writes about 2x). Do not build heartbeat infrastructure on either conclusion until matched trials exist: several heartbeat-then-resume and several cold-resume cycles on comparable work, controlling for other activity in the window, compared on Claude Code's own usage display (not the API's token counts), re-fetched fresh because `/usage` can show a stale reading. Numbers and the trial design: **`README-delegation-measurements.md`**.
+In a model of 177 cold restarts since 2026-09-01, pinging an idle session to keep its cache warm moved 6.57x more raw tokens than a cold resume (one workload, not a general ratio), but raw tokens may not be what plan limits meter (cache reads are priced about 0.1x, writes about 2x). Do not build heartbeat infrastructure on either conclusion until matched trials exist: several heartbeat-then-resume and several cold-resume cycles on comparable work, controlling for other activity in the window, compared on Claude Code's own usage display (not the API's token counts), re-fetched fresh because `/usage` can show a stale reading. Numbers and the trial design: **`README-delegation-measurements.md`**.
 
 
 ## Tool routing
