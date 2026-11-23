@@ -231,7 +231,9 @@ emit_forecast() {
                  # to r+1, so every rise of 1 point or more from a reading in the 90 minutes before the NEWEST reading to
                  # that reading is rated (r+1) over its span, whatever came before it (an earlier dip does not switch this
                  # off) and however long ago the newest reading was taken (the evidence ages with new readings only).
-                 ([$rows[] | select(.t >= $last.t - 5400 and .t < $last.t and ($last.p - .p) >= 1)
+                 # the reading just before the newest counts whatever its age: after an idle gap the first new reading can carry a jump
+                 (([$rows[] | select(.t < $last.t)] | last) as $before
+                 | [$rows[] | select((.t >= $last.t - 5400 or .t == $before.t) and .t < $last.t and ($last.p - .p) >= 1)
                    | (($last.p - .p + 1) / (($last.t - .t) / 3600))] | max)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
@@ -273,7 +275,7 @@ if [ "$MODE" = sprint-advice ]; then
     [ "${st:-}" = sprint ] || continue
     LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
       printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points). ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend
-      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `usage-route.sh sprint` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, ot
+      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", (who == "codex" ? "MEGAVIBE_ROUTER_PROVIDER=codex usage-route.sh sprint" : "usage-route.sh sprint"), t, ot
       printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
   done
   exit 0

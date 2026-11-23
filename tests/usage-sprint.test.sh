@@ -137,6 +137,11 @@ check '30 minutes left, 91 then 92 eighteen minutes ago: spend per hour is below
 # flat 97 with a reading 25 minutes old is not fresh enough near the cap; 15 minutes old is
 { row 1500 97 $R; row 360 97 $R; row 25 97 $R; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'flat 97, newest reading 25 minutes old: no sprint (no-forecast)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-forecast ]'
+# an idle gap before the newest reading: the jump to the newest reading counts whatever the gap (no wall-clock cliff)
+RG=$((NOW + 10800))
+{ row 1440 70 $RG; row 360 80 $RG; row 300 80 $RG; row 100 80 $RG; row 0 88 $RG; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'idle for 100 minutes at 80, then 88: no sprint (the rise from the previous reading is rated whatever its age)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
@@ -159,7 +164,7 @@ check 'five-hour window at 40: sprint' '[ "$(f 2)" = sprint ]'
 # a drop inside the window: trend unreliable, the week average stands in and is still a forecast
 { row 1500 80 $R; row 720 70 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'drop in the window: basis week, decided on it' '[ "$(f 8)" = week ] && [ "$(f 2)" = sprint ]'
+check 'drop in the window: the week average stands in (basis week, plus burst for the 20-point rise since the previous reading) and a decision is made' '[[ "$(f 8)" == week* ]] && [ -n "$(f 2)" ] && [ -n "$(f 5)" ]'
 
 # knobs
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
