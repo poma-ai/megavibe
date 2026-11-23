@@ -37,6 +37,8 @@
 #   no-room      forecast within one point of the sprint target (MEGAVIBE_SPRINT_TARGET, 99; a whole number
 #                below 100, so the 100 backstop is never the aim), or the ordinary target is not below it
 #   off          MEGAVIBE_SPRINT=0
+# With no usage data at all the line is `provider|-|||||||` (no reason either); a provider without a five-hour
+# reading is not held back by the 5h-hot rule.
 # spare = sprint target - forecast; spend = points per hour from now that would reach the sprint target.
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
@@ -228,7 +230,7 @@ if [ "$MODE" = sprint-advice ]; then
     [ "${st:-}" = sprint ] || continue
     LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
       printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: %s points spare to %d%% (%s points per hour from now would reach it). ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend
-      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work until its forecast reaches %d%%, and re-read `usage-route.sh sprint` before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, t, ot
+      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) until its forecast reaches %d%%, and re-read `usage-route.sh sprint` before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, t, ot
       printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
   done
   exit 0

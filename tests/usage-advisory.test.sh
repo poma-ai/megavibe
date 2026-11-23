@@ -20,7 +20,8 @@ case "$1" in
   advisory) echo "${STUB_ADVISORY:-}" ;;
   sprint-advice)
     [ -n "${STUB_SPRINT_SLEEP:-}" ] && { { sleep "$STUB_SPRINT_SLEEP" & }; sleep "$STUB_SPRINT_SLEEP"; }
-    [ -n "${STUB_SPRINT:-}" ] && printf '%s\n' "$STUB_SPRINT" ;;
+    [ -n "${STUB_SPRINT:-}" ] && printf '%s\n' "$STUB_SPRINT"
+    exit "${STUB_SPRINT_RC:-0}" ;;
   forecast) if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = codex ]; then echo "${STUB_FC_CODEX:-}"; else echo "${STUB_FC_CLAUDE:-}"; fi ;;
   pace)
     if [ -n "${STUB_SLEEP:-}" ]; then
@@ -31,7 +32,7 @@ case "$1" in
 esac
 STUB
 FLAG="$P/.agent/LOGS/.usage-band.s1"
-reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_SPRINT STUB_SPRINT_SLEEP STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
+reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_SPRINT STUB_SPRINT_SLEEP STUB_SPRINT_RC STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
 # pace line: provider|used|elapsed|linear|recent_rate|recent_proj|remaining
 claude_pace() { export STUB_PACE_CLAUDE="claude|$1|$2|$3|$4|$5|3"; }
 codex_pace() { export STUB_PACE_CODEX="codex|$1|$2|$3|$4|$5|3"; }
@@ -134,8 +135,8 @@ if [ -n "$OLD_HOOK" ] && [ -f "$OLD_HOOK" ]; then
 fi
 
 # ---- end-of-window sprint advice (usage-route.sh sprint-advice) ---------------------------------------------------
-SC='usage sprint: Claude weekly window resets in 2.5 h. Top model tier on the hardest open work.'
-SX='usage sprint: Codex weekly window resets in 1.0 h. Top model tier on the hardest open work.'
+SC='usage sprint: Claude weekly window resets in 2.5 h. Top model tier on the hardest open work; the 100% backstop and the review floor are unchanged.'
+SX='usage sprint: Codex weekly window resets in 1.0 h. Top model tier on the hardest open work; the 100% backstop and the review floor are unchanged.'
 reset; claude_pace 90 98 91 '' ''; codex_pace 60 30 75 '' ''
 ev PreToolUse | run | ctx >/dev/null; k0=$(cat "$FLAG")
 check 'no sprint: the flag keeps its four fields (nothing changes for a session that never sprints)' '[ "$k0" = "normal:-:9:7" ]'
@@ -154,9 +155,22 @@ export STUB_SPRINT="$SC
 $SX"
 o=$(ev PreToolUse | run | ctx)
 check 'second subscription joins: both sentences' '[[ "$o" == *"$SC"* ]] && [[ "$o" == *"$SX"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:scx" ]'
+export STUB_SPRINT="$SC"
+o=$(ev PreToolUse | run | ctx)
+check 'one of two leaves the sprint: withdrawn for that one by name, the other restated' '[[ "$o" == *"sprint advice for Codex no longer applies"* ]] && [[ "$o" != *"for Claude no longer"* ]] && [[ "$o" == *"$SC"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:sc" ]'
+export STUB_SPRINT_SLEEP=30
+s=$SECONDS; o=$(ev PreToolUse | run | ctx); e=$((SECONDS - s))
+check "sprint call times out mid-sprint: unknown, not over (no withdrawal, flag kept; $e s)" '[ "$e" -lt 10 ] && [[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:sc" ]'
+unset STUB_SPRINT_SLEEP; export STUB_SPRINT_RC=3
+o=$(ev PreToolUse | run | ctx)
+check 'sprint call fails mid-sprint: unknown too' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:sc" ]'
+unset STUB_SPRINT_RC; export STUB_SPRINT="${SC%; the 100*}"
+o=$(ev SessionStart | run | ctx)
+check 'a cut-off sentence (no closing words) is not relayed' '[[ "$o" != *"usage sprint: Claude"* ]]'
+export STUB_SPRINT="$SC"; ev PreToolUse | run >/dev/null
 unset STUB_SPRINT
 o=$(ev PreToolUse | run | ctx)
-check 'sprint over (reset or target reached): withdrawn once, in words' '[[ "$o" == *"end-of-window sprint advice no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7" ]'
+check 'sprint over (reset or target reached): withdrawn once, in words' '[[ "$o" == *"end-of-window sprint advice for Claude no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7" ]'
 o=$(ev PreToolUse | run)
 check 'after the withdrawal: silent' '[ -z "$o" ]'
 reset; export STUB_BAND=over STUB_ADVISORY='over advice.' STUB_SPRINT="$SC"; claude_pace 90 98 91 '' ''

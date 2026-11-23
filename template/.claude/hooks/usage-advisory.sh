@@ -75,13 +75,19 @@ fi
 SPR=""; SK=""
 if [ -n "$BAND" ] && command -v perl &>/dev/null; then
   sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null) && {
-    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; : ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
-    SPR=$(grep -E '^usage sprint: (Claude|Codex) ' "$sf" 2>/dev/null | head -n 2 | cut -c1-900)
+    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
+    src=$?
+    # whole sentences only: a line cut off by the deadline lacks the closing words
+    SPR=$(grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' "$sf" 2>/dev/null | head -n 2 | cut -c1-900)
     rm -f "$sf"
+    case "$SPR" in *"usage sprint: Claude "*) SK="c" ;; esac
+    case "$SPR" in *"usage sprint: Codex "*) SK="${SK}x" ;; esac
+    [ -z "$SK" ] || { SK="s$SK"; SPR=$(printf '%s' "$SPR" | tr '\n' ' '); SPR="${SPR% }"; }
+    # A call that timed out or failed says nothing about the sprint: keep the state the session was last told
+    # (no sentence, no withdrawal) instead of reading silence as "the sprint is over".
+    if [ "$src" != 0 ]; then SPR=""; SK=""; case "${PS:-}" in sc|sx|scx) SK="$PS" ;; esac; fi
+    [ -z "$SK" ] || KEY="$KEY:$SK"
   }
-  case "$SPR" in *"usage sprint: Claude "*) SK="c" ;; esac
-  case "$SPR" in *"usage sprint: Codex "*) SK="${SK}x" ;; esac
-  [ -z "$SK" ] || { SK="s$SK"; KEY="$KEY:$SK"; SPR=$(printf '%s' "$SPR" | tr '\n' ' '); SPR="${SPR% }"; }
 fi
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal state: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the state changed.
@@ -103,7 +109,13 @@ case "$BAND" in over|under) MSG=$(bash "$UR" advisory 2>/dev/null) ;; esac
 RETRACT=""
 case "$PB" in over|under) [ "$BAND" = normal ] && RETRACT="Claude usage is back in the normal range; the earlier subagent model advice no longer applies." ;; esac
 case "$PP" in claude|codex) [ "$PREF" = "-" ] && RETRACT="${RETRACT:+$RETRACT }The earlier balance advice (which subscription optional work should lean on) no longer applies." ;; esac
-case "${PS:-}" in s?*) [ -z "$SK" ] && RETRACT="${RETRACT:+$RETRACT }The earlier end-of-window sprint advice no longer applies: the usual usage target and model advice are back." ;; esac
+# A subscription that was sprinting and no longer is: say so by name (the other one may still be).
+case "${PS:-}" in sc|sx|scx)
+  GONE=""
+  case "$PS" in *c*) case "$SK" in *c*) ;; *) GONE="Claude" ;; esac ;; esac
+  case "$PS" in *x) case "$SK" in *x) ;; *) GONE="${GONE:+$GONE and }Codex" ;; esac ;; esac
+  [ -n "$GONE" ] && RETRACT="${RETRACT:+$RETRACT }The earlier end-of-window sprint advice for $GONE no longer applies: its usual usage target and model advice are back." ;;
+esac
 [ -n "$RETRACT" ] && MSG="usage router: $RETRACT${MSG:+ $MSG}"
 # The projections line rides along whenever the hook speaks, and alone when at least one is known.
 if [ -n "$PROJMSG" ] && { [ -n "$MSG" ] || [ "$PROJKNOWN" = 1 ]; }; then MSG="${MSG:+$MSG }$PROJMSG"; fi
