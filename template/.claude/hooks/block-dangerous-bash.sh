@@ -177,7 +177,7 @@ case "$_TE|$_TE_RAW" in
       _TE_WHY="names trash-empty.sh"
     elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?][^[:space:]]*/'; then
       _TE_WHY="has a path whose first part is a glob that could expand to ~/.megavibe"
-    elif printf '%s' "$_TE_RAW" | grep -Eq "(^|[;&|(\`\"'{!]|\\\$\\(|(^|[[:space:]])(if|then|else|elif|do|while|until))[[:space:]]*((env|sudo|nohup|exec|command|time|nice|xargs|[a-z_][a-z0-9_]*=[^[:space:]]*)[[:space:]]+)*(osascript|osacompile|launchctl|crontab|open[[:space:]].*(terminal|iterm))" \
+    elif printf '%s' "$_TE_RAW" | grep -Eq "(^|[;&|(\`{!]|(-[a-z]*c|eval)[[:space:]]+[\"']|\\\$\\(|(^|[[:space:]])(if|then|else|elif|do|while|until))[[:space:]]*((env|sudo|nohup|exec|command|time|nice|xargs|[a-z_][a-z0-9_]*=[^[:space:]]*)[[:space:]]+)*(osascript|osacompile|launchctl|crontab|open[[:space:]].*(terminal|iterm))" \
          && printf '%s' "$_TE_RAW" | grep -Eq '[/~]\.megavibe|trash-e'; then
       _TE_WHY="starts a process outside Claude Code that mentions ~/.megavibe or trash-empty.sh"
     fi
@@ -852,6 +852,10 @@ def user_agent_bootstrap(argv):
     # LaunchAgents folder, no option, no dotdot. A system domain, a LaunchDaemons path, a
     # second plist or anything else stays blocked.
     rest = argv[2:]
+    cut = next((k for k, x in enumerate(rest) if re.match(r"^[0-9]*[<>&]", x)), None)
+    if cut is not None:
+        if not all(re.match(r"^([0-9]*[<>&]+|/dev/null|[0-9]+)$", x) for x in rest[cut:]): return False
+        rest = rest[:cut]
     if len(rest) != 2 or any(x.startswith("-") for x in rest): return False
     dom, path = rest
     m = re.match(r"^(gui|user)/([0-9]+)$", dom)
@@ -859,7 +863,7 @@ def user_agent_bootstrap(argv):
     home = os.path.expanduser("~")
     if path.startswith("~/"): path = home + path[1:]
     elif path.startswith("$HOME/"): path = home + path[5:]
-    if ".." in path.split("/") or "$" in path or "*" in path or "?" in path: return False
+    if ".." in path.split("/") or not re.match(r"^[A-Za-z0-9._/-]+$", path): return False
     pre = home + "/Library/LaunchAgents/"
     if os.path.exists(path) and not os.path.realpath(path).startswith(os.path.realpath(pre) + "/"): return False
     return path.startswith(pre) and path.endswith(".plist") and "/" not in path[len(pre):] and len(path) > len(pre) + 6
