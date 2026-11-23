@@ -435,19 +435,29 @@ bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@"; }
 tm() { bounded 15 tmux "$@" 9>&-; }
 one_line() { case "$2" in *$'\n'*|*$'\r'*) die "$1 must be one line" ;; esac; }
 rec_get() { awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$S/$1" 2>/dev/null || true; }
-rec_put() {   # rec_put NAME KEY=value...: sets those keys, keeps the others; one atomic replace
-  local name="$1" kv line keep; shift
-  mkdir -p "$S"
-  {
-    for kv in "$@"; do printf '%s\n' "$kv"; done
-    if [ -f "$S/$name" ]; then
-      while IFS= read -r line || [ -n "$line" ]; do
-        keep=1; for kv in "$@"; do [ "${kv%%=*}" != "${line%%=*}" ] || keep=0; done
-        [ "$keep" = 0 ] || printf '%s\n' "$line"
-      done < "$S/$name"
-    fi
-  } > "$S/.$name.tmp" && mv -f "$S/.$name.tmp" "$S/$name"
+# rec_put NAME KEY=value...: sets those keys, keeps the others; one atomic replace. The record is
+# built in memory and written with ONE write whose failure is seen (a full disk that still lets an empty
+# file be created must not pass for a written record), and read back before it replaces the old one.
+rec_put() {
+  local name="$1" kv line keep text=""; shift
+  mkdir -p "$S" || return 1
+  for kv in "$@"; do text="$text$kv
+"; done
+  if [ -f "$S/$name" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      keep=1; for kv in "$@"; do [ "${kv%%=*}" != "${line%%=*}" ] || keep=0; done
+      [ "$keep" = 0 ] || text="$text$line
+"
+    done < "$S/$name"
+  fi
+  printf '%s' "$text" > "$S/.$name.tmp" || return 1
+  [ "$(cat "$S/.$name.tmp" 2>/dev/null; printf x)" = "${text}x" ] || return 1
+  mv -f "$S/.$name.tmp" "$S/$name"
 }
+# From the moment a window is asked for until its record and stamp exist, the command is not
+# interruptible: a caller that cancels in between would leave a running session nothing knows about.
+hold_signals() { trap '' INT TERM HUP; }
+release_signals() { trap - INT TERM HUP; }
 need_name() { [[ "${1:-}" =~ $SESSION_RE ]] || die "session: a name is lower-case letters, digits, dot, dash, underscore (at most 63, starting with a letter or digit): '${1:-}'"; }
 need_rec() { need_name "${1:-}"; [ -f "$S/$1" ] || die "session: $1 is not registered (megavibe node session list)"; }
 # live_stamps: LIVE = the @mv_session stamps of all windows, LIVE_STATE = ok | noserver | unknown.
@@ -536,11 +546,13 @@ cmd_session_start() {
   # The record is made before the window, so a register that cannot be written starts nothing.
   { mkdir -p "$S" && : > "$S/.$name.new" && mv -f "$S/.$name.new" "$S/$name" && rec_put "$name" "state=starting" "dir=$dir" "task=$task" "sid=$sid" "model=$model"; } 2>/dev/null \
     || die "session start: cannot write the register in $S; nothing started"
+  hold_signals
   open_window "$win" "$dir" --name "$name" ${model:+--model "$model"} --session-id "$sid" "$prompt"
   rec_put "$name" "state=running" "window=$WID" "pid=$WPID" "pidstart=$(pid_start "$WPID")" "started=$(date '+%F %T')" \
     || { tm set-option -w -t "$WID" @mv_session "$name" 2>/dev/null || true
          die "session $name runs in window $WID (stamped) but its record could not be completed; fix $S, then: megavibe node session drop $name; megavibe node session add $name --window $WID --task <file>"; }
   stamp_window "$name"
+  release_signals
   say "started $name in tmux window $(node_tmux_session):$win ($WID); registered with task $task"
 }
 
@@ -611,6 +623,7 @@ cmd_session_resume() {
   # The register is written before the window is opened: if it cannot be written nothing is started
   # (a resume that launched and then failed to record would be launched again by the next try).
   rec_put "$name" "resumed=$(date '+%F %T')" 2>/dev/null || die "session resume: cannot write the register in $S; nothing started"
+  hold_signals
   if [ "$fresh" = 0 ] && [[ $sid =~ $UUID_RE ]]; then
     prompt="Your session ended unexpectedly (a crash or a tmux restart) and was resumed. Check what was in flight (git status, your last steps), then continue your task from $task: do not redo finished steps and do not discard uncommitted work. $(report_line)"
     open_window "$name" "$dir" --name "$name" ${model:+--model "$model"} --resume "$sid" "$prompt"
@@ -628,6 +641,7 @@ cmd_session_resume() {
     || { tm set-option -w -t "$WID" @mv_session "$name" 2>/dev/null || true
          die "session $name runs again in window $WID (stamped) but its record could not be updated; fix $S"; }
   stamp_window "$name"
+  release_signals
   say "$msg"
 }
 

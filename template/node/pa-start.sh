@@ -86,10 +86,13 @@ if [ -n "$SID" ]; then
   printf '%s\n' "$SID" >> "$SF.failed" 2>/dev/null; : > "$SF" 2>/dev/null
   nlog "pa-start: conversation $SID could not be resumed (it ended within $MIN s); starting a fresh PA, the id is added to pa.session.failed"
 fi
-NEW=""
+NEW=""; AFTER=""
 if [ -d "$N" ]; then
+  # Where the node restarts the PA, a fresh start can follow a crash too (the old conversation could not
+  # be resumed): the PA must look for what vanished with it, as the resume prompt asks.
+  AFTER=" If the megavibe node is installed here, also run 'megavibe node session check' (repo sessions that vanished) and set up your recurring ticks and watches again."
   NEW=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z')
   if [[ $NEW =~ $UUID_RE ]] && printf '%s\n' "$NEW" > "$SF.tmp" 2>/dev/null && mv -f "$SF.tmp" "$SF" 2>/dev/null; then :
   else NEW=""; nlog "pa-start: could not record a session id (uuidgen, or $SF not writable); this PA will not be resumed after a restart"; fi
 fi
-exec megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" ${NEW:+--session-id "$NEW"} "You were just started fresh (a restart or a first start). Run /rehydrate now, then read megavibe-deliverables/STATUS.md and the newest files in megavibe-deliverables/ if they exist, then tell the user in one line that you are back and what is open."
+exec megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" ${NEW:+--session-id "$NEW"} "You were just started fresh (a restart or a first start). Run /rehydrate now, then read megavibe-deliverables/STATUS.md and the newest files in megavibe-deliverables/ if they exist, then tell the user in one line that you are back and what is open.$AFTER"

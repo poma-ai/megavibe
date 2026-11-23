@@ -137,6 +137,10 @@ ctl session start beta --dir "$D" --task "$TASK"; check "a done name can be star
 ctl session drop beta; check "drop: state dropped, no longer checked" '[ "$(rec beta state)" = dropped ]'
 ctl session done nosuch; check "done for an unknown name: refused" '[ "$RC" = 1 ]'
 
+# A full disk that still creates empty files: the record's content cannot be written, so nothing starts.
+N1=$(wc -l < "$T/megavibe.calls" | tr -d ' ')
+o=$( (trap '' XFSZ; ulimit -f 0; bash "$REPO/scripts/megavibe-node.sh" session start iota --dir "$D" --task "$TASK") 2>&1 ); RC=$?; sleep 1
+check "start when record contents cannot be written (file size limit 0): nothing launched ($o)" '[ "$RC" = 1 ] && [ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = "$N1" ] && ! tmux list-windows -a -F "#{@mv_session}" | grep -qx iota'
 # A start that got as far as its record but not its window is not forgotten.
 TMUX_FAIL_VERB=new-window ctl session start eta --dir "$D" --task "$TASK"
 check "start whose window cannot be opened: exit 1, record left as starting ($o)" '[ "$RC" = 1 ] && [ "$(rec eta state)" = starting ]'

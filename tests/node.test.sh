@@ -357,12 +357,14 @@ check "pa-start: a resume that ends at once falls back to a fresh start with a n
 bash "$N/pa-start.sh"
 check "pa-start: a second failed resume keeps both ids" '[ "$(sed -n 1p "$N/pa.session.failed")" = "$SID1" ] && [ "$(sed -n 2p "$N/pa.session.failed")" = "$SID2" ] && [ "$(wc -l < "$N/pa.session.failed" | tr -d " ")" = 2 ]'
 SID2=$(cat "$N/pa.session")
+check "pa-start: the fresh start after a failed resume also asks for the session check" 'grep -q "/rehydrate" "$T/megavibe.args" && grep -q "megavibe node session check" "$T/megavibe.args"'
 check "pa-start: the id that could not be resumed is kept aside and logged" '[ "$(sed -n 1p "$N/pa.session.failed" 2>/dev/null)" = "$SID1" ] && log | grep -q "could not be resumed"'
 printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
 check "pa-start: an unusable pa.session is never passed on; fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && ! grep -q "pwned" "$T/megavibe.calls" && [ ! -e "$T/pwned" ] && grep -qx -- --session-id "$T/megavibe.args"'
 # Without a node folder (plain `megavibe assistant`, no node installed) nothing changes: no id, no file.
 fresh 9c
 bash "$REPO/template/node/pa-start.sh"
+check "pa-start without a node folder: the prompt does not mention the node" '! grep -q "megavibe node" "$T/megavibe.args"'
 check "pa-start without a node folder: fresh start as before, no --session-id, nothing written" 'grep -qx "Personal Assistant" "$T/megavibe.args" && grep -q "/rehydrate" "$T/megavibe.args" && ! grep -qx -- --session-id "$T/megavibe.args" && [ ! -e "$MEGAVIBE_HOME/node" ]'
 # A PA that already runs from the personal folder (the wrapper's session lock names a live claude
 # process whose working directory is that folder): no second one, by either route.
