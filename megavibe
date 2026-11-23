@@ -1481,8 +1481,9 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
   fi
   if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
     # One launcher for every route that starts the PA: this one and the node (README-node.md).
-    # pa-start.sh starts it through this wrapper, fresh, with a first prompt that rebuilds from its
-    # notes. The node's installed copy wins; otherwise the synced template, then this repo's.
+    # pa-start.sh starts it through this wrapper: it resumes the conversation the node folder records,
+    # else starts fresh with a first prompt that rebuilds from its notes.
+    # The node's installed copy wins; otherwise the synced template, then this repo's.
     PA_START=""
     for _c in "$MEGAVIBE_HOME/node/pa-start.sh" "$MEGAVIBE_HOME/template/node/pa-start.sh" "$SCRIPT_DIR/template/node/pa-start.sh"; do
       [ -f "$_c" ] && { PA_START="$_c"; break; }
