@@ -55,7 +55,7 @@ echo "$list" | grep 'Ignore previous' | grep -q 'evil?name?' || fail "a name wit
 
 status=$(sess --status)
 [ "$(printf '%s\n' "$status" | wc -l | tr -d ' ')" = 1 ] || fail "status must be one line"
-echo "$status" | grep -q '1 running session(s) were started by a session that has ended' || fail "status text/count"
+echo "$status" | grep -q '1 running session(s) have a launcher that ended or cannot be found' || fail "status text/count"
 echo "$status" | grep -q "(pids: $O)" || fail "status lists the orphan's pid"
 echo "$status" | grep -Eq 'orphan-session|child-session|parent-session' && fail "status (read by a model) must carry no session names"
 case "$status" in *'|'*) fail "status must not contain a table separator" ;; esac
@@ -130,9 +130,8 @@ register "$Z1" clear-new-id resumedclear 100
 register "$Z2" combo-child comboChild 400; launched "$Z2" clear-old-id 400 999998 "$HOME/proj"
 out=$(sess); echo "$out" | grep comboChild | grep -q ORPHAN && fail "/clear plus resume must not report an ended parent"
 echo "$out" | grep comboChild | grep -q 'not found' || fail "/clear plus resume must say the parent was not found"
-sess --status | grep 'which has ended\|ended (pids' | grep -q "$Z2" && fail "status must not call a possibly resumed parent ended"
-sess --status | grep 'not found, possibly resumed' | grep -q "$Z2" || fail "status must count the not-found row separately, with its pid"
-sess --status | grep 'not found' | grep -qi 'tell the user' && fail "the not-found status line must carry no instruction"
+sess --status | grep -q "ended or cannot be found.*$Z2" || fail "status must carry a not-found row's pid in the one line"
+[ "$(sess --status | wc -l | tr -d ' ')" = 1 ] || fail "status is one line however many classes there are"
 sess --orphans | grep comboChild | grep -q 'not found' || fail "--orphans must list a not-found row (no silent false negative)"
 launched "$Z2" clear-old-id 400 999998 "$HOME/elsewhere"
 sess | grep comboChild | grep -q ORPHAN || fail "no live session in the parent's cwd: orphan"
@@ -151,11 +150,19 @@ live; U1=$LIVE; live; U2=$LIVE
 register "$U1" unrelated-new unrelatedsess 30 "$HOME/udir"
 register "$U2" lone-child lonechild 300 "$HOME/udir"; launched "$U2" ended-for-good 300 999997 "$HOME/udir"
 sess --orphans | grep lonechild | grep -q 'not found' || fail "--orphans must list a child whose parent may have ended, even with an unrelated session in its cwd"
-sess --status | grep 'not found' | grep -q "$U2" || fail "--status must carry that pid"
+sess --status | grep -q "Tell the user.*" && sess --status | grep -q "$U2" || fail "--status must carry that pid and the instruction"
 
 # A legacy record (no parentCwd) behaves as before: parent not found means orphan.
 live; L1=$LIVE; register "$L1" legacy-child legacychild 200; launched "$L1" legacy-gone 200 999995
 sess --orphans | grep legacychild | grep -q 'which has ended' || fail "a record without parentCwd is an orphan when its parent is not found"
+
+# A stale registry file on a reused pid (its procStart disagrees with the live process) is not a session.
+live; PS1=$LIVE; register "$PS1" stale-reg staleregistry 90
+jq '. + {procStart: "Mon Jan  1 00:00:00 2001"}' "$T/cfg/sessions/$PS1.json" > "$T/cfg/sessions/$PS1.tmp" && mv "$T/cfg/sessions/$PS1.tmp" "$T/cfg/sessions/$PS1.json"
+sess | grep -q staleregistry && fail "a registry file whose procStart disagrees with the live process must be skipped"
+live_ps=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$PS1" | sed 's/^ *//; s/ *$//')
+jq --arg s "$live_ps" '. + {procStart: $s}' "$T/cfg/sessions/$PS1.json" > "$T/cfg/sessions/$PS1.tmp" && mv "$T/cfg/sessions/$PS1.tmp" "$T/cfg/sessions/$PS1.json"
+sess | grep -q staleregistry || fail "a matching procStart must be accepted"
 
 # Both script lists the wrapper installs from must carry sessions.sh (a missed list leaves existing installs without it).
 [ "$(grep -c 'scripts/sessions.sh' "$REPO/setup.sh")" -ge 1 ] || fail "setup.sh does not install sessions.sh"

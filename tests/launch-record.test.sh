@@ -111,6 +111,17 @@ rm -f "$T/cfg/sessions/$$.json"
 [ "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION+set}"' MEGAVIBE_PARENT_SESSION=)" = "set" ] || fail "restore of an empty value"
 [ -z "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION+set}"')" ] || fail "restore invented a value"
 
+# F2: the re-exec carries the parent's pid and cwd resolved BEFORE the parent's /clear, so the restarted child
+# still links to its live parent although the id it was launched with no longer resolves.
+printf '{"pid":%s,"sessionId":"carry-A","cwd":"/carry/dir"}\n' "$$" > "$T/cfg/sessions/$$.json"
+carried=$(probe 'restore_launch_parent; printf "%s\n" "MEGAVIBE_LAUNCH_PPID=$MEGAVIBE_LAUNCH_PPID" "MEGAVIBE_LAUNCH_PCWD=$MEGAVIBE_LAUNCH_PCWD"' MEGAVIBE_PARENT_SESSION=carry-A CLAUDE_CONFIG_DIR="$T/cfg")
+printf '{"pid":%s,"sessionId":"carry-B","cwd":"/carry/dir"}\n' "$$" > "$T/cfg/sessions/$$.json"
+run 4040 MEGAVIBE_PARENT_SESSION=carry-A $(printf '%s' "$carried" | tr '\n' ' ')
+[ "$(field .parentPid 4040)" = "$$" ] || fail "a re-exec must carry the parent pid across the parent's /clear"
+[ "$(field .parentCwd 4040)" = "/carry/dir" ] || fail "a re-exec must carry the parent cwd across the parent's /clear"
+run 4041 MEGAVIBE_PARENT_SESSION=carry-A
+[ "$(field .parentPid 4041)" = "null" ] || fail "without the carried values the old id no longer resolves"
+
 # A bad pid writes nothing.
 run 'abc' MEGAVIBE_PARENT_SESSION=aaaa-1111
 [ ! -e "$T/home/launches/abc.json" ] || fail "non-numeric pid wrote a record"

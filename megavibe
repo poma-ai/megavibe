@@ -23,10 +23,26 @@ MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 capture_launch_parent() {
   LAUNCH_PARENT_SET="${MEGAVIBE_PARENT_SESSION+x}"
   LAUNCH_PARENT="${MEGAVIBE_PARENT_SESSION-}"
-  unset MEGAVIBE_PARENT_SESSION
+  LAUNCH_PPID="${MEGAVIBE_LAUNCH_PPID-}"
+  LAUNCH_PCWD="${MEGAVIBE_LAUNCH_PCWD-}"
+  unset MEGAVIBE_PARENT_SESSION MEGAVIBE_LAUNCH_PPID MEGAVIBE_LAUNCH_PCWD
 }
+# The parent's pid and cwd are resolved from its session id while that is still true and handed to the
+# re-exec with it: a parent that ran /clear in between has a new id, and resolving the old one again
+# would find nothing and make a live parent look ended.
 restore_launch_parent() {
-  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"; fi
+  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then
+    export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"
+    if [ -n "${LAUNCH_PARENT:-}" ] && declare -F session_pid >/dev/null 2>&1; then
+      local pp; pp=$(session_pid "$LAUNCH_PARENT") || pp=""
+      if [[ "$pp" =~ ^[0-9]+$ ]]; then
+        export MEGAVIBE_LAUNCH_PPID="$pp"
+        MEGAVIBE_LAUNCH_PCWD=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions/$pp.json" 2>/dev/null) && export MEGAVIBE_LAUNCH_PCWD || true
+      elif [[ "${LAUNCH_PPID:-}" =~ ^[0-9]+$ ]]; then
+        export MEGAVIBE_LAUNCH_PPID="$LAUNCH_PPID" MEGAVIBE_LAUNCH_PCWD="${LAUNCH_PCWD:-}"
+      fi
+    fi
+  fi
 }
 capture_launch_parent
 
@@ -2435,6 +2451,7 @@ is_session_ancestor() { # is_session_ancestor <session id>
     if [ -f "$dir/$x.json" ]; then
       got=$(jq -r '.sessionId // empty' "$dir/$x.json" 2>/dev/null) || got=""
       [ "$got" = "$want" ] && return 0
+      return 1   # the nearest registered ancestor is the launching session: a farther one is not
     fi
     n=$((n + 1))
   done
@@ -2445,7 +2462,7 @@ is_session_ancestor() { # is_session_ancestor <session id>
 # changes on /clear (measured 2026-11-23: same pid, new id), so a viewer decides whether the parent
 # is still running by this pid, not by the id recorded at launch.
 session_pid() { # session_pid <session id>
-  local id="$1" dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions" f p
+  local id="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
     p=$(basename "$f" .json)
@@ -2470,7 +2487,10 @@ record_launch() {
   [[ "$parent" =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
   if [ -n "$parent" ]; then parent_pid=$(session_pid "$parent"); fi
   [[ "$parent_pid" =~ ^[0-9]+$ ]] || parent_pid=""
-  if [ -n "$parent_pid" ]; then
+  if [ -z "$parent_pid" ] && [ -n "${LAUNCH_PARENT_SET:-}" ] && [ -n "$parent" ] && [[ "${LAUNCH_PPID:-}" =~ ^[0-9]+$ ]] && kill -0 "$LAUNCH_PPID" 2>/dev/null; then
+    parent_pid="$LAUNCH_PPID"; parent_cwd="${LAUNCH_PCWD:-}"
+  fi
+  if [ -n "$parent_pid" ] && [ -z "$parent_cwd" ]; then
     parent_cwd=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$parent_pid.json" 2>/dev/null) || parent_cwd=""
   fi
   (
