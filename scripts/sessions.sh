@@ -78,9 +78,8 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
         ppid: (if $par != null and (($r.parentPid | type) == "number") then $r.parentPid else null end) } ] as $base
   | ($base | map(
       . as $x
-      | (if $x.ppid != null then ($base | map(select(.pid == $x.ppid and .id != $x.id and .started <= $x.started + 5000)) | .[0].id)   # a parent started before its child: a reused pid did not
-         elif $x.parent != null then ($base | map(select(.id == $x.parent and .id != $x.id)) | .[0].id)
-         else null end) as $up
+      | ((if $x.ppid != null then ($base | map(select(.pid == $x.ppid and .id != $x.id and .started <= $x.started + 5000)) | .[0].id) else null end)   # a parent started before its child: a reused pid did not
+         // (if $x.parent != null then ($base | map(select(.id == $x.parent and .id != $x.id)) | .[0].id) else null end)) as $up   # a parent resumed under a new pid keeps its id
       | $x + {up: $up, orphan: ($x.parent != null and $up == null)})) as $rows
   | ($rows | map(select(.orphan))) as $orph
   | def line($d): (("  " * $d) + (if $d > 0 then "└ " else "" end) + .name) + "\t\(.pid)\t\(.state)\t\(.started | age)\t\(.by)\t\(.dir)"

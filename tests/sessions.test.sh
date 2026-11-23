@@ -115,6 +115,17 @@ register "$R" reused-parent-id rparent 10
 register "$R2" reused-child rchild 400; launched "$R2" old-parent-id 400 "$R"
 sess | grep rchild | grep -q ORPHAN || fail "a parent pid that started after its child must not count as the parent"
 
+# A parent resumed under a new pid keeps its session id: the recorded parent pid is dead, the id is live, no orphan.
+live; Q=$LIVE; live; Q2=$LIVE
+register "$Q" resumed-parent resumedparent 500
+register "$Q2" resumed-child resumedchild 400; launched "$Q2" resumed-parent 400 999999
+sess | grep resumedchild | grep -vq ORPHAN || fail "a resumed parent (new pid, same id) must not make an orphan"
+sess | grep -q '└ resumedchild' || fail "the child must still nest under the resumed parent"
+
+# Both script lists the wrapper installs from must carry sessions.sh (a missed list leaves existing installs without it).
+[ "$(grep -c 'scripts/sessions.sh' "$REPO/setup.sh")" -ge 1 ] || fail "setup.sh does not install sessions.sh"
+grep -q '"\$REPO_DIR/scripts/sessions.sh"' "$REPO/megavibe" || fail "the wrapper's per-launch script sync omits sessions.sh"
+
 # Through the wrapper, and the model-facing hook row (the injected line carries pids, never names).
 mkdir -p "$MEGAVIBE_HOME/scripts" "$T/hm/.megavibe/scripts"
 cp "$S" "$MEGAVIBE_HOME/scripts/sessions.sh"; cp "$S" "$T/hm/.megavibe/scripts/sessions.sh"
