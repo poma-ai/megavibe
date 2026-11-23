@@ -2459,7 +2459,7 @@ session_pid() { # session_pid <session id>
 }
 
 record_launch() {
-  local pid="${1:-}" dir="$MEGAVIBE_HOME/launches" parent="" parent_pid="" f p
+  local pid="${1:-}" dir="$MEGAVIBE_HOME/launches" parent="" parent_pid="" parent_cwd="" f p
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
   command -v jq &>/dev/null || return 0
   if [ -n "${LAUNCH_PARENT_SET:-}" ]; then
@@ -2470,6 +2470,9 @@ record_launch() {
   [[ "$parent" =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
   if [ -n "$parent" ]; then parent_pid=$(session_pid "$parent"); fi
   [[ "$parent_pid" =~ ^[0-9]+$ ]] || parent_pid=""
+  if [ -n "$parent_pid" ]; then
+    parent_cwd=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$parent_pid.json" 2>/dev/null) || parent_cwd=""
+  fi
   (
     umask 077
     mkdir -p "$dir" 2>/dev/null || exit 0
@@ -2480,8 +2483,8 @@ record_launch() {
       [[ "$p" =~ ^[0-9]+$ ]] || continue
       kill -0 "$p" 2>/dev/null || rm -f "$f"
     done
-    jq -n --argjson pid "$pid" --arg parent "$parent" --argjson ppid "${parent_pid:-null}" --argjson at "$(date +%s)" \
-      '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, startedAt: $at}' \
+    jq -n --argjson pid "$pid" --arg parent "$parent" --argjson ppid "${parent_pid:-null}" --arg pcwd "$parent_cwd" --argjson at "$(date +%s)" \
+      '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' \
       > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null \
       || rm -f "$dir/$pid.json.tmp"
   ) 2>/dev/null || true

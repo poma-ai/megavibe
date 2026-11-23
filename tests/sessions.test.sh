@@ -21,9 +21,9 @@ register() { # register <pid> <session id> <name> [started seconds ago]
   jq -n --argjson pid "$1" --arg id "$2" --arg name "$3" --arg cwd "$HOME/proj" --argjson ms "$ms" \
     '{pid: $pid, sessionId: $id, name: $name, cwd: $cwd, status: "idle", startedAt: $ms}' > "$T/cfg/sessions/$1.json"
 }
-launched() { # launched <pid> <parent id or ""> [started seconds ago] [parent pid]
-  jq -n --argjson pid "$1" --arg parent "$2" --argjson at "$(( now - ${3:-60} ))" --argjson ppid "${4:-null}" \
-    '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, startedAt: $at}' > "$T/home/launches/$1.json"
+launched() { # launched <pid> <parent id or ""> [started seconds ago] [parent pid] [parent cwd]
+  jq -n --argjson pid "$1" --arg parent "$2" --argjson at "$(( now - ${3:-60} ))" --argjson ppid "${4:-null}" --arg pcwd "${5:-}" \
+    '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' > "$T/home/launches/$1.json"
 }
 
 # No sessions at all.
@@ -121,6 +121,17 @@ register "$Q" resumed-parent resumedparent 500
 register "$Q2" resumed-child resumedchild 400; launched "$Q2" resumed-parent 400 999999
 sess | grep resumedchild | grep -vq ORPHAN || fail "a resumed parent (new pid, same id) must not make an orphan"
 sess | grep -q '└ resumedchild' || fail "the child must still nest under the resumed parent"
+
+# /clear AND resume: the parent's pid is dead and its id changed (found by neither lookup). A live session
+# started later in the parent's recorded cwd makes it "not found", never ended; without one it is an orphan.
+live; Z1=$LIVE; live; Z2=$LIVE
+register "$Z1" clear-new-id resumedclear 100
+register "$Z2" combo-child comboChild 400; launched "$Z2" clear-old-id 400 999998 "$HOME/proj"
+out=$(sess); echo "$out" | grep comboChild | grep -q ORPHAN && fail "/clear plus resume must not report an ended parent"
+echo "$out" | grep comboChild | grep -q 'not found' || fail "/clear plus resume must say the parent was not found"
+sess --status | grep -Eq "(pids|, )$Z2([,)]|$)" && fail "status must not alarm on a possibly resumed parent"
+launched "$Z2" clear-old-id 400 999998 "$HOME/elsewhere"
+sess | grep comboChild | grep -q ORPHAN || fail "no live session in the parent's cwd: orphan"
 
 # Both script lists the wrapper installs from must carry sessions.sh (a missed list leaves existing installs without it).
 [ "$(grep -c 'scripts/sessions.sh' "$REPO/setup.sh")" -ge 1 ] || fail "setup.sh does not install sessions.sh"
