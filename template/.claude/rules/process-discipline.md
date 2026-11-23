@@ -17,6 +17,8 @@ Use one of these instead:
 - **Foreground in a terminal the user is watching** — for things you want them to see in real time.
 - **Named tmux session** — for things genuinely meant to outlive the current Claude session: `tmux new -d -s <project>-<purpose> '<command>'`. The session name is how the user finds and kills it later.
 
+**A Claude session you start from a session carries its parent.** `megavibe` records every launch in `~/.megavibe/launches/<pid>.json` with the session that started it, so a session viewer can nest the child under its parent. A launch from your Bash tool inherits `CLAUDE_CODE_SESSION_ID` and needs nothing. A detached launch (tmux, `setsid`, ssh) does not inherit your environment: prefix it with `MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID`, as in `tmux new -d -s <name> env MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID megavibe ...`. Without it the child shows up unrelated.
+
 ## Backgrounded work gets a heartbeat
 
 `run_in_background` and an async `Agent` return at once and promise a

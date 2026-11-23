@@ -2397,6 +2397,33 @@ update_lock_pid() {
   fi
 }
 
+# Helper: record that THIS wrapper started claude, and on behalf of which session.
+# The session registry (~/.claude/sessions) has no parent field, so tools that list sessions
+# (e.g. megavibe-observer) join this record to a live session by claude's PID. Parent = the
+# explicit MEGAVIBE_PARENT_SESSION (a launcher that detaches, like tmux, must pass it: the new
+# process does not inherit the caller's environment), else the session whose tool ran this
+# wrapper (CLAUDE_CODE_SESSION_ID). A launch with no parent still gets a record, so "started by
+# megavibe" can be told apart from a bare `claude`. Never blocks or fails a launch.
+record_launch() {
+  local pid="${1:-}" dir="$MEGAVIBE_HOME/launches" parent="${MEGAVIBE_PARENT_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}" f p
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  command -v jq &>/dev/null || return 0
+  [[ "$parent" =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
+  (
+    umask 077
+    mkdir -p "$dir" 2>/dev/null || exit 0
+    for f in "$dir"/*.json; do
+      [ -e "$f" ] || continue
+      p=$(basename "$f" .json)
+      kill -0 "$p" 2>/dev/null || rm -f "$f"
+    done
+    jq -n --argjson pid "$pid" --arg parent "$parent" --argjson at "$(date +%s)" \
+      '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), startedAt: $at}' \
+      > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null
+  ) 2>/dev/null || true
+  return 0
+}
+
 # Helper: release lock
 release_lock() {
   rm -rf "${WORKTREE_DIR:+$WORKTREE_DIR/}.agent/.session-lock.d" 2>/dev/null
@@ -2450,6 +2477,7 @@ if $IS_RESUME; then
   CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
   CLAUDE_PID=$!
   update_lock_pid "$CLAUDE_PID"
+  record_launch "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
   exit 0
 fi
@@ -2723,6 +2751,7 @@ while true; do
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
+  record_launch "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
 
   # Check for restart-after-update marker
