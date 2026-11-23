@@ -17,7 +17,7 @@ PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 
 B="$T/bin"; mkdir -p "$B"
-printf '#!/bin/bash\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
+printf '#!/bin/bash\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\n[ -z "${TMUX_NOSERVER:-}" ] || { echo "no server running on /nowhere" >&2; exit 1; }\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
 # megavibe stub: one line per call, then it stays alive like a session would.
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nexec sleep 600\n' "$T" > "$B/megavibe"
 printf '#!/bin/bash\necho testmac\n' > "$B/scutil"
@@ -96,6 +96,13 @@ ctl session list
 check "list: alpha VANISHED, beta running ($o)" '[[ "$o" == *"VANISHED  alpha"* ]] && [[ "$o" == *"running   beta"* ]]'
 TMUX_BROKEN=1 ctl session check
 check "check while tmux cannot answer: exit 2, nothing called vanished ($o)" '[ "$RC" = 2 ] && [[ "$o" == UNKNOWN* ]] && [[ "$o" != *VANISHED* ]]'
+# A tmux socket file removed from /tmp while its server runs: tmux says "no server", the sessions live.
+TMUX_NOSERVER=1 ctl session check
+check "tmux says no server while beta's process lives: beta is UNSEEN, not vanished; alpha still vanished ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"VANISHED (1 of 2)"* ]] && [[ "$o" == *"UNSEEN (1 of 2)"*beta* ]]'
+TMUX_NOSERVER=1 ctl session resume beta
+check "resume of an unseen session: refused, its process is alive ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"still alive"* ]]'
+ctl session resume alpha --frehs; check "resume with a mistyped option: refused, nothing started" '[ "$RC" = 1 ] && ! tmux list-windows -a -F "#{@mv_session}" | grep -qx alpha'
+ctl session start eps --dir "$D" --task "$TASK" --prompt "--dangerously-x"; check "start with a prompt that starts with a dash: refused" '[ "$RC" = 1 ] && [ ! -e "$S/eps" ]'
 ctl status; check "status counts the registered sessions" '[[ "$o" == *"2 registered as running"* ]]'
 
 # ── resume, done, drop ────────────────────────────────────────────────
@@ -104,6 +111,10 @@ ctl session start alpha --dir "$D" --task "$TASK"; check "start of a vanished se
 ctl session resume alpha
 check "resume: the recorded conversation, same name and model, in a new stamped window ($o)" '[ "$RC" = 0 ] && called "^--name alpha --model sonnet --resume $SID Your session ended unexpectedly.*$TASK.*Personal Assistant" && [ "$(tmux list-windows -a -F "#{@mv_session}" | grep -cx alpha)" = 1 ] && [ "$(rec alpha sid)" = "$SID" ] && [ -n "$(rec alpha resumed)" ]'
 ctl session check; check "check after the resume: ok" '[ "$RC" = 0 ]'
+TMUX_NOSERVER=1 ctl session check
+check "no visible window, every process alive: exit 2, nothing called vanished ($o)" '[ "$RC" = 2 ] && [[ "$o" == "UNSEEN (2 of 2)"* ]] && [[ "$o" != *VANISHED* ]]'
+chmod 500 "$S"; ctl session start zeta --dir "$D" --task "$TASK"; chmod 700 "$S"
+check "start with an unwritable register: nothing started ($o)" '[ "$RC" = 1 ] && ! tmux list-windows -a -F "#{@mv_session}" | grep -qx zeta'
 kill "$(pane_of alpha)"; gone alpha
 ctl session resume alpha --fresh
 check "resume --fresh: a new conversation with the continue brief, id replaced" '[ "$RC" = 0 ] && called "^--name alpha --model sonnet --session-id $(rec alpha sid) A previous session working on the task in $TASK" && [ "$(rec alpha sid)" != "$SID" ]'

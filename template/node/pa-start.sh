@@ -30,9 +30,11 @@ UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 nlog() { [ -d "$N" ] && printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$N/node.log"; }
 # pa_live: is a PA already running from the personal folder? The wrapper keeps a session lock there
 # with the pid of its claude process. Live means: that pid exists, its command line names claude or
-# megavibe, and (where lsof can tell) its working directory is the personal folder, so a pid reused by
-# another process, or by a Claude session elsewhere, is not taken for the PA. Without jq, or without a
-# lock, the answer is no, and the start goes ahead as it always did.
+# megavibe, and (where lsof or /proc can tell) its working directory is the personal folder, so a pid
+# reused by another process, or by a Claude session elsewhere, is not taken for the PA. Without jq, or
+# without a lock, the answer is no, and the start goes ahead as it always did. Where the working
+# directory cannot be read the command line alone decides: that errs towards "a PA runs" (no start,
+# one line in node.log), because a second PA on the same conversation is the worse mistake.
 pa_live() {
   local meta="$MH/personal/.agent/.session-lock.d/metadata.json" pid cmd cwd
   [ -f "$meta" ] && command -v jq >/dev/null 2>&1 || return 1
@@ -40,7 +42,9 @@ pa_live() {
   [[ $pid =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && kill -0 "$pid" 2>/dev/null || return 1
   cmd=$(ps -p "$pid" -o command= 2>/dev/null)
   case "$cmd" in *claude*|*megavibe*) ;; *) return 1 ;; esac
-  cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
+  # Bounded: an lsof that blocks (a dead network mount) must not hold the launcher or the node's run.
+  cwd=$(perl -e 'alarm 5; exec { $ARGV[0] } @ARGV or exit 127' lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
+  [ -n "$cwd" ] || cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null)
   [ -z "$cwd" ] || [ "$cwd" -ef "$MH/personal" ]
 }
 if [ "${1:-}" = --running ]; then pa_live; exit; fi
@@ -72,7 +76,7 @@ SID=""
 # Only a session id is ever passed on: a file holding anything else is ignored.
 [[ $SID =~ $UUID_RE ]] || SID=""
 if [ -n "$SID" ]; then
-  MIN="${MEGAVIBE_NODE_TEST_RESUME_SECS:-30}"
+  MIN="${MEGAVIBE_NODE_TEST_RESUME_SECS:-30}"; [[ $MIN =~ ^[0-9]+$ ]] || MIN=30
   T0=$SECONDS
   megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" --resume "$SID" "Your session ended (a crash, a tmux restart or an exit) and was restarted: this is your previous conversation, resumed under the same session name. Check that your scheduled ticks and watches are back and set them up again if not, run 'megavibe node session check' to find repo sessions that vanished meanwhile, then tell the user in one line that you are back and what was interrupted."
   [ $((SECONDS - T0)) -ge "$MIN" ] && exit 0

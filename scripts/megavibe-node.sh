@@ -407,6 +407,10 @@ cmd_handback() {
 # Liveness is that stamp: it goes when the window goes, it cannot survive a server restart (a window
 # id or a window name can come back on a different window), and renaming the window does not lose it.
 # `session check` lists every session registered as running whose stamp is gone, with its task file.
+# A second signal guards the other direction: the record keeps the window's process (pid and start
+# time), and a session whose stamp is gone while that very process still lives is "unseen", not
+# vanished, and is never resumed (a tmux socket file cleaned out of /tmp while its server runs makes
+# tmux report "no server"; resuming then would put a second copy next to every live session).
 # SHORTCUT: liveness = "a stamped window exists", as in node.sh. A hung session keeps its window; a
 # session started from a shell prompt inside a window (session add) leaves the window open when it
 # ends. Upgrade to a heartbeat from the session if either ever bites.
@@ -447,19 +451,29 @@ live_stamps() {
   esac
 }
 alive() { printf '%s\n' "$LIVE" | grep -qxF -- "$1"; }
+pid_start() { ps -p "$1" -o lstart= 2>/dev/null | tr -s ' ' || true; }
+# proc_alive NAME: the process recorded for NAME still exists (same pid, same start time).
+proc_alive() {
+  local pid st
+  pid=$(rec_get "$1" pid); st=$(rec_get "$1" pidstart)
+  [[ $pid =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ -n "$st" ] && kill -0 "$pid" 2>/dev/null && [ "$(pid_start "$pid")" = "$st" ]
+}
 node_tmux_session() {
   local ts; ts=$(conf_get TMUX_SESSION)
   [[ $ts =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] && [ "$ts" != "$PA_TMUX" ] || ts=main
   printf '%s' "$ts"
 }
 # open_window NAME WINDOW DIR ARG...: a new window in the node's tmux session running `megavibe ARG...`
-# in DIR, stamped with NAME. Sets WID. The arguments reach megavibe as they are, no shell in between.
+# in DIR, stamped with NAME. Sets WID and WPID (the window's process). The arguments reach megavibe as
+# they are, no shell in between.
 open_window() {
-  local name="$1" win="$2" dir="$3" ts; shift 3
+  local name="$1" win="$2" dir="$3" ts out; shift 3
   ts=$(node_tmux_session)
   tm has-session -t "=$ts" 2>/dev/null || tm new-session -d -s "$ts" -c "$HOME" -n shell || die "cannot create tmux session $ts"
-  WID=$(tm new-window -d -P -F '#{window_id}' -t "=$ts:" -n "$win" -c "$dir" env MEGAVIBE_HOME="$MH" megavibe "$@") \
+  out=$(tm new-window -d -P -F '#{window_id} #{pane_pid}' -t "=$ts:" -n "$win" -c "$dir" env MEGAVIBE_HOME="$MH" megavibe "$@") \
     || die "could not open a tmux window in session $ts"
+  WID=${out%% *}; WPID=${out##* }
+  [[ $WID =~ ^@[0-9]+$ ]] && [[ $WPID =~ ^[0-9]+$ ]] || die "tmux gave no window id for the new window ($out)"
   tm set-option -w -t "$WID" @mv_session "$name" \
     || die "window $WID opened for $name but it closed at once or could not be stamped (megavibe not on the tmux server's PATH?); nothing registered"
 }
@@ -486,6 +500,7 @@ cmd_session_start() {
   [ -z "$model" ] || [[ $model =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "session start: unusable --model"
   win="${win:-$name}"; [[ $win =~ $SESSION_RE ]] || die "session start: unusable --window name"
   one_line --dir "$dir"; one_line --task "$task"; one_line --prompt "$prompt"
+  case "$prompt" in -*) die "session start: --prompt must not start with a dash (it would be read as an option)" ;; esac
   live_stamps
   [ "$LIVE_STATE" != unknown ] || die "cannot tell which sessions run ($LIVE_WHY); nothing started"
   if alive "$name"; then die "session $name already runs in a tmux window; nothing started"; fi
@@ -495,9 +510,12 @@ cmd_session_start() {
   sid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true)
   [[ $sid =~ $UUID_RE ]] || die "session start: uuidgen did not give a session id"
   [ -n "$prompt" ] || prompt="Read the task file $task and carry it out fully. $(report_line)"
+  # The record is made before the window, so a register that cannot be written starts nothing.
+  { : > "$S/.$name.new" && mv -f "$S/.$name.new" "$S/$name" && rec_put "$name" "state=starting" "dir=$dir" "task=$task" "sid=$sid" "model=$model"; } 2>/dev/null \
+    || die "session start: cannot write the register in $S; nothing started"
   open_window "$name" "$win" "$dir" --name "$name" ${model:+--model "$model"} --session-id "$sid" "$prompt"
-  : > "$S/.$name.new" && mv -f "$S/.$name.new" "$S/$name"
-  rec_put "$name" "state=running" "window=$WID" "dir=$dir" "task=$task" "started=$(date '+%F %T')" "sid=$sid" "model=$model"
+  rec_put "$name" "state=running" "window=$WID" "pid=$WPID" "pidstart=$(pid_start "$WPID")" "started=$(date '+%F %T')" \
+    || die "session $name runs in window $WID but its record could not be completed; fix $S and run: megavibe node session add $name --window $WID --task <file>"
   say "started $name in tmux window $(node_tmux_session):$win ($WID); registered with task $task"
 }
 
@@ -524,29 +542,38 @@ cmd_session_add() {
   [ "$(rec_get "$name" state)" != running ] || die "session $name is already registered as running"
   # The target is matched against the listing, whole: tmux itself resolves a target it cannot find to
   # some other window (the current one), and the stamp would then land on the wrong session.
+  local all
   one_line --window "$target"
-  cur=$(tm list-windows -a -F '#{window_id} #{session_name}:#{window_name}' 2>/dev/null) || die "session add: tmux could not list windows"
-  WID=$(printf '%s\n' "$cur" | awk -v t="$target" '{ id = $1; sub(/^[^ ]* /, "") } id == t || $0 == t { print id }')
+  all=$(tm list-windows -a -F '#{window_id} #{session_name}:#{window_name}' 2>/dev/null) || die "session add: tmux could not list windows"
+  WID=$(printf '%s\n' "$all" | awk -v t="$target" '{ id = $1; sub(/^[^ ]* /, "") } id == t || $0 == t { print id }')
   [[ $WID =~ ^@[0-9]+$ ]] || die "session add: no tmux window $target, or several with that name (give session:window as tmux lists it, or the window id like @7)"
-  cur=$(tm list-windows -a -F '#{window_id} #{@mv_session}' 2>/dev/null | awk -v id="$WID" '$1 == id { print $2 }' || true)
+  # A listing that fails here must stop the command: an unread stamp is not "no stamp".
+  all=$(tm list-windows -a -F '#{window_id} #{pane_pid} #{@mv_session}' 2>/dev/null) || die "session add: tmux could not list windows"
+  cur=$(printf '%s\n' "$all" | awk -v id="$WID" '$1 == id { print $3 }')
+  WPID=$(printf '%s\n' "$all" | awk -v id="$WID" '$1 == id { print $2 }')
+  [[ $WPID =~ ^[0-9]+$ ]] || die "session add: window $WID went away"
   [ -z "$cur" ] || [ "$cur" = "$name" ] || die "session add: that window already belongs to session $cur"
   [ -n "$dir" ] || dir=$(tm list-windows -a -F '#{window_id} #{pane_current_path}' 2>/dev/null | awk -v id="$WID" '$1 == id { sub(/^[^ ]* /, ""); print }' || true)
   [ -n "$dir" ] && [ -d "$dir" ] || die "session add: give --dir (the folder the session runs in)"
   dir=$(cd "$dir" && pwd); one_line --dir "$dir"; one_line --task "$task"
   tm set-option -w -t "$WID" @mv_session "$name" || die "session add: could not stamp window $WID"
-  : > "$S/.$name.new" && mv -f "$S/.$name.new" "$S/$name"
-  rec_put "$name" "state=running" "window=$WID" "dir=$dir" "task=$task" "started=$(date '+%F %T')" "sid=$sid" "model=$model"
+  mkdir -p "$S"; : > "$S/.$name.new" && mv -f "$S/.$name.new" "$S/$name"
+  rec_put "$name" "state=running" "window=$WID" "pid=$WPID" "pidstart=$(pid_start "$WPID")" "dir=$dir" "task=$task" "started=$(date '+%F %T')" "sid=$sid" "model=$model"
   say "registered $name (window $WID, task $task)"
 }
 
 cmd_session_resume() {
   local name="${1:-}" fresh=0 dir task sid model prompt
   need_install; need_rec "$name"
-  [ "${2:-}" != --fresh ] || fresh=1
+  case "${2:-}" in "") ;; --fresh) fresh=1 ;; *) die "session resume: unknown option $2" ;; esac
+  [ $# -le 2 ] || die "session resume: too many arguments"
   [ "$(rec_get "$name" state)" = running ] || die "session $name is $(rec_get "$name" state), not running; start it again with: megavibe node session start $name ..."
   live_stamps
   [ "$LIVE_STATE" != unknown ] || die "cannot tell which sessions run ($LIVE_WHY); nothing started"
   if alive "$name"; then die "session $name still has its tmux window; nothing started"; fi
+  if proc_alive "$name"; then
+    die "session $name has no tmux window that tmux can see, but its process (pid $(rec_get "$name" pid)) is still alive: a second copy is not started. If it really is gone: megavibe node session drop $name, then start it again"
+  fi
   dir=$(rec_get "$name" dir); task=$(rec_get "$name" task); sid=$(rec_get "$name" sid); model=$(rec_get "$name" model)
   [ -d "$dir" ] || die "session $name: its folder $dir is gone"
   [[ $model =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || model=""
@@ -561,11 +588,12 @@ cmd_session_resume() {
     open_window "$name" "$name" "$dir" --name "$name" ${model:+--model "$model"} --session-id "$sid" "$prompt"
     say "started a new conversation for $name in window $WID (the old one was not known, or --fresh was given)"
   fi
-  rec_put "$name" "window=$WID" "sid=$sid" "resumed=$(date '+%F %T')"
+  rec_put "$name" "window=$WID" "pid=$WPID" "pidstart=$(pid_start "$WPID")" "sid=$sid" "resumed=$(date '+%F %T')"
 }
 
 cmd_session_mark() {   # cmd_session_mark done|dropped NAME
   need_install; need_rec "${2:-}"
+  [ $# -le 2 ] || die "session: too many arguments"
   rec_put "$2" "state=$1" "ended=$(date '+%F %T')"
   say "$2: $1"
 }
@@ -577,15 +605,18 @@ cmd_session_list() {
   for f in "$S"/*; do
     [ -f "$f" ] || continue
     n=${f##*/}; st=$(rec_get "$n" state)
-    if [ "$st" = running ] && [ "$LIVE_STATE" != unknown ] && ! alive "$n"; then st=VANISHED; fi
+    if [ "$st" = running ] && [ "$LIVE_STATE" != unknown ] && ! alive "$n"; then
+      if proc_alive "$n"; then st=UNSEEN; else st=VANISHED; fi
+    fi
     printf '%-9s %-28s started %s  task %s\n' "$st" "$n" "$(rec_get "$n" started)" "$(rec_get "$n" task)"
   done
 }
 
 # Exit 0: every session registered as running has its window. 1: at least one vanished (listed with
-# its task file). 2: tmux could not say; nothing is claimed either way.
+# its task file). 2: tmux could not say, or a session has no visible window while its process still
+# lives; nothing is claimed either way.
 cmd_session_check() {
-  local f n r run=0 gone=0 out=""
+  local f n r run=0 gone=0 out="" unseen=0 uout=""
   [ -d "$S" ] || { say "ok: no sessions registered"; return 0; }
   live_stamps
   for f in "$S"/*; do
@@ -594,6 +625,8 @@ cmd_session_check() {
     run=$((run + 1))
     [ "$LIVE_STATE" != unknown ] || continue
     ! alive "$n" || continue
+    if proc_alive "$n"; then unseen=$((unseen + 1)); uout="$uout  $n  (pid $(rec_get "$n" pid))
+"; continue; fi
     gone=$((gone + 1)); r=$(rec_get "$n" resumed)
     out="$out  $n  (started $(rec_get "$n" started)${r:+, resumed $r})
     task:   $(rec_get "$n" task)
@@ -607,8 +640,14 @@ cmd_session_check() {
   if [ "$gone" -gt 0 ]; then
     r=""; [ "$LIVE_STATE" != noserver ] || r=" (no tmux server is running)"
     say "VANISHED ($gone of $run): registered as running, tmux window gone, never marked done$r"
-    printf '%s' "$out"; return 1
+    printf '%s' "$out"
   fi
+  if [ "$unseen" -gt 0 ]; then
+    say "UNSEEN ($unseen of $run): no tmux window found, but the session's process is still alive (a tmux socket file removed while its server runs?). Not vanished; do not resume."
+    printf '%s' "$uout"
+  fi
+  [ "$gone" = 0 ] || return 1
+  [ "$unseen" = 0 ] || return 2
   say "ok: $run session(s) registered as running, all windows present"
 }
 
@@ -659,8 +698,8 @@ case "$sub" in
       resume) cmd_session_resume "$@" ;;
       done) cmd_session_mark done "$@" ;;
       drop) cmd_session_mark dropped "$@" ;;
-      list) cmd_session_list ;;
-      check) cmd_session_check ;;
+      list) [ $# = 0 ] || die "session list: takes no arguments"; cmd_session_list ;;
+      check) [ $# = 0 ] || die "session check: takes no arguments"; cmd_session_check ;;
       *) die "session: expected start, add, check, resume, done, drop or list" ;;
     esac ;;
   takeover) cmd_takeover ;;
