@@ -8,7 +8,7 @@ trap 'rm -rf "$T"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-for fn in capture_launch_parent restore_launch_parent is_session_ancestor record_launch; do
+for fn in capture_launch_parent restore_launch_parent is_session_ancestor session_pid record_launch; do
   sed -n "/^$fn() {/,/^}/p" "$REPO/megavibe" >> "$T/fn.sh"
   grep -q "^$fn() {" "$T/fn.sh" || fail "$fn not found in megavibe"
 done
@@ -87,6 +87,22 @@ run 4020 MEGAVIBE_PARENT_SESSION=grandparent-A CLAUDE_CODE_SESSION_ID=child-C
 # ... so a launch G from C's tool (inherited env now has no MEGAVIBE_PARENT_SESSION) links to C.
 run 4021 CLAUDE_CODE_SESSION_ID=child-C
 [ "$(field .parentSessionId 4021)" = "child-C" ] || fail "grandchild must link to its parent"
+# The parent's pid is recorded while a live session is registered under that id: /clear changes the id, not the pid.
+printf '{"pid":%s,"sessionId":"dddd-4444"}\n' "$$" > "$T/cfg/sessions/$$.json"
+run 4030 MEGAVIBE_PARENT_SESSION=dddd-4444
+[ "$(field .parentPid 4030)" = "$$" ] || fail "parentPid of a live registered parent"
+run 4031 MEGAVIBE_PARENT_SESSION=unknown-5555
+[ "$(field .parentPid 4031)" = "null" ] || fail "parentPid of an unregistered parent"
+sleep 0 & gone=$!; wait "$gone" || true
+if ! kill -0 "$gone" 2>/dev/null; then  # skip if the OS already reused the pid
+  printf '{"pid":%s,"sessionId":"eeee-5555"}\n' "$gone" > "$T/cfg/sessions/$gone.json"
+  run 4032 MEGAVIBE_PARENT_SESSION=eeee-5555
+  [ "$(field .parentPid 4032)" = "null" ] || fail "parentPid of a dead parent"
+fi
+run 4033
+[ "$(field .parentPid 4033)" = "null" ] || fail "no parent, no parentPid"
+rm -f "$T/cfg/sessions/$$.json"
+
 # The wrapper's own re-exec gets the value back, set-but-empty included, and nothing when it was never set.
 [ "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION-}"' MEGAVIBE_PARENT_SESSION=grandparent-A)" = "grandparent-A" ] || fail "restore"
 [ "$(probe 'restore_launch_parent; printf %s "${MEGAVIBE_PARENT_SESSION+set}"' MEGAVIBE_PARENT_SESSION=)" = "set" ] || fail "restore of an empty value"
