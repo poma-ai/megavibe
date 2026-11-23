@@ -791,6 +791,9 @@ for line in CMD.split("\n"):
 CMD = "\n".join(out).replace("\\\n", "")
 CMD = CMD.replace("\n", " ; ")
 
+# A command or process substitution anywhere in the text runs before the words are parsed (an env
+# assignment, a quoted argument), so the bootstrap exception is not granted when the text has one.
+SUBST = "$(" in CMD or "`" in CMD
 KILLERS = {"pkill", "killall"}
 TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
 LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
@@ -852,7 +855,7 @@ def user_agent_bootstrap(argv):
     if cut is not None:
         if cut > 0 and re.match(r"^[0-9]$", rest[cut - 1]): cut -= 1     # the 2 of 2>/dev/null
         tail = " ".join(rest[cut:])
-        redir = r"([0-9]? ?>>? ?/dev/null|[0-9]? ?>& ?[0-9])"
+        redir = r"([0-9]? ?>>? ?/dev/null|&>>? ?/dev/null|[0-9]? ?>& ?[0-9])"
         if not re.fullmatch(redir + "( " + redir + ")*", tail): return False
         rest = rest[:cut]
     if len(rest) != 2 or any(x.startswith("-") for x in rest): return False
@@ -907,7 +910,7 @@ def scan(argv, depth=0):
     if base == "launchctl":
         v = verb(argv, set())
         if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
-        if v == "bootstrap": return not user_agent_bootstrap(argv)
+        if v == "bootstrap": return SUBST or not user_agent_bootstrap(argv)
         return v in LAUNCHCTL_VERBS
     return False
 
