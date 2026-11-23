@@ -27,7 +27,7 @@ R=$((NOW + 9000))   # 2.5 h left in the weekly window
 # the case the rule was written for: 2.5 h left, 90 used, slow pace -> about 8 points spare below 99
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'sprint: 2.5 h left, forecast ~90.6 -> state sprint, nine fields' '[ "$(f 1)" = claude ] && [ "$(f 2)" = sprint ] && [ "$(nf)" = 8 ] && [ "$(f 9)" = ok ]'
+check 'sprint: 2.5 h left, forecast ~90.6 -> state sprint, nine fields' '[ "$(f 1)" = claude ] && [ "$(f 2)" = sprint ] && [ "$(nf)" = 9 ] && [ "$(f 9)" = ok ]'
 check 'sprint: hours left 2.5, used 90' 'near "$(f 3)" 2.5 0.05 && [ "$(f 4)" = 90 ]'
 check 'sprint: spare is 99 minus the forecast, spend is (99-estimated use now)/2.5 = 3.59 per hour' 'near "$(f 6)" "$(awk -v x="$(f 5)" "BEGIN{print 99-x}")" 0.11 && near "$(f 7)" 3.59 0.02 && awk -v s="$(f 6)" "BEGIN{exit !(s > 7 && s < 9)}"'
 check 'sprint mode writes no routing state' '[ ! -e "$MEGAVIBE_USAGE_STATE" ]'
@@ -38,7 +38,7 @@ check 'forecast mode still measures against 95 (spare about 4.4), untouched by t
 R6=$((NOW + 6 * 3600))
 { row 1500 60 $R6; row 360 61 $R6; row 5 62 $R6; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'six hours left: not a sprint (reason outside), still nine fields' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ] && [ "$(nf)" = 8 ] && [ -z "$(f 6)" ]'
+check 'six hours left: not a sprint (reason outside), still nine fields' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ] && [ "$(nf)" = 9 ] && [ -z "$(f 6)" ]'
 o=$(MEGAVIBE_SPRINT_HOURS=8 sp)
 check 'MEGAVIBE_SPRINT_HOURS=8 widens the window' '[ "$(f 2)" = sprint ]'
 o=$(MEGAVIBE_SPRINT_HOURS=abc sp)
@@ -142,6 +142,18 @@ RG=$((NOW + 10800))
 { row 1440 70 $RG; row 360 80 $RG; row 300 80 $RG; row 100 80 $RG; row 0 88 $RG; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'idle for 100 minutes at 80, then 88: no sprint (the rise from the previous reading is rated whatever its age)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
+# an equal repeat reading must not erase a burst: 85 flat, 96 ten minutes ago, then 96 again five minutes ago, 25 minutes left
+{ row 200 85 $RJ; row 105 85 $RJ; row 10 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'jump 85 -> 96 ten minutes ago: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+{ row 200 85 $RJ; row 105 85 $RJ; row 10 96 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'the same plus an equal repeat reading five minutes ago: still no sprint (burst measured to the first reading at that level)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
+{ row 1500 60 $R; row 400 70 $R; row 100 70 $R; row 60 70 $R; row 5 70 $R; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'a rise that ended hours ago and is flat since is not a burst (the endpoint must be recent)' '[[ "$(f 8)" != *burst* ]]'
+# five-hour window figure rides on the line
+{ row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 40; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'the line carries the five-hour used percent as its tenth field' '[ "$(f 10)" = 40 ]'
+o=$(/bin/bash "$UR" sprint-advice)
+check 'the advice names the five-hour window when there is one' '[[ "$o" == *"five-hour window is at 40%"* ]]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
@@ -169,7 +181,7 @@ check 'drop in the window: the week average stands in (basis week, plus burst fo
 # knobs
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(MEGAVIBE_SPRINT=0 sp)
-check 'MEGAVIBE_SPRINT=0: off' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = off ] && [ "$(nf)" = 8 ]'
+check 'MEGAVIBE_SPRINT=0: off' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = off ] && [ "$(nf)" = 9 ]'
 o=$(MEGAVIBE_SPRINT_TARGET=97 sp)
 check 'MEGAVIBE_SPRINT_TARGET=97: spare and spend measured against 97' 'near "$(f 7)" 2.79 0.02 && [ "$(f 2)" = sprint ]'
 o=$(MEGAVIBE_SPRINT_TARGET=150 sp)
@@ -182,9 +194,9 @@ check 'ordinary target already at the sprint target: nothing to add (reason no-r
 # no evidence
 rm -f "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'no history: provider, dash, empty fields, exit 0' '[ "$o" = "claude|-|||||||" ]'
+check 'no history: provider, dash, empty fields, exit 0' '[ "$o" = "claude|-||||||||" ]'
 : > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
-check 'empty history: same shape' '[ "$o" = "claude|-|||||||" ]'
+check 'empty history: same shape' '[ "$o" = "claude|-||||||||" ]'
 row 5 90 $((NOW - 60)) > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'window already reset: no sprint' '[ "$(f 2)" = "-" ]'
 
