@@ -56,7 +56,7 @@ exits or is stopped. Once per interval, all overdue tasks in one reason, never
 in a loop. A Stop hook cannot wake you later; the heartbeat is the only thing
 that can. `MEGAVIBE_BG_CHECK_SECS` sets the interval (clamped to 60–600 s; the
 heartbeat beats 60 s under it); `MEGAVIBE_BG_WATCH=0` switches the hook off.
-The main thread's cache usually lives 1 hour, so the default four-minute beat is cheap there and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
+The main thread's cache usually lives 1 hour (5 minutes on API billing or when forced), so the default four-minute beat is cheap there and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
 by default, so every wait past 5 minutes re-writes the whole context at 1.25x
 instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
 tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
