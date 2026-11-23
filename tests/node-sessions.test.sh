@@ -109,6 +109,8 @@ TMUX_NOSERVER=1 ctl session resume beta
 check "resume of an unseen session: refused, its process is alive ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"still alive"* ]]'
 ctl session resume alpha --frehs; check "resume with a mistyped option: refused, nothing started" '[ "$RC" = 1 ] && ! tmux list-windows -a -F "#{@mv_session}" | grep -qx alpha'
 ctl session start eps --dir "$D" --task "$TASK" --prompt "--dangerously-x"; check "start with a prompt that starts with a dash: refused" '[ "$RC" = 1 ] && [ ! -e "$S/eps" ]'
+ctl session start eps --dir "$D" --task "$TASK" --prompt "do x;"; check "start with a prompt that ends in a semicolon: refused" '[ "$RC" = 1 ] && [ ! -e "$S/eps" ]'
+ctl session start eps --dir "$D" --task "$TASK" --prompt "$(printf 'x%.0s' $(seq 1 8001))"; check "start with a prompt over 8000 characters: refused" '[ "$RC" = 1 ] && [ ! -e "$S/eps" ]'
 ctl status; check "status counts the registered sessions" '[[ "$o" == *"2 registered as running"* ]]'
 
 # ── resume, done, drop ────────────────────────────────────────────────

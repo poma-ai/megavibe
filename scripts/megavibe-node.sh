@@ -534,6 +534,9 @@ cmd_session_start() {
   win="${win:-$name}"; [[ $win =~ $SESSION_RE ]] || die "session start: unusable --window name"
   one_line --dir "$dir"; one_line --task "$task"; one_line --prompt "$prompt"
   case "$prompt" in -*) die "session start: --prompt must not start with a dash (it would be read as an option)" ;; esac
+  # tmux reads an argument that ends in a semicolon as a command separator and refuses a very long one.
+  case "$prompt" in *\;) die "session start: --prompt must not end with a semicolon (tmux would cut it off)" ;; esac
+  [ "${#prompt}" -le 8000 ] || die "session start: --prompt is too long for a tmux command (8000 characters); put the brief in the task file"
   live_stamps
   [ "$LIVE_STATE" != unknown ] || die "cannot tell which sessions run ($LIVE_WHY); nothing started"
   if alive "$name"; then die "session $name already runs in a tmux window; nothing started"; fi
