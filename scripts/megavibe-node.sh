@@ -559,6 +559,10 @@ cmd_session_add() {
   WPID=$(printf '%s\n' "$all" | awk -v id="$WID" '$1 == id { print $2 }')
   [[ $WPID =~ ^[0-9]+$ ]] || die "session add: window $WID went away"
   [ -z "$cur" ] || [ "$cur" = "$name" ] || die "session add: that window already belongs to session $cur"
+  # A window from an earlier registration of this name would keep the name "alive" after this one ends.
+  if [ "$cur" != "$name" ] && printf '%s\n' "$all" | awk -v n="$name" '$3 == n { f = 1 } END { exit !f }'; then
+    die "session add: another tmux window is still stamped $name (an earlier registration); close it, or clear it with: tmux set-option -w -u -t <window> @mv_session"
+  fi
   [ -n "$dir" ] || dir=$(tm list-windows -a -F '#{window_id} #{pane_current_path}' 2>/dev/null | awk -v id="$WID" '$1 == id { sub(/^[^ ]* /, ""); print }' || true)
   [ -n "$dir" ] && [ -d "$dir" ] || die "session add: give --dir (the folder the session runs in)"
   dir=$(cd "$dir" && pwd); one_line --dir "$dir"; one_line --task "$task"
@@ -585,6 +589,9 @@ cmd_session_resume() {
   dir=$(rec_get "$name" dir); task=$(rec_get "$name" task); sid=$(rec_get "$name" sid); model=$(rec_get "$name" model)
   [ -d "$dir" ] || die "session $name: its folder $dir is gone"
   [[ $model =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || model=""
+  # The register is written before the window is opened: if it cannot be written nothing is started
+  # (a resume that launched and then failed to record would be launched again by the next try).
+  rec_put "$name" "resumed=$(date '+%F %T')" 2>/dev/null || die "session resume: cannot write the register in $S; nothing started"
   if [ "$fresh" = 0 ] && [[ $sid =~ $UUID_RE ]]; then
     prompt="Your session ended unexpectedly (a crash or a tmux restart) and was resumed. Check what was in flight (git status, your last steps), then continue your task from $task: do not redo finished steps and do not discard uncommitted work. $(report_line)"
     open_window "$name" "$dir" --name "$name" ${model:+--model "$model"} --resume "$sid" "$prompt"
@@ -681,9 +688,10 @@ case "$sub" in
         case "${2:-}" in
           "") cur=$(head -n 1 "$N/pa.session" 2>/dev/null | tr -d '[:space:]' || true)
               if [[ $cur =~ $UUID_RE ]]; then say "$cur"; else say "none (the next PA start is fresh)"; fi ;;
-          none) rm -f "$N/pa.session"; say "pa session: none (the next PA start is fresh)" ;;
+          none) rm -f "$N/pa.session" || die "pa session: could not remove $N/pa.session"; say "pa session: none (the next PA start is fresh)" ;;
           *) [[ $2 =~ $UUID_RE ]] || die "pa session: expected a session id (lower-case UUID) or none"
-             printf '%s\n' "$2" > "$N/pa.session.tmp" && mv -f "$N/pa.session.tmp" "$N/pa.session"
+             { printf '%s\n' "$2" > "$N/pa.session.tmp" && mv -f "$N/pa.session.tmp" "$N/pa.session"; } 2>/dev/null \
+               || die "pa session: could not write $N/pa.session; nothing changed"
              say "pa session: the next PA start resumes $2" ;;
         esac ;;
       *) die "pa: expected on, off or session" ;;

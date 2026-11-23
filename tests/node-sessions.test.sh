@@ -12,7 +12,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 REAL_TMUX=$(command -v tmux) || { echo "skip: tmux not installed"; exit 0; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/node-sess-test.XXXXXX") || exit 2
 T=$(cd "$T" && pwd -P)
-SOCK="mvtest-$$"
+# A socket name no other run can hold (the temp folder's random suffix), so a stale server is never met.
+SOCK="mvtest-${T##*.}-$$"
 PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 
@@ -34,11 +35,13 @@ N="$MEGAVIBE_HOME/node"; S="$N/sessions"
 # what is left. The server then exits by itself; its socket file stays behind and is removed at the end.
 end_panes() {
   local p i
+  # Only ever on a server this run verified as its own (OWN is set after the socket check below).
+  [ "$OWN" = 1 ] || return 0
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -HUP "$p" 2>/dev/null; done
   for i in 1 2 3 4 5 6; do tmux has-session 2>/dev/null || return 0; sleep 0.5; done
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done
 }
-SP=""
+SP=""; OWN=0
 cleanup() {
   end_panes
   case "$SP" in */"$SOCK") tmux has-session 2>/dev/null || rm -f "$SP" ;; esac
@@ -55,7 +58,7 @@ rec() { awk -v k="$2" 'index($0, k "=") == 1 { print substr($0, length(k) + 2) }
 
 tmux new-session -d -s main -n shell sleep 600 || { echo "could not start the private tmux server"; exit 2; }
 SP=$(tmux display-message -p '#{socket_path}')
-case "$SP" in */"$SOCK") ;; *) echo "ABORT: tmux answered from $SP, not from the private socket $SOCK"; exit 2 ;; esac
+case "$SP" in */"$SOCK") OWN=1 ;; *) echo "ABORT: tmux answered from $SP, not from the private socket $SOCK; nothing is cleaned up"; exit 2 ;; esac
 
 ctl session check
 check "check before install: nothing registered, exit 0 ($o)" '[ "$RC" = 0 ] && [[ "$o" == ok* ]]'
@@ -117,6 +120,10 @@ chmod 500 "$S"; ctl session start zeta --dir "$D" --task "$TASK"; chmod 700 "$S"
 check "start with an unwritable register: nothing started ($o)" '[ "$RC" = 1 ] && ! tmux list-windows -a -F "#{@mv_session}" | grep -qx zeta'
 kill "$(pane_of alpha)"; gone alpha
 ctl session resume alpha --fresh
+kill "$(pane_of alpha)"; gone alpha; N0=$(grep -c -- "^--name alpha " "$T/megavibe.calls")
+chmod 500 "$S"; ctl session resume alpha; R1=$RC; ctl session resume alpha; R2=$RC; chmod 700 "$S"; sleep 1
+check "resume with an unwritable register, twice: nothing launched either time" '[ "$R1" = 1 ] && [ "$R2" = 1 ] && [ "$(grep -c -- "^--name alpha " "$T/megavibe.calls")" = "$N0" ]'
+ctl session resume alpha --fresh
 check "resume --fresh: a new conversation with the continue brief, id replaced" '[ "$RC" = 0 ] && called "^--name alpha --model sonnet --session-id $(rec alpha sid) A previous session working on the task in $TASK" && [ "$(rec alpha sid)" != "$SID" ]'
 ctl session done beta
 check "done: state done" '[ "$RC" = 0 ] && [ "$(rec beta state)" = done ] && [ -n "$(rec beta ended)" ]'
@@ -145,6 +152,10 @@ tmux new-window -d -t main: -n manual -c "$D" sleep 600
 ctl session add gamma --window main:manual --task "$TASK"
 check "add: window stamped, registered with the window's folder ($o)" '[ "$RC" = 0 ] && tmux list-windows -a -F "#{window_name} #{@mv_session}" | grep -qx "manual gamma" && [ "$(rec gamma state)" = running ] && [ "$(rec gamma dir)" = "$D" ]'
 ctl session add delta --window main:manual --task "$TASK"; check "add onto a window of another session: refused" '[ "$RC" = 1 ] && [ ! -e "$S/delta" ]'
+tmux new-window -d -t main: -n manual2 -c "$D" sleep 600
+ctl session drop gamma; ctl session add gamma --window main:manual2 --task "$TASK"
+check "add of a dropped name while its old window is still stamped: refused (the old stamp would keep it alive) ($o)" '[ "$RC" = 1 ] && [[ "$o" == *"still stamped gamma"* ]] && [ "$(rec gamma state)" = dropped ]'
+ctl session add gamma --window main:manual --task "$TASK"; check "add again on its own window: fine" '[ "$RC" = 0 ] && [ "$(rec gamma state)" = running ]'
 ctl session add delta --window main:nowhere --task "$TASK"; check "add with no such window: refused" '[ "$RC" = 1 ] && [ ! -e "$S/delta" ]'
 ctl session add delta --window main:shell --task "$TASK" --sid nope; check "add with a bad id: refused" '[ "$RC" = 1 ] && [ ! -e "$S/delta" ]'
 tmux new-window -d -t main: -n twin sleep 600; tmux new-window -d -t main: -n twin sleep 600

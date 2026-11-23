@@ -376,6 +376,13 @@ printf '{"pid": %s}\n' "$$" > "$M/.agent/.session-lock.d/metadata.json"
 bash "$N/pa-start.sh" --running; check "pa-start --running: a live process that is not claude is not a PA" '[ "$?" = 1 ]'
 node
 check "node: stale lock: the PA is started" '[ -e "$TMUXSTATE/s/megavibe-personal" ] && [ -s "$N/.starts-pa" ]'
+# Without a node folder the launcher does not judge the lock: the wrapper's own handling applies, as before.
+fresh 9f; mkdir -p "$M/.agent/.session-lock.d"
+( cd "$M" && exec -a claude-live sleep 300 ) & LIVE=$!
+printf '{"pid": %s}\n' "$LIVE" > "$M/.agent/.session-lock.d/metadata.json"; sleep 1
+bash "$REPO/template/node/pa-start.sh"
+check "pa-start without a node folder, live lock: megavibe is still called (unchanged behaviour)" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ]'
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
 # megavibe node pa session: show, set, clear
 fresh 9e; ctl install
 ctl pa session; check "pa session: none recorded ($o)" '[ "$RC" = 0 ] && [[ "$o" == *none* ]]'
@@ -383,6 +390,8 @@ ctl pa session 11111111-2222-4333-8444-555555555555
 check "pa session <id>: recorded" '[ "$RC" = 0 ] && [ "$(cat "$N/pa.session")" = 11111111-2222-4333-8444-555555555555 ]'
 ctl pa session 'x; y'; check "pa session <junk>: refused, file unchanged" '[ "$RC" = 1 ] && [ "$(cat "$N/pa.session")" = 11111111-2222-4333-8444-555555555555 ]'
 ctl status; check "status shows the recorded PA conversation" '[[ "$o" == *11111111-2222-4333-8444-555555555555* ]]'
+chmod 500 "$N"; ctl pa session 99999999-2222-4333-8444-555555555555; chmod 700 "$N"
+check "pa session <id> with an unwritable node folder: fails, says so, old id kept ($o)" '[ "$RC" = 1 ] && [ "$(cat "$N/pa.session")" = 11111111-2222-4333-8444-555555555555 ]'
 ctl pa session none; check "pa session none: cleared" '[ "$RC" = 0 ] && [ ! -e "$N/pa.session" ]'
 unset MEGAVIBE_NODE_TEST_RESUME_SECS
 

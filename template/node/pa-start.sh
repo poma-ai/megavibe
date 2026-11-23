@@ -49,7 +49,9 @@ pa_live() {
 }
 if [ "${1:-}" = --running ]; then pa_live; exit; fi
 cd "$MH/personal" || exit 1
-if pa_live; then
+# Only where the node folder exists (the node restarts and resumes the PA there): without it the
+# wrapper's own handling of a live session lock applies, as it always did.
+if [ -d "$N" ] && pa_live; then
   nlog "pa-start: a PA already runs from $MH/personal (its session lock names a live process); not starting a second one"
   if [ -t 1 ]; then
     echo "A Personal Assistant already runs from $MH/personal (see .agent/.session-lock.d there); not starting a second one. This window closes in 20 s."
