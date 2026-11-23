@@ -791,9 +791,10 @@ for line in CMD.split("\n"):
 CMD = "\n".join(out).replace("\\\n", "")
 CMD = CMD.replace("\n", " ; ")
 
-# A command or process substitution anywhere in the text runs before the words are parsed (an env
-# assignment, a quoted argument), so the bootstrap exception is not granted when the text has one.
-SUBST = "$(" in CMD or "`" in CMD
+# The bootstrap exception holds only when the WHOLE command text is that one simple command: nothing
+# before it, no wrapper, no substitution, no second command. Reading around the words (an env
+# assignment, a process substitution, a quoted argument) found a new spelling in every review round.
+SIMPLE_BOOTSTRAP = re.fullmatch(r"\s*launchctl\s+bootstrap\s+(?:gui|user)/[0-9]+\s+\"?(?:~|\$HOME)/[A-Za-z0-9._ /-]+\.plist\"?(?:\s+(?:[0-9]?>>?\s*/dev/null|&>>?\s*/dev/null|[0-9]?>&[0-9]))*\s*", CMD)
 KILLERS = {"pkill", "killall"}
 TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
 LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
@@ -910,7 +911,7 @@ def scan(argv, depth=0):
     if base == "launchctl":
         v = verb(argv, set())
         if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
-        if v == "bootstrap": return SUBST or not user_agent_bootstrap(argv)
+        if v == "bootstrap": return not (SIMPLE_BOOTSTRAP and user_agent_bootstrap(argv))
         return v in LAUNCHCTL_VERBS
     return False
 
