@@ -17,7 +17,7 @@ Use one of these instead:
 - **Foreground in a terminal the user is watching** — for things you want them to see in real time.
 - **Named tmux session** — for things genuinely meant to outlive the current Claude session: `tmux new -d -s <project>-<purpose> '<command>'`. The session name is how the user finds and kills it later.
 
-**A Claude session you start from a session carries its parent.** `megavibe` records every launch in `~/.megavibe/launches/<pid>.json` with the session that started it, so a session viewer can nest the child under its parent. A launch from your Bash tool inherits `CLAUDE_CODE_SESSION_ID` and needs nothing. A detached launch (tmux, `setsid`, ssh) does not inherit your environment: prefix it with `MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID`, as in `tmux new -d -s <name> env MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID megavibe ...`. Without it the child shows up unrelated.
+**A Claude session you start from a session carries its parent.** `megavibe` records every launch in `~/.megavibe/launches/<pid>.json` with the session that started it, so a session viewer can nest the child under its parent. A launch that is your own child process (from your Bash tool) needs nothing: the wrapper uses `CLAUDE_CODE_SESSION_ID` while a `claude` process is among its ancestors. A launch that is not your child (tmux, ssh, a LaunchAgent) must say whose it is: prefix it with `MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID`, as in `tmux new -d -s <name> env MEGAVIBE_PARENT_SESSION=$CLAUDE_CODE_SESSION_ID megavibe ...`. Without it the child shows up unrelated (a stale id a tmux server handed on is ignored, not believed). `MEGAVIBE_PARENT_SESSION=` (empty) means no parent.
 
 ## Backgrounded work gets a heartbeat
 

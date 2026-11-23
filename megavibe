@@ -2400,14 +2400,33 @@ update_lock_pid() {
 # Helper: record that THIS wrapper started claude, and on behalf of which session.
 # The session registry (~/.claude/sessions) has no parent field, so tools that list sessions
 # (e.g. megavibe-observer) join this record to a live session by claude's PID. Parent = the
-# explicit MEGAVIBE_PARENT_SESSION (a launcher that detaches, like tmux, must pass it: the new
-# process does not inherit the caller's environment), else the session whose tool ran this
-# wrapper (CLAUDE_CODE_SESSION_ID). A launch with no parent still gets a record, so "started by
-# megavibe" can be told apart from a bare `claude`. Never blocks or fails a launch.
+# explicit MEGAVIBE_PARENT_SESSION (set, even empty = "no parent"; a launcher that is not the
+# session's own child, like tmux or ssh, must pass it), else CLAUDE_CODE_SESSION_ID, believed only
+# while a `claude` process is among this wrapper's ancestors: a tmux server hands every later
+# window the environment of whoever started it, so a bare env value can name an unrelated session.
+# A launch with no parent still gets a record, so "started by megavibe" can be told apart from a
+# bare `claude`. Never blocks or fails a launch.
+has_claude_ancestor() {
+  local x=$$ n=0 c
+  while [ "$n" -lt 12 ]; do
+    x=$(ps -o ppid= -p "$x" 2>/dev/null | tr -d ' ')
+    [[ "$x" =~ ^[0-9]+$ ]] && [ "$x" -gt 1 ] || return 1
+    c=$(ps -o comm= -p "$x" 2>/dev/null)
+    [ "$(basename "${c:-}")" = claude ] && return 0
+    n=$((n + 1))
+  done
+  return 1
+}
+
 record_launch() {
-  local pid="${1:-}" dir="$MEGAVIBE_HOME/launches" parent="${MEGAVIBE_PARENT_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}" f p
+  local pid="${1:-}" dir="$MEGAVIBE_HOME/launches" parent="" f p
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
   command -v jq &>/dev/null || return 0
+  if [ -n "${MEGAVIBE_PARENT_SESSION+x}" ]; then
+    parent="$MEGAVIBE_PARENT_SESSION"
+  elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && has_claude_ancestor; then
+    parent="$CLAUDE_CODE_SESSION_ID"
+  fi
   [[ "$parent" =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
   (
     umask 077
@@ -2420,7 +2439,8 @@ record_launch() {
     done
     jq -n --argjson pid "$pid" --arg parent "$parent" --argjson at "$(date +%s)" \
       '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), startedAt: $at}' \
-      > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null
+      > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null \
+      || rm -f "$dir/$pid.json.tmp"
   ) 2>/dev/null || true
   return 0
 }

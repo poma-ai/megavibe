@@ -8,15 +8,29 @@ trap 'rm -rf "$T"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-sed -n '/^record_launch() {/,/^}/p' "$REPO/megavibe" > "$T/fn.sh"
-[ -s "$T/fn.sh" ] || fail "record_launch not found in megavibe"
+{ sed -n '/^has_claude_ancestor() {/,/^}/p' "$REPO/megavibe"; sed -n '/^record_launch() {/,/^}/p' "$REPO/megavibe"; } > "$T/fn.sh"
+grep -q '^record_launch() {' "$T/fn.sh" && grep -q '^has_claude_ancestor() {' "$T/fn.sh" || fail "functions not found in megavibe"
+
+# A stub `ps` gives the recording shell a fixed ancestry: <shell> -> 50001 (named $FAKE_COMM) -> 50002 -> init.
+# The real chain is not usable here: this test normally runs under a real claude session.
+mkdir -p "$T/bin"
+cat > "$T/bin/ps" <<'EOF'
+#!/bin/bash
+field=$2; pid=$4
+case "$field" in
+  ppid=) case "$pid" in 50001) echo 50002;; 50002) echo 1;; *) echo 50001;; esac ;;
+  comm=) case "$pid" in 50001) echo "${FAKE_COMM:-zsh}";; 50002) echo login;; esac ;;
+esac
+EOF
+chmod +x "$T/bin/ps"
 # Both claude launch sites must record, or sessions started on that path are unmarked.
 [ "$(grep -c '^  record_launch "\$CLAUDE_PID"$' "$REPO/megavibe")" = 2 ] || fail "expected record_launch after both claude launches"
 
 run() { # run <pid> [env assignments...]: source the function in a clean shell
   local pid="$1"; shift
-  (cd "$T" && env -i PATH="$PATH" MEGAVIBE_HOME="$T/home" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid")
+  (cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" "$@" bash -c 'set -euo pipefail; source "$1"; record_launch "$2"' _ "$T/fn.sh" "$pid")
 }
+run_c() { run "$1" FAKE_COMM=/Users/x/.local/bin/claude "${@:2}"; }  # the launching shell is a child of a claude process
 field() { jq -r "$1" "$T/home/launches/$2.json"; }
 
 # Explicit parent wins over the inherited session id.
@@ -29,9 +43,17 @@ mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }  # GNU first: `stat 
 [ "$(mode "$T/home/launches")" = 700 ] || fail "launches dir mode"
 [ "$(mode "$T/home/launches/4001.json")" = 600 ] || fail "record mode"
 
-# Inherited session id is used when no explicit parent is set.
-run 4002 CLAUDE_CODE_SESSION_ID=bbbb-2222
+# Inherited session id is used when no explicit parent is set and a claude process is an ancestor.
+run_c 4002 CLAUDE_CODE_SESSION_ID=bbbb-2222
 [ "$(field .parentSessionId 4002)" = "bbbb-2222" ] || fail "inherited parent"
+
+# The same value with no claude ancestor (a stale id from a shared tmux server) is ignored.
+run 4010 CLAUDE_CODE_SESSION_ID=bbbb-2222
+[ "$(field .parentSessionId 4010)" = "null" ] || fail "stale inherited id must be ignored"
+
+# An explicitly empty MEGAVIBE_PARENT_SESSION means "no parent", even under claude with an inherited id.
+run_c 4011 MEGAVIBE_PARENT_SESSION= CLAUDE_CODE_SESSION_ID=bbbb-2222
+[ "$(field .parentSessionId 4011)" = "null" ] || fail "empty explicit parent must mean none"
 
 # No parent: still recorded, parent null (tells "started by megavibe" from a bare claude).
 run 4003
