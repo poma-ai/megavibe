@@ -123,7 +123,7 @@ codex_row() {
       | select(length > 1)' 2>/dev/null \
     | jq -sc 'select(length > 0) | sort_by(.t)' 2>/dev/null)
   # An empty result is cached too (an API-key login has rollouts and no rate_limits: do not re-walk the tree on every call).
-  if [ -z "${MEGAVIBE_NOW:-}" ] && [ "$SPRINT_FRESH" != 1 ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
+  if [ -z "${MEGAVIBE_NOW:-}" ] && [ "$MODE" != sprint ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
     { printf '%s\n' "$NOW"; printf '%s\n' "$rows"; } > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$" 2>/dev/null
   fi
   [ -n "$rows" ] && printf '%s\n' "$rows"
@@ -217,12 +217,14 @@ emit_forecast() {
                elif $r6 != null then {v: $r6, b: "6h"}
                elif $r24 != null then {v: $r24, b: "24h"}
                elif $wk != null then {v: $wk, b: "week"} else null end) as $pc0
-            # Sprint mode only: a rise of 3 points or more inside the last 90 minutes, over whatever span (the blended
+            # Sprint mode only: a rise of 2 points or more inside the last 90 minutes, over whatever span (the blended
             # paces need readings 2 h apart and miss a burst that has just started, which is what a session spending
             # in the sprint looks like), raises the pace to that rate.
-            | (if $burst == 1 and $mono and $pc0 != null then
-                 ([$rows[] | select(.t >= $now - 5400 and .t < $last.t and ($last.p - .p) >= 3)
-                   | (($last.p - .p) / (($last.t - .t) / 3600))] | max)
+            | (if $burst == 1 and $pc0 != null then
+                 # a rise of 2 points or more from any reading in the last 90 minutes to the newest, whatever came before
+                 # it (an earlier dip does not switch this off); whole-percent readings, so the rise is counted one short
+                 ([$rows[] | select(.t >= $now - 5400 and .t < $last.t and ($last.p - .p) >= 2)
+                   | (($last.p - .p - 1) / (($last.t - .t) / 3600))] | max)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"

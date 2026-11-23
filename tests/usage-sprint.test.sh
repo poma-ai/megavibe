@@ -107,6 +107,14 @@ RJ=$((NOW + 1500))   # 25 minutes left
 { row 85 93 $RJ; row 60 93 $RJ; row 35 93 $RJ; row 15 93 $RJ; row 10 93 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'flat at 93 then 96 five minutes ago, 25 minutes left: no sprint (burst measured from the nearest reading)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
+# two points in five minutes near the limit is a burst too (whole-percent readings: the rise is counted one point short)
+{ row 85 94 $RJ; row 60 94 $RJ; row 35 94 $RJ; row 15 94 $RJ; row 10 94 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check '94 then 96 five minutes ago, 25 minutes left: no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
+# an earlier one-point dip (unreliable trend) does not switch the burst check off
+{ row 85 94 $RJ; row 60 93 $RJ; row 35 93 $RJ; row 15 93 $RJ; row 10 93 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check '94, a dip to 93, then 96 five minutes ago: still no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
@@ -174,6 +182,15 @@ o=$(cx sprint)
 check 'a 100 reading written seconds later ends the sprint at once (the cache is not trusted inside the window)' '[ "$(f 2)" = "-" ] && [ "$(f 4)" = 100 ]'
 fo=$(cx forecast)
 check 'the sprint did not refresh the shared forecast cache: the ordinary forecast still serves its cached 90 (no change for a session outside the sprint)' '[ "$(printf "%s" "$fo" | cut -d"|" -f2)" = 90 ]'
+# a sprint call outside the window on a cold cache must not seed the shared cache either
+rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"
+RO=$((RN + 6 * 3600))
+{ codex "$((RN - 25 * 3600))" 60 "$RO"; codex "$((RN - 5 * 3600))" 64 "$RO"; codex "$((RN - 120))" 66 "$RO"; } > "$T/codex2/sessions/x/rollout-1.jsonl"
+o=$(cx sprint)
+check 'six hours left, cold cache: not a sprint' '[ "$(f 2)" = "-" ]'
+codex "$RN" 77 "$RO" >> "$T/codex2/sessions/x/rollout-1.jsonl"
+fo=$(cx forecast)
+check 'a sprint call on a cold cache left nothing behind: the next ordinary forecast sees the new 77' '[ "$(printf "%s" "$fo" | cut -d"|" -f2)" = 77 ]'
 
 # ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
 adv() { /bin/bash "$UR" sprint-advice; }
