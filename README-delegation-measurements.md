@@ -1,6 +1,6 @@
 # Delegation: measurements and history
 
-Evidence behind the rules in `template/.claude/rules/delegation.md`. Moved out of that file on 2026-11-23 because it is loaded eagerly into every session and the instruction-file total passed the 150k-char limit; the rules there stay authoritative, nothing here is a rule. Text is verbatim as moved.
+Evidence behind the rules in `template/.claude/rules/delegation.md`. Moved out of that file on 2026-11-23 because it is loaded eagerly into every session and the instruction-file total passed the 150k-char limit; the rules there stay authoritative. This file is evidence and history: imperatives in the quoted text below are the original wording of rules that live in `delegation.md`. Text is verbatim as moved; bracketed notes are added.
 
 ## Reasoning-effort/timeout asymmetry (2026-10-04)
 
@@ -13,17 +13,11 @@ Evidence behind the rules in `template/.claude/rules/delegation.md`. Moved out o
 
 
 | Backend | Time | Output | What it costs |
-
 |---|---|---|---|
-
 | Codex `gpt-5.6-terra`, effort low | 23 s | 76 lines | plan tokens |
-
 | Claude `summarizer` (sonnet) | 87 s | 64 lines | 125K tokens of this session's own subscription |
-
 | Codex `gpt-6-astra`, effort low / high | 93 / 105 s | 156 / 168 lines | plan tokens |
-
 | Gemini `3.1-flash-lite`, level low | 9 s | 40 lines | billed per token |
-
 | Claude `general-purpose` + `model: haiku`, measured 2026-10-04 on a different 200KB input | 65 s | 108 lines, specific (named commits, PR #s, task IDs, acceptance criteria — plus a self-added Rationale section not in the template) | 113K tokens of this session's own subscription — *less* than the sonnet subagent, at half Sonnet's per-token price |
 
 
@@ -62,11 +56,12 @@ Proposed once: ping an idle session every ~50 min (under the 1h ephemeral cache 
 
 ## Model steering table: rows moved whole
 
+| Role | Model | Effort | Why | Confidence |
+|---|---|---|---|---|
 | Main/captain (your own session) | Opus for most work; Fable for one deep, continuous, hard thread; Sonnet for routine work | session default | Fable is 2.5x Opus per token — reserve it for sustained hard reasoning in a SINGLE context. Avoid using it to fan out across many project contexts at once: each pays its own fresh floor regardless of model, so that step should run the cheapest model ADEQUATE for the judgment that step actually needs — not automatically the cheapest available, and not the priciest by default either (reported from a 2026-10-04 transcript audit on one machine, not yet written to a durable record: 5 projects' first calls within 50s on 2026-09-28, ~1.83M fresh tokens, ~97% of that day's Fable cost) | reported, not independently re-checked — see caveat |
-
 | Codex, reviews | `gpt-6.1-sol` | **high** | was `low` (a real misconfiguration — Codex, the primary reviewer by volume, was thinking less than its own Sonnet fallback; fixed). A/B'd once against `gpt-6-astra` on a real review task: same verdict, comparable depth, astra actually faster this run — no clear win, kept `sol` as the default rather than switch on an n=1 tie | fixed; model choice inconclusive, revisit if evidence accumulates |
 
-What this table is *not*: a result of finding one mega-pattern in aggregate error rates (there wasn't one — tool-call error rates sit flat at 1-4% across every model/effort combo, most likely task-difficulty confound rather than model quality signal). It's task-shape-based reasoning plus the handful of things that WERE directly measurable (the Haiku test, the Codex misconfiguration, the Codex A/B) — formalized so the next session doesn't have to re-derive it. Two reported findings — the Main/captain row's incident citation above, and the "## Cache heartbeat" section further down — come from one machine's transcript audit and haven't been written to a durable record or independently reproduced. Treat those two as leads, not settled fact, until they are.
+What this table is *not*: a result of finding one mega-pattern in aggregate error rates (there wasn't one — tool-call error rates sit flat at 1-4% across every model/effort combo, most likely task-difficulty confound rather than model quality signal). It's task-shape-based reasoning plus the handful of things that WERE directly measurable (the Haiku test, the Codex misconfiguration, the Codex A/B) — formalized so the next session doesn't have to re-derive it. Two reported findings — the Main/captain row's incident citation above, and the "## Cache heartbeat" section [above in this file; further down in delegation.md] — come from one machine's transcript audit and haven't been written to a durable record or independently reproduced. Treat those two as leads, not settled fact, until they are.
 
 ## Text removed from delegation.md on 2026-11-23 (verbatim fragments)
 
