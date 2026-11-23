@@ -152,7 +152,11 @@ EOF
 #     that goes on below it (~/.m*/scripts/x, ~/.meg?vibe/x): blocked; a plain `ls -d ~/.m*` passes;
 #   - osascript, launchctl, crontab or a new Terminal window that mentions ~/.megavibe or the
 #     script: blocked (they start a process outside Claude Code's process tree; the script
-#     refuses those anyway). `launchctl list | grep com.megavibe` is not a mention.
+#     refuses those anyway). `launchctl list | grep com.megavibe` is not a mention. The
+#     starter word must be in command position (start of the text, after a separator, a quote,
+#     `$(`, or a wrapper such as env/sudo/nohup): the word inside prose (a review brief that
+#     says "never launchctl stop") next to a ~/.megavibe path is not a command, and a
+#     backgrounded review or sweep script is no longer refused for it.
 # HACK: a net, not a wall. Known holes: a name assembled from pieces the text never shows
 # together, a script FILE that calls it; the script itself is the lock for both.
 # Known over-blocks: any Bash text that names the script is refused, including `git add
@@ -173,7 +177,7 @@ case "$_TE|$_TE_RAW" in
       _TE_WHY="names trash-empty.sh"
     elif printf '%s' "$_TE_RAW" | grep -Eq '(^|[[:space:]=:("'"'"'])(~|\$\{?home\}?|/users/[^[:space:]/]+)/\.(m|me|meg|mega|megav|megavi|megavib)[*?][^[:space:]]*/'; then
       _TE_WHY="has a path whose first part is a glob that could expand to ~/.megavibe"
-    elif printf '%s' "$_TE_RAW" | grep -Eq '(osascript|osacompile|launchctl|crontab|(^|[[:space:];&|(])open[[:space:]].*(terminal|iterm))' \
+    elif printf '%s' "$_TE_RAW" | grep -Eq "(^|[;&|(\`\"'{!]|\\\$\\(|(^|[[:space:]])(if|then|else|elif|do|while|until))[[:space:]]*((env|sudo|nohup|exec|command|time|nice|xargs|[a-z_][a-z0-9_]*=[^[:space:]]*)[[:space:]]+)*(osascript|osacompile|launchctl|crontab|open[[:space:]].*(terminal|iterm))" \
          && printf '%s' "$_TE_RAW" | grep -Eq '[/~]\.megavibe|trash-e'; then
       _TE_WHY="starts a process outside Claude Code that mentions ~/.megavibe or trash-empty.sh"
     fi
@@ -759,9 +763,11 @@ fi
 # (same class as the `git rm -f` incident of 2026-10-08).
 #
 # Blocked when they are the command: pkill, killall, `tmux kill-server|kill-session|
-# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|bootstrap|disable`
+# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|disable|bootstrap`
 # and `launchctl kickstart -k`. NOT blocked: `kill <pid>` (a PID you started),
-# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`.
+# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`, and
+# `launchctl bootstrap gui/<uid> ~/Library/LaunchAgents/<name>.plist` (loading a user agent
+# stops nothing; any other bootstrap form stays blocked).
 # Parsed with shlex like the exec guard above, so the words inside quotes, an
 # echo, a commit message or a heredoc body are not commands; `bash -c "pkill x"`,
 # `sudo pkill x` and `env X=1 pkill x` are. Escape hatch for a human decision:
@@ -840,6 +846,24 @@ def verb(argv, valued):
         return a
     return None
 
+def user_agent_bootstrap(argv):
+    # bootstrap gui/UID ~/Library/LaunchAgents/NAME.plist only LOADS a user agent (stops
+    # nothing): exactly one user-domain target and one plist file directly under the user own
+    # LaunchAgents folder, no option, no dotdot. A system domain, a LaunchDaemons path, a
+    # second plist or anything else stays blocked.
+    rest = argv[2:]
+    if len(rest) != 2 or any(x.startswith("-") for x in rest): return False
+    dom, path = rest
+    m = re.match(r"^(gui|user)/([0-9]+)$", dom)
+    if not m or int(m.group(2)) != os.getuid(): return False
+    home = os.path.expanduser("~")
+    if path.startswith("~/"): path = home + path[1:]
+    elif path.startswith("$HOME/"): path = home + path[5:]
+    if ".." in path.split("/") or "$" in path or "*" in path or "?" in path: return False
+    pre = home + "/Library/LaunchAgents/"
+    if os.path.exists(path) and not os.path.realpath(path).startswith(os.path.realpath(pre) + "/"): return False
+    return path.startswith(pre) and path.endswith(".plist") and "/" not in path[len(pre):] and len(path) > len(pre) + 6
+
 def scan(argv, depth=0):
     if depth > 3 or not argv: return False
     i = 0
@@ -879,6 +903,7 @@ def scan(argv, depth=0):
     if base == "launchctl":
         v = verb(argv, set())
         if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
+        if v == "bootstrap": return not user_agent_bootstrap(argv)
         return v in LAUNCHCTL_VERBS
     return False
 
