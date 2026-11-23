@@ -144,6 +144,19 @@ printf '#!/bin/bash\nprintf "%%s|%%s|%%s\\n" "$*" "${MEGAVIBE_PROBE_MODEL:-}" "$
 rm -f "$T/probe.calls"; printf 'PROBE_MODEL=my-model\nPROBE_CODEX_HOME=/tmp/some codex\n' >> "$N/node.conf"; node
 check "node with pa.on: probe model and Codex home from node.conf reach the probe" '[ "$(cat "$T/probe.calls" 2>/dev/null)" = "run --every 30|my-model|/tmp/some codex" ]'
 
+# PA secrets sync: run by the node on a PA Mac that has the secrets tool; failure logged without its text
+fresh 4s; ctl install
+mkdir -p "$HOME/.local/bin"; printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/secret.calls"\n' "$T" > "$HOME/.local/bin/secret"; chmod +x "$HOME/.local/bin/secret"
+node
+check "node without pa.on: secret sync is not run" '[ ! -e "$T/secret.calls" ]'
+touch "$N/pa.on"; node
+check "node with pa.on: secret sync runs on every run" '[ "$(cat "$T/secret.calls" 2>/dev/null)" = "sync" ]'
+printf '#!/bin/bash\necho SECRETVALUE; exit 3\n' > "$HOME/.local/bin/secret"
+node
+check "failed secret sync: logged without its output" 'log | grep -q "secret sync failed" && ! log | grep -q SECRETVALUE && [ ! -e "$N/secret-sync.log" ]'
+mv "$HOME/.local/bin/secret" "$HOME/.local/bin/secret.off"; node
+check "no secrets tool: nothing happens, exit 0" '[ "$RC" = 0 ] && [ "$(cat "$T/secret.calls")" = "sync" ]'
+
 fresh 4; ctl install
 for i in 1 2 3 4; do rm -f "$TMUXSTATE/w.main"; mkdir -p "$TMUXSTATE/s"; touch "$TMUXSTATE/s/main"; node; done
 check "start cap: 3 node starts per hour" '[ "$(grep -c "^new-window" "$TMUXSTATE/calls")" = 3 ] && log | grep -q "3 starts in the last hour"'
