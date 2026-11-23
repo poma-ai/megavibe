@@ -102,6 +102,22 @@ RL=$((NOW + 300)); { row 1500 84 $RL; row 360 89 $RL; row 5 90 $RL; } > "$MEGAVI
 o=$(sp)
 check 'five minutes left: not a sprint (reason outside)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ]'
 
+# a jump at the very end of a flat history: the steepest recent rise counts, not the average over 90 minutes
+RJ=$((NOW + 1500))   # 25 minutes left
+{ row 85 93 $RJ; row 60 93 $RJ; row 35 93 $RJ; row 15 93 $RJ; row 10 93 $RJ; row 5 96 $RJ; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'flat at 93 then 96 five minutes ago, 25 minutes left: no sprint (burst measured from the nearest reading)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
+# the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
+RM=$((NOW + 900))    # 15 minutes left
+{ row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'forecast just over 97.0: spare is rounded down, so no sprint' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ]'
+{ row 1500 60 $R; row 360 62 $R; row 5 63 $R; } > "$MEGAVIBE_USAGE_FILE"
+fo=$(SPRINT_BURST=1 /bin/bash "$UR" forecast); fo0=$(/bin/bash "$UR" forecast)
+check 'SPRINT_BURST in the environment does not reach the ordinary forecast' '[ "$fo" = "$fo0" ] && [[ "$fo" != *burst* ]]'
+fo=$(SPRINT_BURST=junk /bin/bash "$UR" forecast)
+check 'a junk SPRINT_BURST does not blank it either' '[ "$fo" = "$fo0" ]'
+
 # the five-hour window is hot: top-tier work would only hit that limit
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -156,6 +172,8 @@ check 'codex on the real clock, 90 used, 2 h left: sprint' '[ "$(f 2)" = sprint 
 codex "$RN" 100 "$RR" >> "$T/codex2/sessions/x/rollout-1.jsonl"
 o=$(cx sprint)
 check 'a 100 reading written seconds later ends the sprint at once (the cache is not trusted inside the window)' '[ "$(f 2)" = "-" ] && [ "$(f 4)" = 100 ]'
+fo=$(cx forecast)
+check 'the sprint did not refresh the shared forecast cache: the ordinary forecast still serves its cached 90 (no change for a session outside the sprint)' '[ "$(printf "%s" "$fo" | cut -d"|" -f2)" = 90 ]'
 
 # ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
 adv() { /bin/bash "$UR" sprint-advice; }
@@ -167,6 +185,10 @@ check 'advice says what to do and what does not move' '[[ "$o" == *"top model ti
 { codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 6 * 3600))" 55 "$R"; codex "$((NOW - 600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(adv)
 check 'both sprinting: two lines, Claude then Codex' '[ "$(printf "%s\n" "$o" | grep -c .)" = 2 ] && [[ "$(printf "%s\n" "$o" | sed -n 2p)" == "usage sprint: Codex "* ]]'
+mkdir -p "$T/noperl"; printf '#!/bin/sh\nexit 1\n' > "$T/noperl/perl"; chmod +x "$T/noperl/perl"
+o=$(PATH="$T/noperl:$PATH" adv)
+check 'a provider call that cannot run is reported as unknown, per provider, not as not-sprinting' '[ "$o" = "usage sprint-unknown: Claude
+usage sprint-unknown: Codex" ]'
 o=$(MEGAVIBE_SPRINT=0 adv)
 check 'advice with MEGAVIBE_SPRINT=0: silent' '[ -z "$o" ]'
 { row 1500 60 $R6; row 360 61 $R6; row 5 62 $R6; } > "$MEGAVIBE_USAGE_FILE"; : > "$T/codex/sessions/x/rollout-1.jsonl"

@@ -80,7 +80,7 @@ UP="${MEGAVIBE_ROUTER_UP:-opus}"
 MODE="${1:-claude}"; PEEK=0; [ "${2:-}" = "--peek" ] && PEEK=1   # --peek: report, never advance the hysteresis state
 case "$MODE" in pace|forecast|sprint|sprint-advice) PEEK=1 ;; esac   # display must never update routing state or trim history
 FCMODE=0; case "$MODE" in forecast|sprint) FCMODE=1 ;; esac          # modes that read the long history a forecast needs
-FSTALE=""                                                            # set by sprint mode only, never taken from the environment
+FSTALE=""; SPRINT_BURST=0                                            # set by sprint mode only, never taken from the environment
 SPRINT_FRESH=0; [ "$MODE" = sprint ] && [ "${_MEGAVIBE_SPRINT_FRESH:-}" = 1 ] && SPRINT_FRESH=1   # internal: sprint re-running itself past the Codex cache
 PROVIDER="${MEGAVIBE_ROUTER_PROVIDER:-claude}"; STALE=21600
 case "$MODE" in codex|codex-band) PROVIDER=codex ;; esac
@@ -123,7 +123,7 @@ codex_row() {
       | select(length > 1)' 2>/dev/null \
     | jq -sc 'select(length > 0) | sort_by(.t)' 2>/dev/null)
   # An empty result is cached too (an API-key login has rollouts and no rate_limits: do not re-walk the tree on every call).
-  if [ -z "${MEGAVIBE_NOW:-}" ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
+  if [ -z "${MEGAVIBE_NOW:-}" ] && [ "$SPRINT_FRESH" != 1 ] && { [ ! -e "$cache" ] || [ -f "$cache" ]; } && mkdir -p "$MV/usage" 2>/dev/null; then
     { printf '%s\n' "$NOW"; printf '%s\n' "$rows"; } > "$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null || rm -f "$cache.$$" 2>/dev/null
   fi
   [ -n "$rows" ] && printf '%s\n' "$rows"
@@ -221,15 +221,17 @@ emit_forecast() {
             # paces need readings 2 h apart and miss a burst that has just started, which is what a session spending
             # in the sprint looks like), raises the pace to that rate.
             | (if $burst == 1 and $mono and $pc0 != null then
-                 ([$rows[] | select(.t >= $now - 5400)] | first) as $bb
-                 | if $bb != null and $last.t > $bb.t and ($last.p - $bb.p) >= 3
-                   then (($last.p - $bb.p) / (($last.t - $bb.t) / 3600)) else null end
+                 ([$rows[] | select(.t >= $now - 5400 and .t < $last.t and ($last.p - .p) >= 3)
+                   | (($last.p - .p) / (($last.t - .t) / 3600))] | max)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"
               else ([$pc.v, 0] | max) as $rate
                 | ($w.used + $rate * $left) as $fc
-                | [($rate * 1000 | round / 1000), ([$fc, 999] | min | r1), ($target - $fc | r1),
+                | [($rate * 1000 | round / 1000),
+                   # the sprint rounds the forecast up and the spare down: a margin must not be rounded into existence
+                   (if $burst == 1 then ([$fc, 999] | min | . * 10 | ceil / 10) else ([$fc, 999] | min | r1) end),
+                   (if $burst == 1 then ($target - $fc | . * 10 | floor / 10) else ($target - $fc | r1) end),
                    (if $left > 0 then ([($target - $w.used) / $left, 0] | max | . * 100 | round / 100) else 0 end), $pc.b]
                 | map(tostring) | join("|")
               end
@@ -243,11 +245,19 @@ if [ "$MODE" = sprint-advice ]; then
   # the launch model or the balance preference.
   [ "${MEGAVIBE_SPRINT:-1}" != 0 ] || exit 0
   for p in claude codex; do
-    IFS='|' read -r _ st hl u fc spare spend _ _ < <(MEGAVIBE_ROUTER_PROVIDER=$p bash "$0" sprint 2>/dev/null) || true
+    # each provider's call is bounded on its own (2 s); one that cannot run or times out is reported as unknown,
+    # never as "not sprinting", so a slow Codex read cannot hide that Claude's sprint ended (or the reverse)
+    pf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint-adv.XXXXXX" 2>/dev/null) || pf=""
+    pp=""; st=""
+    if [ -n "$pf" ] && command -v perl >/dev/null 2>&1 && ( MEGAVIBE_ROUTER_PROVIDER=$p perl -e 'alarm 2; exec @ARGV' bash "$0" sprint >"$pf" 2>/dev/null </dev/null ) 2>/dev/null; then
+      IFS='|' read -r pp st hl u fc spare spend _ _ <"$pf" || true
+    fi
+    [ -z "$pf" ] || rm -f "$pf"
+    if [ "${pp:-}" != "$p" ]; then printf 'usage sprint-unknown: %s\n' "$([ "$p" = codex ] && echo Codex || echo Claude)"; continue; fi
     [ "${st:-}" = sprint ] || continue
     LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
       printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points). ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend
-      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) until its forecast reaches %d%%, and re-read `usage-route.sh sprint` before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, t, ot
+      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `usage-route.sh sprint` reports sprint for this subscription, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", t, ot
       printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
   done
   exit 0
@@ -412,7 +422,6 @@ if [ "$MODE" = forecast ]; then
   printf '%s|%s|%s\n' "$PROVIDER" "$(jq -r '(.wk.used // "")' <<<"$DECISION")" "$FC"
   exit 0
 fi
-SPRINT_BURST=0
 if [ "$MODE" = sprint ]; then
   IFS='|' read -r s_used s_rem s_fh < <(jq -r '[(.wk.used // ""), (.wk.rem // ""), (.mx.fh.p // "")] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || true
   s_in=$(LC_ALL=C awk -v r="${s_rem:-}" -v h="$SHOURS" 'BEGIN { if (r !~ /^[0-9]+([.][0-9]+)?$/ || r + 0 <= 0) print "none"; else if (r + 0 < 600) print "out"; else if (r + 0 <= h * 3600) print "in"; else print "out" }')

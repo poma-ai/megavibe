@@ -71,19 +71,23 @@ if [ -n "$BAND" ]; then
 fi
 # End-of-window sprint (usage-route.sh sprint-advice): one sentence per subscription whose weekly window is in
 # its last hours with room below the sprint target; nothing otherwise, and then the flag keeps its four fields.
-# Bounded (2 s) and written to a file like the pace calls, and skipped when the calls above already took 5 s, so
-# the whole hook stays inside its 10 s deadline. Only lines that are sprint sentences are relayed.
+# Bounded (5 s, each provider 2 s inside it) and written to a file like the pace calls, and skipped when the calls
+# above already took 3 s, so the whole hook stays inside its 10 s deadline. Only lines that are sprint sentences are relayed.
 SPR=""; SK=""
 if [ -n "$BAND" ]; then
   src=1
-  if [ "$SECONDS" -lt 5 ] && command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
-    ( perl -e 'alarm 2; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
+  if [ "$SECONDS" -lt 3 ] && command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
+    ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
     src=$?
     # whole sentences only: a line cut off by the deadline, or longer than any real one, lacks the closing words
     SPR=$(cut -c1-1200 "$sf" 2>/dev/null | grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' | head -n 2)
+    UNK=$(cut -c1-80 "$sf" 2>/dev/null | grep -E '^usage sprint-unknown: (Claude|Codex)$')
     rm -f "$sf"
+    # a provider whose own check could not run keeps the letter the session was last told; the others are decided now
     case "$SPR" in *"usage sprint: Claude "*) SK="c" ;; esac
+    case "$UNK" in *Claude*) case "${PS:-}" in s*c*) SK="${SK:-c}" ;; esac ;; esac
     case "$SPR" in *"usage sprint: Codex "*) SK="${SK}x" ;; esac
+    case "$UNK" in *Codex*) case "${PS:-}" in s*x) SK="${SK}x" ;; esac ;; esac
     [ -z "$SK" ] || { SK="s$SK"; SPR=$(printf '%s' "$SPR" | tr '\n' ' '); SPR="${SPR% }"; }
   fi
   # A call that could not run, timed out or failed says nothing about the sprint: keep the state the session was

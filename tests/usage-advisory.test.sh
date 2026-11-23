@@ -195,6 +195,16 @@ check 'an overlong line is not relayed, in part or whole' '[[ "$o" != *"usage sp
 reset; claude_pace 50 40 147 '' ''; codex_pace 60 30 222 '' ''; export STUB_SLEEP=30 STUB_SPRINT_SLEEP=30 STUB_SPRINT="$SC"
 s=$SECONDS; o=$(ev SessionStart | run); e=$((SECONDS - s))
 check "slow pace calls AND a slow sprint call: still under the 10 s hook deadline ($e s)" '[ "$e" -lt 9 ]'
+# per-provider unknown: one provider's check failing does not hide the other one's change
+reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:scx' > "$FLAG"
+export STUB_SPRINT='usage sprint-unknown: Codex'
+o=$(ev PreToolUse | run | ctx)
+check 'Claude left the sprint while Codex is unknown: Claude withdrawn by name, Codex kept in the flag' '[[ "$o" == *"advice for Claude no longer applies"* ]] && [[ "$o" != *"Codex no longer"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u:sx" ]'
+printf 'normal:-:9:u:sc' > "$FLAG"; export STUB_SPRINT="$SC
+usage sprint-unknown: Codex"
+o=$(ev PreToolUse | run | ctx)
+check 'Claude still sprinting, Codex unknown and never announced: flag stays sc, no withdrawal' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u:sc" ]'
+unset STUB_SPRINT
 check 'no temp files left behind (sprint)' '[ -z "$(ls "$TMPDIR" | grep usage-)" ]'
 printf 'usage-advisory: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
