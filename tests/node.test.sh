@@ -17,6 +17,8 @@ B="$T/bin"; mkdir -p "$B"
 cat > "$B/tmux" <<'EOF'
 #!/bin/bash
 S="$TMUXSTATE"; mkdir -p "$S/s"; printf '%s\n' "$*" >> "$S/calls"
+# The locale a real tmux server (and every pane in it) would inherit from this call.
+case "$1" in new-session|new-window) printf '%s LC_ALL=%s LANG=%s\n' "$1" "${LC_ALL-unset}" "${LANG-unset}" >> "$S/locale" ;; esac
 v="$1"; shift
 [ "${TMUX_FAIL:-}" = "$v" ] && exit 1
 tgt() { local t="$1"; t="${t#=}"; printf '%s' "${t%%:*}"; }
@@ -35,7 +37,9 @@ EOF
 printf '#!/bin/bash\nprintf "%%s\\n" "${HOSTNAME_STUB-testmac}"\n' > "$B/scutil"
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/launchctl.calls"\n[ "$1" = print ] && [ -e "%s/loaded" ] && exit 0\n[ "$1" = print ] && exit 113\nexit 0\n' "$T" "$T" > "$B/launchctl"
 printf '#!/bin/bash\necho Darwin\n' > "$B/uname"
-printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/megavibe.args"\n' "$T" > "$B/megavibe"
+# megavibe stub: the last call's arguments one per line in megavibe.args, every call as one line in
+# megavibe.calls; it stays alive for the seconds in megavibe.sleep when that file exists.
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/megavibe.args"\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\n[ -e "%s/megavibe.sleep" ] && sleep "$(cat "%s/megavibe.sleep")"\nexit 0\n' "$T" "$T" "$T" "$T" > "$B/megavibe"
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/claude.calls"\n' "$T" > "$B/claude"
 chmod +x "$B"/*
 export PATH="$B:$PATH"
@@ -48,7 +52,7 @@ fresh() {
   AUTH_RC=0; AUTH_MSG="ok"
   printf '#!/bin/bash\necho "$AUTH_MSG"\nexit "$AUTH_RC"\n' > "$MEGAVIBE_HOME/scripts/claude-auth-check.sh"
   chmod +x "$MEGAVIBE_HOME/scripts/claude-auth-check.sh"
-  rm -f "$T/launchctl.calls" "$T/loaded" "$T/megavibe.args" "$T/claude.calls"
+  rm -f "$T/launchctl.calls" "$T/loaded" "$T/megavibe.args" "$T/megavibe.calls" "$T/megavibe.sleep" "$T/claude.calls"
 }
 ctl() { o=$(bash "$REPO/scripts/megavibe-node.sh" "$@" 2>&1); RC=$?; }
 node() { AUTH_RC=$AUTH_RC AUTH_MSG=$AUTH_MSG bash "$N/node.sh"; RC=$?; }
@@ -163,9 +167,16 @@ check "start cap: 3 node starts per hour" '[ "$(grep -c "^new-window" "$TMUXSTAT
 
 fresh 5; ctl install --pa
 node
+check "node: what it starts in tmux gets a UTF-8 locale, never LC_ALL=C ($(tr '\n' ';' < "$TMUXSTATE/locale"))" '[ "$(grep -c "LC_ALL=unset LANG=en_US.UTF-8$" "$TMUXSTATE/locale")" = 3 ] && [ "$(wc -l < "$TMUXSTATE/locale" | tr -d " ")" = 3 ]'
+( export LC_ALL=C; node ); rm -f "$TMUXSTATE/w.main" "$TMUXSTATE/s/megavibe-personal"; : > "$TMUXSTATE/locale"; ( export LC_ALL=C; AUTH_RC=$AUTH_RC AUTH_MSG=$AUTH_MSG bash "$N/node.sh" )
+check "node: an inherited LC_ALL=C is not passed on either ($(tr '\n' ';' < "$TMUXSTATE/locale"))" '[ -s "$TMUXSTATE/locale" ] && ! grep -q "LC_ALL=C" "$TMUXSTATE/locale"'
 check "pa.on: PA started in megavibe-personal through pa-start.sh" '[ -e "$TMUXSTATE/s/megavibe-personal" ] && grep -q "$N/pa-start.sh" "$TMUXSTATE/cmd.megavibe-personal"'
 fresh 5b; ctl install --pa; chmod -x "$N/pa-start.sh"; node
 check "pa.on, launcher not executable: logged, not started" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "pa-start.sh is missing or not executable"'
+fresh 5d; ctl install --pa; git -C "$REPO" show main:template/node/pa-start.sh > "$N/pa-start.sh"; node
+check "pa.on with a launcher older than node.sh: never asked --running, not started, logged" '[ ! -e "$T/megavibe.calls" ] && [ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "older than node.sh"'
+fresh 5e; ctl install; echo "# old" >> "$N/pa-start.sh"; echo "# old" >> "$N/node.sh"; cp "$N/node.sh" "$T/node.old"; chmod 500 "$N"; ctl install; chmod 700 "$N"
+check "install that cannot write the launcher: exits non-zero and leaves node.sh alone ($o)" '[ "$RC" != 0 ] && cmp -s "$N/node.sh" "$T/node.old"'
 fresh 5c; ctl install --pa; TMUX_FAIL=list-sessions node
 check "session listing failed: PA not started, logged" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "could not list sessions"'
 
@@ -275,11 +286,12 @@ check "pull: ignored local file is not overwritten" '[ "$(cat "$M/.agent/LOGS/ke
 rm -f "$M/.agent/LOGS/keep.log"; rm -f "$N"/.once-*; node   # catch up for the takeover below
 
 # takeover / handback on the standby
-touch "$N/memory.pull"
+touch "$N/memory.pull"; echo 11111111-2222-4333-8444-555555555555 > "$N/pa.session"
 ( cd "$STUDIO_M" && echo n5 > .agent/events/e5.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm e5 && git push -q )
 ctl takeover
 check "takeover: memory.pull gone, memory.push and pa.on set, PA started ($o)" '[ "$RC" = 0 ] && [ ! -e "$N/memory.pull" ] && [ -e "$N/memory.push" ] && [ -e "$N/pa.on" ] && [ -e "$TMUXSTATE/s/megavibe-personal" ]'
 check "takeover: fast-forwarded to origin before starting" '[ -f "$M/.agent/events/e5.md" ]'
+check "takeover that pulled newer notes: the conversation recorded here is forgotten" '[ ! -e "$N/pa.session" ]'
 ( cd "$STUDIO_M" && git pull -q --ff-only && echo n5b > .agent/events/e5b.md && git add -A && git -c user.name=t -c user.email=t@t commit -qm e5b && git push -q )
 ctl takeover
 check "takeover with a running PA behind origin: refused, asks to end it" '[ "$RC" = 1 ] && [[ "$o" == *"/exit"* ]] && [ ! -f "$M/.agent/events/e5b.md" ]'
@@ -287,11 +299,12 @@ rm -f "$TMUXSTATE/s/megavibe-personal"; ctl takeover
 check "takeover after the PA ended: fast-forwards and starts it" '[ "$RC" = 0 ] && [ -f "$M/.agent/events/e5b.md" ] && [ -e "$TMUXSTATE/s/megavibe-personal" ]'
 ctl handback
 check "handback while the PA runs: refused, pa.on removed, still push" '[ "$RC" = 1 ] && [ ! -e "$N/pa.on" ] && [ -e "$N/memory.push" ] && [[ "$o" == *"/exit"* ]]'
-rm -f "$TMUXSTATE/s/megavibe-personal"; echo standby-note > "$M/.agent/events/s1.md"
+rm -f "$TMUXSTATE/s/megavibe-personal"; echo standby-note > "$M/.agent/events/s1.md"; echo 11111111-2222-4333-8444-555555555555 > "$N/pa.session"
 mv "$M/.git/index" "$M/.git/index.good"; echo garbage > "$M/.git/index"; ctl handback
 check "handback with a failing git status: refused, nothing switched ($o)" '[ "$RC" = 1 ] && [ -e "$N/memory.push" ] && [ ! -e "$N/memory.pull" ]'
 mv -f "$M/.git/index.good" "$M/.git/index"
 ctl handback
+check "handback: the conversation recorded on this Mac is forgotten" '[ ! -e "$N/pa.session" ]'
 check "handback: pushed, then memory.pull ($o)" '[ "$RC" = 0 ] && git -C "$O" ls-tree -r main --name-only | grep -q s1.md && [ -e "$N/memory.pull" ] && [ ! -e "$N/memory.push" ]'
 # handback publishes even when the switch was none
 ctl memory none; echo unpublished > "$M/.agent/events/u1.md"; ctl handback
@@ -305,7 +318,8 @@ touch "$N/pa.on"; ctl takeover
 check "takeover refused on a Mac that still had pa.on: pa.on disarmed" '[ "$RC" = 1 ] && [ ! -e "$N/pa.on" ]'
 node; check "  and the node does not start a PA afterwards" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ]'
 git -C "$M" remote set-url origin "$T/nowhere.git"; git -C "$M" reset -q --hard HEAD~1
-ctl takeover
+touch "$N/memory.pull"; echo 11111111-2222-4333-8444-555555555555 > "$N/pa.session"; ctl takeover
+check "takeover on a standby whose notes were already pulled (nothing to merge): the old conversation is still forgotten" '[ ! -e "$N/pa.session" ] && [[ "$o" == *"was a standby"* ]]'
 check "takeover with origin unreachable: starts from the local copy" '[ "$RC" = 0 ] && [[ "$o" == *"origin unreachable"* ]] && [ -e "$TMUXSTATE/s/megavibe-personal" ]'
 ctl takeover
 check "takeover, PA running, origin unreachable: says it could not check, not up to date" '[ "$RC" = 0 ] && [[ "$o" == *"is unknown"* ]] && [[ "$o" != *"up to date"* ]]'
@@ -321,6 +335,77 @@ bash "$N/pa-start.sh"
 check "pa-start: PA_MODEL=opus -> --model opus; trusted -> no preflight" 'grep -qx opus "$T/megavibe.args" && [ ! -e "$T/claude.calls" ]'
 echo 'PA_MODEL=$(x)' >> "$N/node.conf"; bash "$N/pa-start.sh"
 check "pa-start: unusable PA_MODEL ignored and logged" '! grep -qx -- --model "$T/megavibe.args" && log | grep -q "PA_MODEL has an unusable value"'
+
+# ── pa-start.sh: recorded session, resume, fixed name, no second PA ──
+UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+export MEGAVIBE_NODE_TEST_RESUME_SECS=1
+fresh 9b; ctl install
+bash "$N/pa-start.sh"
+SID1=$(cat "$N/pa.session" 2>/dev/null)
+check "pa-start fresh: a session id is chosen, recorded in pa.session and passed as --session-id ($SID1)" '[[ "$SID1" =~ ^$UUID_RE$ ]] && grep -qx -- --session-id "$T/megavibe.args" && grep -qx -- "$SID1" "$T/megavibe.args" && ! grep -qx -- --resume "$T/megavibe.args"'
+echo 2 > "$T/megavibe.sleep"; : > "$T/megavibe.calls"
+bash "$N/pa-start.sh"
+check "pa-start with pa.session: resumes that id under the fixed name, once, no fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && grep -qx -- --resume "$T/megavibe.args" && grep -qx -- "$SID1" "$T/megavibe.args" && grep -qx "Personal Assistant" "$T/megavibe.args" && ! grep -qx -- --session-id "$T/megavibe.args" && grep -qx -- --no-normalize "$T/megavibe.args"'
+check "pa-start resume: the prompt says it was resumed and points at the session check" 'grep -q "resumed" "$T/megavibe.args" && grep -q "megavibe node session check" "$T/megavibe.args" && ! grep -q "/rehydrate" "$T/megavibe.args"'
+check "pa-start resume: pa.session unchanged" '[ "$(cat "$N/pa.session")" = "$SID1" ]'
+echo "PA_MODEL=opus" >> "$N/node.conf"; bash "$N/pa-start.sh"
+check "pa-start resume: PA_MODEL still passed" 'grep -qx opus "$T/megavibe.args" && grep -qx -- --resume "$T/megavibe.args"'
+: > "$T/megavibe.calls"; echo 0 > "$T/megavibe.sleep"
+bash "$N/pa-start.sh"
+SID2=$(cat "$N/pa.session" 2>/dev/null)
+check "pa-start: a resume that ends at once falls back to a fresh start with a new id" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 2 ] && sed -n 1p "$T/megavibe.calls" | grep -q -- "--resume $SID1" && sed -n 2p "$T/megavibe.calls" | grep -q -- "--session-id $SID2" && [[ "$SID2" =~ ^$UUID_RE$ ]] && [ "$SID2" != "$SID1" ]'
+bash "$N/pa-start.sh"
+check "pa-start: a second failed resume keeps both ids" '[ "$(sed -n 1p "$N/pa.session.failed")" = "$SID1" ] && [ "$(sed -n 2p "$N/pa.session.failed")" = "$SID2" ] && [ "$(wc -l < "$N/pa.session.failed" | tr -d " ")" = 2 ]'
+SID2=$(cat "$N/pa.session")
+check "pa-start: the fresh start after a failed resume also asks for the session check" 'grep -q "/rehydrate" "$T/megavibe.args" && grep -q "megavibe node session check" "$T/megavibe.args"'
+check "pa-start: the id that could not be resumed is kept aside and logged" '[ "$(sed -n 1p "$N/pa.session.failed" 2>/dev/null)" = "$SID1" ] && log | grep -q "could not be resumed"'
+printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
+check "pa-start: an unusable pa.session is never passed on; fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && ! grep -q "pwned" "$T/megavibe.calls" && [ ! -e "$T/pwned" ] && grep -qx -- --session-id "$T/megavibe.args"'
+# Without a node folder (plain `megavibe assistant`, no node installed) nothing changes: no id, no file.
+fresh 9c
+bash "$REPO/template/node/pa-start.sh"
+check "pa-start without a node folder: the prompt does not mention the node" '! grep -q "megavibe node" "$T/megavibe.args"'
+check "pa-start without a node folder: fresh start as before, no --session-id, nothing written" 'grep -qx "Personal Assistant" "$T/megavibe.args" && grep -q "/rehydrate" "$T/megavibe.args" && ! grep -qx -- --session-id "$T/megavibe.args" && [ ! -e "$MEGAVIBE_HOME/node" ]'
+# A PA that already runs from the personal folder (the wrapper's session lock names a live claude
+# process whose working directory is that folder): no second one, by either route.
+fresh 9d; ctl install --pa
+mkdir -p "$M/.agent/.session-lock.d"
+( cd "$M" && exec -a claude-live sleep 300 ) & LIVE=$!
+printf '{"pid": %s, "session_id": "x"}\n' "$LIVE" > "$M/.agent/.session-lock.d/metadata.json"
+sleep 1
+bash "$N/pa-start.sh" --running; check "pa-start --running: exit 0 while the lock names a live PA process" '[ "$?" = 0 ]'
+bash "$N/pa-start.sh"
+check "pa-start: does not start a second PA while one runs" '[ ! -e "$T/megavibe.calls" ] && log | grep -q "already runs"'
+node
+check "node: pa.on, PA running outside its tmux session: not started, logged, not counted as a start" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "already runs outside" && [ ! -e "$N/.starts-pa" ]'
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+bash "$N/pa-start.sh" --running; check "pa-start --running: exit 1 once that process is gone (stale lock)" '[ "$?" = 1 ]'
+( cd "$T" && exec -a claude-live sleep 300 ) & LIVE=$!
+printf '{"pid": %s}\n' "$LIVE" > "$M/.agent/.session-lock.d/metadata.json"; sleep 1
+bash "$N/pa-start.sh" --running; check "pa-start --running: a live process in another folder (pid reuse) is not a PA" '[ "$?" = 1 ]'
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+printf '{"pid": %s}\n' "$$" > "$M/.agent/.session-lock.d/metadata.json"
+bash "$N/pa-start.sh" --running; check "pa-start --running: a live process that is not claude is not a PA" '[ "$?" = 1 ]'
+node
+check "node: stale lock: the PA is started" '[ -e "$TMUXSTATE/s/megavibe-personal" ] && [ -s "$N/.starts-pa" ]'
+# Without a node folder the launcher does not judge the lock: the wrapper's own handling applies, as before.
+fresh 9f; mkdir -p "$M/.agent/.session-lock.d"
+( cd "$M" && exec -a claude-live sleep 300 ) & LIVE=$!
+printf '{"pid": %s}\n' "$LIVE" > "$M/.agent/.session-lock.d/metadata.json"; sleep 1
+bash "$REPO/template/node/pa-start.sh"
+check "pa-start without a node folder, live lock: megavibe is still called (unchanged behaviour)" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ]'
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null
+# megavibe node pa session: show, set, clear
+fresh 9e; ctl install
+ctl pa session; check "pa session: none recorded ($o)" '[ "$RC" = 0 ] && [[ "$o" == *none* ]]'
+ctl pa session 11111111-2222-4333-8444-555555555555
+check "pa session <id>: recorded" '[ "$RC" = 0 ] && [ "$(cat "$N/pa.session")" = 11111111-2222-4333-8444-555555555555 ]'
+ctl pa session 'x; y'; check "pa session <junk>: refused, file unchanged" '[ "$RC" = 1 ] && [ "$(cat "$N/pa.session")" = 11111111-2222-4333-8444-555555555555 ]'
+ctl status; check "status shows the recorded PA conversation" '[[ "$o" == *11111111-2222-4333-8444-555555555555* ]]'
+chmod 500 "$N"; ctl pa session 99999999-2222-4333-8444-555555555555; chmod 700 "$N"
+check "pa session <id> with an unwritable node folder: fails, says so, old id kept ($o)" '[ "$RC" = 1 ] && [ "$(cat "$N/pa.session")" = 11111111-2222-4333-8444-555555555555 ]'
+ctl pa session none; check "pa session none: cleared" '[ "$RC" = 0 ] && [ ! -e "$N/pa.session" ]'
+unset MEGAVIBE_NODE_TEST_RESUME_SECS
 
 # pa-start.sh keeps the inherited PATH (a claude under nvm or an npm prefix), standard dirs only appended.
 mkdir -p "$T/custom-bin"; printf '#!/bin/bash\necho custom\n' > "$T/custom-bin/only-here"; chmod +x "$T/custom-bin/only-here"
