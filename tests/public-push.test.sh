@@ -311,6 +311,23 @@ case "$WHY" in *"AWS key"*) ok ;; *) bad "secret in a file name is reported" ;; 
 ( cd "$CM" && git reset -q --hard HEAD~1 )
 passes "clean PR with a home path earlier in the command" "$PR" "cd /Users/jsmith/project && gh pr create -R acme/pub --title Clean --body Done"   # EXAMPLE: fixture
 
+# 10g. gh pr create can push the current branch itself: unpushed commits are scanned; --template is read.
+PU=$T/pu; mkrepo "$PU" https://github.com/acme/pub.git
+commit "$PU" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
+asks "pr create: an unpushed commit with a secret asks" "$PU" "gh pr create -R acme/pub --title Fix --body Done" "may push local commits" "[AWS key]"
+asks "pr create: the same without -R (base from the remote)" "$PU" "gh pr create --title Fix --body Done" "may push local commits" "[AWS key]"
+passes "pr create to a private base does not scan commits" "$PU" "gh pr create -R acme/priv --title Fix --body Done"
+( cd "$PU" && git update-ref refs/remotes/origin/feature HEAD )
+passes "pr create: the branch is already on a remote" "$PU" "gh pr create -R acme/pub --title Fix --body Done"
+PC=$T/pc; mkrepo "$PC" https://github.com/acme/pub.git; commit "$PC" a.txt "plain change"
+passes "pr create: an unpushed clean commit passes" "$PC" "gh pr create -R acme/pub --title Fix --body Done"
+printf 'AKIAABCDEFGHIJKLMNOP\n' > "$T/tpl.md"   # EXAMPLE: fixture
+asks "pr create --template file is scanned" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl.md" "[AWS key]"
+asks "pr create -T file is scanned" "$PC" "gh pr create -R acme/pub --title Fix -T $T/tpl.md" "[AWS key]"
+asks "pr create --template that cannot be read asks" "$PC" "gh pr create -R acme/pub --title Fix --template /nonexistent/t.md" "could not be read"
+printf 'clean template\n' > "$T/tpl-ok.md"
+passes "pr create --template with clean text passes" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl-ok.md"
+
 # 10h. Round-3 (second reader) findings.
 SR=$T/sr; mkdir -p "$SR" && ( cd "$SR" && git init -q && git remote add upstream https://github.com/acme/pub.git && echo a > a.txt && git add a.txt && git commit -qm i && echo "AKIAABCDEFGHIJKLMNOP" > k.txt && git add k.txt && git commit -qm k )   # EXAMPLE: fixture
 asks "the sole remote is used when it is not called origin" "$SR" "git -c push.default=current push" "[AWS key]"

@@ -17,8 +17,10 @@ set -u
 #   git push                      the target is resolved (remote name, URL, pushurl,
 #                                 insteadOf, branch/pushDefault remote) and its
 #                                 visibility looked up with `gh repo view`
-#   gh pr create                  same lookup for the base repository; the title and
-#                                 body text are scanned
+#   gh pr create                  same lookup for the base repository; the title, body,
+#                                 body file and --template file are scanned, and so are
+#                                 the commits no remote holds yet (gh pushes the current
+#                                 branch itself when nothing has)
 #   gh repo create --public       asks (publishes a new repo); scans local history
 #                                 when --push/--source is given
 #   gh repo edit --visibility public   asks: it turns the WHOLE history public;
@@ -76,8 +78,8 @@ set -u
 #
 # Known gaps (not enforced here): a push through a git alias, a script or
 # $(...)/backtick substitution; `git push` inside a command run by another tool;
-# gh pr create does not scan commits (they were scanned when pushed) and cannot read
-# a body that comes from $(...); binary content; the conflict-resolution lines of a merge
+# gh pr create scans only the commits of HEAD that no remote holds (not another --head
+# branch) and cannot read a body that comes from $(...); binary content; the conflict-resolution lines of a merge
 # commit (git log -p shows no diff for merges); another gh operation that publishes
 # (gh gist create --public, gh release create); a denylist
 # written in a file the hook cannot read is silently empty (the reason says so only
@@ -553,13 +555,14 @@ class Scanner:
             m = rx.search(text)
             if m: self.hit(loc, "denylist #%d" % n, trunc(redact(m.group(0))))   # redact BEFORE truncating: a cut token no longer matches
 
-def scan_range(act, revargs, remote):
+def scan_range(act, revargs, remote, notall=False):
     """revargs: list of rev-list args selecting tips. Returns (hits_lines, total, truncated)."""
     # a source that does not resolve cannot be pushed (git itself will fail): skip it
     revargs = [r for r in revargs if r.startswith("--") or git(act, "rev-parse", "--verify", "-q", r + "^{commit}")[0] == 0]
     if not revargs: return [], 0, False, None
     base = ["rev-list", "--max-count=%d" % (MAX_COMMITS + 1)] + revargs
     if remote: base += ["--not", "--remotes=" + remote]
+    elif notall: base += ["--not", "--remotes"]   # what no remote ref holds, whichever remote a tool pushes to
     rc, o = git(act, *base)
     if rc != 0: raise ScanFailed()   # a resolvable ref whose walk fails is not a clean scan
     shas = o.split()
@@ -830,7 +833,7 @@ def handle_pr(act):
     _unres = [t for t in flag_value(argv, ["--title", "-t", "--body", "-b"]) if re.search(r"\$\{?[A-Za-z_]", t)]
     if _unres:
         return ["%s is PUBLIC and the pull request title/body contains an unexpanded variable, so its text cannot be scanned." % (got or "the base repository")]
-    for f in flag_value(argv, ["--body-file", "-F"]):
+    for f in flag_value(argv, ["--body-file", "-F", "--template", "-T"]):   # a template file becomes the start of the body
         if f == "-" or f in ("/dev/stdin", "/dev/tty") or re.match(r"^/(?:dev|proc/self)/fd/\d+$", f):
             if not HEREDOCS: unread.append("standard input")
             continue
@@ -845,9 +848,14 @@ def handle_pr(act):
     sc = Scanner([])
     for t in texts:
         for ln in t.split("\n"): sc.line("pull request text", ln, True)
+    out = []
     if sc.total:
-        return report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
-    return None
+        out += report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
+    # gh pr create pushes the current branch itself when no remote holds it yet, and the push is not a `git push` this hook sees:
+    # scan what no remote ref holds (the same range a push of HEAD would send), so an unpushed secret is asked about here.
+    _h, _t, _tr, _sc = scan_range(act, ["HEAD"], None, notall=True)
+    if _t or _tr: out += report_hits("%s is PUBLIC and this pull request may push local commits that no remote holds yet; they contain:" % (got or "the base repository"), _h, _t, _tr, _sc)
+    return out or None
 
 def handle_repo(act):
     argv = act["argv"]; kind = act["kind"]
