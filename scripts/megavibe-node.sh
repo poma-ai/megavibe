@@ -341,6 +341,12 @@ cmd_memory_clone() {
 
 cmd_takeover() {
   need_install
+  # A standby has been following another Mac's PA (its node pulled the notes all along, so the merge
+  # below may move nothing): a conversation recorded here from an earlier turn as the PA is older than
+  # those notes, and the PA started below must begin fresh from them.
+  if [ -e "$N/memory.pull" ] && [ -e "$N/pa.session" ]; then
+    rm -f "$N/pa.session"; say "  this Mac was a standby: the PA starts a fresh conversation from the notes"
+  fi
   # Order matters: memory.pull goes first, so no node run can pull underneath the PA started below.
   rm -f "$N/memory.pull"
   lock_node

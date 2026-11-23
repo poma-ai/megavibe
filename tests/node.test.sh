@@ -318,7 +318,8 @@ touch "$N/pa.on"; ctl takeover
 check "takeover refused on a Mac that still had pa.on: pa.on disarmed" '[ "$RC" = 1 ] && [ ! -e "$N/pa.on" ]'
 node; check "  and the node does not start a PA afterwards" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ]'
 git -C "$M" remote set-url origin "$T/nowhere.git"; git -C "$M" reset -q --hard HEAD~1
-ctl takeover
+touch "$N/memory.pull"; echo 11111111-2222-4333-8444-555555555555 > "$N/pa.session"; ctl takeover
+check "takeover on a standby whose notes were already pulled (nothing to merge): the old conversation is still forgotten" '[ ! -e "$N/pa.session" ] && [[ "$o" == *"was a standby"* ]]'
 check "takeover with origin unreachable: starts from the local copy" '[ "$RC" = 0 ] && [[ "$o" == *"origin unreachable"* ]] && [ -e "$TMUXSTATE/s/megavibe-personal" ]'
 ctl takeover
 check "takeover, PA running, origin unreachable: says it could not check, not up to date" '[ "$RC" = 0 ] && [[ "$o" == *"is unknown"* ]] && [[ "$o" != *"up to date"* ]]'
