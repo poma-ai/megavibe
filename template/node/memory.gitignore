@@ -1,0 +1,17 @@
+# PA memory repo: allow-list. Everything is ignored unless named below.
+/*
+!/.gitignore
+!/CLAUDE.md
+!/tick.conf
+!/tools/
+!/megavibe-deliverables/
+# The exact negation above also tells megavibe's init.sh not to add its megavibe-deliverables ignore rule.
+!/.agent/
+# Inside .agent: scratch, per-session state, rendered views and indexes stay out.
+/.agent/LOGS/
+/.agent/sessions/
+/.agent/FULL_CONTEXT.md
+/.agent/*.lock
+/.agent/.poma-memory.db*
+/.agent/.registers-checkpoint.lock
+.DS_Store

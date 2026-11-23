@@ -13,7 +13,7 @@
 # non-negotiable 4 are called the same way and neither is the awkward one.
 #
 # Usage:
-#   scripts/codex-review.sh [--as-reviewer [--no-amass "<reason>"]] [--scratch | --strict]
+#   scripts/codex-review.sh [--as-reviewer [--no-amass "oversize|prose|hotfix[: note]"]] [--scratch | --strict]
 #                           [--model M] [--effort minimal|low|medium|high|xhigh]
 #                           [--timeout N] [--out FILE] --prompt "text" FILE...
 #   scripts/codex-review.sh ... --prompt-file PROMPT.md FILE...
@@ -224,7 +224,7 @@ fi
 if [ -n "$AS_REVIEWER" ] && [ ! -f "$_RVDIR/amass-gate.sh" ]; then
   echo "warning: amass-gate.sh is missing next to this script, the sweep gate was skipped (run setup.sh)" >&2
 elif [ -n "$AS_REVIEWER" ]; then
-  if [ -n "$NO_AMASS" ]; then bash "$_RVDIR/amass-gate.sh" waive "$NO_AMASS" || exit 2
+  if [ -n "$NO_AMASS" ]; then bash "$_RVDIR/amass-gate.sh" waive "$NO_AMASS" ${FILES[@]+"${FILES[@]}"} || exit 2
   else bash "$_RVDIR/amass-gate.sh" check || { _ag=$?; [ "$_ag" -eq 6 ] && exit 6; }; fi
 fi
 

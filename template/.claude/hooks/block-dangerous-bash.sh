@@ -754,14 +754,16 @@ fi
 # 2026-10-15 18:35: a review subagent cleaning up after a timeout test ran
 # `pkill -f 'perl -e' -P 1`. The pattern also matched the tmux server (its argv
 # carries the whole start command), and every tmux-hosted session died with it:
-# the remote-control sessions, the Telegram bot, the Personal Assistant, the
-# context watchers. A prose prohibition in the brief is not a sandbox
+# the remote-control sessions, the Personal Assistant, and the context
+# watchers. A prose prohibition in the brief is not a sandbox
 # (same class as the `git rm -f` incident of 2026-10-08).
 #
 # Blocked when they are the command: pkill, killall, `tmux kill-server|kill-session|
-# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|bootstrap|disable`
+# kill-window|kill-pane`, `launchctl bootout|unload|remove|stop|kill|disable|bootstrap`
 # and `launchctl kickstart -k`. NOT blocked: `kill <pid>` (a PID you started),
-# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`.
+# `tmux ls|new|send-keys|capture-pane|attach`, `launchctl list|print|kickstart`, and
+# `launchctl bootstrap gui/<uid> ~/Library/LaunchAgents/<name>.plist` (loading a user agent
+# stops nothing; any other bootstrap form stays blocked).
 # Parsed with shlex like the exec guard above, so the words inside quotes, an
 # echo, a commit message or a heredoc body are not commands; `bash -c "pkill x"`,
 # `sudo pkill x` and `env X=1 pkill x` are. Escape hatch for a human decision:
@@ -789,6 +791,10 @@ for line in CMD.split("\n"):
 CMD = "\n".join(out).replace("\\\n", "")
 CMD = CMD.replace("\n", " ; ")
 
+# The bootstrap exception holds only when the WHOLE command text is that one simple command: nothing
+# before it, no wrapper, no substitution, no second command. Reading around the words (an env
+# assignment, a process substitution, a quoted argument) found a new spelling in every review round.
+SIMPLE_BOOTSTRAP = re.fullmatch(r"\s*launchctl\s+bootstrap\s+(?:gui|user)/[0-9]+\s+\"?(?:~|\$HOME)/[A-Za-z0-9._ /-]+\.plist\"?(?:\s+(?:[0-9]?>>?\s*/dev/null|&>>?\s*/dev/null|[0-9]?>&[0-9]))*\s*", CMD)
 KILLERS = {"pkill", "killall"}
 TMUX_VERBS = {"kill-server", "kill-session", "kill-window", "kill-pane"}
 LAUNCHCTL_VERBS = {"bootout", "unload", "remove", "stop", "kill", "bootstrap", "disable"}
@@ -840,6 +846,31 @@ def verb(argv, valued):
         return a
     return None
 
+def user_agent_bootstrap(argv):
+    # bootstrap gui/UID ~/Library/LaunchAgents/NAME.plist only LOADS a user agent (stops
+    # nothing): exactly one user-domain target and one plist file directly under the user own
+    # LaunchAgents folder, no option, no dotdot. A system domain, a LaunchDaemons path, a
+    # second plist or anything else stays blocked.
+    rest = argv[2:]
+    cut = next((k for k, x in enumerate(rest) if re.match(r"^[0-9]*[<>&]", x)), None)
+    if cut is not None:
+        if cut > 0 and re.match(r"^[0-9]$", rest[cut - 1]): cut -= 1     # the 2 of 2>/dev/null
+        tail = " ".join(rest[cut:])
+        redir = r"([0-9]? ?>>? ?/dev/null|&>>? ?/dev/null|[0-9]? ?>& ?[0-9])"
+        if not re.fullmatch(redir + "( " + redir + ")*", tail): return False
+        rest = rest[:cut]
+    if len(rest) != 2 or any(x.startswith("-") for x in rest): return False
+    dom, path = rest
+    m = re.match(r"^(gui|user)/([0-9]+)$", dom)
+    if not m or int(m.group(2)) != os.getuid(): return False
+    home = os.path.expanduser("~")
+    if path.startswith("~/"): path = home + path[1:]
+    elif path.startswith("$HOME/"): path = home + path[5:]
+    if ".." in path.split("/") or not re.match(r"^[A-Za-z0-9._/ -]+$", path): return False
+    pre = home + "/Library/LaunchAgents/"
+    if os.path.exists(path) and not os.path.realpath(path).startswith(os.path.realpath(pre) + "/"): return False
+    return path.startswith(pre) and path.endswith(".plist") and "/" not in path[len(pre):] and len(path) > len(pre) + 6
+
 def scan(argv, depth=0):
     if depth > 3 or not argv: return False
     i = 0
@@ -854,6 +885,7 @@ def scan(argv, depth=0):
             i += 1
             while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
                 opt = argv[i]; i += 1
+                if b == "env" and re.match(r"^(-[A-Za-z]*S|--split-string)", opt) and any("launchctl" in x for x in [opt] + argv[i:]): return True   # env -S runs a split string: not parsed here, so blocked
                 if opt == "--": break
                 if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
             while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
@@ -879,6 +911,7 @@ def scan(argv, depth=0):
     if base == "launchctl":
         v = verb(argv, set())
         if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
+        if v == "bootstrap": return not (SIMPLE_BOOTSTRAP and user_agent_bootstrap(argv))
         return v in LAUNCHCTL_VERBS
     return False
 

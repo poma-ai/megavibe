@@ -19,6 +19,9 @@ up, or mark them droppable.
   trash-review.py apply FILE        FILE: {"decisions": [{"group": "G<code>", "action": "restore|keep|backup|droppable"}]}
   trash-review.py backup-dir        where `backup` moves items
 
+An item on another volume is in that volume's Trash, <mount>/.Trashes/<uid> (recorded as trash_root); every check
+goes through root_ok() and ident_matches() below, and an unmounted volume is simply not in the Trash.
+
 Everything lives in $MEGAVIBE_TRASH_LEDGER_DIR (default ~/.megavibe/trash):
 ledger.jsonl (one line per trashed item, append-only), reviewed.jsonl (one line
 per decision, append-only), groups.jsonl (registered groups), nudge.json (hook state).
@@ -51,6 +54,7 @@ GROUPS = os.path.join(DIR, "groups.jsonl")
 LOCK = os.path.join(DIR, "apply.lock")
 CLAIM = os.path.join(DIR, "claim")
 NOT_HANDLED = 3
+UID = os.getuid()
 
 
 def env_int(name, default):
@@ -100,6 +104,105 @@ def size_kb(p):
         return int(r.stdout.split()[0])
     except (subprocess.TimeoutExpired, ValueError, IndexError, OSError):
         return -1
+
+
+# ---- Trash directories: ~/.Trash, and <volume>/.Trashes/<uid> on any other volume ---------
+
+def mount_of(path):
+    """The mount point of the volume holding `path`: the highest ancestor on the same device."""
+    p = os.path.join(os.path.realpath(os.path.dirname(path) or "."), os.path.basename(path))
+    dev = os.lstat(p).st_dev
+    while p != "/":
+        parent = os.path.dirname(p)
+        if os.lstat(parent).st_dev != dev:
+            break
+        p = parent
+    return p
+
+
+def volume_trash_of(path):
+    """Where macOS puts an item removed from the volume holding `path` (not the boot disk)."""
+    return os.path.join(mount_of(path), ".Trashes", str(UID))
+
+
+def root_ok(root):
+    """True when `root` is ~/.Trash or the user's Trash directory on a MOUNTED volume. The ledger
+    is only a hint, so a recorded root is never trusted as a path: it must have exactly this shape,
+    be a real directory (no symlinks) on the volume it names, and belong to this user."""
+    if root == TRASH:
+        return True
+    if not isinstance(root, str) or "\0" in root or not os.path.isabs(root) or os.path.normpath(root) != root:
+        return False
+    parent, leaf = os.path.split(root)
+    mnt, mid = os.path.split(parent)
+    if leaf != str(UID) or mid != ".Trashes" or mnt in ("", "/") or not os.path.ismount(mnt):
+        return False          # an unmounted volume is a plain directory (or nothing): not a Trash
+    try:
+        m, a, b = os.lstat(mnt), os.lstat(parent), os.lstat(root)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(a.st_mode) and stat.S_ISDIR(b.st_mode) and a.st_dev == m.st_dev == b.st_dev
+            and b.st_uid == UID)
+
+
+def ident_matches(r, st):
+    """st is the recorded object. On a volume other than the boot disk the device number is not stable (a remount can
+    give the volume another one), so there the inode, inside the checked Trash directory, is the identity."""
+    if r.get("trash_root"):
+        return st.st_ino == r.get("ino")
+    return (st.st_dev, st.st_ino) == (r.get("dev"), r.get("ino"))
+
+
+def root_of(r):
+    v = r.get("trash_root")
+    if v is None:
+        return TRASH
+    return v if isinstance(v, str) and v else "not-a-root"
+
+
+def claim_dir(root):
+    return CLAIM if root == TRASH else os.path.join(root, ".megavibe-claim")
+
+
+def snapshot(root, budget=3.0):
+    """The entry names of `root` right now (empty when it does not exist yet), or None when it cannot be listed
+    in time. Taken before rmtrash so the entry rmtrash adds is the one new name, never an older hard link."""
+    end = time.monotonic() + budget
+    names = set()
+    try:
+        for e in os.scandir(root):
+            if time.monotonic() > end:
+                return None
+            names.add(e.name)
+    except FileNotFoundError:
+        return names
+    except OSError:
+        return None
+    return names
+
+
+def locate_new(root, before, dev, ino, budget=3.0):
+    """The ONE entry of `root` that is new since `before` and is the object (dev, ino); None when there is none,
+    when it is ambiguous, or when `before` is unknown (the item is then recorded without a location)."""
+    if before is None:
+        return None
+    end = time.monotonic() + budget
+    found = []
+    try:
+        for e in os.scandir(root):
+            if time.monotonic() > end:
+                return None
+            if e.name in before:
+                continue
+            try:
+                st = e.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == (dev, ino):
+                found.append(os.path.join(root, e.name))
+    except OSError:
+        return None
+    return found[0] if len(found) == 1 else None
 
 
 # ---- moves that never replace -----------------------------------------------
@@ -268,10 +371,24 @@ def trash_one(o, opts, tdev, rows):
             if "v" in opts:
                 print(o)
             return 0
-    # Another volume (its own Trash) or a refused rename: rmtrash, recorded but not restorable here.
+    # Another volume (its own Trash) or a refused rename: rmtrash does it, then the entry is looked
+    # up by inode in that volume's Trash so the record carries where it went and how big it is.
+    kb = size_kb(path)
+    root = None
+    if st.st_dev != tdev:
+        try:
+            root = volume_trash_of(path)
+        except OSError:
+            root = None
+    # The volume's Trash may not exist before this first delete (rmtrash makes it): snapshot reads that as empty.
+    before = snapshot(root) if root else None
     r1 = rmtrash_one(opts, stripped)
     if r1 == 0 and not os.path.lexists(path):
-        rows.append(dict(row, id=uuid.uuid4().hex[:12], trash_path=None, kb=-1))
+        rec = dict(row, id=uuid.uuid4().hex[:12], trash_path=None, kb=kb)
+        where = locate_new(root, before, st.st_dev, st.st_ino) if root and root_ok(root) else None
+        if where:
+            rec.update(trash_path=where, trash_root=root, dev=st.st_dev, ino=st.st_ino)
+        rows.append(rec)
     return 1 if r1 else 0
 
 
@@ -286,8 +403,9 @@ def same_entry(r):
         st = os.lstat(tp)
     except OSError:
         return False
-    return (st.st_dev, st.st_ino) == (r.get("dev"), r.get("ino")) \
-        and os.path.realpath(os.path.dirname(tp)) == os.path.realpath(TRASH)
+    root = root_of(r)
+    return ident_matches(r, st) and root_ok(root) \
+        and os.path.realpath(os.path.dirname(tp)) == os.path.realpath(root)
 
 
 def ledger():
@@ -343,12 +461,24 @@ def totals(items):
 def cmd_status():
     n, mb = totals(pending())
     print(f"{n} unreviewed item(s) in the Trash, {mb} MB (review at {COUNT_MAX} items or {MB_MAX} MB)")
-    try:
-        stuck = os.listdir(CLAIM)
-    except OSError:
-        stuck = []
+    stuck = []
+    for d in claim_dirs():
+        try:
+            stuck += [(d, n) for n in os.listdir(d)]
+        except OSError:
+            pass
     if stuck:
-        print(f"{len(stuck)} item(s) stranded in {CLAIM} by an interrupted review: the next apply puts them back")
+        print(f"{len(stuck)} item(s) stranded in {len({d for d, _ in stuck})} claim director(ies) by an interrupted review: the next apply puts them back")
+    closed = {r.get("id") for r in read(REVIEWED) if r.get("ok")}
+    left = {r.get("id") for r in read(REVIEWED) if r.get("ok") and r.get("action") in ("restore", "backup", "emptied")}
+    lost = [r for r in ledger() if not r.get("trash_path") and r.get("id") not in closed]
+    if lost:
+        print(f"{len(lost)} older record(s) have no Trash location (an item on another volume, recorded before that was tracked): "
+              f"they cannot be reviewed from here; look in <volume>/.Trashes/<uid> or Finder")
+    for root in sorted({root_of(r) for r in ledger() if r.get("trash_path") and r.get("id") not in left} - {TRASH}):
+        if not root_ok(root):
+            n = sum(1 for r in ledger() if root_of(r) == root and r.get("id") not in left)
+            print(f"{n} item(s) in {json.dumps(root, ensure_ascii=True)} not counted: that volume is not mounted (or its Trash is not usable)")
     d = droppable()
     if d:
         kb = sum(max(r.get("kb", 0), 0) for r in d)
@@ -361,7 +491,7 @@ def cmd_droppable(as_json):
     (same entry, same inode) here, and again by the script right before it deletes."""
     for r in droppable():
         if as_json:
-            print(json.dumps({k: r.get(k) for k in ("id", "trash_path", "dev", "ino", "kb", "path")}, ensure_ascii=False))
+            print(json.dumps({k: r.get(k) for k in ("id", "trash_path", "trash_root", "dev", "ino", "kb", "path")}, ensure_ascii=False))
         else:
             print(f'{r["id"]}  {max(r.get("kb", 0), 0):>9} KB  {r["path"]}')
 
@@ -424,6 +554,22 @@ def backup_dir():
     return os.path.join(icloud if os.path.isdir(icloud) else HOME, "megavibe-trash-backup")
 
 
+def claim_dirs():
+    """Existing claim directories: the boot one, and one inside each mounted volume Trash the ledger names."""
+    out = []
+    for root in sorted({TRASH} | {root_of(r) for r in ledger()}):
+        if not root_ok(root):
+            continue
+        d = claim_dir(root)
+        try:
+            real = stat.S_ISDIR(os.lstat(d).st_mode)
+        except (OSError, ValueError):
+            real = False
+        if real:
+            out.append(d)
+    return out
+
+
 def claim(r):
     """Atomically take the recorded Trash entry into the private claim directory, then check it
     is the recorded object. Nothing else writes there, so nothing can swap it between the check
@@ -431,14 +577,17 @@ def claim(r):
     tp = r.get("trash_path")
     if not same_entry(r):
         return None
-    os.makedirs(CLAIM, mode=0o700, exist_ok=True)
-    cp = os.path.join(CLAIM, r["id"])
+    cdir = claim_dir(root_of(r))
+    os.makedirs(cdir, mode=0o700, exist_ok=True)
+    if not stat.S_ISDIR(os.lstat(cdir).st_mode):
+        return None                           # a link or a file where the claim directory belongs
+    cp = os.path.join(cdir, r["id"])
     try:
         rename_noreplace(tp, cp)
     except OSError:
         return None
     st = os.lstat(cp)
-    if (st.st_dev, st.st_ino) != (r.get("dev"), r.get("ino")):
+    if not ident_matches(r, st):
         unclaim(r, cp)                        # not ours: put it back untouched
         return None
     return cp
@@ -454,7 +603,7 @@ def unclaim(r, cp):
         pass
     base = os.path.basename(r["path"])
     for n in range(1, 100):
-        tp = os.path.join(TRASH, trash_name(base, f' mv-{r["id"]}-{n}'))
+        tp = os.path.join(root_of(r), trash_name(base, f' mv-{r["id"]}-{n}'))
         try:
             rename_noreplace(cp, tp)
         except OSError:
@@ -469,16 +618,17 @@ def unclaim(r, cp):
 
 
 def recover_claims():
-    """Put back anything a failed or interrupted action left in the claim directory."""
-    try:
-        names = os.listdir(CLAIM)
-    except OSError:
-        return
+    """Put back anything a failed or interrupted action left in a claim directory."""
     by_id = {r.get("id"): r for r in ledger()}
-    for n in names:
-        r = by_id.get(n)
-        if r and r.get("trash_path") and not unclaim(r, os.path.join(CLAIM, n)):
-            print(f"{n}: still in {CLAIM} (its Trash name is taken): move it back by hand", file=sys.stderr)
+    for d in claim_dirs():
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            r = by_id.get(n)
+            if r and r.get("trash_path") and root_ok(root_of(r)) and not unclaim(r, os.path.join(d, n)):
+                print(f"{n}: still in {d} (its Trash name is taken): move it back by hand", file=sys.stderr)
 
 
 def apply_one(r, action):
@@ -489,6 +639,8 @@ def apply_one(r, action):
         return True, "kept in the Trash" + (", marked droppable" if action == "droppable" else "")
     if action not in ("restore", "backup"):
         return False, f"unknown action {action!r}"
+    if not same_entry(r):              # before anything is created: an unmounted volume's mount point stays untouched
+        return False, "refused: the recorded Trash entry is gone or was replaced"
     # Everything that can fail before the move happens before the claim.
     if action == "restore":
         targets = [orig]

@@ -18,6 +18,7 @@ case "$1" in
   band) [ -n "${STUB_BAND_FAIL:-}" ] && exit 3; echo "${STUB_BAND:-normal}" ;;
   balance) echo "${STUB_BALANCE:--|}" ;;
   advisory) echo "${STUB_ADVISORY:-}" ;;
+  forecast) if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = codex ]; then echo "${STUB_FC_CODEX:-}"; else echo "${STUB_FC_CLAUDE:-}"; fi ;;
   pace)
     if [ -n "${STUB_SLEEP:-}" ]; then
       [ -n "${STUB_CHILD:-}" ] && { sleep "$STUB_SLEEP" & }   # a child that inherits stdout and outlives the stub
@@ -27,7 +28,7 @@ case "$1" in
 esac
 STUB
 FLAG="$P/.agent/LOGS/.usage-band.s1"
-reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
+reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
 # pace line: provider|used|elapsed|linear|recent_rate|recent_proj|remaining
 claude_pace() { export STUB_PACE_CLAUDE="claude|$1|$2|$3|$4|$5|3"; }
 codex_pace() { export STUB_PACE_CODEX="codex|$1|$2|$3|$4|$5|3"; }
@@ -42,6 +43,9 @@ check 'SessionStart, known: exact line with both basis words' '[[ "$o" == *"usag
 reset; claude_pace 50 40 147 90 120; codex_pace 60 30 222 '' ''
 o=$(ev SessionStart | run | ctx)
 check 'linear headline, recent shown beside it (the band and balance decide on linear)' '[[ "$o" == *"claude 147 (linear; recent 120)"* ]] && [[ "$o" == *"codex 222 (linear)"* ]]'
+reset; claude_pace 50 40 147 90 120; codex_pace 60 30 222 '' ''; export STUB_FC_CLAUDE='claude|50|0.6|109.4|-14.4|0.5|6h+24h'
+o=$(ev SessionStart | run | ctx)
+check 'forecast leads the headline, linear shown beside it; a side without a forecast keeps linear' '[[ "$o" == *"claude 109 (forecast; linear 147)"* ]] && [[ "$o" == *"codex 222 (linear)"* ]]'
 reset; claude_pace 50 40 '' 90 120; codex_pace 60 30 222 '' ''
 o=$(ev SessionStart | run | ctx)
 check 'recent alone still shows' '[[ "$o" == *"claude 50 (used; recent 120)"* ]]'

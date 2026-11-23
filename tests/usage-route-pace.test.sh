@@ -148,10 +148,10 @@ tick_usage() {
     /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo | grep '^usage:'
 }
 expected_balance() {
-  printf 'codex|usage balance: Claude 95%% used (linear estimate ~190%% by week end)%s; Codex 9%% used [linear estimate ~64%%] (one is running hot). Lean optional work (digests, exploration, second opinions) on Codex; the review floor does not move.' "$1"
+  printf 'codex|usage balance: Claude 95%% used (recent-pace forecast ~109%% by week end) (linear estimate ~190%% by week end)%s; Codex 9%% used (recent-pace forecast ~64%% by week end) [linear estimate ~64%%] (one is running hot). Lean optional work (digests, exploration, second opinions) on Codex; the review floor does not move.' "$1"
 }
 expected_tick() {
-  printf 'usage: Claude 95%% used (linear estimate ~190%% by week end)%s, resets in 3d [over] | Codex 9%% used [linear estimate ~64%%], resets in 6d | lean optional work on codex' "$1"
+  printf 'usage: Claude 95%% used (recent-pace forecast ~109%% by week end, spare -14 pts to 95%%) (linear estimate ~190%% by week end)%s, resets in 3d [over] | Codex 9%% used (recent-pace forecast ~64%% by week end, spare 30 pts to 95%%) [linear estimate ~64%%], resets in 6d | lean optional work on codex' "$1"
 }
 o=$(pace)
 check 'exact high linear, low recent pace record' '[ "$o" = "claude|95|50|190|4|109|3.5" ]'
@@ -213,7 +213,7 @@ for stage in raw status band reason decision history row stream; do
     o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault route balance --peek)
     check "$stage $fault: balance gives no advice" '[ "$o" = "-|" ]'
     o=$(PACE_FAULT_STAGE=$stage PACE_FAULT_MODE=$fault tick_usage)
-    check "$stage $fault: tick no reading, no false reset or lean advice" '[ "$o" = "usage: Claude: no reading | Codex 9% used [linear estimate ~64%], resets in 6d" ]'
+    check "$stage $fault: tick no reading, no false reset or lean advice" '[ "$o" = "usage: Claude: no reading | Codex 9% used (recent-pace forecast ~64% by week end, spare 30 pts to 95%) [linear estimate ~64%], resets in 6d" ]'
   done
 done
 # With Codex hot, a shifted Claude record used to invent spare Claude capacity.
@@ -290,10 +290,10 @@ check 'delayed-window status byte-identical' '[ "$o" = "over|95|110|86400|0|7d 9
 o=$(pace)
 check 'delayed-window pace uses status window, one sample has no recent estimate' '[ "$o" = "claude|95|85.714|110.833|||1" ]'
 o=$(route balance --peek)
-check 'balance never borrows recent estimate from other window' '[[ "$o" == codex\|*"Claude 95% used (linear estimate ~110% by week end); Codex"* ]]'
+check 'balance never borrows recent estimate from other window' '[[ "$o" == codex\|*"Claude 95% used (recent-pace forecast ~110% by week end) (linear estimate ~110% by week end); Codex"* ]]'
 o=$(MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/credentials.json" TICK_LINEAR=0 /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo)
 usage=$(printf '%s\n' "$o" | grep '^usage:')
-check 'tick uses one window for used, linear, recent and remaining' '[[ "$usage" == "usage: Claude 95% used (linear estimate ~110% by week end), resets in 24h [over] | Codex"* ]]'
+check 'tick uses one window for used, linear, recent and remaining' '[[ "$usage" == "usage: Claude 95% used (recent-pace forecast ~110% by week end, spare -15 pts to 95%) (linear estimate ~110% by week end), resets in 24h [over] | Codex"* ]]'
 
 # Interleaving a different live window must not discard the selected window's baseline.
 { row "$((NOW - 21600))" 90 "$((NOW + 86400))"; row "$((NOW - 18000))" 8 "$((NOW + 6 * 86400))"; row "$((NOW - 10800))" 95 "$((NOW + 86400))"; row "$NOW" 20 "$((NOW + 6 * 86400))"; row "$((NOW - 14400))" 92 "$((NOW + 86400))"; } > "$MEGAVIBE_USAGE_FILE"

@@ -1,10 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-# session-status.sh — show active megavibe sessions across all registered projects
+# session-status.sh — show megavibe sessions for the personal project and any projects in the
+# legacy projects.json registry (nothing writes it since the Telegram remote was removed)
 # Used by the personal assistant to answer "what sessions are running?"
 
 MEGAVIBE_HOME="$HOME/.megavibe"
+# Legacy registry: only the removed Telegram bot wrote it; read when an old install still has one.
 PROJECTS_FILE="$MEGAVIBE_HOME/projects.json"
 
 GREEN='\033[0;32m'
@@ -98,5 +100,5 @@ done
 
 if ! $FOUND_ANY; then
   echo ""
-  echo "No active sessions."
+  echo "No active sessions among the projects listed above (other projects are not visible here)."
 fi

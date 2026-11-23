@@ -530,9 +530,15 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
       echo "  added $entry to .gitignore"
     fi
   done
+  # One deliberate exception: an allow-list .gitignore (an exact `/*` line: everything ignored unless negated)
+  # that explicitly negates the folder (an exact `!megavibe-deliverables` line, with or without slashes) tracks
+  # it on purpose, as the PA memory repo of `megavibe node memory init` does. Only the deliverables rules below
+  # are skipped there; every other entry above is still added.
+  if grep -qx '/\*' "$PROJECT/.gitignore" && grep -qxE '!/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
+    echo "  skip: megavibe-deliverables rule (an allow-list .gitignore tracks the folder on purpose)"
   # The deliverables folder needs an EXACT rule (a comment or a negation that merely mentions the name is not one).
   # No trailing slash: "name/" matches directories only, and in a worktree the folder is a symlink.
-  if ! grep -qxE '/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
+  elif ! grep -qxE '/?megavibe-deliverables/?' "$PROJECT/.gitignore"; then
     echo "megavibe-deliverables" >> "$PROJECT/.gitignore"
     echo "  added megavibe-deliverables to .gitignore"
   fi
@@ -540,7 +546,7 @@ if [ -f "$PROJECT/.gitignore" ] || [ -d "$PROJECT/.git" ] || [ -f "$PROJECT/.git
   # does not ignore the folder, append the rule again so the last match wins.
   # Only an exit status of exactly 1 means "not ignored": git answers 128 for a path behind a symlink (the folder
   # IS a symlink in a `megavibe worktree`), and that must not read as "not ignored" on every launch.
-  if [ -e "$PROJECT/.git" ]; then
+  if [ -e "$PROJECT/.git" ] && ! { grep -qx '/\*' "$PROJECT/.gitignore" && grep -qxE '!/?megavibe-deliverables/?' "$PROJECT/.gitignore"; }; then
     if [ -L "$PROJECT/megavibe-deliverables" ]; then _probe="megavibe-deliverables"; else _probe="megavibe-deliverables/STATUS.md"; fi
     _rc=0; git -C "$PROJECT" check-ignore -q --no-index -- "$_probe" 2>/dev/null || _rc=$?   # (set -e: capture, never abort)
     if [ "$_rc" -eq 1 ]; then

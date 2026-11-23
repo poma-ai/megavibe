@@ -136,13 +136,21 @@ else
   say "auth: claude-auth-check.sh not installed (skipped)"
 fi
 
+# --- amass waivers (silent when none; an owed hotfix sweep needs action) -----
+AG="$SELF_DIR/amass-gate.sh"; [ -f "$AG" ] || AG="$MV/scripts/amass-gate.sh"
+if [ -f "$AG" ]; then
+  w=$(bash "$AG" status 24 2>/dev/null) || w=""
+  case $w in "") ;; *"sweeps owed"*) NEED=$((NEED + 1)); say "! $w" ;; *) say "$w" ;; esac
+fi
+
 # --- usage ------------------------------------------------------------------
 UR="$SELF_DIR/usage-route.sh"; [ -f "$UR" ] || UR="$MV/scripts/usage-route.sh"
 if [ -f "$UR" ]; then
-  fmt_status() {   # $1 label, $2 combined status/pace snapshot
+  fmt_status() {   # $1 label, $2 combined status/pace snapshot, $3 forecast %, $4 spare points (usage-route.sh forecast)
     local b u p r s _ lp rate rp; IFS='|' read -r b u p r s _ _ _ _ lp rate rp _ <<<"$2"
     [ -n "$u" ] || { printf '%s: no reading' "$1"; return; }
     printf '%s %s%% used' "$1" "$u"
+    [[ "$3" =~ ^[0-9]+([.][0-9]+)?$ ]] && printf ' (recent-pace forecast ~%s%% by week end, spare %s pts to %s%%)' "${3%%.*}" "${4%%.*}" "${MEGAVIBE_USAGE_TARGET:-95}"
     if [ -n "$p" ]; then printf ' (linear estimate ~%s%% by week end)' "$p"
     elif [ -n "$lp" ]; then printf ' [linear estimate ~%s%%]' "${lp%%.*}"
     else printf ' [linear estimate unavailable]'; fi
@@ -156,7 +164,9 @@ if [ -f "$UR" ]; then
   cl=$(MEGAVIBE_ROUTER_PROVIDER=claude bash "$UR" status-pace --peek 2>/dev/null)
   cx=$(MEGAVIBE_ROUTER_PROVIDER=codex bash "$UR" status-pace --peek 2>/dev/null)
   bal=$(bash "$UR" balance --peek 2>/dev/null); pref="${bal%%|*}"
-  line="usage: $(fmt_status Claude "$cl") | $(fmt_status Codex "$cx")"
+  IFS='|' read -r _ _ _ cff cfs _ <<<"$(MEGAVIBE_ROUTER_PROVIDER=claude bash "$UR" forecast 2>/dev/null)" || true
+  IFS='|' read -r _ _ _ xff xfs _ <<<"$(MEGAVIBE_ROUTER_PROVIDER=codex bash "$UR" forecast 2>/dev/null)" || true
+  line="usage: $(fmt_status Claude "$cl" "${cff:-}" "${cfs:-}") | $(fmt_status Codex "$cx" "${xff:-}" "${xfs:-}")"
   case "$pref" in claude|codex) line="$line | lean optional work on $pref" ;; esac
   say "$line"
 fi
