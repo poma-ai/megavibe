@@ -810,6 +810,8 @@ gt 2 "sh -lc \"osascript -e x ~/.megavibe/scripts/x\"" "gate: sh -lc quoted comm
 gt 2 "env -S 'sh -c \"launchctl stop com.example.other\"' launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.job.plist" "launchctl: env -S wrapper blocked"
 gt 0 "launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/My Agent.plist\"" "launchctl: bootstrap of a plist with a space in its name allowed"
 gt 2 "/usr/bin/osascript -e 'x' # ~/.megavibe/scripts/x" "gate: osascript by absolute path still refused"
+gt 2 "env --split-string 'sh -c \"launchctl stop x\"' launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.job.plist" "launchctl: env --split-string wrapper blocked"
+gt 2 "env -Ssh launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.job.plist" "launchctl: env -S attached blocked"
 gt 2 "launchctl bootout gui/501/com.example.job" "launchctl: bootout blocked"
 gt 2 "launchctl unload ~/Library/LaunchAgents/com.example.job.plist" "launchctl: unload blocked"
 gt 2 "launchctl remove com.example.job" "launchctl: remove blocked"

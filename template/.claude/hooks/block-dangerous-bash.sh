@@ -878,7 +878,7 @@ def scan(argv, depth=0):
             i += 1
             while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
                 opt = argv[i]; i += 1
-                if b == "env" and re.match(r"^-[A-Za-z]*S", opt) and any("launchctl" in x for x in argv[i:]): return True   # env -S runs a split string: not parsed here, so blocked
+                if b == "env" and re.match(r"^(-[A-Za-z]*S|--split-string)", opt) and any("launchctl" in x for x in argv[i:]): return True   # env -S runs a split string: not parsed here, so blocked
                 if opt == "--": break
                 if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
             while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
