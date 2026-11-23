@@ -214,5 +214,16 @@ check "a dry run with cut lines still writes the report it points at" '[[ "$o" =
 o=$(tick --name 2>&1); rc=$?
 check "a missing option value is refused" '[[ "$o" == *"--name needs a value"* ]]'
 
+# A running session whose launcher session ended is an action item (the hook line carries pids only).
+mkdir -p "$T/.claude/sessions" "$T/mv/launches"
+sleep 120 >/dev/null 2>&1 & OP=$!
+jq -n --argjson pid "$OP" --argjson ms "$(( (NOW - 600) * 1000 ))" '{pid: $pid, sessionId: "orph-1", name: "orphanhelper", cwd: "/x", status: "idle", startedAt: $ms}' > "$T/.claude/sessions/$OP.json"
+jq -n --argjson pid "$OP" --argjson at "$(( NOW - 600 ))" '{pid: $pid, launcher: "megavibe", parentSessionId: "ended-parent", parentPid: null, parentCwd: null, startedAt: $at}' > "$T/mv/launches/$OP.json"
+o=$(tick --no-mark)
+check "an orphaned session is an action item, by pid, without its name" '[[ "$o" == *"! sessions: 1 running session(s) have a launcher that ended or cannot be found (pids: $OP)"* ]] && [[ "$o" != *orphanhelper* ]]'
+kill "$OP" 2>/dev/null
+o=$(tick --no-mark)
+check "no orphan: no sessions line" '[[ "$o" != *"sessions:"* ]]'
+
 printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

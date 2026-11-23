@@ -9,6 +9,7 @@
 #   tick NAME: NEEDS ACTION (n) | window <from>..<to>        or   tick NAME: quiet | window ...
 #   auth:   scripts/claude-auth-check.sh at TICK_AUTH_HOURS (default 12): the login lifetime
 #           is what keeps an unattended session alive; a warning here goes to the user NOW
+#   sessions: `sessions.sh --status` (live sessions whose launcher session ended; pids only), silent when none
 #   usage:  both subscriptions' weekly windows (N% used, the projection for the end of
 #           the window, time to reset) and `usage-route.sh balance` when it has a preference
 #   github: per repo, inside the window: PRs updated (author named; your own PRs left out),
@@ -141,6 +142,13 @@ AG="$SELF_DIR/amass-gate.sh"; [ -f "$AG" ] || AG="$MV/scripts/amass-gate.sh"
 if [ -f "$AG" ]; then
   w=$(bash "$AG" status 24 2>/dev/null) || w=""
   case $w in "") ;; *"sweeps owed"*) NEED=$((NEED + 1)); say "! $w" ;; *) say "$w" ;; esac
+fi
+
+# --- orphaned sessions (silent when none; a running session whose launcher ended needs action) ---
+SS="$SELF_DIR/sessions.sh"; [ -f "$SS" ] || SS="$MV/scripts/sessions.sh"
+if [ -f "$SS" ]; then
+  s=$(bash "$SS" --status 2>/dev/null) || s=""
+  [ -z "$s" ] || { NEED=$((NEED + 1)); say "! sessions: $s"; }
 fi
 
 # --- usage ------------------------------------------------------------------

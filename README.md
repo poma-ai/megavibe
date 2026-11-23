@@ -322,7 +322,7 @@ Inside a megavibe session:
 | `/init-feature <description \| issue link>` | **Before starting a feature** — takes prose or a GitHub issue link; produces a scoped summary and a complexity/token estimate you confirm or send back, then you pick: write a spec or vibe it, and whether to post the result to that ticket or open a new one |
 | `/finish-feature [base]` | **After finishing one** — measures turns, tool calls and tokens actually spent from the transcript, scores them against what `/init-feature` predicted, comments the result on the PR and offers to merge it |
 | `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
-| `/watch [interval] [org/repo ...]` | **Before leaving a session unattended** — schedules `tick.sh` as a recurring prompt (30 min default): review requests, pushes, reviews and comments from others on the watched repos, Linear comments, the login lifetime, both subscriptions' usage; the session acts on it. `/watch status`, `/watch off`. See "Unattended windows" |
+| `/watch [interval] [org/repo ...]` | **Before leaving a session unattended** — schedules `tick.sh` as a recurring prompt (30 min default): review requests, pushes, reviews and comments from others on the watched repos, Linear comments, orphaned sessions, the login lifetime, both subscriptions' usage; the session acts on it. `/watch status`, `/watch off`. See "Unattended windows" |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
 
 ---
