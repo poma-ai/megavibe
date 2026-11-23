@@ -1,6 +1,6 @@
 #!/bin/bash
 # node.sh: keep this Mac's node session running; where pa.on exists, also the Personal Assistant;
-# and keep the PA's memory repo in step (memory.push on the Mac that writes it, memory.pull on a
+# and keep the PA's memory repo in step and, on a PA Mac, the secrets in step (memory.push on the Mac that writes it, memory.pull on a
 # Mac that holds a standby copy). Installed by `megavibe node install`; opt-in, see README-node.md.
 # Run by the LaunchAgent com.megavibe.node at login and every 5 minutes. It starts things; it never
 # stops or kills anything. A session that exits is started again on the next run (at most 3 starts
@@ -45,7 +45,7 @@ CMAIL=$(conf COMMIT_EMAIL 'megavibe-node@localhost' '[A-Za-z0-9._+-]+@[A-Za-z0-9
 # SHORTCUT: the alarm ends the helper itself, not its children, and a helper that ignored SIGALRM
 # would hold this script and its lock. None of the helpers does (tmux, scutil, git, and
 # claude-auth-check.sh, which bounds its own child; an ssh that git started can outlive git, but it
-# does not hold fd 9); upgrade to a supervising process that ends the helper's process group if a
+# does not hold fd 9; the secrets tool's sync is the one external helper added since, and it is bounded by 60 s); upgrade to a supervising process that ends the helper's process group if a
 # helper is ever added that might.
 # A helper that cannot be started exits 127 here, not 0.
 bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@"; }
@@ -131,6 +131,16 @@ if [ -e "$N/pa.on" ] && [ -x "$MH/scripts/usage-probe.sh" ]; then
     [ -z "$PROBE_CODEX_HOME" ] || export CODEX_HOME="$PROBE_CODEX_HOME"
     bounded 300 "$MH/scripts/usage-probe.sh" run --every 30 >/dev/null 2>&1 9>&- </dev/null
   ) || true
+fi
+
+# PA secrets: where the PA runs and the personal secrets tool is installed (~/.local/bin/secret), carry secret
+# changes from the other Mac (iCloud store) into this Mac's Keychain on every run, so no separate job is needed.
+# PA only, like the probe above: a Mac without pa.on, and plain megavibe use, never run it. Its output is
+# discarded (it could carry secret names, and a log would grow without bound); a failure is logged by exit
+# status only, once an hour.
+if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
+  bounded 60 "$HOME/.local/bin/secret" sync >/dev/null 2>&1 9>&- </dev/null \
+    || log_once secret-sync "secret sync failed or timed out (run: secret sync)"
 fi
 
 # PA memory: a git repo in the personal folder whose origin is a bare repo on the writing Mac.
