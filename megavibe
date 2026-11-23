@@ -2828,7 +2828,6 @@ while true; do
       restore_launch_parent
       if [ "$NORMALIZE" = "0" ]; then exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize --continue; fi
       exec bash "$MEGAVIBE_HOME/megavibe" --continue
-      capture_launch_parent  # only reached when exec failed: keep the variable out of claude's environment
     fi
 
     # Re-capture launch version after update (only reached if exec did not)
