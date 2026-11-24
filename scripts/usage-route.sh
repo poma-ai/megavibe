@@ -34,10 +34,10 @@
 # selected one (a second account's rows in the same file) are not summed in; so is the old window after an early or
 # unscheduled reset whose resets_at is still ahead (errs low, only the week after such a reset). Known gaps: reset stamps
 # jittering by more than 3 minutes, or chained across the boundary of two windows, can split or merge windows.
-# SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less), and the
-# Codex history is the 3000 most recently written rollout files of the last 8 days (one file per codex exec call): beyond
-# that, or in the 2-minute Codex cache (15 s when it is empty), a very busy account's older baselines or newest reading are
-# missed. The forecast is clipped at 999. forecast_7d on Codex follows the same limits.
+# SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less). The Codex
+# history is a time-bucketed sample of the last 8 days of rollout files under a byte and time budget (see _rollout_sample),
+# so a heavy account loses resolution, not the baselines; the 2-minute Codex cache (15 s when empty) can hold a figure from before
+# the newest reading. The forecast is clipped at 999.
 # The bands still decide on the straight-line projection (hysteresis and the `under` guard were tuned on it); balance
 # and the advisory use the forecast. Reported by the `forecast` mode only: status and pace lines are byte-identical.
 #
@@ -121,7 +121,7 @@ if [ "$PROVIDER" = codex ]; then
   FILE=""; STATE="${MEGAVIBE_CODEX_STATE:-$MV/usage/codex-route-state.json}"; STALE=86400
 fi
 
-# Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six (3000 for the forecast modes) most recently written rollout files
+# Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six (a time-bucketed sample for the forecast modes) most recently written rollout files
 # of the last 8 days (by mtime, sorted over the whole list: a resumed session keeps appending to an old file).
 # Bounded: at most 1 MB read per file, and the result is cached for 2 minutes (the hook runs on every Agent call).
 # Every usable row is kept (a slice could drop the window's highest reading). Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
@@ -135,10 +135,33 @@ _rollout_tails() {
     while IFS= read -r f; do [ -f "$f" ] && tail -c "$1" "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n "$2"; done
   fi
 }
+# Sampling for the forecast modes: "mtime path" lines on stdin (any order). The pace needs the highest reading before each horizon and
+# the highest now, so what matters is that every stretch of time is represented, not how many files there are. Files are bucketed by
+# age relative to the newest file (10 minutes for the last 6 hours, 1 hour beyond), ranked inside their bucket newest first, and read
+# in rank order (every bucket's newest, then every bucket's second newest, ...) until a total byte budget ($3, default 128 MB) or a
+# time budget ($4, default 1.5 s) runs out: a heavy history degrades to a coarser sample, never to unknown. Each file is read only
+# from its tail, at most $1 bytes and at most budget / (files of rank 0) (at least 64 KB), keeping the last $2 lines that mention
+# rate_limits. Without perl, the newest 400 files.
+_rollout_sample() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'my ($nb, $nl, $budget, $tmax) = @ARGV; my $t0 = time; my @f;
+      while (<STDIN>) { chomp; push @f, [$1, $2] if /^(\d+) (.+)$/ }
+      exit 0 unless @f;
+      @f = sort { $b->[0] <=> $a->[0] } @f; my $top = $f[0][0]; my (%cnt, @r);
+      for my $x (@f) { my $age = $top - $x->[0]; my $b = $age < 21600 ? int($age / 600) : 36 + int(($age - 21600) / 3600); push @r, [$cnt{$b}++, $x->[0], $x->[1]] }
+      my $per = int($budget / (scalar(keys %cnt) || 1)); $per = 65536 if $per < 65536; $per = $nb if $per > $nb;
+      @r = sort { $a->[0] <=> $b->[0] or $b->[1] <=> $a->[1] } @r; my $used = 0;
+      for my $x (@r) { last if time - $t0 > $tmax or $used >= $budget; my $f = $x->[2]; next unless -f $f; open(my $h, "<", $f) or next;
+        my $sz = -s $h; my $want = $sz < $per ? $sz : $per; seek($h, $sz - $want, 0); $used += $want;
+        my @l = grep { index($_, q("rate_limits")) >= 0 } <$h>; splice(@l, 0, @l - $nl) if @l > $nl; print @l; close $h }' "$1" "$2" "${MEGAVIBE_ROLLOUT_BUDGET:-134217728}" "${MEGAVIBE_ROLLOUT_SECONDS:-1.5}" 2>/dev/null
+  else
+    sort -rn | head -n 400 | cut -d' ' -f2- | _rollout_tails "$1" "$2"
+  fi
+}
 codex_row() {
   local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6 nl=200 nb=1048576
-  # the forecast needs 24 h of readings: a probe (or any codex exec) writes one rollout file per call, so six files are only about 3 h and 3000 cover 8 days of calls
-  [ "$FCMODE" != 1 ] || { nf=3000 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
+  # the forecast needs 24 h of readings: a probe (or any codex exec) writes one rollout file per call, so six files are only about 3 h and the forecast samples the last 8 days by time bucket (see _rollout_sample)
+  [ "$FCMODE" != 1 ] || { nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
   # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls. It is also
   # skipped for the sprint decision inside the window (SPRINT_FRESH): a reading written since must count.
@@ -153,7 +176,7 @@ codex_row() {
   # print "mtime path" per file and sort the whole list instead.
   local rows
   rows=$(perl -e 'alarm 3; exec @ARGV' find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
-    | sort -rn | head -n "$nf" | cut -d' ' -f2- | _rollout_tails "$nb" "$nl" \
+    | if [ "$FCMODE" = 1 ]; then _rollout_sample "$nb" "$nl"; else sort -rn | head -n "$nf" | cut -d' ' -f2- | _rollout_tails "$nb" "$nl"; fi \
     | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
       | ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) as $t

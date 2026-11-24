@@ -238,6 +238,45 @@ start=$SECONDS; o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex, 481 rollouts over 24 h: the early rise is seen (forecast about 96, not 40) and the read takes under 6 s' '[ $((SECONDS - start)) -lt 6 ] && awk -v x="$(f 4)" "BEGIN{exit !(x > 80)}"'
 rm -r "$T/codex/sessions/flood"
 
+# Seven concurrent Codex streams, one rollout each every 3 minutes for 8 days (26880 files): the sampled forecast must match the same
+# readings consolidated in one rollout within 2 points, in a few seconds (reader finding: 64.9 against 103.5 with a flat file cap)
+FL="$T/codex/sessions/flood8"; mkdir -p "$FL"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+PREVR=$((R - 604800)); BASE=$(date +%s)
+GEN='
+  my ($dir, $now, $base, $r, $pr, $mode) = @ARGV; my $i = 0; my $one;
+  if ($mode eq "one") { open($one, ">", "$dir/rollout-all.jsonl") or die }
+  for my $m (reverse(0 .. 11520)) {
+    next if $m % 3;
+    my ($u, $rr) = $m < 4900 ? (20 + (4900 - $m) * 30 / 4900, $r) : (80 - ($m - 4900) * 40 / 6620, $pr);
+    $u = 0 if $u < 0;
+    for my $st (0 .. 6) {
+      my $t = $now - $m * 60 - $st; my @g = gmtime($t);
+      my $line = sprintf(q({"timestamp":"%04d-%02d-%02dT%02d:%02d:%02dZ","payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":%.2f,"window_minutes":10080,"resets_at":%d}}}}) . "\n", $g[5] + 1900, $g[4] + 1, $g[3], $g[2], $g[1], $g[0], $u, $rr);
+      if ($mode eq "one") { print $one $line }
+      else { my $f = sprintf("%s/rollout-%06d.jsonl", $dir, $i++); open(my $h, ">", $f) or die; print $h $line; close $h; my $mt = $base - $m * 60 - $st; utime($mt, $mt, $f) }
+    }
+  }'
+perl -e "$GEN" "$FL" "$NOW" "$BASE" "$R" "$PREVR" many
+start=$SECONDS; o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); mt=$((SECONDS - start)); fm=$(f 4)
+check 'codex, 26880 rollouts over 8 days: the sampled forecast is a number and the read takes under 6 s' '[ -n "$fm" ] && [ "$mt" -lt 6 ]'
+rm -r "$FL"; mkdir -p "$FL"
+perl -e "$GEN" "$FL" "$NOW" "$BASE" "$R" "$PREVR" one
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); fc1=$(f 4)
+check 'codex, 26880 rollouts: the sampled forecast is within 2 points of the consolidated forecast' 'near "$fm" "$fc1" 2'
+rm -r "$FL"
+
+# a 1.5 GB-equivalent set of rollout tails (450 files of 3.4 MB, sparse) finishes inside the budget with a number, not unknown
+BG="$T/codex/sessions/big"; mkdir -p "$BG"
+perl -e '
+  my ($dir, $now, $base, $r) = @ARGV;
+  for my $i (0 .. 449) { my $m = $i * 25; my $f = sprintf("%s/rollout-%04d.jsonl", $dir, $i); open(my $h, ">", $f) or die; truncate($h, 3_400_000); seek($h, 3_399_000, 0);
+    my @g = gmtime($now - $m * 60); my $u = 20 + (11250 - $m) * 20 / 11250; $u = 20 if $m > 4900;
+    printf $h "\n" . q({"timestamp":"%04d-%02d-%02dT%02d:%02d:%02dZ","payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":%.2f,"window_minutes":10080,"resets_at":%d}}}}) . "\n", $g[5] + 1900, $g[4] + 1, $g[3], $g[2], $g[1], $g[0], $u, $r;
+    close $h; my $mt = $base - $m * 60; utime($mt, $mt, $f) }' "$BG" "$NOW" "$BASE" "$R"
+start=$SECONDS; o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); mt=$((SECONDS - start))
+check 'codex, 450 files of 3.4 MB (1.5 GB of tails): a forecast, not unknown, inside 4 s' '[ -n "$(f 4)" ] && [ "$mt" -lt 4 ]'
+rm -r "$BG"
+
 # an EMPTY warm cache hides the first valid reading for seconds, not two minutes
 RE=$(mktemp -d "$T/re.XXXXXX"); mkdir -p "$RE/sessions/z"; N1=$(date +%s)
 : > "$RE/sessions/z/rollout-1.jsonl"
