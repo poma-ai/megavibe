@@ -42,10 +42,11 @@
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
 #                account; or the ordinary target is not below the sprint target
 #   off          MEGAVIBE_SPRINT=0
-# The sprint's pace is conservative: it also includes the steepest rise of 2 points or more from any reading in the
-# 90 minutes before the newest reading to that reading, rated (rise + 1) over its span floored at 30 minutes
-# (whole-percent readings; a single one-point tick is noise; an earlier dip does not switch it off; basis suffix
-# `+burst`), and the forecast is projected from the newest reading to the reset, not from now.
+# The sprint's pace is conservative: it also includes the steepest rise of 2 points or more over every pair of a recent
+# reading (the last 90 minutes) and an earlier one (within 90 minutes of it, or the row just before it whatever its age),
+# rated (rise + 1) over the time from the earlier reading to now, floored at 30 minutes (whole-percent readings; a single
+# one-point tick is noise; an earlier dip does not switch it off; basis suffix `+burst`), and the forecast is projected
+# from the newest reading to the reset, not from now.
 # Known gap: a Codex history whose uncached scan takes over 2 s (the advice's per-provider alarm) reports `unknown`
 # for Codex, and the hook then keeps the state it last told (fails closed: no new advice, no false advice).
 # With no usage data at all the line is `provider|-||||||||` (ten fields, empty); a provider without a five-hour
@@ -508,19 +509,15 @@ if [ "$MODE" = sprint ]; then
       # is not averaged away); at least 5 minutes of span
       # anchored to the NEWEST row of the live window, not to now: the evidence does not age out of a wall-clock lookback while the
       # history is unchanged (the sprint own 35-minute freshness rule bounds how old the newest row may be)
-      # Equal repeat readings do not erase a surge: the anchor is the FIRST row of the trailing run of equal five-hour readings, the
-      # climb is measured up to it (and projected through its age), and it counts while that row is within the last hour
-      | ($rows | length) as $n
-      | (if $n == 0 then null else ([range(0; $n) | select($rows[.].fh.p != $rows[$n - 1].fh.p)] | last) end) as $li
-      | (if $n == 0 then null elif $li == null then 0 else $li + 1 end) as $ai
-      | (if $ai == null then null else $rows[$ai] end) as $nw
-      | (if $ai == null then [] else $rows[0:$ai + 1] end) as $hist
-      # when the lookback holds only the newest reading (sparse sampling, e.g. a probe every 30 minutes), the nearest earlier reading of
-      # the live window within two hours supplies the slope, divided by the real interval
-      | def climb($h): [$hist[] | select(.t >= $nw.t - $h)] as $w0
-          | (if ($w0 | length) >= 2 then $w0 else ([$hist[] | select(.t < $nw.t and ($nw.t - .t) <= 7200)] | last) as $pv | if $pv == null then $w0 else [$pv, $nw] end end) as $w
-          | if ($w | length) < 2 then 0 else ($w | first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * (1800 + ([($now - $b.t), 0] | max))) end) end;
-      if $nw == null or $nw.t < $now - 3600 then 0 else [climb(1800), climb(600)] | max end' <<<"$HISTORY" 2>/dev/null)
+      # EVERY recent endpoint pair counts (no single anchor an equal repeat or a one-point follow-up could move away from the evidence):
+      # each row of the last hour is a possible high, paired with every earlier row within 30 minutes of it, or with the row just before it
+      # whatever its age up to two hours (sparse sampling, e.g. a probe every 30 minutes). Each pair rates its rise over the real interval
+      # (at least 5 minutes) and continues it through the age of the high plus a 30-minute unit; the highest wins.
+      | ([range(0; $rows | length) as $hi | $rows[$hi] as $H | select($H.t >= $now - 3600)
+          | range(0; $hi) as $lo | $rows[$lo] as $L
+          | select(($H.t - $L.t) <= 1800 or ($lo == $hi - 1 and ($H.t - $L.t) <= 7200))
+          | select(($H.fh.p - $L.fh.p) > 0)
+          | (($H.fh.p - $L.fh.p) / ([($H.t - $L.t), 300] | max) * (1800 + ([($now - $H.t), 0] | max)))] | max) // 0' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"

@@ -255,10 +255,15 @@ printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":65,"r":%s}}\n{"t":%s,"sd":{"p":65
   "$((NOW - 4500))" "$R2" "$FR" "$((NOW - 4200))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour 65 then 82 seventy minutes ago and flat since: the surge is more than an hour old, so no climb is counted and the sprint is allowed' '[ "$(f 2)" = sprint ]'
+# a fresh increase must not clear the five-hour guard by moving the endpoint: 74 until -11 minutes, 78 at -6, then 79 now, 2 h left
+{ rowfh 30 70 $R2 74; rowfh 11 70 $R2 74; rowfh 6 70 $R2 78; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'five-hour 74 (-11 min), 78 (-6 min): 5h-hot' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+{ rowfh 30 70 $R2 74; rowfh 11 70 $R2 74; rowfh 6 70 $R2 78; rowfh 0 70 $R2 79; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'the same plus a fresh 79 now (a one-point follow-up): still 5h-hot (every recent endpoint pair counts)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'five-hour 78 -> 81 over 29 minutes: the tenth field is the projection (about 84), not 81' 'awk -v x="$(f 10)" "BEGIN{exit !(x > 83 && x < 86)}"'
+check 'five-hour 78 -> 81 over 29 minutes: the tenth field is the projection (84 to 90: the highest pair rate), not 81' 'awk -v x="$(f 10)" "BEGIN{exit !(x > 83 && x < 90)}"'
 
 # the five-hour window is hot: top-tier work would only hit that limit
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"
