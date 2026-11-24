@@ -36,7 +36,7 @@
 #   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
 #   5h-hot       the five-hour window is at 85 or more, counting its climb (the highest rate over every pair of a recent and an earlier reading) continued for a
-#                30-minute unit and through the age of the newest reading: top-tier work would only hit that limit
+#                30-minute unit and through the age of the higher reading of the pair: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
 #                (MEGAVIBE_SPRINT_TARGET, 99; a whole number below 100, so the 100 backstop is never the aim):
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
