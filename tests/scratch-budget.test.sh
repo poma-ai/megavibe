@@ -150,9 +150,10 @@ stop() { printf '{"hook_event_name":"Stop","session_id":"%s","stop_hook_active":
 )
 check "a user venv only contributes to other temp usage" '[ $? -eq 0 ]'
 rm -rf "$TMPDIR/user-venv"
+touch -t 200001010000 "$S/old-unregistered"
 o=$(stop); check "Stop over budget: block" 'printf "%s" "$o" | jq -e ".decision == \"block\"" >/dev/null'
 o=$(stop); check "Stop again, same size: allowed (the session reported)" '[ -z "$o" ]'
-check "an over-budget Stop leaves session scratch intact" '[ -f "$S/huge.bin" ]'
+check "an over-budget Stop leaves recent and old session scratch intact" '[ -f "$S/huge.bin" ] && [ -f "$S/old-unregistered" ]'
 rm -f "$T/p/.agent/LOGS/.scratch-stopped.$SID"
 o=$(MEGAVIBE_DISK_WATCH=0 stop)
 check "Stop passes with disk watch off" '[ -z "$o" ]'
