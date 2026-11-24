@@ -21,61 +21,61 @@ f() { printf '%s\n' "$o" | cut -d'|' -f"$1"; }   # 2 used, 3 pace, 4 forecast, 5
 near() { awk -v a="$1" -v b="$2" -v e="${3:-0.2}" 'BEGIN {exit !(a != "" && a-b <= e && b-a <= e)}'; }
 R=$((NOW + 300000))   # 50 percent of the week elapsed, 83.33 h left
 
-# steady 0.5 points per hour
-{ row 30 40 $R; row 24 43 $R; row 18 46 $R; row 12 49 $R; row 6 52 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+# ramp FROM_H_AGO TO_H_AGO P_START P_END RESET [LAG]: a reading every 10 minutes, linear in used percent (fractional: only the
+# arithmetic is under test); LAG subtracts that many points from every other reading (a session whose figure lags)
+ramp() { awk -v n="$NOW" -v a="$1" -v b="$2" -v p0="$3" -v p1="$4" -v r="$5" -v lag="${6:-0}" 'BEGIN {
+  k = int((a - b) * 6); for (i = 0; i <= k; i++) { h = a - (a - b) * i / k; p = p0 + (p1 - p0) * i / k - ((i % 2) ? lag : 0);
+  printf "{\"t\":%d,\"sd\":{\"p\":%.3f,\"r\":%d}}\n", n - h * 3600, p, r } }'; }
+
+# steady 1 point per hour for 30 hours
+ramp 30 0 25 55 $R > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'steady: pace 0.5, forecast 96.7, spare -1.7, basis 6h+24h' 'near "$(f 3)" 0.5 0.01 && near "$(f 4)" 96.7 && near "$(f 5)" -1.7 && [ "$(f 7)" = "6h+24h" ]'
+check 'steady: pace 1.0, forecast 55 + 83.3 = 138.3, basis 6h+24h' 'near "$(f 3)" 1.0 0.06 && near "$(f 4)" 138.3 5 && [ "$(f 7)" = "6h+24h" ]'
 check 'steady: spend per hour to reach the target is (95-55)/83.33' 'near "$(f 6)" 0.48 0.01'
+check 'steady: the 7-day pace forecast is the eighth field' '[ -n "$(f 8)" ]'
 
-# burst: quiet for a day, then 13 points in the last 6 hours
-{ row 30 40 $R; row 24 41 $R; row 18 41 $R; row 12 41 $R; row 6 42 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+# several sessions, one lagging a point behind on every other reading: row-to-row changes would sum to far more than the
+# true rise (30 points of rise would read as about 90); the highest-reading method stays at the true pace
+ramp 30 0 25 55 $R 1 > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'burst: the 6 h pace dominates (0.6 x 2.17 + 0.4 x 0.58 = 1.53 per hour), forecast above 150' 'near "$(f 3)" 1.533 0.01 && awk -v x="$(f 4)" "BEGIN{exit !(x > 150)}"'
+check 'lagging sessions: pace stays about 1.0 (never an inflated row-to-row sum)' 'near "$(f 3)" 1.0 0.15'
 
-# quiet: nothing used for 30 hours -> forecast is the used percent, never below it
-{ row 30 30 $R; row 18 30 $R; row 6 30 $R; row 0 30 $R; } > "$MEGAVIBE_USAGE_FILE"
+# burst: flat for a day, then 13 points in the last hour
+{ ramp 30 1 41 41 $R; ramp 1 0 41 54 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'quiet: zero pace is a real zero (readings exist), forecast equals used' 'near "$(f 3)" 0 0.001 && near "$(f 4)" 30'
+check 'burst: the 6 h pace dominates, forecast above 150' 'awk -v x="$(f 4)" "BEGIN{exit !(x > 150)}"'
 
-# whole-percent readings: a span shorter than 2 h is unknown, not zero; the window average stands in
-{ row 1 54 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+# quiet: nothing used for 30 hours -> forecast is the used percent
+ramp 30 0 30 30 $R > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'two readings an hour apart: no 6 h / 24 h pace, basis week' '[ "$(f 7)" = week ] && near "$(f 3)" 0.65 0.01'
+check 'quiet: zero pace, forecast equals used' 'near "$(f 3)" 0 0.001 && near "$(f 4)" 30'
 
-# sparse burst: a 48 h old reading must not stretch the recent pace (readings 48, 4, 2, 0 h ago)
-{ row 48 20 $R; row 4 20 $R; row 2 24 $R; row 0 28 $R; } > "$MEGAVIBE_USAGE_FILE"
-o=$(fc)
-check 'sparse burst: both paces use only readings inside their horizon (2 points per hour)' 'near "$(f 3)" 2 0.01 && [ "$(f 7)" = "6h+24h" ]'
-# only an old reading plus a fresh one: no pace inside either horizon, the week average stands in
-{ row 48 20 $R; row 0 28 $R; } > "$MEGAVIBE_USAGE_FILE"
-o=$(fc)
-check 'old reading outside both horizons: basis week' '[ "$(f 7)" = week ]'
-
-# horizons are measured from now, not from the newest reading: readings 29 h and 23 h ago are in neither horizon
-{ row 29 20 $R; row 23 32 $R; } > "$MEGAVIBE_USAGE_FILE"
-o=$(fc)
-check 'aged readings only (Claude, stale after 6 h): unknown' '[ -z "$(f 4)" ]'
-
-# one reading
+# short history: one reading has no trailing pace (window average stands in); two readings an hour apart do
 row 0 55 $R > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'one reading: week average basis, still a forecast' '[ "$(f 7)" = week ] && [ -n "$(f 4)" ]'
-
-# a drop inside the window makes the trend unreliable: no recent pace
-{ row 30 40 $R; row 20 30 $R; row 6 45 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+check 'one reading in a window that began inside the 7-day horizon: 7-day pace' '[ "$(f 7)" = 7d ] && [ -n "$(f 4)" ]'
+{ row 1 54 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'drop in the window: basis week, not the recent pace' '[ "$(f 7)" = week ]'
+check 'two readings an hour apart: a trailing pace of 1 per hour, not the window average' 'near "$(f 3)" 1.0 0.01 && [ "$(f 7)" = "6h+24h" ]'
 
-# window rollover: old window rows (reset an hour ago) never enter the new window's pace
-NR=$((NOW + 500000))
-{ row 40 90 $((NOW - 3600)); row 30 95 $((NOW - 3600)); row 12 2 $NR; row 6 3 $NR; row 0 4 $NR; } > "$MEGAVIBE_USAGE_FILE"
+# a lagging low reading inside the window never breaks the pace: the highest readings decide
+{ ramp 30 10 40 50 $R; row 8 49 $R; ramp 6 0 51 55 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'rollover: forecast comes from the new window only (4 used, 0.17 per hour)' '[ "$(f 2)" = 4 ] && near "$(f 3)" 0.167 0.01 && near "$(f 4)" 27 1'
+check 'a lagging low reading inside the window: still a trailing pace' '[ "$(f 7)" = "6h+24h" ]'
 
-# too early in the window: no forecast (whole-percent readings are too coarse before 5 percent)
-row 0 30 $((NOW + 604800 - 3600)) > "$MEGAVIBE_USAGE_FILE"
+# the reset boundary: a window that began 3 h ago, after the previous window rose from 56 to 62
+NR=$((NOW + 604800 - 3 * 3600)); OR=$((NOW - 3 * 3600))
+{ ramp 6 3 56 62 $OR; ramp 3 0 0 3 $NR; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'under 5 percent elapsed: empty forecast' '[ -z "$(f 4)" ] && [ "$(f 2)" = 30 ]'
+check 'reset boundary: used 3, pace counts the old window rise plus the new reading over 6 h, 1.5 per hour' 'near "$(f 2)" 3 0.01 && near "$(f 3)" 1.5 0.3 && [ "$(f 7)" != week ]'
+# the very first minute of a window: the new reading counts as used since the reset
+{ ramp 10 1 40 61 $((NOW - 60)); row 0 1 $((NOW + 604800 - 60)); } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'first minute of a window: a forecast exists (used 1 + pace x 168 h), never blank' '[ -n "$(f 4)" ] && near "$(f 2)" 1 0.01 && awk -v x="$(f 4)" "BEGIN{exit !(x > 1)}"'
+# a window outside every horizon adds nothing
+{ row 400 99 $((NOW - 604800 - 1000)); ramp 6 0 10 16 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'an old window outside every horizon adds nothing' 'near "$(f 3)" 1.0 0.1'
 
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
@@ -85,20 +85,20 @@ check 'stale reading: empty forecast' '[ -z "$(f 4)" ]'
 # no data / missing file
 rm -f "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'no history: provider and empty fields, exit 0' '[ "$o" = "claude||||||" ]'
+check 'no history: provider and empty fields, exit 0' '[ "$o" = "claude|||||||" ]'
 
 # target override
-{ row 30 40 $R; row 24 43 $R; row 18 46 $R; row 12 49 $R; row 6 52 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+ramp 30 0 25 55 $R > "$MEGAVIBE_USAGE_FILE"
 o=$(MEGAVIBE_USAGE_TARGET=100 fc)
-check 'target 100: spare 3.3' 'near "$(f 5)" 3.3'
+check 'target 100: spare is 100 minus the forecast' 'near "$(f 5)" "$(awk -v x="$(f 4)" "BEGIN{print 100-x}")" 0.2'
 
 # every output has exactly seven fields, also for no evidence; a junk target falls back to 95
 { row 30 40 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(MEGAVIBE_USAGE_TARGET=abc fc)
-check 'forecast with evidence: seven fields; junk target uses 95' '[ "$(printf "%s" "$o" | tr -cd "|" | wc -c | tr -d " ")" = 6 ] && near "$(f 5)" "$(awk -v x="$(f 4)" "BEGIN{print 95-x}")" 0.2'
-row 0 30 $((NOW + 604800 - 3600)) > "$MEGAVIBE_USAGE_FILE"
-o=$(fc)
-check 'early window (empty forecast) still has seven fields' '[ "$(printf "%s" "$o" | tr -cd "|" | wc -c | tr -d " ")" = 6 ]'
+check 'forecast with evidence: eight fields; junk target uses 95' '[ "$(printf "%s" "$o" | tr -cd "|" | wc -c | tr -d " ")" = 7 ] && near "$(f 5)" "$(awk -v x="$(f 4)" "BEGIN{print 95-x}")" 0.2'
+# no history at all: still eight fields
+rm -f "$MEGAVIBE_USAGE_FILE"; o=$(fc)
+check 'no history: eight fields' '[ "$(printf "%s" "$o" | tr -cd "|" | wc -c | tr -d " ")" = 7 ]'
 
 # status and pace lines are unchanged by the forecast mode (field counts)
 o=$(/bin/bash "$REPO/scripts/usage-route.sh" pace)
@@ -114,14 +114,14 @@ o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex without records: unknown' '[ "$(f 1)" = codex ] && [ -z "$(f 4)" ]'
 { codex "$((NOW - 3600))" 20 "$R"; codex "$NOW" 21 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex, two readings an hour apart: basis week, not a zero pace' '[ "$(f 7)" = week ] && near "$(f 3)" 0.25 0.01'
+check 'codex, two readings an hour apart: a trailing pace of 1 per hour' '[ "$(f 7)" = "6h+24h" ] && near "$(f 3)" 1 0.01'
 { codex "$((NOW - 30 * 3600))" 10 "$R"; codex "$((NOW - 6 * 3600))" 16 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && near "$(f 3)" 0.6 0.35'
+check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && awk -v x="$(f 3)" "BEGIN{exit !(x > 0.4 && x < 2)}"'
 
 { codex "$((NOW - 29 * 3600))" 20 "$R"; codex "$((NOW - 23 * 3600))" 32 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex readings 29 h and 23 h ago: in neither horizon, basis week (not a 6h+24h burst)' '[ "$(f 7)" = week ]'
+check 'codex readings 29 h and 23 h ago: only the 24 h horizon holds one (12 points over 24 h)' '[ "$(f 7)" = 24h ] && near "$(f 3)" 0.5 0.05'
 
 # probe-style history: one rollout file per half-hour reading over 24 h must all count (the forecast reads 60 files, not 6)
 mkdir -p "$T/codex/sessions/p"; : > "$T/codex/sessions/x/rollout-1.jsonl"
@@ -140,10 +140,10 @@ check 'busy rollout over 1 MB: the forecast still sees the 24 h baseline (6h+24h
 rm -r "$T/codex/sessions/b"
 
 # balance leads with the forecast: Claude steady at 55 (forecast 97), Codex quiet at 20 -> lean on Codex, text shows the forecast
-{ row 30 40 $R; row 24 43 $R; row 18 46 $R; row 12 49 $R; row 6 52 $R; row 0 55 $R; } > "$MEGAVIBE_USAGE_FILE"
+ramp 30 0 25 55 $R > "$MEGAVIBE_USAGE_FILE"
 { codex "$((NOW - 30 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=claude /bin/bash "$REPO/scripts/usage-route.sh" balance --peek)
-check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~96% by week end"* ]] || [[ "$o" == codex\|*"recent-pace forecast ~97% by week end"* ]]'
+check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~14"* ]]'
 
 # ---- the probe: run by the PA's node only, throttled, never scheduled by itself -----------------------------------
 cat > "$T/bin/codex" <<'STUB'

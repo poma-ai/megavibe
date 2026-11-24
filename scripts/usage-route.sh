@@ -13,17 +13,22 @@
 #   usage-route.sh status     band|used|proj|rem|stale|reason for the weekly window of $MEGAVIBE_ROUTER_PROVIDER (claude, default, or codex)
 #   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
 #                             display only; linear from 5% elapsed, recent from samples within the last 6h that span at least 2h
-#   usage-route.sh forecast   provider|used|fc_pace_per_h|forecast|spare|spend_per_h|basis (recent-pace forecast, see below; read-only)
+#   usage-route.sh forecast   provider|used|fc_pace_per_h|forecast|spare|spend_per_h|basis|forecast_7d (see below; read-only)
 #   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
 #
-# Recent-pace forecast (added 2026-11-22; extra trailing fields, nothing existing changed): pace = 0.6 x the 6-hour
-# pace + 0.4 x the 24-hour pace inside the current window (whichever has no readings is "unknown", never zero;
-# both unknown: the window average, basis "week"); forecast = used + pace x hours_left; spare = target - forecast
-# (target 95, MEGAVIBE_USAGE_TARGET); spend = points per hour that would reach the target exactly. Reported by the
-# new `forecast` mode only: status and pace lines are byte-identical to before.
-# A pace span needs readings at least 2 h apart (whole-percent resolution), a drop in the window makes it
-# unreliable (unknown), a stale reading or a missing window means no forecast at all. The bands still decide on the
-# straight-line projection (hysteresis and the `under` guard were tuned on it); balance and the advisory use the forecast.
+# Recent-pace forecast (added 2026-11-22, reworked 2026-11-24; extra trailing fields, nothing existing changed):
+# pace is a property of time, not of the weekly window: the use over the trailing 6, 24 and 168 hours, summed across
+# resets, so it exists from the first minute of a window. Per weekly window the use is (highest reading up to now) minus
+# (highest reading before the horizon began); a window that began inside the horizon counts from 0 (after a reset the new
+# reading is the use since it). Row-to-row changes are never summed: readings come from several sessions and lag by a
+# point, which inflates such a sum several times over. Forecast pace = 0.6 x the 6 h + 0.4 x the 24 h pace (basis 6h+24h,
+# 6h, 24h), else the 7-day pace (7d), else the window average (week, one reading only); forecast = used + pace x hours left;
+# spare = target - forecast (target 95, MEGAVIBE_USAGE_TARGET); spend = points per hour that would reach the target exactly;
+# the last field is the forecast at the 7-day pace. Unknown only with no history, no window or a stale newest reading.
+# A baseline reading much older than its horizon makes a sparse history overstate the pace (SHORTCUT: the reading is
+# taken as the horizon start; real histories are dense, and Codex is probed every 30 minutes on a PA Mac).
+# The bands still decide on the straight-line projection (hysteresis and the `under` guard were tuned on it); balance
+# and the advisory use the forecast. Reported by the `forecast` mode only: status and pace lines are byte-identical.
 #
 # Input: ~/.megavibe/usage/claude.jsonl, appended by template/statusline.sh from the
 # statusline's account-wide rate_limits (five_hour / seven_day used_percentage and
@@ -60,6 +65,16 @@ MODE="${1:-claude}"; PEEK=0; [ "${2:-}" = "--peek" ] && PEEK=1   # --peek: repor
 [ "$MODE" != pace ] && [ "$MODE" != forecast ] || PEEK=1   # display must never update routing state or trim history
 PROVIDER="${MEGAVIBE_ROUTER_PROVIDER:-claude}"; STALE=21600
 case "$MODE" in codex|codex-band) PROVIDER=codex ;; esac
+if [ "$MODE" = windows ]; then   # which Claude windows Claude Code actually reports (statusline.sh records key names only)
+  SHAPE="$MV/usage/claude-shape.json"
+  [ -f "$SHAPE" ] && [ -r "$SHAPE" ] && command -v jq >/dev/null 2>&1 || { echo "windows: unknown (no statusline record yet)"; exit 0; }
+  jq -r 'if type != "object" then "windows: unknown (no statusline record yet)" else
+    (["five_hour", "seven_day"] | map(if $__loc__ and (. as $k | ($ARGS.named | length) >= 0) then . else . end)) as $_ | . as $s
+    | "windows: seven_day " + (if $s.seven_day then "reported" else "not reported" end)
+      + ", five_hour " + (if $s.five_hour then "reported" else "not reported by Claude Code (the 5-hour condition of the router sees nothing)" end) end' "$SHAPE" 2>/dev/null \
+    || echo "windows: unknown (unreadable statusline record)"
+  exit 0
+fi
 if [ "$PROVIDER" = codex ]; then
   FILE=""; STATE="${MEGAVIBE_CODEX_STATE:-$MV/usage/codex-route-state.json}"; STALE=86400
 fi
@@ -106,7 +121,7 @@ codex_row() {
 }
 
 none() {   # no evidence: the normal band, in the shape of the mode asked for
-  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; forecast) printf '%s||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
+  case "$MODE" in advisory) ;; status-pace) printf 'normal||||||%s||||||\n' "$PROVIDER" ;; pace) printf '%s||||||\n' "$PROVIDER" ;; forecast) printf '%s|||||||\n' "$PROVIDER" ;; band|codex-band) echo normal ;; status) echo 'normal|||||' ;; balance) echo '-|' ;; *) printf 'normal|||\n' ;; esac
   exit 0
 }
 # Pace has no routing fallback: without jq it is silent, and never blocks a caller.
@@ -155,46 +170,55 @@ emit_pace() {
 
 # the target is a whole number from 1 to 999, else 95
 TARGET=95; case "${MEGAVIBE_USAGE_TARGET:-}" in ""|*[!0-9]*|0*) ;; *) [ "${#MEGAVIBE_USAGE_TARGET}" -le 4 ] && [ "$MEGAVIBE_USAGE_TARGET" -le 999 ] && TARGET=$MEGAVIBE_USAGE_TARGET ;; esac
-# Recent-pace forecast of the selected weekly window: pace|forecast|spare|spend_per_h|basis (all empty when unknown).
+# Forecast of the selected weekly window: pace|forecast|spare|spend_per_h|basis|forecast_7d (all empty when unknown).
+# Pace is a property of time, not of the window, so it exists from the first minute of a window: the used points of the
+# trailing H hours are summed across resets. Per weekly window: (highest reading up to now) minus (highest reading before the
+# horizon began); a window that began inside the horizon counts from 0. Row-to-row changes are never summed: readings come
+# from several sessions and lag by a point, which inflates such a sum several times over.
 emit_forecast() {
   LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" --argjson target "$TARGET" '
-    def sec: if . > 100000000000 then . / 1000 else . end;
+    . as $all
+    | def sec: if . > 100000000000 then . / 1000 else . end;
     def r1: . * 10 | round / 10;
     $decision.wk as $w | ($decision.mx.sd.r // 0) as $reset
-    | [ .[] | select(type == "object")
+    | [ $all[] | select(type == "object")
         | select((.t | type) == "number" and (.sd.p? | type) == "number" and (.sd.r? | type) == "number")
         | {t, p: .sd.p, r: (.sd.r | sec)}
-        | select((.r - $reset | fabs) <= 180)
-        | select(.t > 0 and .t <= $now and .t >= $reset - 604800 and .p >= 0 and .p <= 1000) ] | sort_by(.t) as $rows
-    | if $w == null or ($rows | length) == 0 or $w.stale or $reset <= $now or $reset > $now + 604800 then "||||"
+        | select(.t > 0 and .t <= $now and .p >= 0 and .p <= 1000 and .r > 0) ] as $rows
+    | [ $rows[] | select((.r - $reset | fabs) <= 180) ] | (map(.t) | max) as $lastt
+    | if $w == null or $lastt == null or $w.stale or $reset <= $now or $reset > $now + 604800 or $now - $lastt > $stale then "|||||"
       else
-        ($rows | last) as $last
-        | # like the straight line, nothing before 5 percent of the window has elapsed (8.4 h): whole-percent readings are too coarse
-        if $now - $last.t > $stale or $last.p != $w.used or ((604800 - ($reset - $now)) < 30240) then "||||"
-          else
-            ($rows | [.[] | .p] | . as $ps | [range(1; length) | select($ps[.] < $ps[. - 1])] | length == 0) as $mono
-            | ($reset - $now) / 3600 as $left
-            | ((604800 - ($reset - $now)) / 3600) as $el
-            # pace over the last h hours before now: from the earliest reading inside those h hours, 2 h or more before the newest
-            # (a sparse history must not stretch the 6 h pace over days); none such is unknown, never zero
-            | def pace($h):
-                if ($mono | not) then null
-                else ([$rows[] | select(.t >= $now - $h * 3600)] | first) as $b   # the earliest reading inside the horizon, never one from before it
-                  | if $b == null or $last.t - $b.t < 7200 then null else (($last.p - $b.p) / (($last.t - $b.t) / 3600)) end
-                end;
-              pace(6) as $r6 | pace(24) as $r24
-            | (if $el >= 1 then $w.used / $el else null end) as $wk
-            | (if $r6 != null and $r24 != null then {v: (0.6 * $r6 + 0.4 * $r24), b: "6h+24h"}
-               elif $r6 != null then {v: $r6, b: "6h"}
-               elif $r24 != null then {v: $r24, b: "24h"}
-               elif $wk != null then {v: $wk, b: "week"} else null end) as $pc
-            | if $pc == null then "||||"
-              else ([$pc.v, 0] | max) as $rate
-                | ($w.used + $rate * $left) as $fc
-                | [($rate * 1000 | round / 1000), ([$fc, 999] | min | r1), ($target - $fc | r1),
-                   (if $left > 0 then ([($target - $w.used) / $left, 0] | max | . * 100 | round / 100) else 0 end), $pc.b]
-                | map(tostring) | join("|")
-              end
+        (($reset - $now) / 3600) as $left
+        | def trailing($h):
+            ($now - $h * 3600) as $t0
+            | [ $rows | group_by((.r / 3600) | round)[]
+                | . as $rs | ($rs | map(.r) | max) as $wr | ($wr - 604800) as $ws
+                | [ $rs[] | select(.t >= $t0) ] as $in
+                | [ $rs[] | select(.t < $t0) | .p ] as $bf
+                | select(($in | length) > 1 or ($bf | length) > 0 or $ws >= $t0)   # a lone reading of an older window is no baseline
+                | select(($in | length) > 0)
+                | (if ($bf | length) > 0 then ($bf | max) elif $ws >= $t0 then 0 else ($in | map(.p) | min) end) as $sv
+                | { used: ([($rs | map(.p) | max) - $sv, 0] | max),
+                    first: ([ ($in | map(.t) | min), (if ($bf | length) > 0 or $ws >= $t0 then ([$t0, $ws] | max) else empty end) ] | min) } ] as $g
+            | if ($g | length) == 0 then null
+              else (($now - ($g | map(.first) | min)) / 3600) as $span
+                | if $span >= 0.5 then (($g | map(.used) | add) / $span) else null end
+              end;
+        trailing(6) as $r6 | trailing(24) as $r24 | trailing(168) as $r7
+        | ((604800 - ($reset - $now)) / 3600) as $el
+        | (if $el >= 1 then $w.used / $el else null end) as $wk
+        | (if $r6 != null and $r24 != null then {v: (0.6 * $r6 + 0.4 * $r24), b: "6h+24h"}
+           elif $r6 != null then {v: $r6, b: "6h"}
+           elif $r24 != null then {v: $r24, b: "24h"}
+           elif $r7 != null then {v: $r7, b: "7d"}
+           elif $wk != null then {v: $wk, b: "week"} else null end) as $pc
+        | if $pc == null then "|||||"
+          else ([$pc.v, 0] | max) as $rate
+            | ($w.used + $rate * $left) as $fc
+            | [($rate * 1000 | round / 1000), ([$fc, 999] | min | r1), ($target - $fc | r1),
+               (if $left > 0 then ([($target - $w.used) / $left, 0] | max | . * 100 | round / 100) else 0 end), $pc.b,
+               (if $r7 != null then ([$w.used + $r7 * $left, 999] | min | r1) else "" end)]
+            | map(tostring) | join("|")
           end
       end
   ' <<<"$HISTORY" 2>/dev/null
@@ -208,8 +232,8 @@ if [ "$MODE" = balance ]; then
   pk=""; [ "$PEEK" = 1 ] && pk="--peek"
   IFS='|' read -r cb cu cp _ cs _ _ _ _ clp crate crp _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" status-pace $pk 2>/dev/null) || true
   IFS='|' read -r xb xu xp _ xs _ _ _ _ xlp xrate xrp _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" status-pace $pk 2>/dev/null) || true
-  IFS='|' read -r _ _ _ cff _ _ _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" forecast 2>/dev/null) || true
-  IFS='|' read -r _ _ _ xff _ _ _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" forecast 2>/dev/null) || true
+  IFS='|' read -r _ _ _ cff _ _ _ _ < <(MEGAVIBE_ROUTER_PROVIDER=claude bash "$0" forecast 2>/dev/null) || true
+  IFS='|' read -r _ _ _ xff _ _ _ _ < <(MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" forecast 2>/dev/null) || true
   LC_ALL=C awk -v cff="${cff:-}" -v xff="${xff:-}" -v clp="${clp:-}" -v crp="${crp:-}" -v crate="${crate:-}" -v xlp="${xlp:-}" -v xrp="${xrp:-}" -v xrate="${xrate:-}" \
     -v cb="${cb:-}" -v cu="${cu:-}" -v cp="${cp:-}" -v xb="${xb:-}" -v xu="${xu:-}" -v xp="${xp:-}" -v cs="${cs:-0}" -v xs="${xs:-0}" -v prev="${MEGAVIBE_BALANCE_PREV:-}" '
   function estimate(label, used, proj, linear, recent, rate, stale, fc, text) {
@@ -355,7 +379,7 @@ if [ "$PEEK" = 0 ] && { [ ! -e "$STATE" ] || [ -f "$STATE" ]; } && [ "$NEWSTATE"
 fi
 
 if [ "$MODE" = forecast ]; then
-  FC=$(emit_forecast) || FC=""; [ -n "$FC" ] || FC="||||"
+  FC=$(emit_forecast) || FC=""; [ -n "$FC" ] || FC="|||||"
   printf '%s|%s|%s\n' "$PROVIDER" "$(jq -r '(.wk.used // "")' <<<"$DECISION")" "$FC"
   exit 0
 fi
