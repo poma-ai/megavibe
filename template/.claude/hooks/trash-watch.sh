@@ -23,15 +23,16 @@ INPUT=$(cat 2>/dev/null || echo "")
 [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = "0" ] && exit 0
 ATTENDANCE=$(printf '%s' "$INPUT" | jq -ers '
   select(length == 1) | .[0] |
-  select(type == "object" and
-  ((.agent_id // "") == "") and
-  ((.transcript_path // "") | test("/subagents/agent-[^/]+\\.jsonl$") | not)) |
-  if .is_interactive == false or .scheduled == true then "unattended"
+  select(type == "object") |
+  if (.agent_id // "") != "" or
+     ((.transcript_path // "") | test("/subagents/agent-[^/]+\\.jsonl$")) then "subagent"
+  elif .is_interactive == false or .scheduled == true then "unattended"
   elif .is_interactive == true then "attended"
   else "unknown" end
-' 2>/dev/null) || exit 0
+' 2>/dev/null) || ATTENDANCE=""
+[ "$ATTENDANCE" = "subagent" ] && exit 0
 if [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" != "1" ]; then
-  [ "$ATTENDANCE" = "unattended" ] && exit 0
+  [[ -z "$ATTENDANCE" || "$ATTENDANCE" = "unattended" ]] && exit 0
   # Remote Control bridge processes also use SDK entrypoints.
   if [ "$ATTENDANCE" = "unknown" ] && [ "${CLAUDE_CODE_ENVIRONMENT_KIND:-}" != "bridge" ]; then
     case "${CLAUDE_CODE_ENTRYPOINT:-}" in sdk*|ci|headless) exit 0 ;; esac

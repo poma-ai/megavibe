@@ -81,23 +81,17 @@ def append(path, rows):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def read(path, errors=None):
+def read(path):
     try:
-        with open(path, "rb") as f:
+        with open(path, encoding="utf-8") as f:
             out = []
             for line in f:
                 try:
-                    row = json.loads(line)
-                    if not isinstance(row, dict) or not isinstance(row.get("id", ""), str):
-                        raise ValueError("invalid record")
-                    out.append(row)
+                    out.append(json.loads(line))
                 except ValueError:
-                    if errors is not None:
-                        errors.append(True)
+                    pass
             return out
     except OSError:
-        if errors is not None:
-            errors.append(True)
         return []
 
 
@@ -405,21 +399,21 @@ def trash_one(o, opts, tdev, rows):
 def same_entry(r):
     """The recorded Trash entry, still there and still the same object."""
     tp = r.get("trash_path")
-    if not isinstance(tp, str) or not tp or "\0" in tp:
+    if not tp:
         return False
     try:
         st = os.lstat(tp)
-    except (OSError, UnicodeError):
+    except OSError:
         return False
     root = root_of(r)
     return ident_matches(r, st) and root_ok(root) \
         and os.path.realpath(os.path.dirname(tp)) == os.path.realpath(root)
 
 
-def ledger(errors=None):
+def ledger():
     """One record per id; a later line for the same id (a relocation) updates it."""
     by_id = {}
-    for r in read(LEDGER, errors):
+    for r in read(LEDGER):
         i = r.get("id")
         if i in by_id:
             by_id[i].update(r)
@@ -441,64 +435,15 @@ def reviewable():
     return out
 
 
-def entry_present(r, roots):
-    """Check identity anywhere in a pinned Trash. None means absence cannot be confirmed."""
-    root = root_of(r)
-    path = r.get("trash_path")
-    if (not isinstance(path, str) or "\0" in path or not r.get("id")
-            or type(r.get("dev")) is not int or r["dev"] < 0
-            or type(r.get("ino")) is not int or r["ino"] <= 0):
-        return None
-    parent, name = os.path.split(path)
-    if parent != root or name in ("", ".", ".."):
-        return None
-    if root not in roots:
-        roots[root] = None
-        if root_ok(root):
-            fd = None
-            try:
-                fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                # Claims may temporarily remove the entry from its recorded path.
-                if root == TRASH and os.path.lexists(CLAIM) and os.listdir(CLAIM):
-                    return None
-                devices_by_inode = {}
-                with os.scandir(fd) as entries:
-                    for entry in entries:
-                        if entry.name.startswith(".megavibe-empty-"):
-                            return None
-                        if root != TRASH and entry.name == ".megavibe-claim" and os.listdir(claim_dir(root)):
-                            return None
-                        st = os.lstat(entry.name, dir_fd=fd)
-                        devices_by_inode.setdefault(st.st_ino, set()).add(st.st_dev)
-                roots[root] = devices_by_inode
-            except (OSError, UnicodeError):
-                pass
-            finally:
-                if fd is not None:
-                    os.close(fd)
-    devices_by_inode = roots[root]
-    if devices_by_inode is None:
-        return None
-    # Keep an older record too if the same inode was restored and re-trashed under a new record.
-    devices = devices_by_inode.get(r["ino"], ())
-    return bool(devices) if r.get("trash_root") else r["dev"] in devices
-
-
 def pending():
-    """Return pending records and the number confirmed gone. The ledger stays append-only."""
     done = {r.get("id") for r in read(REVIEWED) if r.get("ok")}
-    errors, roots, out = [], {}, []
-    dropped = 0
-    for r in ledger(errors):
+    out = []
+    for r in ledger():
         if r.get("id") in done:
             continue
-        present = True if same_entry(r) else entry_present(r, roots)
-        r["in_trash"] = present is True
-        if present is False and not errors:
-            dropped += 1
-        else:
-            out.append(r)
-    return out, dropped
+        r["in_trash"] = same_entry(r)
+        out.append(r)
+    return out
 
 
 def droppable():
@@ -510,22 +455,16 @@ def droppable():
     return [r for r in ledger() if r.get("id") in ids and same_entry(r)]
 
 
-def total_mb(items):
-    return sum(max(r["kb"], 0) for r in items if type(r.get("kb")) is int) // 1024
-
-
-def drop_message(dropped):
-    return f"{dropped} stale record(s) dropped from unreviewed"
+def totals(items):
+    live = [r for r in items if r["in_trash"]]
+    return len(live), sum(max(r.get("kb", 0), 0) for r in live) // 1024
 
 
 def cmd_status():
-    items, dropped = pending()
-    live = [r for r in items if r["in_trash"]]
+    n, mb = totals(pending())
     threshold = ("30 items or 2048 MB (legacy mode)" if LEGACY_DUE else
                  f"{MB_MAX} MB or {AGE_MB} MB with an item older than {AGE_DAYS} days")
-    print(f"{len(live)} unreviewed item(s) in the Trash, {total_mb(live)} MB (review at {threshold})")
-    if dropped:
-        print(drop_message(dropped))
+    print(f"{n} unreviewed item(s) in the Trash, {mb} MB (review at {threshold})")
     stuck = []
     for d in claim_dirs():
         try:
@@ -562,11 +501,7 @@ def cmd_droppable(as_json):
 
 
 def cmd_pending(as_json, everything=False):
-    if everything:
-        records = reviewable()
-    else:
-        records, _ = pending()
-    items = [r for r in records if r["in_trash"]]
+    items = [r for r in (reviewable() if everything else pending()) if r["in_trash"]]
     if as_json:
         for r in items:
             print(json.dumps({k: r.get(k) for k in ("id", "ts", "path", "kind", "kb", "cwd", "session")}, ensure_ascii=False))
@@ -587,11 +522,10 @@ def cmd_nudge(peek=False):
     # cannot emit the same state or overwrite a newer snapshot with an older one.
     with open(NUDGE + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        items, dropped = pending()
-        live = [r for r in items if r["in_trash"]]
-        mb = total_mb(live)
+        live = [r for r in pending() if r["in_trash"]]
+        n, mb = totals(live)
         if LEGACY_DUE:
-            due = len(live) >= 30 or mb >= 2048
+            due = n >= 30 or mb >= 2048
         else:
             cutoff = time.time() - AGE_DAYS * 86400
             due = mb >= MB_MAX or (mb >= AGE_MB and any(recorded_time(r) < cutoff for r in live))
@@ -611,7 +545,7 @@ def cmd_nudge(peek=False):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(state, f)
             os.replace(tmp, NUDGE)
-    print(f"{len(live)} unreviewed item(s) in the Trash, {mb} MB. {drop_message(dropped)}.")
+    print(f"{n} unreviewed item(s) in the Trash, {mb} MB.")
 
 
 def backup_dir():
@@ -770,8 +704,7 @@ def cmd_group(path):
                      "ts": time.time(), "session": os.environ.get("CLAUDE_CODE_SESSION_ID", "")})
         print(f'{summary}  ({g.get("label", "")})')
     append(GROUPS, rows)
-    items, _ = pending()
-    unreviewed = {r["id"] for r in items}
+    unreviewed = {r["id"] for r in pending()}
     missing = [i for i in by_id if i not in seen and i in unreviewed]
     if missing:
         print(f"not grouped (still pending): {len(missing)} item(s)")

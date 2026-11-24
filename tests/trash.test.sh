@@ -236,7 +236,7 @@ check "a broken python3 falls back to rmtrash instead of failing every rm" '[ $r
 review_due_tests() {
 unset MEGAVIBE_TRASH_REVIEW_COUNT MEGAVIBE_TRASH_REVIEW_MB MEGAVIBE_TRASH_REVIEW_AGE_DAYS_MB MEGAVIBE_TRASH_REVIEW_AGE_DAYS
 unset MEGAVIBE_TRASH_REVIEW CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENTRYPOINT
-local PROJ="$T/proj" out status label attended kind entrypoint payload expected stamp
+local PROJ="$T/proj" out status label attended kind entrypoint payload expected stamp count
 mkdir -p "$PROJ/.agent" "$HOME/.megavibe/scripts" "$MEGAVIBE_TRASH_DIR" "$MEGAVIBE_TRASH_LEDGER_DIR"
 cp "$REPO/scripts/trash-review.py" "$HOME/.megavibe/scripts/"
 fixture() {
@@ -250,41 +250,34 @@ for i in range(count):
     path = root / ("foo 2" if i == 0 else str(i))
     path.touch()
     st = path.stat()
+    if len(sys.argv) > 4:
+        path.unlink()
     ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days if i == 0 else 0)
     rows.append(dict(id=str(i), path="/original/foo", trash_path=str(path), dev=st.st_dev,
                      ino=st.st_ino, kb=kb // count + int(i < kb % count), ts=ts.strftime("%Y-%m-%dT%H:%M:%S%z"), kind="file"))
-if len(sys.argv) > 4:
-    gone = root / "gone"
-    gone.touch()
-    st = gone.stat()
-    rows.append(dict(rows[0], id="gone", trash_path=str(gone), dev=st.st_dev, ino=st.st_ino, kb=2097152))
-    gone.unlink()
 Path(os.environ["MEGAVIBE_TRASH_LEDGER_DIR"], "ledger.jsonl").write_text("".join(json.dumps(r)+"\n" for r in rows))
 PYFIX
 }
-hook() { (cd "$PROJ" && printf '%s\n' "$1" | bash "$HOOKS/trash-watch.sh"); }
+hook() { (cd "$PROJ" && printf '%s' "$1" | bash "$HOOKS/trash-watch.sh"); }
 fixture 77 264 0
 check "77 items and 264 KB are quiet" '[ -z "$(hook "{}")" ]'
 check "count=0 restores legacy due thresholds" '[ -n "$(MEGAVIBE_TRASH_REVIEW_COUNT=0 $RV nudge --peek)" ]'
-fixture 1 102400 0 gone
-check "100 MB of young items is quiet even with a large vanished entry" '[ -z "$(hook "{}")" ]'
-status=$($RV status)
-check "status drops and reports a genuinely gone item" 'printf "%s\n" "$status" | grep -q "^1 unreviewed.*100 MB" && printf "%s\n" "$status" | grep -q "^1 stale record(s) dropped"'
-chmod 100 "$MEGAVIBE_TRASH_DIR"
-check "unreadable Trash does not drop records" 'status=$($RV status) && [[ "$status" != *dropped* ]]'
-chmod 700 "$MEGAVIBE_TRASH_DIR"
-printf '\377invalid\n' >> "$MEGAVIBE_TRASH_LEDGER_DIR/ledger.jsonl"
-check "an unreadable ledger record prevents dropping" '! $RV status | grep -q "dropped"'
-fixture 1 102400 8 gone
+for count in 77 5000; do
+  fixture "$count" 2097152 8 gone
+  status=$($RV status)
+  check "$count vanished entries contribute 0 items and 0 MB" '[[ "$status" == "0 unreviewed item(s) in the Trash, 0 MB ("* ]] && [ -z "$($RV pending --json)" ]'
+  check "$count vanished entries cannot make a review due" '[ -z "$($RV nudge --peek)" ] && [ -z "$(MEGAVIBE_TRASH_REVIEW_COUNT=0 $RV nudge --peek)" ]'
+done
+fixture 1 102400 0
+check "100 MB of young items is quiet" '[ -z "$(hook "{}")" ]'
+fixture 1 102400 8
+# Known gap inherited from main. See the follow-up ledger item "auto-drop with the safe rule".
 mv "$MEGAVIBE_TRASH_DIR/foo 2" "$MEGAVIBE_TRASH_DIR/foo renamed"
-status=$($RV status)
-check "a Trash rename keeps the record unreviewed and drops only the gone item" 'printf "%s\n" "$status" | grep -q "^1 unreviewed.*100 MB" && printf "%s\n" "$status" | grep -q "^1 stale record(s) dropped"'
-check "the renamed item still makes review due" '$RV nudge --peek | grep -q "^1 unreviewed"'
-mv "$MEGAVIBE_TRASH_DIR/foo renamed" "$MEGAVIBE_TRASH_DIR/foo 2"
-python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$MEGAVIBE_TRASH_DIR/foo 2" "$MEGAVIBE_TRASH_DIR/FOO 2"
-status=$($RV status)
-check "a case-only Trash rename keeps the record unreviewed" 'printf "%s\n" "$status" | grep -q "^1 unreviewed.*100 MB" && printf "%s\n" "$status" | grep -q "^1 stale record(s) dropped"'
-mv "$MEGAVIBE_TRASH_DIR/FOO 2" "$MEGAVIBE_TRASH_DIR/foo renamed"
+check "known gap: a rename inside the Trash leaves in_trash false" 'python3 -B -c '"'"'
+import runpy, sys
+records = runpy.run_path(sys.argv[1])["pending"]()
+sys.exit(not (len(records) == 1 and records[0]["in_trash"] is False))
+'"'"' "$REPO/scripts/trash-review.py" && [ -z "$($RV pending --json)" ]'
 mv "$MEGAVIBE_TRASH_DIR/foo renamed" "$MEGAVIBE_TRASH_DIR/foo 2"
 
 stamp="$MEGAVIBE_TRASH_LEDGER_DIR/nudge.json"
@@ -298,6 +291,14 @@ while IFS='|' read -r label attended kind entrypoint payload expected; do
     check "$label stays silent and leaves no stamp" '[ -z "$out" ] && [ ! -e "$stamp" ]'
   fi
 done <<'CASES'
+explicitly attended with empty stdin|1||||emits
+explicitly attended with invalid JSON|1|||{|emits
+explicitly unattended with empty stdin|0||||silent
+explicitly unattended with invalid JSON|0|||{|silent
+empty stdin without explicit attendance|||||silent
+invalid JSON without explicit attendance||||{|silent
+explicit attendance with agent ID|1|||{"agent_id":"x"}|silent
+explicit attendance with subagent transcript|1|||{"transcript_path":"/x/subagents/agent-a1.jsonl"}|silent
 explicit attendance with dontAsk|1|||{"permission_mode":"dontAsk"}|emits
 explicit attendance with SDK entrypoint|1||sdk-cli|{}|emits
 explicit attendance with unattended payload|1|||{"is_interactive":false,"scheduled":true}|emits
@@ -312,7 +313,7 @@ check "unattended and subagent hooks are silent" '[ -z "$(hook "{\"agent_id\":\"
 check "inferred unattended calls leave no stamp" '[ ! -e "$stamp" ]'
 out=$(hook '{"session_id":"one"}')
 check "the attended session emits and stamps after the unattended bridge" '[ -n "$out" ] && [ -s "$stamp" ]'
-check "100 MB with an eight-day-old entry is due and reports the drop" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"AskUserQuestion\") and contains(\"dropped\")" >/dev/null'
+check "100 MB with an eight-day-old entry is due and asks for review" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"AskUserQuestion\")" >/dev/null'
 check "the stamp silences another session at the same state" '[ -z "$(hook "{\"session_id\":\"two\"}")" ]'
 fixture 2 102400 8
 check "a new newest id re-arms the stamp in the same size bucket" '[ -n "$(hook "{\"session_id\":\"three\"}")" ]'
