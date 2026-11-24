@@ -7,6 +7,7 @@ trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" TMPDIR="$T/tmp" TEST_ROOT="$T/root" TEST_ALIAS="$T/alias" TEST_USER_TEMP="$T/user-temp"
 S="$HOME/.megavibe/scripts"
 OWN="$S/scratch-own.sh"
+TMP_HOOK="$REPO/template/.claude/hooks/scratch-tmpdir.sh"
 HOOK="$REPO/template/.claude/hooks/scratch-orphans.sh"
 mkdir -p "$S" "$T/bin" "$HOME/.claude/sessions" "$TMPDIR" "$T/.agent" "$T/outside/-project/00000000-0000-0000-0000-00000000000e"
 ln -s "$T/outside" "$TEST_ALIAS"
@@ -63,9 +64,12 @@ start=$TEST_START
 record() { jq -n --arg sid "$1" --argjson pid "$2" --arg start "$3" \
   '{sessionId:$sid,pid:$pid,procStart:$start}' > "${RECORD_DIR:-$HOME/.claude/sessions}/$1.json"; }
 # Give each regression its own scratch root so all failures are visible in one run.
-unset CLAUDE_CONFIG_DIR
+unset CLAUDE_CONFIG_DIR CLAUDE_ENV_FILE
+bash -c 'exit 0' &
+dead_pid=$!
+wait "$dead_pid"
 failures=0
-for scenario in timezone custom sibling invalid-start invalid-custom attribution; do
+for scenario in timezone custom sibling registered invalid-start invalid-custom invalid-dead invalid-dead-type invalid-registry-dir attribution; do
   (
     export TEST_ROOT="$T/$scenario" TEST_USER_TEMP="$T/$scenario-no-pytest"
     target="$TEST_ROOT/-project/$live"
@@ -76,10 +80,19 @@ for scenario in timezone custom sibling invalid-start invalid-custom attribution
         export CLAUDE_CONFIG_DIR="$T/custom-config"
         record_dir="$CLAUDE_CONFIG_DIR/sessions"
         ;;
+      registered|invalid-registry-dir) record_dir="$HOME/.config/claude-$scenario/sessions" ;;
       sibling) record_dir="$HOME/.claude-work/sessions" ;;
       attribution) target="$TEST_ROOT/-personal-notes/notes" ;;
     esac
     mkdir -p "$target" "$record_dir"
+    if [[ "$scenario" = registered || "$scenario" = invalid-registry-dir ]]; then
+      for attempt in 1 2; do
+        CLAUDE_CONFIG_DIR="${record_dir%/sessions}" MEGAVIBE_SESSION_TMPDIR=0 bash "$TMP_HOOK" </dev/null || exit 1
+      done
+      registry="$HOME/.megavibe/claude-config-dirs"
+      [[ $(grep -Fxc "${record_dir%/sessions}" "$registry") = 1 ]] || exit 1
+      python3 -c 'import os, stat, sys; assert stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600' "$registry" || exit 1
+    fi
     touch "$target/live-work"
     find "$TEST_ROOT" -exec touch -t 200001010000 {} +
     if [[ "$scenario" != attribution ]]; then
@@ -87,13 +100,34 @@ for scenario in timezone custom sibling invalid-start invalid-custom attribution
       if [[ "$scenario" = invalid-start || "$scenario" = invalid-custom ]]; then
         recorded='Mon Nov 31 15:31:16 2026'
       fi
-      RECORD_DIR="$record_dir" record "$live" "$$" "$recorded"
+      pid=$$
+      if [[ "$scenario" = invalid-dead* ]]; then
+        pid=$dead_pid
+        recorded=garbage
+      fi
+      RECORD_DIR="$record_dir" record "$live" "$pid" "$recorded"
+      if [[ "$scenario" = invalid-dead-type ]]; then
+        jq '.procStart = null' "$record_dir/$live.json" > "$T/record.json"
+        mv "$T/record.json" "$record_dir/$live.json"
+      fi
+      if [[ "$scenario" = invalid-registry-dir ]]; then
+        if [[ $(id -u) != 0 ]]; then
+          chmod 000 "${record_dir%/sessions}"
+        else
+          rm -r "$record_dir"
+          touch "$record_dir"  # A non-directory sessions path cannot be read.
+        fi
+      fi
       if [[ "$scenario" = invalid-* ]]; then
         mkdir "$TEST_ROOT/-project/$dead"
         touch -t 200001010000 "$TEST_ROOT/-project/$dead"
       fi
     fi
     "$OWN" sweep-orphans "$current" > /dev/null 2>"$T/$scenario.report"
+    if [[ "$scenario" = invalid-registry-dir ]]; then
+      chmod 700 "${record_dir%/sessions}"
+      rm -rf "${record_dir%/sessions}"
+    fi
     rm -f "$record_dir/$live.json"
     [[ -f "$target/live-work" ]] || exit 1
     case "$scenario" in
@@ -106,13 +140,46 @@ for scenario in timezone custom sibling invalid-start invalid-custom attribution
   ) || { echo "FAIL: $scenario orphan protection" >&2; failures=1; }
 done
 [[ "$failures" -eq 0 ]] || exit 1
+
+registry="$HOME/.megavibe/claude-config-dirs"
+trap_config="$HOME/.config/registry-trap"
+mkdir -p "$trap_config/sessions"
+printf '{' > "$trap_config/sessions/damaged.json"
+for scenario in symlink oversized too-many-lines garbage; do
+  rm -f "$registry"
+  case "$scenario" in
+    symlink)
+      printf '%s\n' "$trap_config" > "$T/registry-target"
+      ln -s "$T/registry-target" "$registry"
+      ;;
+    oversized)
+      { printf '%s\n' "$trap_config"; printf '%65536s\n' ''; } > "$registry"
+      ;;
+    too-many-lines)
+      { printf '%s\n' "$trap_config"; printf 'garbage\n%.0s' {1..256}; } > "$registry"
+      ;;
+    garbage)
+      printf 'relative\n%s/sessions/damaged.json\000\n\377\n' "$trap_config" > "$registry"
+      ;;
+  esac
+  cp "$registry" "$T/registry-before"
+  CLAUDE_CONFIG_DIR="$HOME/.config/claude-new" bash "$TMP_HOOK" </dev/null
+  if [[ "$scenario" = garbage ]]; then
+    grep -Fxq "$HOME/.config/claude-new" "$registry"
+  else
+    cmp "$T/registry-before" "$registry"
+    if [[ "$scenario" = symlink ]]; then [[ -L "$registry" ]]; fi
+  fi
+  TEST_ROOT="$T/attribution" TEST_USER_TEMP="$T/no-pytest" \
+    "$OWN" sweep-orphans "$current" >/dev/null 2>"$T/registry-report"
+  grep -Eq '/-personal-notes/notes: [0-9]+ kB$' "$T/registry-report"
+  if grep -q 'invalid session record' "$T/registry-report"; then exit 1; fi
+done
+rm "$registry"
 record "$live" "$$" "$start"
 record "$idle" "$$" "$start"
 record tempidle-session "$$" "$start"
 record "$reused" "$$" 'Thu Jan 1 00:00:00 1970'
-bash -c 'exit 0' &
-dead_pid=$!
-wait "$dead_pid"
 record "$dead" "$dead_pid" "$start"
 if [[ $(id -u) = 0 ]]; then
   mkdir "$P/$foreign" "$P/$foreign_child"

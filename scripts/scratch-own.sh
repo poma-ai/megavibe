@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Resolve the harness default centrally so a moved scratch volume stays visible.
 case "${1:-}" in
-  stamp|session-tmpdir|sweep-orphans) ;;
+  stamp|session-tmpdir|register-config-dir|sweep-orphans) ;;
   *)
     if [[ -z "${TMPDIR:-}" ]]; then
       TMPDIR=$("$(dirname "$0")/scratch-root.sh" base)
@@ -35,6 +35,9 @@ MARK = ".megavibe-review-copy"
 SID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
 UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 TEMP_MARK = ".sid"
+CONFIG_REGISTRY = "claude-config-dirs"
+CONFIG_BYTES = 64 * 1024
+CONFIG_LINES = 256
 MISSING = object()
 UID = os.getuid()
 REVIEW = ("claude-review-scratch.*", "codex-review-scratch.*")
@@ -592,6 +595,7 @@ def parse_process_start(value):
 
 
 def process_matches(pid, recorded):
+    started = None if recorded is MISSING else parse_process_start(recorded)
     accessible = True
     try:
         os.kill(pid, 0)
@@ -599,10 +603,7 @@ def process_matches(pid, recorded):
         return False
     except PermissionError:
         accessible = False
-    if recorded is MISSING:
-        return True
-    started = parse_process_start(recorded)
-    if not accessible:
+    if started is None or not accessible:
         return True
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
@@ -614,12 +615,66 @@ def process_matches(pid, recorded):
         return True
 
 
+def config_path(value):
+    if not value.startswith(b"/") or re.search(rb"[\x00-\x1f\x7f]", value):
+        return None
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def config_lines(data):
+    if len(data) <= CONFIG_BYTES and data.count(b"\n") <= CONFIG_LINES:
+        # Writers terminate each entry with a newline.
+        return data.split(b"\n")[:-1]
+    return []
+
+
+def register_config_dir():
+    home = os.environ["HOME"]
+    value = os.environ.get("CLAUDE_CONFIG_DIR", "").encode("utf-8")
+    config = config_path(value)
+    if (config is None or len(value) >= CONFIG_BYTES
+            or config.rstrip("/") == os.path.join(home, ".claude")):
+        return
+    with pinned_dir(home) as parent, child_dir(parent, ".megavibe", create=True) as root:
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+        fd = os.open(CONFIG_REGISTRY, flags, 0o600, dir_fd=root)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != UID or info.st_nlink != 1:
+                return
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.fchmod(fd, 0o600)
+            data = stream.read(CONFIG_BYTES + 1)
+            if value in config_lines(data):
+                return
+            addition = (b"\n" if data and not data.endswith(b"\n") else b"") + value + b"\n"
+            if (len(data) + len(addition) <= CONFIG_BYTES
+                    and data.count(b"\n") + addition.count(b"\n") <= CONFIG_LINES):
+                os.write(fd, addition)
+
+
+def registered_config_dirs(home):
+    try:
+        with pinned_dir(os.path.join(home, ".megavibe")) as root:
+            data = read_at(root, CONFIG_REGISTRY, CONFIG_BYTES + 1)
+    except (FileNotFoundError, NotADirectoryError, ValueError):
+        return []
+    return [path for line in config_lines(data) if (path := config_path(line)) is not None]
+
+
 def live_sessions(current):
     live = {current}
     invalid = 0
     limit = 1024 * 1024
     home = os.environ["HOME"]
     configs = [os.path.join(home, ".claude")]
+    try:
+        registered = set(registered_config_dirs(home))
+    except OSError:
+        return live, 1
     if os.environ.get("CLAUDE_CONFIG_DIR"):
         configs.append(os.environ["CLAUDE_CONFIG_DIR"])
     for name in os.listdir(home):
@@ -632,9 +687,13 @@ def live_sessions(current):
         except FileNotFoundError:
             continue
     seen = set()
-    for config in dict.fromkeys(configs):
-        path = os.path.realpath(os.path.join(config, "sessions"))
+    for config in dict.fromkeys([*configs, *sorted(registered)]):
         try:
+            if config in registered:
+                # An unreadable config can hide its sessions directory.
+                with directory(os.path.realpath(config)):
+                    pass
+            path = os.path.realpath(os.path.join(config, "sessions"))
             with directory(path) as fd:
                 info = os.fstat(fd)
                 identity = (info.st_dev, info.st_ino)
@@ -663,6 +722,8 @@ def live_sessions(current):
                         invalid += 1
         except FileNotFoundError:
             continue
+        except OSError:
+            invalid += 1
     return live, invalid
 
 
@@ -894,10 +955,13 @@ def scan_shared(cmd, sid, arg, stamp, paths, mounts, swept, report, short_dirs=(
 def main():
     script = sys.argv.pop(1)
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "register-config-dir" and len(sys.argv) == 2:
+        register_config_dir()
+        return 0
     if (cmd not in ("stamp", "register", "list", "other", "clean-unit", "clean-end",
                         "session-tmpdir", "sweep-orphans")
             or (cmd != "register" and len(sys.argv) > 3)):
-        raise ValueError("usage: scratch-own.sh stamp SID | register [SID] PATH... | list SID | other [N] | clean-unit SID | clean-end SID | session-tmpdir SID | sweep-orphans SID")
+        raise ValueError("usage: scratch-own.sh stamp SID | register [SID] PATH... | list SID | other [N] | clean-unit SID | clean-end SID | session-tmpdir SID | register-config-dir | sweep-orphans SID")
     arg = sys.argv[2] if len(sys.argv) >= 3 else ""
     if cmd == "other" and arg and not re.fullmatch(r"[0-9]{1,6}", arg):
         raise ValueError("invalid entry count")
