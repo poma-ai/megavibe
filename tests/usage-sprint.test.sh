@@ -267,6 +267,17 @@ check 'five-hour 60 then 63 five minutes later: 5h-hot (a three-point rise is ra
 printf '{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":79,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 363))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(/bin/bash "$UR" sprint-advice)
 check 'the advice shows the five-hour projection with its decimal (84.9) and a reserve for it' '[[ "$o" == *"projected at 84.9%"* ]] && [[ "$o" == *"one point in reserve there"* ]]'
+# a rise of two points or more is rated over its measured interval (at least a minute): 50 seven minutes ago, 50 two minutes ago, 53 now
+printf '{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":50,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":50,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":53,"r":%s}}\n' \
+  "$((NOW - 420))" "$R2" "$FR" "$((NOW - 120))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'five-hour 50, 50, then 53 two minutes later: 5h-hot (the measured interval, not the 5-minute floor)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# an outer SIGALRM (the hook deadline) while a provider call is running must not leave the provider temp file behind
+mkdir -p "$T/tmpx" "$T/shim2"; REALFIND2=$(command -v find)
+printf '#!/bin/sh\nsleep 1.5\nexec "%s" "$@"\n' "$REALFIND2" > "$T/shim2/find"; chmod +x "$T/shim2/find"
+rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"
+( cd "$T"; env -u MEGAVIBE_NOW TMPDIR="$T/tmpx" PATH="$T/shim2:$PATH" MEGAVIBE_CODEX_HOME="$T/codex2" /bin/bash "$UR" sprint-advice >/dev/null 2>&1 & p=$!; sleep 0.8; kill -ALRM $p 2>/dev/null; wait $p 2>/dev/null ) 2>/dev/null
+sleep 2
+check 'an outer SIGALRM while a provider call runs leaves no usage-sprint-adv temp file behind' '[ "$(ls "$T/tmpx" 2>/dev/null | grep -c usage-sprint-adv)" = 0 ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)

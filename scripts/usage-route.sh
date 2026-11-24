@@ -305,6 +305,8 @@ if [ "$MODE" = sprint-advice ]; then
     # each provider's call is bounded on its own (2 s); one that cannot run or times out is reported as unknown,
     # never as "not sprinting", so a slow Codex read cannot hide that Claude's sprint ended (or the reverse)
     pf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint-adv.XXXXXX" 2>/dev/null) || pf=""
+    # the temp file goes away on any exit, including the caller's outer alarm (SIGALRM), term or interrupt
+    trap '[ -z "${pf:-}" ] || rm -f "$pf"; exit 142' ALRM TERM INT
     pp=""; st=""
     if [ -n "$pf" ] && command -v perl >/dev/null 2>&1 && ( MEGAVIBE_ROUTER_PROVIDER=$p perl -e 'alarm 2; exec @ARGV' bash "$0" sprint >"$pf" 2>/dev/null </dev/null; exit $? ) 2>/dev/null; then
       IFS='|' read -r pp st hl u fc spare spend _ _ fhu <"$pf" || true
@@ -515,7 +517,8 @@ if [ "$MODE" = sprint ]; then
           | select(($H.fh.p - $L.fh.p) > 0)
           # whole-percent readings: a rise of 2 points or more is rated one point higher (like the weekly burst); a single one-point
           # tick is noise and rated as it reads
-          | ((if ($H.fh.p - $L.fh.p) >= 2 then ($H.fh.p - $L.fh.p + 1) else ($H.fh.p - $L.fh.p) end) / ([($H.t - $L.t), 300] | max) * (1800 + ([($now - $H.t), 0] | max)))] | max) // 0' <<<"$HISTORY" 2>/dev/null)
+          | (if ($H.fh.p - $L.fh.p) >= 2 then (($H.fh.p - $L.fh.p + 1) / ([($H.t - $L.t), 60] | max)) else (($H.fh.p - $L.fh.p) / ([($H.t - $L.t), 300] | max)) end)
+          | . * (1800 + ([($now - $H.t), 0] | max))] | max) // 0' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"
