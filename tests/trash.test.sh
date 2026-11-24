@@ -137,15 +137,15 @@ bash "$TR" -f; rc=$?
 check "-f, no operands: 0" '[ $rc = 0 ]'
 echo l > "$W/lf"; MEGAVIBE_TRASH_LEDGER_DIR="$W/lf-not-a-dir" bash -c 'touch "$MEGAVIBE_TRASH_LEDGER_DIR"; bash "$0" "$1"' "$TR" "$W/lf" 2>/dev/null; rc=$?
 check "ledger failure keeps the delete's exit status" '[ $rc = 0 ] && [ ! -e "$W/lf" ]'
-export MEGAVIBE_TRASH_REVIEW_COUNT=1
-echo k > "$W/k1"; bash "$TR" "$W/k1"; $RV nudge >/dev/null
+export MEGAVIBE_TRASH_REVIEW_MB=1
+dd if=/dev/zero of="$W/k1" bs=1048576 count=1 2>/dev/null; bash "$TR" "$W/k1"; $RV nudge >/dev/null
 printf '{"groups":[{"label":"all","ids":[%s]}]}' "$($RV pending --json | python3 -c 'import json,sys; print(",".join(json.dumps(json.loads(l)["id"]) for l in sys.stdin))')" > "$T/all.json"
 GALL=$($RV group "$T/all.json" | sed -n 1p | sed 's/^\[\(G[0-9a-f]*\)\].*/\1/')
 dec "$GALL" keep >/dev/null
 $RV nudge >/dev/null
-echo k > "$W/k2"; bash "$TR" "$W/k2"
+dd if=/dev/zero of="$W/k2" bs=1048576 count=1 2>/dev/null; bash "$TR" "$W/k2"
 check "re-armed after a review" '[ -n "$($RV nudge)" ]'
-unset MEGAVIBE_TRASH_REVIEW_COUNT
+unset MEGAVIBE_TRASH_REVIEW_MB
 
 # 2c. Round-4 regressions.
 echo v > "$W/victim"
@@ -172,12 +172,12 @@ check "cross-volume: a symlink is copied as a symlink and the source is kept" '[
 mkdir -p "$MEGAVIBE_TRASH_LEDGER_DIR/claim"; echo s > "$MEGAVIBE_TRASH_LEDGER_DIR/claim/stray"
 check "status reports stranded claims" '$RV status | grep -q "stranded"'
 /bin/rm -f "$MEGAVIBE_TRASH_LEDGER_DIR/claim/stray"
-export MEGAVIBE_TRASH_REVIEW_COUNT=1
-echo a > "$W/na"; bash "$TR" "$W/na"; $RV nudge >/dev/null
+export MEGAVIBE_TRASH_REVIEW_MB=1
+dd if=/dev/zero of="$W/na" bs=1048576 count=1 2>/dev/null; bash "$TR" "$W/na"; $RV nudge >/dev/null
 GNA=$(grp "na" "$($RV pending --json | ids "/work/na")" | cut -f1); dec "$GNA" keep >/dev/null
-echo b > "$W/nb"; bash "$TR" "$W/nb"
-check "a review between two deletes does not hide the next crossing" '[ -n "$($RV nudge)" ]'
-unset MEGAVIBE_TRASH_REVIEW_COUNT
+dd if=/dev/zero of="$W/nb" bs=1048576 count=1 2>/dev/null; bash "$TR" "$W/nb"
+check "a review between two deletes does not hide the next due state" '[ -n "$($RV nudge)" ]'
+unset MEGAVIBE_TRASH_REVIEW_MB
 
 # 2d. Round-5 regressions.
 bash "$TR" -rf ""; rc=$?
@@ -232,35 +232,59 @@ mkdir -p "$T/badpy"; printf '#!/bin/sh\nexit 127\n' > "$T/badpy/python3"; chmod 
 echo bp > "$W/bp"; PATH="$T/badpy:$PATH" bash "$TR" "$W/bp"; rc=$?
 check "a broken python3 falls back to rmtrash instead of failing every rm" '[ $rc = 0 ] && [ ! -e "$W/bp" ]'
 
-# 3. Nudge: once per crossing, re-armed after a review.
-export MEGAVIBE_TRASH_REVIEW_COUNT=2
-for i in 1 2; do echo $i > "$W/n$i"; done; bash "$TR" "$W/n1" "$W/n2"
-check "nudges at the threshold" '[ -n "$($RV nudge)" ]'
-check "silent the second time" '[ -z "$($RV nudge)" ]'
-echo 3 > "$W/n3"; bash "$TR" "$W/n3"
-check "silent below the next crossing" '[ -z "$($RV nudge)" ]'
-echo 4 > "$W/n4"; bash "$TR" "$W/n4"
-check "nudges again after another threshold" '[ -n "$($RV nudge)" ]'
-
-# 4. The hook: main thread only, JSON with the procedure.
-PROJ="$T/proj"; mkdir -p "$PROJ/.agent" "$T/home/.megavibe/scripts"
-cp "$REPO/scripts/trash-review.py" "$T/home/.megavibe/scripts/"
-echo 5 > "$W/n5"; echo 6 > "$W/n6"; bash "$TR" "$W/n5" "$W/n6"
-out=$(cd "$PROJ" && echo '{"agent_id":"x"}' | HOME="$T/home" bash "$HOOKS/trash-watch.sh")
-check "hook silent for a subagent" '[ -z "$out" ]'
-out=$(cd "$PROJ" && echo '{}' | HOME="$T/home" bash "$HOOKS/trash-watch.sh")
-check "hook emits the review procedure" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | test(\"AskUserQuestion\")" >/dev/null'
-out=$(cd "$PROJ" && echo '{}' | HOME="$T/home" bash "$HOOKS/trash-watch.sh")
-check "hook silent once nudged" '[ -z "$out" ]'
-out=$(cd "$PROJ" && echo '{"session_id":"s-one"}' | HOME="$T/home" bash "$HOOKS/trash-watch.sh")
-check "a review deferred by one session is raised again in the next" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext" >/dev/null'
-out=$(cd "$PROJ" && echo '{"session_id":"s-one"}' | HOME="$T/home" bash "$HOOKS/trash-watch.sh")
-check "and only once in that session" '[ -z "$out" ]'
-out=$(cd "$PROJ" && echo '{"session_id":"s-two"}' | HOME="$T/home" bash "$HOOKS/trash-watch.sh")
-check "a third session is told too" '[ -n "$out" ]'
-err=$(cd "$PROJ" && echo '{}' | HOME="$T/home" MEGAVIBE_TRASH_LEDGER_DIR="$T/l2" bash -c 'mkdir -p "$MEGAVIBE_TRASH_LEDGER_DIR"; echo "{}" > "$MEGAVIBE_TRASH_LEDGER_DIR/ledger.jsonl"; bash "$0"; bash "$0"' "$HOOKS/trash-watch.sh" 2>&1 >/dev/null)
-check "hook quiet on stderr before the first review" '[ -z "$err" ]'
-unset MEGAVIBE_TRASH_REVIEW_COUNT
+# 3. Review due thresholds and the machine-wide hook stamp.
+review_due_tests() {
+unset MEGAVIBE_TRASH_REVIEW_COUNT MEGAVIBE_TRASH_REVIEW_MB MEGAVIBE_TRASH_REVIEW_AGE_DAYS_MB MEGAVIBE_TRASH_REVIEW_AGE_DAYS
+local PROJ="$T/proj" out
+mkdir -p "$PROJ/.agent" "$HOME/.megavibe/scripts" "$MEGAVIBE_TRASH_DIR" "$MEGAVIBE_TRASH_LEDGER_DIR"
+cp "$REPO/scripts/trash-review.py" "$HOME/.megavibe/scripts/"
+fixture() {
+  python3 - "$@" <<'PYFIX'
+import datetime, json, os, sys
+from pathlib import Path
+root = Path(os.environ["MEGAVIBE_TRASH_DIR"])
+rows = []
+count, kb, days = map(int, sys.argv[1:4])
+for i in range(count):
+    path = root / ("foo 2" if i == 0 else str(i))
+    path.touch()
+    st = path.stat()
+    ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days if i == 0 else 0)
+    rows.append(dict(id=str(i), path="/original/foo", trash_path=str(path), dev=st.st_dev,
+                     ino=st.st_ino, kb=kb // count + int(i < kb % count), ts=ts.strftime("%Y-%m-%dT%H:%M:%S%z"), kind="file"))
+if len(sys.argv) > 4:
+    gone = root / "gone"
+    gone.touch()
+    st = gone.stat()
+    rows.append(dict(rows[0], id="gone", trash_path=str(gone), dev=st.st_dev, ino=st.st_ino, kb=2097152))
+    gone.unlink()
+Path(os.environ["MEGAVIBE_TRASH_LEDGER_DIR"], "ledger.jsonl").write_text("".join(json.dumps(r)+"\n" for r in rows))
+PYFIX
+}
+hook() { (cd "$PROJ" && printf '%s\n' "$1" | bash "$HOOKS/trash-watch.sh"); }
+fixture 77 264 0
+check "77 items and 264 KB are quiet" '[ -z "$(hook "{}")" ]'
+check "count=0 restores legacy due thresholds" '[ -n "$(MEGAVIBE_TRASH_REVIEW_COUNT=0 $RV nudge --peek)" ]'
+fixture 1 102400 0 gone
+check "100 MB of young items is quiet even with a large vanished entry" '[ -z "$(hook "{}")" ]'
+check "status counts the collision-renamed entry and reports the dropped record" '$RV status | grep -q "^1 unreviewed.*100 MB" && $RV status | grep -q "1 .*dropped"'
+chmod 100 "$MEGAVIBE_TRASH_DIR"
+check "unreadable Trash does not drop records" '! $RV status | grep -q "dropped"'
+chmod 700 "$MEGAVIBE_TRASH_DIR"
+printf '\377invalid\n' >> "$MEGAVIBE_TRASH_LEDGER_DIR/ledger.jsonl"
+check "an unreadable ledger record prevents dropping" '! $RV status | grep -q "dropped"'
+fixture 1 102400 8 gone
+check "unattended and subagent hooks are silent" '[ -z "$(hook "{\"agent_id\":\"x\"}")" ] && [ -z "$(CLAUDE_CODE_ENTRYPOINT=sdk-cli hook "{}")" ] && [ -z "$(hook "{\"is_interactive\":false}")" ] && [ -z "$(CLAUDE_CODE_SESSION_ATTENDED=0 hook "{}")" ] && [ -z "$(hook "{\"scheduled\":true}")" ]'
+out=$(hook '{"session_id":"one"}')
+check "100 MB with an eight-day-old entry is due and reports the drop" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"AskUserQuestion\") and contains(\"dropped\")" >/dev/null'
+check "the stamp silences another session at the same state" '[ -z "$(hook "{\"session_id\":\"two\"}")" ]'
+fixture 2 102400 8
+check "a new newest id re-arms the stamp in the same size bucket" '[ -n "$(hook "{\"session_id\":\"three\"}")" ]'
+fixture 2 1048576 0
+check "1 GB of young items is due" '[ -n "$(hook "{}")" ]'
+}
+HOME="$T/due-home" MEGAVIBE_TRASH_DIR="$T/due-home/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$T/due-home/.megavibe/trash" review_due_tests
+mkdir -p "$T/home/.megavibe/scripts"
 
 # 5. Real-delete guard.
 bd() { printf '%s' "$1" | jq -Rs '{tool_input:{command:.}}' | env "${@:2}" bash "$HOOKS/block-dangerous-bash.sh" 2>/dev/null; echo $?; }
@@ -900,6 +924,30 @@ forge() {  # forge <home> <id> <trash_path> <"dev ino"> <original path> [decisio
     jq -nc --arg id "$2" --arg a "$6" '{id:$id, ts:"t", action:$a, ok:true, detail:"forged"}' >> "$h/.megavibe/trash/reviewed.jsonl"
   fi
 }
+H="$T/permissions"; mk_home "$H"
+mkdir -p "$H/.Trash/drop/sub" "$H/.Trash/keep/sub" "$H/outside"
+echo data > "$H/.Trash/drop/sub/file"
+echo data > "$H/.Trash/keep/sub/file"
+echo outside > "$H/outside/file"
+ln -s "$H/outside" "$H/.Trash/drop/link"
+echo protected > "$H/.Trash/immutable"
+echo protected > "$H/.Trash/immutable-keep"
+chmod 500 "$H/.Trash/drop" "$H/.Trash/drop/sub" "$H/.Trash/keep/sub" "$H/outside"
+chflags uchg "$H/.Trash/immutable" "$H/.Trash/immutable-keep" "$H/.Trash/drop/sub/file"
+forge "$H" perm-drop "$H/.Trash/drop" "$(oid "$H/.Trash/drop")" "$H/drop" droppable
+forge "$H" perm-keep "$H/.Trash/keep" "$(oid "$H/.Trash/keep")" "$H/keep" keep
+forge "$H" perm-flag "$H/.Trash/immutable" "$(oid "$H/.Trash/immutable")" "$H/immutable" droppable
+forge "$H" perm-flagkeep "$H/.Trash/immutable-keep" "$(oid "$H/.Trash/immutable-keep")" "$H/immutable-keep" keep
+forge "$H" perm-outside "$H/outside" "$(oid "$H/outside")" "$H/elsewhere" droppable
+run_in "$H" >/dev/null 2>&1
+check "droppable read-only tree and immutable file are removed" '[ ! -e "$H/.Trash/drop" ] && [ ! -e "$H/.Trash/immutable" ]'
+check "kept read-only directory and immutable file stay protected" '[ "$(stat -f %Lp "$H/.Trash/keep/sub")" = 500 ] && ls -lO "$H/.Trash/immutable-keep" | grep -q uchg'
+check "outside entry and symlink target are untouched" '[ "$(stat -f %Lp "$H/outside")" = 500 ] && [ "$(cat "$H/outside/file")" = outside ]'
+chflags nouchg "$H/.Trash/immutable-keep"
+[ ! -e "$H/.Trash/immutable" ] || chflags nouchg "$H/.Trash/immutable"
+[ ! -e "$H/.Trash/drop/sub/file" ] || chflags nouchg "$H/.Trash/drop/sub/file"
+chmod -R u+w "$H"
+
 H="$T/th"; mk_home "$H"
 te()  { run_in "$H" "$@"; }
 tr_() { env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" bash "$TR" "$@"; }
@@ -960,12 +1008,12 @@ check "...and it is not droppable any more" '[ $rc = 0 ] && printf "%s" "$out" |
 # a failing delete is reported, recorded as not ok, the rest of that entry keeps its name, and the next item still goes
 mkdir -p "$TW/stuck/sub"; echo s > "$TW/stuck/sub/f"; echo n > "$TW/next"
 tr_ -r "$TW/stuck" "$TW/next"; mark_ droppable "/stuck" "/next"
-STK=$(ls "$H/.Trash" | grep '^stuck mv-'); chmod 500 "$H/.Trash/$STK/sub"
+STK=$(ls "$H/.Trash" | grep '^stuck mv-'); chmod 000 "$H/.Trash/$STK/sub"
 out=$(te 2>&1); rc=$?
 check "a delete that fails: exit 1, the next item still goes" '[ $rc = 1 ] && ! ls "$H/.Trash" | grep -q "^next mv-" && printf "%s" "$out" | grep -q "emptied=1 failed=1"'
 check "a failed delete is recorded ok:false and the rest gets its name back" 'jq -e "select(.action==\"emptied\" and .ok==false)" "$H/.megavibe/trash/reviewed.jsonl" >/dev/null && [ -d "$H/.Trash/$STK" ]'
 check "a failed delete leaves no quarantine behind" '! ls -A "$H/.Trash" | grep -q "^.megavibe-empty-"'
-chmod -R u+w "$H/.Trash/$STK" 2>/dev/null
+chmod u+rwx "$H/.Trash/$STK/sub"
 # the failed row is not a decision: the item is still droppable and goes once the cause is fixed
 rv_ droppable | grep -q "/stuck$"; rcd=$?
 te >/dev/null 2>&1
@@ -985,8 +1033,8 @@ te --all --yes >/dev/null 2>&1; rc=$?; check "--all --yes: usage error 2" '[ $rc
 te -h >/dev/null 2>&1; rc=$?; check "-h: usage error 2" '[ $rc = 2 ]'
 te --dry-run >/dev/null 2>&1; rc=$?; check "--dry-run does not exist: 2" '[ $rc = 2 ]'
 # the review procedure offers the script, only in its asked spelling, and never --all unprompted
-mkdir -p "$T/projg/.agent"; echo h > "$TW/h1"; tr_ "$TW/h1"
-out=$(cd "$T/projg" && echo '{"session_id":"s-greenlight"}' | env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" MEGAVIBE_TRASH_REVIEW_COUNT=1 bash "$HOOKS/trash-watch.sh")
+mkdir -p "$T/projg/.agent"; dd if=/dev/zero of="$TW/h1" bs=1048576 count=1 2>/dev/null; tr_ "$TW/h1"
+out=$(cd "$T/projg" && echo '{"session_id":"s-greenlight"}' | env HOME="$H" MEGAVIBE_TRASH_DIR="$H/.Trash" MEGAVIBE_TRASH_LEDGER_DIR="$H/.megavibe/trash" MEGAVIBE_TRASH_REVIEW_MB=1 bash "$HOOKS/trash-watch.sh")
 check "the review procedure ends with the greenlight step" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | test(\"6\\\\. If .*trash-empty\\\\.sh.*Never add .*--all\")" >/dev/null'
 check "the review procedure no longer says only the user empties the Trash" '! printf "%s" "$out" | jq -r ".hookSpecificOutput.additionalContext" | grep -q "only the user empties it"'
 

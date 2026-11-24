@@ -430,9 +430,45 @@ def rename_excl(src, sfd, dst, dfd):
         raise OSError(e, os.strerror(e), dst)
 
 
-def rm_at(dfd, name):
+def repair_at(dfd, name, st):
+    """Make an identity-checked entry removable through a no-follow descriptor."""
+    directory = stat.S_ISDIR(st.st_mode)
+    immutable = getattr(st, "st_flags", 0) & stat.UF_IMMUTABLE
+    bits = stat.S_IWUSR | stat.S_IXUSR
+    if not (directory and st.st_mode & bits != bits
+            or immutable and (directory or stat.S_ISREG(st.st_mode))):
+        return
+    flags = getattr(os, "O_EVTONLY", os.O_RDONLY | os.O_NONBLOCK)
+    fd = os.open(name, flags | os.O_NOFOLLOW, dir_fd=dfd)
+    try:
+        current = os.fstat(fd)
+        if (current.st_dev, current.st_ino) != (st.st_dev, st.st_ino):
+            raise OSError(errno.ESTALE, "changed while being emptied", name)
+        current_flags = getattr(current, "st_flags", 0)
+        if current_flags & stat.UF_IMMUTABLE:
+            # Flags belong to the inode. An extra regular-file link may live outside Trash.
+            if not directory and current.st_nlink != 1:
+                raise OSError(errno.EPERM, "immutable file has other hard links", name)
+            mask = current_flags & ~stat.UF_IMMUTABLE
+            fchflags = ctypes.CDLL(None, use_errno=True).fchflags
+            if fchflags(fd, ctypes.c_uint(mask)) != 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error), name)
+        if directory:
+            mode = stat.S_IMODE(current.st_mode)
+            if mode & bits != bits:
+                os.fchmod(fd, mode | bits)
+    finally:
+        os.close(fd)
+
+
+def rm_at(dfd, name, repair_dev=None):
     """Delete the entry `name` under dfd without ever following a symlink."""
     st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+    if repair_dev is not None:
+        if st.st_dev != repair_dev:
+            raise OSError(errno.EXDEV, "entry is on another device", name)
+        repair_at(dfd, name, st)
     if not stat.S_ISDIR(st.st_mode):
         os.unlink(name, dir_fd=dfd)
         return
@@ -444,7 +480,7 @@ def rm_at(dfd, name):
             raise OSError(errno.ESTALE, "changed while being emptied", name)
         for ent in list(os.scandir(fd)):
             try:
-                rm_at(fd, ent.name)
+                rm_at(fd, ent.name, repair_dev)
             except (OSError, RecursionError) as e:
                 first = first or e
     finally:
@@ -523,7 +559,7 @@ class Trash:
         except OSError:
             return False
 
-    def remove(self, name, want):
+    def remove(self, name, want, repair=False):
         """Claim `name` by an atomic rename, check it is the object `want` (dev, ino) AFTER the claim,
         then delete it. Returns (state, detail): ok / gone (it vanished before the claim) / skip (nothing
         was deleted) / fail. A signal (SystemExit) or any other error puts the entry back before it propagates."""
@@ -532,6 +568,13 @@ class Trash:
         slot = "%06d" % self.n
         try:
             try:
+                if repair:
+                    before = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+                    if ((want[0] is not None and before.st_dev != want[0]) or before.st_ino != want[1]
+                            or before.st_dev != os.fstat(self.fd).st_dev):
+                        return "skip", "replaced since it was marked droppable"
+                    # Moving a directory into quarantine updates its parent link. Repair it first.
+                    repair_at(self.fd, name, before)
                 os.rename(name, slot, src_dir_fd=self.fd, dst_dir_fd=qfd)
             except OSError as e:
                 return ("gone" if e.errno == errno.ENOENT else "fail"), "claim failed: " + e.strerror
@@ -545,7 +588,7 @@ class Trash:
                 return "skip", "replaced since it was marked (the object now there was %s)" % where
             _hook("after_claim", home=self.home, tfd=self.fd, name=name, slot=slot, qfd=qfd)
             try:
-                rm_at(qfd, slot)
+                rm_at(qfd, slot, got.st_dev if repair else None)
             except (OSError, RecursionError) as e:
                 self.put_back(slot, qfd, name)           # what is left gets its name back for a later run
                 return "fail", str(getattr(e, "strerror", None) or e)
@@ -688,7 +731,7 @@ def main():
                         matches = [r for r in recs if r.get("ino") == ident[1] and ((r.get("trash_root") == trash.path) if trash.volume else (r.get("dev") == ident[0]))]
                         drop = [r for r in matches if latest.get(r.get("id")) == "droppable"]
                         if drop and conflict(drop[0], recs, latest) is None:
-                            rm_at(qfd, slot)
+                            rm_at(qfd, slot, os.fstat(trash.fd).st_dev)
                             emptied += 1
                             shown = show(os.path.basename(str(drop[0].get("trash_path") or slot)))
                             print("emptied: %s (finished after an interrupted run)" % shown)
@@ -797,7 +840,7 @@ def main():
             done(name, "skip", "replaced since it was marked droppable", [])
             return
         _hook("after_check", home=home, tfd=tr.fd, name=name)
-        state, detail = tr.remove(name, (None if volume else c["dev"], c["ino"]))
+        state, detail = tr.remove(name, (None if volume else c["dev"], c["ino"]), repair=True)
         done(name, state, detail, [c])
 
     try:
