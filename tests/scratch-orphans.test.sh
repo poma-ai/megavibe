@@ -145,7 +145,7 @@ registry="$HOME/.megavibe/claude-config-dirs"
 trap_config="$HOME/.config/registry-trap"
 mkdir -p "$trap_config/sessions"
 printf '{' > "$trap_config/sessions/damaged.json"
-for scenario in symlink oversized too-many-lines garbage; do
+for scenario in symlink oversized too-many-lines torn garbage; do
   rm -f "$registry"
   case "$scenario" in
     symlink)
@@ -158,13 +158,16 @@ for scenario in symlink oversized too-many-lines garbage; do
     too-many-lines)
       { printf '%s\n' "$trap_config"; printf 'garbage\n%.0s' {1..256}; } > "$registry"
       ;;
+    torn)
+      printf '%s\n%s' "$trap_config" "$HOME/.config/claude-torn" > "$registry"
+      ;;
     garbage)
       printf 'relative\n%s/sessions/damaged.json\000\n\377\n' "$trap_config" > "$registry"
       ;;
   esac
   cp "$registry" "$T/registry-before"
   CLAUDE_CONFIG_DIR="$HOME/.config/claude-new" bash "$TMP_HOOK" </dev/null
-  if [[ "$scenario" = garbage ]]; then
+  if [[ "$scenario" = garbage || "$scenario" = torn ]]; then
     grep -Fxq "$HOME/.config/claude-new" "$registry"
   else
     cmp "$T/registry-before" "$registry"
@@ -172,8 +175,13 @@ for scenario in symlink oversized too-many-lines garbage; do
   fi
   TEST_ROOT="$T/attribution" TEST_USER_TEMP="$T/no-pytest" \
     "$OWN" sweep-orphans "$current" >/dev/null 2>"$T/registry-report"
-  grep -Eq '/-personal-notes/notes: [0-9]+ kB$' "$T/registry-report"
-  if grep -q 'invalid session record' "$T/registry-report"; then exit 1; fi
+  if [[ "$scenario" = garbage ]]; then
+    grep -Eq '/-personal-notes/notes: [0-9]+ kB$' "$T/registry-report"
+    if grep -q 'invalid session record' "$T/registry-report"; then exit 1; fi
+  else
+    # An untrustworthy registry (symlink, over its limits) fails safe: the session sweep is skipped.
+    grep -q 'invalid session record' "$T/registry-report"
+  fi
 done
 rm "$registry"
 record "$live" "$$" "$start"

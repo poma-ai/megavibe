@@ -627,8 +627,10 @@ def config_path(value):
 def config_lines(data):
     if len(data) <= CONFIG_BYTES and data.count(b"\n") <= CONFIG_LINES:
         # Writers terminate each entry with a newline.
+        if data and not data.endswith(b"\n"):
+            raise ValueError("unterminated registry entry")
         return data.split(b"\n")[:-1]
-    return []
+    raise ValueError("registry over its limits")
 
 
 def register_config_dir():
@@ -648,8 +650,11 @@ def register_config_dir():
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             os.fchmod(fd, 0o600)
             data = stream.read(CONFIG_BYTES + 1)
-            if value in config_lines(data):
-                return
+            try:
+                if value in config_lines(data):
+                    return
+            except ValueError:
+                pass
             addition = (b"\n" if data and not data.endswith(b"\n") else b"") + value + b"\n"
             if (len(data) + len(addition) <= CONFIG_BYTES
                     and data.count(b"\n") + addition.count(b"\n") <= CONFIG_LINES):
@@ -660,8 +665,9 @@ def registered_config_dirs(home):
     try:
         with pinned_dir(os.path.join(home, ".megavibe")) as root:
             data = read_at(root, CONFIG_REGISTRY, CONFIG_BYTES + 1)
-    except (FileNotFoundError, NotADirectoryError, ValueError):
+    except (FileNotFoundError, NotADirectoryError):
         return []
+    # A registry that cannot be trusted (symlink, oversize, torn write) raises ValueError.
     return [path for line in config_lines(data) if (path := config_path(line)) is not None]
 
 
@@ -673,7 +679,7 @@ def live_sessions(current):
     configs = [os.path.join(home, ".claude")]
     try:
         registered = set(registered_config_dirs(home))
-    except OSError:
+    except (OSError, ValueError):
         return live, 1
     if os.environ.get("CLAUDE_CONFIG_DIR"):
         configs.append(os.environ["CLAUDE_CONFIG_DIR"])
