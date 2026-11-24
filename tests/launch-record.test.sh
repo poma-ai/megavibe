@@ -12,6 +12,8 @@ for fn in capture_launch_parent restore_launch_parent is_session_ancestor sessio
   sed -n "/^$fn() {/,/^}/p" "$REPO/megavibe" >> "$T/fn.sh"
   grep -q "^$fn() {" "$T/fn.sh" || fail "$fn not found in megavibe"
 done
+# The early re-exec runs before session_pid exists: its functions without that one.
+for fn in capture_launch_parent restore_launch_parent; do sed -n "/^$fn() {/,/^}/p" "$REPO/megavibe" >> "$T/early.sh"; done
 # The wrapper must capture the variable once at the top, and put it back before each of its own re-execs.
 [ "$(grep -c '^capture_launch_parent$' "$REPO/megavibe")" = 1 ] || fail "capture_launch_parent must be called once, at the top"
 [ "$(grep -c '^ *restore_launch_parent$' "$REPO/megavibe")" = 2 ] || fail "restore_launch_parent must precede both self re-execs"
@@ -137,6 +139,22 @@ reexec 4050 4051 MEGAVIBE_PARENT_SESSION=orig-A
 [ "$(field .parentSessionId 4051)" = "orig-A" ] || fail "R1 explicit: parentSessionId kept"
 [ "$(field .parentCwd 4051)" = "/r1" ] || fail "R1 explicit: parentCwd kept"
 rm -f "$T/cfg/sessions/$PARENT.json"
+
+# R1, inferred parent: no MEGAVIBE_PARENT_SESSION, the id comes from CLAUDE_CODE_SESSION_ID while the nearest
+# registered ancestor (a live sleep, via a stub ps) is that session; after its /clear the re-exec must still link to it.
+sleep 30 & SL=$!
+mkdir -p "$T/bin2"
+printf '#!/bin/bash\n[ "$4" = %s ] && echo 1 || echo %s\n' "$SL" "$SL" > "$T/bin2/ps"; chmod +x "$T/bin2/ps"
+printf '{"pid":%s,"sessionId":"orig-A","cwd":"/r1"}\n' "$SL" > "$T/cfg/sessions/$SL.json"
+inf=$(cd "$T" && env -i PATH="$T/bin2:$PATH" MEGAVIBE_HOME="$T/home" CLAUDE_CONFIG_DIR="$T/cfg" CLAUDE_CODE_SESSION_ID=orig-A bash -c 'set -eu; source "$1"; capture_launch_parent; record_launch "$2"; printf "{\"pid\":%s,\"sessionId\":\"cleared-B\",\"cwd\":\"/r1\"}\n" "$3" > "$CLAUDE_CONFIG_DIR/sessions/$3.json"; restore_launch_parent; env | grep "^MEGAVIBE_[A-Z_]*=" | grep -v "^MEGAVIBE_HOME="' _ "$T/fn.sh" 4060 "$SL")
+kill "$SL" 2>/dev/null || true; wait "$SL" 2>/dev/null || true
+[ "$(field .parentSessionId 4060)" = "orig-A" ] || fail "R1 inferred: first launch must infer the parent (got $(field .parentSessionId 4060))"
+case "$inf" in *MEGAVIBE_PARENT_SESSION=orig-A*MEGAVIBE_LAUNCH_PPID=$SL*|*MEGAVIBE_LAUNCH_PPID=$SL*MEGAVIBE_PARENT_SESSION=orig-A*) : ;; *) fail "R1 inferred: re-exec must carry the inferred parent and its pid (got: $inf)" ;; esac
+
+# M1: an early re-exec (the self-update sync) runs before session_pid is defined in the file; it must still
+# forward the pid and cwd resolved at first launch.
+early=$(cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_PARENT_SESSION=orig-A MEGAVIBE_LAUNCH_PPID=4242 MEGAVIBE_LAUNCH_PCWD=/r1 bash -c 'set -eu; source "$1"; capture_launch_parent; restore_launch_parent; env | grep "^MEGAVIBE_[A-Z_]*="' _ "$T/early.sh")
+case "$early" in *MEGAVIBE_LAUNCH_PPID=4242*MEGAVIBE_LAUNCH_PCWD=/r1*|*MEGAVIBE_LAUNCH_PCWD=/r1*MEGAVIBE_LAUNCH_PPID=4242*) : ;; *) fail "M1: restore_launch_parent without session_pid must forward the carried pid and cwd (got: $early)" ;; esac
 
 # R2: the wrapper removes an explicit parent from the environment but hands it (set, even empty) to the node
 # script, which reads it once; unset stays unset. Real wrapper, stub node script.

@@ -34,8 +34,10 @@ capture_launch_parent() {
 restore_launch_parent() {
   if [ -n "${LAUNCH_PARENT_SET:-}" ]; then
     export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"
-    if [ -n "${LAUNCH_PARENT:-}" ] && declare -F session_pid >/dev/null 2>&1; then
-      local pp; pp=$(session_pid "$LAUNCH_PARENT") || pp=""
+    if [ -n "${LAUNCH_PARENT:-}" ]; then
+      # session_pid is defined further down the file: an early re-exec (the self-update sync) runs before it exists,
+      # and must still forward the pid and cwd resolved at first launch.
+      local pp=""; if declare -F session_pid >/dev/null 2>&1; then pp=$(session_pid "$LAUNCH_PARENT") || pp=""; fi
       if [[ "$pp" =~ ^[0-9]+$ ]]; then
         export MEGAVIBE_LAUNCH_PPID="$pp"
         MEGAVIBE_LAUNCH_PCWD=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions/$pp.json" 2>/dev/null) && export MEGAVIBE_LAUNCH_PCWD || true
