@@ -138,14 +138,14 @@ worse() { # two level words -> the worse
 BUDGET=$(_int "${MEGAVIBE_SCRATCH_BUDGET_GB:-}" 2)
 scratch_dirs() {
   local sid=$1 roots r project d phys seen=$'\n' failed=0
-  case "$sid" in ''|*[!A-Za-z0-9-]*) return 4 ;; esac
+  case "$sid" in ''|-*|*[!A-Za-z0-9-]*) return 4 ;; esac
   roots=$(bounded 3 "$(dirname "$0")/scratch-root.sh" roots) || return 4
   [ -n "$roots" ] || return 4
   while IFS= read -r r; do
     [ -e "$r" ] || { [ ! -L "$r" ] || failed=4; continue; }
     [ -d "$r" ] && [ -r "$r" ] && [ -x "$r" ] || { failed=4; continue; }
     for project in "$r"/*; do
-      [ -d "$project" ] && [ ! -L "$project" ] || continue
+      [ "${project##*/}" != t ] && [ -d "$project" ] && [ ! -L "$project" ] || continue
       [ -x "$project" ] || { failed=4; continue; }
       d=$project/$sid
       [ -d "$d" ] && [ ! -L "$d" ] || continue
@@ -161,7 +161,7 @@ SCR_UNKNOWN=0
 scratch_kb() {
   local sid=$1 dirs own row d p total=0 k covered
   SCR_UNKNOWN=0
-  case "$sid" in ''|*[!A-Za-z0-9-]*) SCR_UNKNOWN=1; echo 0; return ;; esac
+  case "$sid" in ''|-*|*[!A-Za-z0-9-]*) SCR_UNKNOWN=1; echo 0; return ;; esac
   dirs=$(scratch_dirs "$sid") || SCR_UNKNOWN=1
   own=$(bounded 6 "$(dirname "$0")/scratch-own.sh" list "$sid") || SCR_UNKNOWN=1
   while IFS="$TAB" read -r k p; do
