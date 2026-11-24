@@ -126,6 +126,14 @@ check "a file named -dash.txt can be selected as a PATH" '[ -f "$C/-dash.txt" ] 
 C=$(bash "$RC" make) || C=''; mkdir -p "$C/lockdir"; echo l > "$C/lockdir/f"; chmod -R a-w "$C/lockdir"; command -v chflags >/dev/null 2>&1 && chflags -R uchg "$C/lockdir"
 bash "$RC" remove "$C" >/dev/null 2>&1
 check "remove clears flags and modes of a locked subdirectory and deletes the copy" '[ ! -e "$C" ]'
+# a repository in the middle of a merge conflict (one path, three index stages) copies completely
+M=$T/conflict; mkdir -p "$M" && cd "$M" && git init -q . && echo base > f && git add f && git commit -qm base
+git checkout -qb side && echo side > f && git commit -qam side && git checkout -q - && echo main > f && git commit -qam main
+git merge side >/dev/null 2>&1 || true
+C=$(bash "$RC" make) || C=''
+check "a merge-conflicted checkout is copied (one file, not three)" '[ -n "$C" ] && [ -f "$C/f" ] && grep -q "<<<<<<<" "$C/f"'
+[ -n "$C" ] && bash "$RC" remove "$C"
+cd "$H"
 # a file one byte over the cap is skipped (the cap is exact, not floored to whole KB)
 head -c 2049 /dev/zero > "$H/over.bin"; head -c 2048 /dev/zero > "$H/exact.bin"
 C=$(bash "$RC" make --max-file-kb 2) || C=''

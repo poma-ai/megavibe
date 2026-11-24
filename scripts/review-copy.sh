@@ -77,7 +77,9 @@ case "$cmd" in
     DESTR=$(canon "$DEST"); WORKR=$(canon "$WORK")
     git -C "$TOP" ls-files -z --cached --others --exclude-standard -- ${SPECS[@]+"${SPECS[@]}"} > "$WORK/all" || die "git ls-files failed"
     : > "$WORK/keep"; : > "$WORK/skipped"; NKEEP=0; LASTD=''; TOPR=$(canon "$TOP")
+    PREVF=''
     while IFS= read -r -d '' f; do
+      [ "$f" = "$PREVF" ] && continue; PREVF=$f   # a conflicted path is listed once per index stage
       case "$TOP/$f" in "$DESTR"/*|"$WORKR"/*) continue ;; esac   # TMPDIR inside the repository: never copy our own copies
       case "/$f" in */mv-review-copy.*/*|*/mv-review-work.*/*) continue ;; esac   # nor an earlier one
       if [ -d "$TOP/$f" ] && [ ! -L "$TOP/$f" ]; then printf '%s (submodule or nested repository: not copied)\n' "${f//[$'\n\r']/?}" >> "$WORK/skipped"; continue; fi
