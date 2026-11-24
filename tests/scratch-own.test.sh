@@ -8,6 +8,19 @@ trap 'chmod -R u+rwX "$T"; rm -rf "$T"' EXIT
 export HOME=$T/home TMPDIR=$T/tmp CLAUDE_CODE_SESSION_ID=unit-test
 unset CLAUDE_CODE_TMPDIR
 mkdir -p "$HOME" "$TMPDIR/mv-old" "$HOME/outside"
+# Session root discovery is confined to private fixtures, including the fallback root.
+mkdir -p "$HOME/.megavibe/scripts"
+cp "$OWN" "$HOME/.megavibe/scripts/"
+OWN=$HOME/.megavibe/scripts/scratch-own.sh
+export TEST_ROOTS="$T/session roots"$'\n'"$T/fallback"
+cat > "$HOME/.megavibe/scripts/scratch-root.sh" <<'SH'
+#!/bin/bash
+case "$1" in
+  roots) printf '%s\n' "$TEST_ROOTS" ;;
+  base) printf '%s\n' "$TMPDIR" ;;
+esac
+SH
+chmod +x "$HOME/.megavibe/scripts/scratch-root.sh"
 touch "$HOME/outside/keep"
 "$OWN" stamp "$CLAUDE_CODE_SESSION_ID"
 stamp=$HOME/.megavibe/scratch-start/$CLAUDE_CODE_SESSION_ID
@@ -135,7 +148,6 @@ touch -t 200001010000 "$TMPDIR/mv-review-copy.stale" "$TMPDIR/mv-review-copy.sta
 touch -h -t 200001010000 "$TMPDIR/mv-review-copy.stale/link"
 # Check the registered hook's real entry point, including stderr-only reporting.
 mkdir -p "$HOME/.megavibe/scripts" "$HOME/project/.agent"
-cp "$OWN" "$REPO/scripts/scratch-root.sh" "$HOME/.megavibe/scripts/"
 hook=$REPO/template/.claude/hooks/scratch-end.sh
 (cd "$HOME/project" && printf '{"session_id":"aged"}' | bash "$hook") > "$HOME/stdout" 2>"$HOME/end"
 [[ ! -s "$HOME/stdout" && ! -d "$TMPDIR/mv-review-copy.stale" && -d "$TMPDIR/mv-recent" && -f "$HOME/outside/keep" ]]
@@ -228,4 +240,91 @@ touch "$HOME/project/.agent/DECISIONS.md" "$HOME/project/.agent/LESSONS.md"
 start=$REPO/template/.claude/hooks/on-session-start.sh
 (cd "$HOME/project" && printf '%s' '{"source":"startup","session_id":"other\n"}' | bash "$start") >/dev/null
 [[ ! -e "$HOME/.megavibe/scratch-start/other" ]] || { echo "FAIL: malformed startup SID stamped another session"; exit 1; }
+failed=0
+check() {
+  if ! "$@"; then
+    printf 'FAIL: %s\n' "$*" >&2
+    failed=1
+  fi
+}
+mkdir "$TMPDIR/default-register"
+check bash -c 'cd "$TMPDIR" && "$1" register default-register' _ "$OWN"
+"$OWN" list "$CLAUDE_CODE_SESSION_ID" > "$HOME/default-list" 2>/dev/null || [[ $? == 4 ]]
+check grep -Fq "$TMPDIR/default-register" "$HOME/default-list"
+if (unset CLAUDE_CODE_SESSION_ID; "$OWN" register "$TMPDIR/default-register") 2>"$HOME/no-sid"; then
+  echo 'FAIL: register accepted a path without a session ID' >&2
+  failed=1
+fi
+check grep -Fq CLAUDE_CODE_SESSION_ID "$HOME/no-sid"
+
+root="$T/session roots"
+project="$root/project"
+session="$project/pad"
+fallback="$T/fallback/project/pad"
+mkdir -p "$session"/{tasks,pinned/nested,resume} "$fallback" "$project/another" "$project/PAD-CASE" \
+  "$root/x" "$project/"{'a b',-r,'*',a/b,ab,$'pad\n'} "$HOME/outside/pad"
+touch "$session"/{tasks/output,cwd,.keep,pinned/nested/.keep,resume/new} \
+  "$fallback/old" "$project/PAD-CASE/old" "$project/old" "$HOME/outside/pad/old" \
+  {"$root/x","$project/"{'a b',-r,'*',a/b,ab,another,$'pad\n'}}/old
+ln -s "$HOME/outside/pad" "$session/link"
+ln -s "$HOME/outside" "$root/project-link"
+mkdir "$root/session-link"
+ln -s "$HOME/outside/pad" "$root/session-link/pad"
+age "$root" "$T/fallback" "$HOME/outside/pad"
+python3 - "$session/resume/new" <<'PYTHON'
+import os, sys, time
+recent = time.time() - 1800
+os.utime(sys.argv[1], (recent, recent))
+PYTHON
+printf 'task output\n' > "$session/tasks/output"
+touch -t 200001010000 "$session/tasks/output"
+touch "$HOME/outside/pad/.keep"
+chmod -R a-w "$session/tasks"
+
+"$OWN" clean-unit pad > "$HOME/pad-unit"
+check test -f "$session/tasks/output"
+for bad in '../x' 'a b' '-r' '*' '' 'a/b' $'pad\n' 'a.b'; do
+  "$OWN" clean-end "$bad" > "$HOME/bad-out" 2>/dev/null || [[ $? == 4 ]]
+done
+for file in "$root/x/old" "$project/old" "$project/"{'a b',-r,'*',a/b,ab,another,$'pad\n'}/old "$session/tasks/output"; do
+  check test -f "$file"
+done
+(cd "$HOME/project" && printf '{"session_id":"pad"}' | bash "$hook") > "$HOME/pad-out" 2>"$HOME/pad-end"
+check test ! -s "$HOME/pad-out"
+check test ! -e "$session/tasks"
+check test ! -e "$session/cwd"
+check test ! -L "$session/link"
+check test ! -e "$fallback"
+check test -f "$session/.keep"
+check test -f "$session/pinned/nested/.keep"
+check test -f "$session/resume/new"
+check test -f "$project/another/old"
+"$OWN" clean-end pad-case 2>"$HOME/case-end"
+check test -f "$project/PAD-CASE/old"
+check test -f "$HOME/outside/pad/old"
+check test "$(wc -l < "$HOME/pad-end" | tr -d ' ')" = 1
+check grep -Eq 'scratchpad [1-9][0-9]* entries, [1-9][0-9]* kB' "$HOME/pad-end"
+# A shared-base scan must not bypass the scratchpad's retention rules,
+# even if TMPDIR points at the session directory and a copy is attributed.
+overlap="$project/overlap"
+copy="$overlap/mv-review-copy.pinned"
+mkdir -p "$copy"
+"$OWN" stamp overlap
+touch -t 199912310000 "$HOME/.megavibe/scratch-start/overlap"
+printf 'mv-review-copy-v1\nsession overlap\n' > "$copy/.megavibe-review-copy"
+touch "$copy/.keep"
+age "$copy"
+TMPDIR="$overlap" "$OWN" clean-end overlap 2>"$HOME/overlap-end"
+check test -f "$copy/.keep"
+# Failure of the shared-temp scan must still leave a SessionEnd summary
+# and allow cleanup in a valid session root.
+mkdir "$project/broken-base"
+touch "$project/broken-base/old"
+age "$project/broken-base"
+rc=0
+TMPDIR="$T/missing" "$OWN" clean-end broken-base 2>"$HOME/broken-base-end" || rc=$?
+check test "$rc" = 4
+check test ! -e "$project/broken-base"
+check grep -q 'scratchpad 1 entries' "$HOME/broken-base-end"
+[[ $failed == 0 ]] || exit 1
 printf 'scratch ownership and cleanup passed\n'
