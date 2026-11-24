@@ -36,7 +36,7 @@
 #   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
 #   5h-hot       the five-hour window is at 85 or more, counting its climb (the higher slope of the last 30 and last 10 minutes before the newest reading) continued for a
-#                30-minute unit: top-tier work would only hit that limit
+#                30-minute unit and through the age of the newest reading: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
 #                (MEGAVIBE_SPRINT_TARGET, 99; a whole number below 100, so the 100 backstop is never the aim):
 #                a whole-percent reading can be almost a point low and other sessions spend from the same
@@ -510,7 +510,7 @@ if [ "$MODE" = sprint ]; then
       # history is unchanged (the sprint own 35-minute freshness rule bounds how old the newest row may be)
       | ($rows | last) as $nw
       | def climb($h): [$rows[] | select(.t >= $nw.t - $h)] as $w
-          | if ($w | length) < 2 then 0 else ($w | first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * 1800) end) end;
+          | if ($w | length) < 2 then 0 else ($w | first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * (1800 + ([($now - $b.t), 0] | max))) end) end;
       if $nw == null then 0 else [climb(1800), climb(600)] | max end' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {

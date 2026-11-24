@@ -222,6 +222,11 @@ FZ=$((NOW + 7200))
 printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":74,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":82,"r":%s}}\n' "$((NOW - 1860))" "$FZ" "$FR" "$((NOW - 1560))" "$FZ" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour 74 at -31 min and 82 at -26 min (the older reading is outside 30 minutes of now): still 5h-hot, anchored to the newest reading' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# the five-hour projection includes the AGE of the newest reading: 72, 73, 74 at -40, -35, -30 minutes (one point per five minutes), so the
+# estimate now is about 80 and after a 30-minute unit about 86
+{ rowfh 40 72 $R2 72; rowfh 35 72 $R2 73; rowfh 30 72 $R2 74; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 72, 73, 74 at -40, -35, -30 minutes: projection covers the reading age plus the unit (86 or more, so 5h-hot)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -324,6 +329,18 @@ check 'megavibe usage sprint with an older installed router: refuses with an upg
 ne=$(HOME="$T/home" MEGAVIBE_HOME="$T/mv" /bin/bash "$REPO/megavibe" usage sprint 2>/dev/null); nrc=$?
 check 'megavibe usage sprint with the current router: both provider lines, the advice, exit 0, no routing state written' '[ "$nrc" = 0 ] && [[ "$ne" == claude\|sprint\|* ]] && [[ "$ne" == *$'"'"'\ncodex|'"'"'* ]] && [[ "$ne" == *"usage sprint: Claude"* ]] && [ ! -e "$MEGAVIBE_USAGE_STATE" ]'
 
+# a router that has `sprint` but NOT `sprint-render` (it falls through to its ordinary routing row) is refused, nothing published
+mkdir -p "$T/mvhalf/scripts" "$T/mvhalf/usage"
+cat > "$T/mvhalf/scripts/usage-route.sh" <<'HALFR'
+#!/bin/bash
+case "$1" in
+  sprint) if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = claude ]; then echo "claude|sprint|2.0|90|90|9|4.5|6h+24h|ok|"; else echo "codex|-||||||||"; fi ;;
+  *) cat > /dev/null; echo "normal|||5h 74% used, resets in 2h" ;;
+esac
+HALFR
+chmod +x "$T/mvhalf/scripts/usage-route.sh"
+ho=$(HOME="$T/home" MEGAVIBE_HOME="$T/mvhalf" /bin/bash "$REPO/megavibe" usage sprint 2>"$T/half.err"); hrc=$?
+check 'megavibe usage sprint with a router that has sprint but no sprint-render: refuses (exit 1, upgrade message), prints no routing row' '[ "$hrc" = 1 ] && [[ "$ho" != *normal* ]] && [ -s "$T/half.err" ]'
 # `megavibe usage sprint` renders its advice from the rows it printed (one read per provider), not from a second read
 mkdir -p "$T/mvstub/scripts" "$T/mvstub/usage"
 cat > "$T/mvstub/scripts/usage-route.sh" <<'STUBR'
