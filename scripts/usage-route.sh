@@ -35,7 +35,7 @@
 #                (nothing useful can start, and the per-hour figure would be absurd), or no live window
 #   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
-#   5h-hot       the five-hour window is at 85 or more, counting its climb (the higher slope of the last 30 and last 10 minutes before the newest reading) continued for a
+#   5h-hot       the five-hour window is at 85 or more, counting its climb (the highest rate over every pair of a recent and an earlier reading) continued for a
 #                30-minute unit and through the age of the newest reading: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
 #                (MEGAVIBE_SPRINT_TARGET, 99; a whole number below 100, so the 100 backstop is never the aim):
@@ -499,16 +499,12 @@ if [ "$MODE" = sprint ]; then
   OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2100; [ "$STALE" -ge 2100 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
-  # The five-hour window climbing fast: its rise (the higher slope of the last 30 and last 10 minutes before the newest reading, at least 5 minutes of span), continued for a
+  # The five-hour window climbing fast: its rise (the highest rate over every pair of a recent and an earlier reading, at least 5 minutes of span), continued for a
   # 30-minute unit, is added to its used percent before the 85 check.
   case "$s_flr" in ''|*[!0-9.]*) s_flr=null ;; esac
   s_fhadd=$(jq -r --argjson now "$NOW" --argjson lr "${s_flr:-null}" 'def sec: if . > 100000000000 then . / 1000 else . end;
       [.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now)] | sort_by(.t)
       | map(select(($lr | type) == "number" and (.fh.r | type) == "number" and (((.fh.r | sec) - $lr) | fabs) <= 180)) as $rows
-      # the climb over a 30-minute unit from the slope of the last 30 AND of the last 10 minutes (the higher counts: a flat-then-surge
-      # is not averaged away); at least 5 minutes of span
-      # anchored to the NEWEST row of the live window, not to now: the evidence does not age out of a wall-clock lookback while the
-      # history is unchanged (the sprint own 35-minute freshness rule bounds how old the newest row may be)
       # EVERY recent endpoint pair counts (no single anchor an equal repeat or a one-point follow-up could move away from the evidence):
       # each row of the last hour is a possible high, paired with every earlier row within 30 minutes of it, or with the row just before it
       # whatever its age up to two hours (sparse sampling, e.g. a probe every 30 minutes). Each pair rates its rise over the real interval
