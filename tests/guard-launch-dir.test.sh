@@ -121,7 +121,7 @@ check 'launcher refuses from outside the launch worktree' verdict 1 'launch dire
 
 guard() {
   RC=0
-  OUT=$(payload "$T" "$1" | CLAUDE_PROJECT_DIR="$T/repo-review/sub" \
+  OUT=$(payload "${3:-$T}" "$1" | CLAUDE_PROJECT_DIR="$T/repo-review/sub" \
     MEGAVIBE_ALLOW_REMOVE_LAUNCH="${2:-0}" bash "$HOOKS/block-dangerous-bash.sh" 2>&1) || RC=$?
 }
 guard "git worktree remove \"$T/repo-review/sub\""
@@ -142,6 +142,21 @@ guard "git worktree remove '$T/repo'"
 check 'Bash guard allows another worktree' verdict 0
 guard "git worktree remove '$T/repo-review'" 1
 check 'Bash guard honors the launch-removal override' verdict 0
+
+git -C "$T/repo" worktree add --detach -q "$T/repo-other" HEAD
+guard 'git worktree remove repo-review' 0 "$T/repo"
+check 'Bash guard blocks launch worktree shorthand from the main checkout' verdict 2 'launch directory'
+guard 'git worktree remove repo-other' 0 "$T/repo"
+check 'Bash guard allows shorthand for a different linked worktree' verdict 0
+guard "cd $T/repo && git worktree remove repo-review"
+check 'Bash guard blocks launch worktree shorthand after cd' verdict 2 'launch directory'
+guard "git -C $T/repo worktree remove repo-review"
+check 'Bash guard blocks launch worktree shorthand with git -C' verdict 2 'launch directory'
+guard 'git worktree remove repo-review' 1 "$T/repo"
+check 'Bash guard honors the launch-removal override for shorthand' verdict 0
+mkdir "$T/repo/repo-review"
+guard 'git worktree remove repo-review' 0 "$T/repo"
+check 'Bash guard uses the literal path when the relative directory exists' verdict 0
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

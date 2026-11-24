@@ -18,6 +18,16 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # If we couldn't parse the command, allow it (don't block on parse errors)
 [ -n "$COMMAND" ] || exit 0
 
+_is_launch_ancestor() {
+  local ancestor="$1" launch="$2"
+  while :; do
+    [[ "$launch" -ef "$ancestor" ]] && return 0
+    [[ "$launch" != / ]] || return 1
+    launch=${launch%/*}
+    launch=${launch:-/}
+  done
+}
+
 # Match a git invocation with literal paths and an optional leading cd.
 # Resolve relative paths from the payload cwd, then cd and git -C in order.
 if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
@@ -31,10 +41,7 @@ if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]
     _cd_path="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
     _git_c="${BASH_REMATCH[9]}${BASH_REMATCH[10]}${BASH_REMATCH[11]}"
     _target="${BASH_REMATCH[15]}${BASH_REMATCH[16]}${BASH_REMATCH[17]}"
-    _base=''
-    if [[ -n "$_cd_path" || -n "$_git_c" || "$_target" != /* ]]; then
-      _base=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
-    fi
+    _base=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
     if [[ -n "${BASH_REMATCH[1]}" && ( -z "$_cd_path" || "$_cd_path" == -* ) ]]; then
       _target=''
     fi
@@ -49,21 +56,36 @@ if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]
         break
       fi
     done
-    if [[ -n "$_target" && "$_target" != /* ]]; then
-      if [[ "$_base" == /* ]]; then _target="$_base/$_target"; else _target=''; fi
-    fi
     if [[ -n "$_target" ]] &&
-       _target=$(CDPATH= cd -P -- "$_target" 2>/dev/null && pwd -P) &&
        _launch=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P); then
-      while :; do
-        if [[ "$_launch" -ef "$_target" ]]; then
-          printf 'Blocked: git worktree remove would remove the session launch directory (%s).\n' "$CLAUDE_PROJECT_DIR" >&2
-          exit 2
-        fi
-        [ "$_launch" != / ] || break
-        _launch=${_launch%/*}
-        _launch=${_launch:-/}
-      done
+      _literal=$_target
+      if [[ "$_literal" != /* ]]; then
+        if [[ "$_base" == /* ]]; then _literal="$_base/$_literal"; else _literal=''; fi
+      fi
+      _block_launch=0
+      if [[ -n "$_literal" ]] &&
+         _resolved=$(CDPATH= cd -P -- "$_literal" 2>/dev/null && pwd -P); then
+        _is_launch_ancestor "$_resolved" "$_launch" && _block_launch=1
+      elif [[ "$_base" == /* && -d "$_base" ]] && (
+        # Drain the NUL-delimited list and require Git to succeed even after a match.
+        set -o pipefail
+        git -C "$_base" worktree list --porcelain -z 2>/dev/null | {
+          _matched=1
+          while IFS= read -r -d '' _field; do
+            if [[ "$_field" == 'worktree '*"/${_target#/}" ]] &&
+               _is_launch_ancestor "${_field#worktree }" "$_launch"; then
+              _matched=0
+            fi
+          done
+          exit "$_matched"
+        }
+      ); then
+        _block_launch=1
+      fi
+      if [[ "$_block_launch" == 1 ]]; then
+        printf 'Blocked: git worktree remove would remove the session launch directory (%s).\n' "$CLAUDE_PROJECT_DIR" >&2
+        exit 2
+      fi
     fi
   fi
 fi
