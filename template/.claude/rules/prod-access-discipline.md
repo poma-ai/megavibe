@@ -61,7 +61,10 @@ in the `default` namespace is untouched.
 
 Parsing uses Python's `shlex`, not a regex (a regex first cut was defeated by
 `bash -c`, quoting, line continuations and `#` inside a word). Without
-`python3` the guard skips rather than blocks, as `rm-to-trash.sh` does.
+`python3` the guard skips rather than blocks, as `rm-to-trash.sh` does; when
+`python3` is there but the check fails to run, it blocks if the text names an
+exec-class verb. A `$( )` inside double quotes is checked as a command, since
+bash runs it.
 
 The obviously-mutating verbs (`apply`, `patch`, `delete`, `scale`,
 `rollout restart`) are **not** blocked: nobody mistakes those for reads, and
