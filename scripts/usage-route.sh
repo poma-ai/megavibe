@@ -93,13 +93,15 @@ fi
 # future; a window listed twice keeps the HIGHER usage, so entry order can never turn 95% into spare capacity.
 codex_row() {
   local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6 nl=200 nb=1048576
-  # the forecast needs 24 h of readings: a probe writes one rollout file per call, so six files are only about 3 h
-  [ "$MODE" != forecast ] || { nf=60 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
+  # the forecast needs 24 h of readings: a probe (or any codex exec) writes one rollout file per call, so six files are only about 3 h and 400 cover 8 days of probes
+  [ "$MODE" != forecast ] || { nf=400 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
   # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls.
   if [ -z "${MEGAVIBE_NOW:-}" ] && [ -f "$cache" ] && [ ! -L "$cache" ]; then
     local at; at=$(head -n 1 "$cache" 2>/dev/null)
-    case "$at" in ''|*[!0-9]*) ;; *) if [ "$((NOW - at))" -ge 0 ] && [ "$((NOW - at))" -lt 120 ]; then tail -n +2 "$cache" 2>/dev/null; return 0; fi ;; esac
+    # a cached window that has since reset is no evidence of the new one: the cache is dropped at once, not after 2 minutes
+    case "$at" in ''|*[!0-9]*) ;; *) if [ "$((NOW - at))" -ge 0 ] && [ "$((NOW - at))" -lt 120 ] \
+        && { [ "$(tail -n +2 "$cache" 2>/dev/null | head -c 2 | tr -d '[:space:]')" = "" ] || tail -n +2 "$cache" 2>/dev/null | jq -e --argjson now "$NOW" '(map(.sd.r? // 0) | max) > $now' >/dev/null 2>&1; }; then tail -n +2 "$cache" 2>/dev/null; return 0; fi ;; esac
   fi
   local -a sf; if stat -c %Y / >/dev/null 2>&1; then sf=(-c '%Y %n'); else sf=(-f '%m %N'); fi
   # `find -exec ... +` runs the command once per chunk, so sorting INSIDE it (ls -t) is only right per chunk:

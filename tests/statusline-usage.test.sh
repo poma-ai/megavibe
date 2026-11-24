@@ -42,6 +42,12 @@ check 'five_hour with a null percentage: not reported' '[[ "$(w)" == *"five_hour
 run '{"session_id":"s7","rate_limits":{"five_hour":{"used_percentage":null,"resets_at":5},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
 check 'a new key in the window object, same percentages: the shape record follows at once' 'jq -e ".five_hour == [\"resets_at\"]" "$T/mv/usage/claude-shape.json" >/dev/null'
 
+# the first reading after a reset has the same percentages but a new reset stamp: it must be recorded, not throttled away
+fresh
+run '{"session_id":"s8","rate_limits":{"seven_day":{"used_percentage":1,"resets_at":1796065200}}}'
+run '{"session_id":"s9","rate_limits":{"seven_day":{"used_percentage":1,"resets_at":1796669999}}}'
+check 'same percentage, new resets_at: a second row is written' '[ "$(wc -l < "$T/mv/usage/claude.jsonl" | tr -d " ")" = 2 ]'
+
 # a window sent as null or as an empty object is not reported
 fresh
 run '{"session_id":"s6","rate_limits":{"five_hour":null,"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'

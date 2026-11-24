@@ -142,6 +142,18 @@ OTHER=$((R + 172800))
 o=$(fc)
 check 'a second account (overlapping window) interleaved: pace stays about 1 per hour' 'near "$(f 3)" 1.0 0.15'
 
+# Codex cache: a warm cache of a window that has since reset must not hide the new window (real clock: the cache is off under
+# a pinned MEGAVIBE_NOW)
+RT=$(mktemp -d "$T/rt.XXXXXX"); mkdir -p "$RT/sessions/y"; N0=$(date +%s)
+ts0() { jq -nr --argjson t "$1" '$t | todateiso8601'; }
+cx() { printf '{"timestamp":"%s","payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":%s,"window_minutes":10080,"resets_at":%s}}}}\n' "$(ts0 "$1")" "$2" "$3"; }
+{ cx "$((N0 - 7200))" 40 "$((N0 + 2))"; cx "$((N0 - 60))" 50 "$((N0 + 2))"; } > "$RT/sessions/y/rollout-1.jsonl"
+env -u MEGAVIBE_NOW MEGAVIBE_CODEX_HOME="$RT" MEGAVIBE_ROUTER_PROVIDER=codex /bin/bash "$REPO/scripts/usage-route.sh" forecast > /dev/null
+sleep 3
+cx "$(date +%s)" 1 "$((N0 + 604800))" >> "$RT/sessions/y/rollout-1.jsonl"
+o=$(env -u MEGAVIBE_NOW MEGAVIBE_CODEX_HOME="$RT" MEGAVIBE_ROUTER_PROVIDER=codex /bin/bash "$REPO/scripts/usage-route.sh" forecast)
+check 'codex warm cache across a reset: the new window is seen at once, not blank' '[ -n "$(f 4)" ]'
+
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
@@ -209,6 +221,14 @@ ramp 30 0 25 55 $R > "$MEGAVIBE_USAGE_FILE"
 { codex "$((NOW - 30 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=claude /bin/bash "$REPO/scripts/usage-route.sh" balance --peek)
 check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~1"* ]]'
+
+# Codex: one rollout per call, 140 calls three minutes apart over 7 h (flat 20, then a rise to 26 in the last 3 h). A file cap that
+# keeps only the newest 60 loses the flat baseline and doubles the pace (reader finding: 106 points of forecast)
+mkdir -p "$T/codex/sessions/many"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+for i in $(seq 0 139); do m=$((i * 3)); u=20; [ "$m" -lt 180 ] && u=$(awk -v m="$m" 'BEGIN { printf "%.2f", 20 + (180 - m) / 30 }'); codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/many/rollout-$(printf %03d $i).jsonl"; done
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'codex, 140 one-reading rollouts: the baseline beyond the newest 60 files counts (pace about 1, not 2)' 'awk -v x="$(f 3)" "BEGIN{exit !(x > 0.7 && x < 1.3)}"'
+rm -r "$T/codex/sessions/many"
 
 # ---- the probe: run by the PA's node only, throttled, never scheduled by itself -----------------------------------
 cat > "$T/bin/codex" <<'STUB'
