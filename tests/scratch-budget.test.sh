@@ -131,6 +131,25 @@ mkdir -p "$T/home/.megavibe/scripts" "$T/p/.agent/LOGS" "$T/p/.claude/hooks"
 cp "$SR" "$DW" "$REPO/scripts/scratch-own.sh" "$T/home/.megavibe/scripts/"; cp "$REPO/template/.claude/hooks/watch-background.sh" "$T/p/.claude/hooks/"
 stop() { printf '{"hook_event_name":"Stop","session_id":"%s","stop_hook_active":false,"background_tasks":[]}' "$SID" \
   | (cd "$T/p" && HOME="$T/home" CLAUDE_CODE_TMPDIR=$T/moved MEGAVIBE_SCRATCH_BUDGET_GB=1 bash .claude/hooks/watch-background.sh); }
+(
+  SID=venv-budget
+  "$REPO/scripts/scratch-own.sh" stamp "$SID"
+  sleep 1
+  python3 -m venv --without-pip "$TMPDIR/user-venv"
+  touch "$TMPDIR/user-venv/other-huge"
+  failed=0
+  kb=$(CLAUDE_CODE_TMPDIR=$T/moved bash "$DW" scratch-kb "$SID")
+  if [[ "$kb" != 0 ]]; then echo "FAIL: user venv contributes to session budget"; failed=1; fi
+  if [[ -n "$(stop)" ]]; then echo "FAIL: user venv blocks Stop"; failed=1; fi
+  report=$(CLAUDE_CODE_TMPDIR=$T/moved bash "$DW" scratch "$SID")
+  if [[ "$report" != *"user-venv (1100000 kB,"* ]]; then
+    echo "FAIL: user venv missing from other temp usage"
+    failed=1
+  fi
+  [ "$failed" = 0 ]
+)
+check "a user venv only contributes to other temp usage" '[ $? -eq 0 ]'
+rm -rf "$TMPDIR/user-venv"
 o=$(stop); check "Stop over budget: block" 'printf "%s" "$o" | jq -e ".decision == \"block\"" >/dev/null'
 o=$(stop); check "Stop again, same size: allowed (the session reported)" '[ -z "$o" ]'
 check "an over-budget Stop leaves session scratch intact" '[ -f "$S/huge.bin" ]'

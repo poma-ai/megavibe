@@ -19,7 +19,7 @@ find what is wrong with it before a user does.
 2. **Review the current files, not just the diff.** A diff hides the code it
    did not touch but now interacts with.
 3. **Run things.** Reproduce claims; do not take them from the commit message.
-   Work in a scratch directory; when you need a copy of the repository, use `TMPDIR=<scratch> ~/.megavibe/scripts/review-copy.sh make PATHS` (never `cp -R` of a whole repository) and remove it with `review-copy.sh remove DIR` before you report. If a script writes under `$HOME`, set `HOME`
+   Work in a scratch directory; when you need a copy of the repository, use `TMPDIR=<scratch> ~/.megavibe/scripts/review-copy.sh make PATHS` (never `cp -R` of a whole repository) and remove it with `review-copy.sh remove DIR` before you report. If the session creates a virtualenv or build directory in shared TMPDIR and wants it cleaned, register it with `~/.megavibe/scripts/scratch-own.sh register SID PATH...` after creation. If a script writes under `$HOME`, set `HOME`
    to a scratch directory first. Never touch the user's real config, keys,
    `/Applications`, `~/.local/bin`, or any credential store. Never open a
    browser or call a cloud CLI that would prompt. Stub external commands

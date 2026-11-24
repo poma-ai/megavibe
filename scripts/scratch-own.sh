@@ -10,7 +10,9 @@ fi
 # Directory descriptors keep cleanup anchored even if a name is replaced mid-walk.
 exec python3 - "$@" <<'PY'
 import ctypes
+import fcntl
 import fnmatch
+import json
 import os
 import re
 import stat
@@ -22,7 +24,6 @@ from contextlib import contextmanager
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 MARK = ".megavibe-review-copy"
 REVIEW = ("claude-review-scratch.*", "codex-review-scratch.*")
-PRODUCER = ("mv-*", "codex-*-scratch.*")
 NOW = time.time()
 FCHFLAGS = getattr(ctypes.CDLL(None, use_errno=True), "fchflags", None) if sys.platform == "darwin" else None
 
@@ -71,21 +72,20 @@ def reviewer_running(fd, path):
     try:
         data = read_at(fd, ".pid", 64).strip()
     except FileNotFoundError:
-        data = None
-    if data is not None:
-        if not re.fullmatch(rb"[1-9][0-9]{0,9}", data):
-            raise ValueError("invalid reviewer PID")
-        pid = int(data)
-        if pid > 2147483647:
-            raise ValueError("invalid reviewer PID")
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            return True
-        else:
-            return True
+        return True
+    if not re.fullmatch(rb"[1-9][0-9]{0,9}", data):
+        raise ValueError("invalid reviewer PID")
+    pid = int(data)
+    if pid > 2147483647:
+        raise ValueError("invalid reviewer PID")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        return True
+    else:
+        return True
     # Legacy reviewers can leave a child running even after the launcher exits.
     processes = output("ps", "-ax", "-o", "command=")
     if os.fsencode(path) in processes:
@@ -105,41 +105,79 @@ def newer(path, info, started):
     return birth(path, info) > started
 
 
-def owned(parent, name, path, info, sid, started, nested, cmd):
-    if not sid or info.st_uid != os.getuid():
+def identity(path, info):
+    return [info.st_dev, info.st_ino, birth(path, info)]
+
+
+def registrations(filename, rows=None):
+    flags = os.O_NOFOLLOW | os.O_NONBLOCK
+    if rows is not None:
+        flags |= os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    try:
+        fd = os.open(filename, flags, 0o600)
+    except FileNotFoundError:
+        if rows is None:
+            return {}
+        raise
+    with os.fdopen(fd, "r" if rows is None else "a", encoding="ascii") as stream:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("invalid session register")
+        fcntl.flock(fd, fcntl.LOCK_SH if rows is None else fcntl.LOCK_EX)
+        if rows is None:
+            records = {}
+            for line in stream:
+                batch = json.loads(line)
+                if not isinstance(batch, dict):
+                    raise ValueError("invalid session register")
+                records.update(batch)
+            return records
+        print(json.dumps(rows), file=stream)
+
+
+def register(base, filename, paths, started):
+    if started is None:
+        raise ValueError("session start unavailable")
+    rows = {}
+    with directory(base) as root:
+        for supplied in paths:
+            parent, name = os.path.split(supplied.rstrip("/"))
+            if name in ("", ".", "..") or os.path.realpath(parent or ".") != base:
+                raise ValueError("register requires a direct child of the temp base")
+            path = os.path.join(base, name)
+            info = entry(root, name)
+            if stat.S_ISLNK(info.st_mode) or path != label(path):
+                raise ValueError("cannot register a symlink or a path with control characters")
+            if info.st_uid != os.getuid() or not same_entry(info, os.lstat(supplied.rstrip("/"))):
+                raise ValueError("register requires an entry owned by the current user")
+            record = identity(path, info)
+            if not same_entry(info, entry(root, name)):
+                raise ValueError("entry changed")
+            if record[2] <= started:
+                raise ValueError("registered entry must be created after the session stamp")
+            rows[path] = record
+    registrations(filename, rows)
+
+
+def owned(parent, name, path, info, sid, started, registered, cleaning):
+    if not sid or info.st_uid != os.getuid() or stat.S_ISLNK(info.st_mode):
         return False
-    if not stat.S_ISDIR(info.st_mode):
-        return (not nested and stat.S_ISREG(info.st_mode)
-                and not name.startswith("mv-review-copy.")
-                and not any(fnmatch.fnmatchcase(name, p) for p in REVIEW)
-                and any(fnmatch.fnmatchcase(name, p) for p in PRODUCER)
-                and newer(path, info, started))
-    if nested:
-        return newer(path, info, started)
-    if name.startswith("pytest-of-"):
-        return False
-    with directory(name, parent) as fd:
-        if name.startswith("mv-review-copy."):
+    if stat.S_ISDIR(info.st_mode) and name.startswith("mv-review-copy."):
+        with directory(name, parent) as fd:
             try:
                 lines = read_at(fd, MARK).split(b"\n", 2)
             except FileNotFoundError:
-                return False
-            if lines[0] != b"mv-review-copy-v1":
-                return False
-            if len(lines) > 1 and lines[1].startswith(b"session "):
-                return (lines[1] == b"session " + sid.encode()
-                        and (not cmd.startswith("clean-") or newer(path, info, started)))
-        elif not any(fnmatch.fnmatchcase(name, pattern)
-                     for pattern in (*REVIEW, *PRODUCER, "pip-*")):
-            try:
-                if not stat.S_ISREG(entry(fd, "pyvenv.cfg").st_mode):
-                    return False
-            except FileNotFoundError:
-                return False
-        if not newer(path, info, started):
-            return False
-        return not (cmd.startswith("clean-") and any(fnmatch.fnmatchcase(name, p) for p in REVIEW)
-                    and reviewer_running(fd, path))
+                pass
+            else:
+                if lines[0] == b"mv-review-copy-v1" and len(lines) > 1 and lines[1].startswith(b"session "):
+                    return (lines[1] == b"session " + sid.encode()
+                            and (not cleaning or newer(path, info, started)))
+    if stat.S_ISDIR(info.st_mode) and any(fnmatch.fnmatchcase(name, p) for p in REVIEW):
+        with directory(name, parent) as fd:
+            return not reviewer_running(fd, path) and newer(path, info, started)
+    if path in registered and started is not None:
+        record = identity(path, info)
+        return record == registered[path] and record[2] > started
+    return False
 
 
 def tree(fd, device, path, mounts):
@@ -223,9 +261,10 @@ def label(path):
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd not in ("stamp", "list", "other", "clean-unit", "clean-end") or len(sys.argv) > 3:
-        raise ValueError("usage: scratch-own.sh stamp SID | list SID | other [N] | clean-unit SID | clean-end SID")
-    arg = sys.argv[2] if len(sys.argv) == 3 else ""
+    if (cmd not in ("stamp", "register", "list", "other", "clean-unit", "clean-end")
+            or (len(sys.argv) < 4 if cmd == "register" else len(sys.argv) > 3)):
+        raise ValueError("usage: scratch-own.sh stamp SID | register SID PATH... | list SID | other [N] | clean-unit SID | clean-end SID")
+    arg = sys.argv[2] if len(sys.argv) >= 3 else ""
     if cmd == "other" and arg and not re.fullmatch(r"[0-9]{1,6}", arg):
         raise ValueError("invalid entry count")
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "") if cmd == "other" else arg
@@ -263,6 +302,11 @@ def main():
             expected = "/private" + expected
         if base != expected:
             raise ValueError("symlinked temp base")
+    register_file = stamp + ".register"
+    if cmd == "register":
+        register(base, register_file, sys.argv[3:], started)
+        return 0
+    registered = registrations(register_file) if sid else {}
     mounts = set()
     if os.path.isfile("/proc/self/mountinfo"):
         with open("/proc/self/mountinfo") as stream:
@@ -279,14 +323,13 @@ def main():
         errors += 1
         print(f"scratch-own: skipped {label(path)} ({type(exc).__name__})", file=sys.stderr)
 
-    def visit(parent, location, name, nested=False):
+    def visit(parent, name, path):
         nonlocal count, total
-        path = os.path.join(location, name)
         try:
             info = entry(parent, name)
-            if owned(parent, name, path, info, sid, started, nested, cmd):
-                if cmd == "other" and not nested:
-                    return 0
+            if owned(parent, name, path, info, sid, started, registered, cleaning):
+                if cmd == "other":
+                    return
                 if info.st_dev != device or path in mounts:
                     raise ValueError("mount boundary")
                 if cmd != "other" and path != label(path):
@@ -308,8 +351,8 @@ def main():
                         remove_file(parent, name, info)
                     count += 1
                     total += kb
-                return kb
-            if cmd == "other" and not nested:
+                return
+            if cmd == "other":
                 enclosed = [d for d in session_dirs if d.startswith(path + "/")]
                 # The harness root is shared. Its row covers the space left
                 # after removing this session's contribution to its size.
@@ -319,7 +362,6 @@ def main():
                                max(0, int((NOW - info.st_mtime) / 60))))
         except failures as exc:
             report(path, exc)
-        return 0
 
     with directory(base) as root:
         device = os.fstat(root).st_dev
@@ -327,25 +369,7 @@ def main():
             path = os.path.join(base, name)
             if cmd == "other" and any(path == d or path.startswith(d + "/") for d in session_dirs):
                 continue
-            if sid and name.startswith("pytest-of-"):
-                try:
-                    info = entry(root, name)
-                    if stat.S_ISDIR(info.st_mode):
-                        if info.st_dev != device or path in mounts:
-                            raise ValueError("mount boundary")
-                        with directory(name, root) as parent:
-                            owned_kb = sum(visit(parent, path, run, True) for run in os.listdir(parent)
-                                           if re.fullmatch(r"pytest-[0-9]+", run))
-                    else:
-                        owned_kb = 0
-                    if cmd == "other":
-                        total_kb = size(path)
-                        others.append((max(0, total_kb - owned_kb), label(name),
-                                       max(0, int((NOW - info.st_mtime) / 60))))
-                except failures as exc:
-                    report(path, exc)
-            else:
-                visit(root, base, name)
+            visit(root, name, path)
     if cleaning:
         print(f"scratch cleanup: removed {count} entries, {total} kB")
     if cmd == "other":
