@@ -277,6 +277,18 @@ start=$SECONDS; o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); mt=$((SECONDS - start))
 check 'codex, 450 files of 3.4 MB (1.5 GB of tails): a forecast, not unknown, inside 4 s' '[ -n "$(f 4)" ] && [ "$mt" -lt 4 ]'
 rm -r "$BG"
 
+# the sampler reads at least 50 files whatever the clock says, and widens a slice that holds no record
+mkdir -p "$T/codex/sessions/clk"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+for i in $(seq 0 59); do m=$((i * 3)); u=$(awk -v m="$m" 'BEGIN { printf "%.2f", 30 + (180 - m) / 12 }'); codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/clk/rollout-$(printf %03d $i).jsonl"; done
+o=$(MEGAVIBE_ROLLOUT_SECONDS=0 MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'sampler with a zero time budget: still a forecast (the first 50 files are always read)' '[ -n "$(f 4)" ]'
+rm -r "$T/codex/sessions/clk"
+mkdir -p "$T/codex/sessions/pad"
+for i in $(seq 0 19); do m=$((i * 60)); f="$T/codex/sessions/pad/rollout-$(printf %03d $i).jsonl"; codex "$((NOW - m * 60))" "$((20 + (1200 - m) / 40))" "$R" > "$f"; head -c 400000 /dev/zero | tr '\0' 'x' | fold -w 4000 >> "$f"; done
+o=$(MEGAVIBE_ROLLOUT_BUDGET=200000 MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'sampler with a tiny per-file allowance and 400 KB of tool output after each record: the slice is widened, a forecast is printed' '[ -n "$(f 4)" ]'
+rm -r "$T/codex/sessions/pad"
+
 # an EMPTY warm cache hides the first valid reading for seconds, not two minutes
 RE=$(mktemp -d "$T/re.XXXXXX"); mkdir -p "$RE/sessions/z"; N1=$(date +%s)
 : > "$RE/sessions/z/rollout-1.jsonl"
