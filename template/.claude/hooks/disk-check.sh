@@ -10,7 +10,7 @@ set -u
 # disk between starts (14.8 GB of reviewer copies and venvs in one scratchpad,
 # 8 GB left, 2026-11-03, noticed by the user, not the session).
 #
-# Silent unless free space is below the warn threshold (default 15 GB; see
+# Silent unless free space is below the warn threshold (the larger of 40 GB and 15 percent of the volume; see
 # scripts/disk-watch.sh). One bounded `df` when the disk is fine, so it costs nothing.
 # Opt out: MEGAVIBE_DISK_WATCH=0.
 
