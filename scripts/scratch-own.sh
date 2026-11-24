@@ -482,6 +482,60 @@ def scan_shared(cmd, sid, arg, stamp, paths, mounts, swept, report):
     return count, total
 
 
+def footprint_paths(stamps, boot, bases):
+    """NUL-delimited paths with a Megavibe ownership marker or registration."""
+    device = os.stat(boot).st_dev
+    registered = {}
+    if os.path.isdir(stamps):
+        for name in os.listdir(stamps):
+            if not name.endswith(".register") or not SID.fullmatch(name[:-9]):
+                continue
+            stamp = os.path.join(stamps, name[:-9])
+            try:
+                info = os.lstat(stamp)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                    continue
+                for path, record in registrations(stamp + ".register").items():
+                    registered.setdefault(path, []).append((record, info.st_mtime))
+            except (OSError, ValueError):
+                continue
+    candidate_bases = [*bases, *(os.path.dirname(path) for path in registered)]
+    for base in dict.fromkeys(os.path.realpath(path) for path in candidate_bases if os.path.isabs(path)):
+        if base == "/" or not os.path.isdir(base) or os.stat(base).st_dev != device:
+            continue
+        with directory(base) as parent:
+            for name in os.listdir(parent):
+                path = os.path.join(base, name)
+                is_copy = name.startswith("mv-review-copy.")
+                is_reviewer = any(fnmatch.fnmatchcase(name, pattern) for pattern in REVIEW)
+                if not (is_copy or is_reviewer or path in registered):
+                    continue
+                try:
+                    info = entry(parent, name)
+                    if info.st_uid != os.getuid() or info.st_dev != device or stat.S_ISLNK(info.st_mode):
+                        continue
+                    attributed = False
+                    if path in registered:
+                        current = identity(path, info)
+                        attributed = any(current == record and current[2] > started
+                                         for record, started in registered[path])
+                    if not attributed and stat.S_ISDIR(info.st_mode) and (is_copy or is_reviewer):
+                        with directory(name, parent) as child:
+                            if not same_entry(info, os.fstat(child)):
+                                continue
+                            if is_copy:
+                                marker = read_at(child, MARK).split(b"\n", 2)
+                                attributed = (len(marker) > 1 and marker[0] == b"mv-review-copy-v1"
+                                              and re.fullmatch(rb"session [A-Za-z0-9-]+", marker[1]))
+                            else:
+                                attributed = re.fullmatch(rb"[1-9][0-9]{0,9}", read_at(child, ".pid", 64).strip())
+                    if attributed:
+                        sys.stdout.buffer.write(os.fsencode(path) + b"\0")
+                except (FileNotFoundError, ValueError):
+                    continue
+    return 0
+
+
 def main():
     script = sys.argv.pop(1)
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -554,6 +608,9 @@ def main():
 
 
 try:
+    if sys.argv[2:3] == ["footprint-paths"]:
+        stamps = os.path.join(os.environ["HOME"], ".megavibe", "scratch-start")
+        sys.exit(footprint_paths(stamps, sys.argv[3], sys.argv[4:]))
     sys.exit(main())
 except (OSError, ValueError, subprocess.SubprocessError) as exc:
     print(f"scratch-own: {exc}", file=sys.stderr)

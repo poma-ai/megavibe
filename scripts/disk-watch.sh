@@ -5,6 +5,7 @@
 #                               status line plus the biggest places to look
 #   disk-watch.sh watch [secs]  loop for Monitor (default 60 s, minimum 30): prints only
 #                               when free space moves by STEP GB or the level changes
+#   disk-watch.sh footprint     one bounded estimate of Megavibe usage on the boot volume
 #   disk-watch.sh top           the biggest places to look, sizes only
 #   disk-watch.sh level         one word for a caller that keeps its own state: OK, LOW,
 #                               CRITICAL, or UNKNOWN when df could not answer (one bounded df,
@@ -61,10 +62,20 @@ row_avail() { printf '%s' "${1%%"$TAB"*}"; }
 row_rest() { printf '%s' "${1#*"$TAB"}"; }
 row_total() { local r; r=$(row_rest "$1"); printf '%s' "${r%%"$TAB"*}"; }
 row_mount() { local r; r=$(row_rest "$1"); printf '%s' "${r#*"$TAB"}"; }
+# Skip the second df on the ordinary home-and-default-scratch volume.
+default_on_primary() {
+  local ids
+  case "$(uname -s)" in
+    Darwin) ids=$(bounded 1 stat -L -f '%d' "$P" /private/tmp 2>/dev/null) || return 1 ;;
+    *) ids=$(bounded 1 stat -L -c '%d' "$P" /tmp 2>/dev/null) || return 1 ;;
+  esac
+  [[ "$ids" = *$'\n'* && "${ids%%$'\n'*}" = "${ids#*$'\n'}" ]]
+}
 # The volume the session scratch lives on, when CLAUDE_CODE_TMPDIR / MEGAVIBE_DATA_DIR moved it off /tmp
 # and onto a different volume than $P. Prints that df row, or nothing.
 scratch_row() {
   local b r
+  if [[ -n "$1" && -z "${CLAUDE_CODE_TMPDIR:-}" ]] && default_on_primary; then return 0; fi
   b=$(bounded 3 "$(dirname "$0")/scratch-root.sh" base 2>/dev/null) || return 0
   [ -n "$b" ] || return 0
   r=$(df_row "$b") || return 0; [ -n "$r" ] || return 0
@@ -226,6 +237,10 @@ case "${1:-check}" in
     top
     ;;
   top) top ;;
+  footprint)
+    out=$(python3 "$(dirname "$0")/disk-footprint.py" 2>/dev/null) || out=""
+    printf '%s\n' "${out:-megavibe: boot-volume footprint unknown (scratch unknown, temp unknown, worktrees unknown) — measurement incomplete}"
+    ;;
   scratch) # [--kb] [session id]: this session's own scratch size, one line (with --kb, "<kB><TAB><line>"); exit 3 when over the budget
     withkb=0; [ "${2:-}" = "--kb" ] && { withkb=1; shift; }
     sid=${2:-${CLAUDE_CODE_SESSION_ID:-}}
@@ -284,5 +299,5 @@ case "${1:-check}" in
       sleep "$iv"
     done
     ;;
-  *) echo "usage: disk-watch.sh check | top | level | scratch [session id] | watch [secs]" >&2; exit 2 ;;
+  *) echo "usage: disk-watch.sh check | top | footprint | level | scratch [session id] | watch [secs]" >&2; exit 2 ;;
 esac

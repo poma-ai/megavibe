@@ -6,7 +6,8 @@
 #                           /tmp/claude-<uid> elsewhere)
 #   scratch-root.sh roots   every root worth scanning, one per line: the resolved one, then the
 #                           default if different (sessions started before the variable was set
-#                           leave their folders there)
+#                           leave their folders there), then safe roots on the project volume
+#                           and previously used volumes
 #   scratch-root.sh base    the folder holding Claude Code's claude-<hex>-cwd files and the
 #                           claude-<uid> root: $CLAUDE_CODE_TMPDIR when usable, else /tmp
 #
@@ -24,7 +25,15 @@ root() { if usable "${CLAUDE_CODE_TMPDIR:-}"; then printf '%s/claude-%s' "${CLAU
 
 case "${1:-root}" in
   root) root; echo ;;
-  roots) r=$(root); echo "$r"; [ "$r" = "$DEFBASE/claude-$UIDN" ] || echo "$DEFBASE/claude-$UIDN" ;;
+  roots)
+    r=$(root)
+    resolver="$(dirname "$0")/scratch-volume.py"
+    if [[ -f "$resolver" ]] && command -v python3 >/dev/null 2>&1; then
+      exec python3 "$resolver" discover . "$r" "$DEFBASE/claude-$UIDN"
+    fi
+    printf '%s\n' "$r"
+    [[ "$r" = "$DEFBASE/claude-$UIDN" ]] || printf '%s\n' "$DEFBASE/claude-$UIDN"
+    ;;
   base) base; echo ;;
   *) echo "usage: scratch-root.sh root|roots|base" >&2; exit 2 ;;
 esac

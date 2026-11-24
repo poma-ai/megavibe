@@ -11,7 +11,7 @@ set -u
 # 8 GB left, 2026-11-03, noticed by the user, not the session).
 #
 # Silent unless free space is below the warn threshold (the larger of 40 GB and 15 percent of the volume; see
-# scripts/disk-watch.sh). One bounded `df` when the disk is fine, so it costs nothing.
+# scripts/disk-watch.sh). When the disk is fine, only probe free space.
 # Opt out: MEGAVIBE_DISK_WATCH=0.
 
 [ -d ".agent" ] || exit 0
@@ -45,6 +45,14 @@ if [ "$LEVEL" = OK ]; then record OK; exit 0; fi
 OUT=$(bash "$SCRIPT" check 2>/dev/null) || OUT=""
 [ -n "$OUT" ] || OUT="disk: free space is $LEVEL (the sizes scan did not finish; run ~/.megavibe/scripts/disk-watch.sh top for the biggest places)."
 
+FOOTPRINT=$(bash "$SCRIPT" footprint 2>/dev/null) || FOOTPRINT=""
+FIRST=${OUT%%$'\n'*}
+if [ -n "$FOOTPRINT" ]; then
+  REST=${OUT#"$FIRST"}
+  OUT="$FIRST"$'\n'"$FOOTPRINT$REST"
+  FIRST="$FIRST | $FOOTPRINT"
+fi
+
 MSG="## Low disk space
 
 ${OUT}
@@ -56,5 +64,5 @@ Rules while space is short:
 
 # additionalContext reaches the model; systemMessage is the line the user sees.
 record "$LEVEL"
-jq -n --arg msg "$MSG" --arg line "$(printf '%s' "$OUT" | head -1)" \
+jq -n --arg msg "$MSG" --arg line "$FIRST" \
   '{systemMessage: $line, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $msg}}'
