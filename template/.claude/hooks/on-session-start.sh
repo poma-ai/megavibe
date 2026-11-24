@@ -27,6 +27,13 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 # Only act on fresh startup (not compact — that's handled by on-compact.sh)
 [ "$SOURCE" = "startup" ] || exit 0
 
+# Set the cutoff before the context checks, including in a fresh project.
+STAMP_HELPER="$HOME/.megavibe/scripts/scratch-own.sh"
+if [ -x "$STAMP_HELPER" ] && command -v perl >/dev/null 2>&1; then
+  STAMP_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null) || STAMP_SID=""
+  perl -e 'alarm shift; exec @ARGV' 3 "$STAMP_HELPER" stamp "$STAMP_SID" >/dev/null 2>&1 || true
+fi
+
 # NOTE: Context-watcher spawn moved to start-context-watcher.sh — that hook
 # registers for SessionStart with matchers `startup` AND `resume`, so the
 # watcher comes up on /megavibe-restart and `claude --continue` too. This

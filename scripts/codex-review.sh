@@ -206,6 +206,7 @@ trap 'rm -f "$REQ" "$REQ.err" "$ANS" || true; if [ -n "$SCRATCH" ]; then chmod -
 if [ "$SCRATCH_MODE" = 1 ]; then
   SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/codex-review-scratch.XXXXXX") || { SCRATCH=""; echo "error: cannot create the scratch dir" >&2; exit 1; }
   SCRATCH=$(CDPATH= cd -- "$SCRATCH" && pwd -P) || { echo "error: cannot resolve the scratch dir" >&2; exit 1; }   # absolute: a relative TMPDIR would give codex a wrong one
+  printf '%s\n' "$$" > "$SCRATCH/.pid"
   mkdir -p "$SCRATCH/tmp"
 fi
 {
