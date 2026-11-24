@@ -522,7 +522,7 @@ if [ "$MODE" = sprint ]; then
     else if (spare + 0 < 2 || used + 0 > t - 2 || ot + 0 >= t + 0) print "no-room"
     else print "ok" }')
   s_state="-"; [ "$s_reason" != ok ] || s_state=sprint
-  s_fhp=$(LC_ALL=C awk -v fh="${s_fh:-}" -v add="$s_fhadd" 'BEGIN { if (fh !~ /^[0-9]+([.][0-9]+)?$/) exit; v = sprintf("%.1f", fh + add); sub(/\.0$/, "", v); print v }')
+  s_fhp=$(LC_ALL=C awk -v fh="${s_fh:-}" -v add="$s_fhadd" 'BEGIN { if (fh !~ /^[0-9]+([.][0-9]+)?$/) exit; v = int((fh + add) * 10) / 10; print v }')
   printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$PROVIDER" "$s_state" "$s_hl" "${s_used:-}" "$s_fc" "$s_spare" "$s_spend" "$s_basis" "$s_reason" "${s_fhp:-}"
   exit 0
 fi

@@ -235,6 +235,10 @@ check 'five-hour 20, 40, 60, 80 sampled 31 minutes apart: 5h-hot (the slope come
 { rowfh 93 58 $R2 50; rowfh 62 58 $R2 50; rowfh 31 58 $R2 50; rowfh 0 58 $R2 50; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour flat at 50 sampled 31 minutes apart: still a sprint' '[ "$(f 2)" = sprint ]'
+# the printed projection never rounds up to the gate: 79 at -363 s, 80 now is about 84.96 projected and prints below 85
+printf '{"t":%s,"sd":{"p":85,"r":%s},"fh":{"p":79,"r":%s}}\n{"t":%s,"sd":{"p":85,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 363))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'a projection just under 85 prints under 85 (floored), not 85' 'awk -v x="$(f 10)" "BEGIN{exit !(x != \"\" && x < 85)}"'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
