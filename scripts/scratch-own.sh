@@ -595,24 +595,25 @@ def parse_process_start(value):
 
 
 def process_matches(pid, recorded):
+    # An inconclusive check keeps the session but cannot account for a Claude process.
     started = None if recorded is MISSING else parse_process_start(recorded)
-    accessible = True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        accessible = False
-    if started is None or not accessible:
+        return None
+    if started is None:
         return True
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
                                 capture_output=True, text=True, timeout=1,
                                 env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
-        return (result.returncode != 0 or bool(result.stderr)
-                or parse_process_start(result.stdout) == started)
+        if result.returncode != 0 or result.stderr:
+            return None
+        return parse_process_start(result.stdout) == started
     except FAILURES:
-        return True
+        return None
 
 
 def config_path(value):
@@ -673,6 +674,7 @@ def registered_config_dirs(home):
 
 def live_sessions(current):
     live = {current}
+    matched = set()
     invalid = 0
     limit = 1024 * 1024
     home = os.environ["HOME"]
@@ -680,7 +682,7 @@ def live_sessions(current):
     try:
         registered = set(registered_config_dirs(home))
     except (OSError, ValueError):
-        return live, 1
+        return live, matched, "1 invalid session record(s)"
     if os.environ.get("CLAUDE_CONFIG_DIR"):
         configs.append(os.environ["CLAUDE_CONFIG_DIR"])
     for name in os.listdir(home):
@@ -694,12 +696,14 @@ def live_sessions(current):
             continue
     seen = set()
     for config in dict.fromkeys([*configs, *sorted(registered)]):
+        kind, source = "config", config
         try:
             if config in registered:
                 # An unreadable config can hide its sessions directory.
                 with directory(os.path.realpath(config)):
                     pass
-            path = os.path.realpath(os.path.join(config, "sessions"))
+            kind, source = "sessions", os.path.join(config, "sessions")
+            path = os.path.realpath(source)
             with directory(path) as fd:
                 info = os.fstat(fd)
                 identity = (info.st_dev, info.st_ino)
@@ -720,17 +724,39 @@ def live_sessions(current):
                         if not (isinstance(sid, str) and SID.fullmatch(sid)
                                 and type(pid) is int and 0 < pid <= 2147483647):
                             raise ValueError("invalid session record")
-                        if process_matches(pid, record.get("procStart", MISSING)):
+                        match = process_matches(pid, record.get("procStart", MISSING))
+                        if match is not False:
                             live.add(sid)
+                        if match:
+                            matched.add(pid)
                     except FileNotFoundError:
                         continue
                     except (OSError, ValueError, RecursionError):
                         invalid += 1
         except FileNotFoundError:
-            continue
+            if config in registered:
+                return live, matched, f"missing registered {kind} directory {label(source)}"
         except OSError:
+            if config in registered:
+                return live, matched, f"unreadable registered {kind} directory {label(source)}"
             invalid += 1
-    return live, invalid
+    return live, matched, f"{invalid} invalid session record(s)" if invalid else None
+
+
+def claude_processes():
+    result = subprocess.run(["ps", "-U", str(UID), "-o", "pid=,comm="],
+                            capture_output=True, check=True, timeout=2,
+                            env={**os.environ, "LC_ALL": "C"})
+    if result.stderr:
+        raise ValueError("incomplete process listing")
+    processes = set()
+    for line in result.stdout.splitlines():
+        row = re.fullmatch(rb"[ \t]*([1-9][0-9]{0,9})[ \t]+([^ \t].*)", line)
+        if not row or int(row[1]) > 2147483647:
+            raise ValueError("invalid process row")
+        if os.path.basename(row[2]) == b"claude":
+            processes.add(int(row[1]))
+    return processes
 
 
 def sweep_pytest(cutoff, mounts, report):
@@ -841,11 +867,20 @@ def sweep_orphans(script, current, mounts, report):
     if not int(hours):
         return
     cutoff = NOW - int(hours) * 3600
-    live, invalid = live_sessions(current)
+    try:
+        live, matched, reason = live_sessions(current)
+    except FAILURES:
+        reason = "inconclusive session record discovery"
+    if reason is None:
+        try:
+            unrecorded = len(claude_processes() - matched)
+            if unrecorded:
+                reason = f"{unrecorded} unrecorded Claude process(es)"
+        except FAILURES:
+            reason = "inconclusive Claude process scan"
     blocks = ended = 0
-    if invalid:
-        print(f"scratch-own: skipped session scratch sweep due to {invalid} invalid session record(s)",
-              file=sys.stderr)
+    if reason:
+        print(f"scratch-own: skipped session scratch sweep due to {reason}", file=sys.stderr)
     else:
         blocks, ended = sweep_session_orphans(script, live, cutoff, mounts, report)
     try:

@@ -51,6 +51,20 @@ ln -s pytest-2 "$Y/pytest-current"
 export TEST_START='Mon Nov 23 15:31:16 2026'
 cat > "$T/bin/ps" <<'PS'
 #!/bin/bash
+if [[ "$1" = -U ]]; then
+  [[ $# = 4 && "$2" = "$(id -u)" && "$3" = -o && "$4" = pid=,comm= && "${LC_ALL:-}" = C ]] || exit 2
+  case "${TEST_PS_MODE:-}" in
+    failed) exit 1 ;;
+    malformed) echo 'invalid process row'; exit 0 ;;
+    timeout) exec sleep 10 ;;
+    extra) printf '%s\n' '2147483647 claude' ;;
+  esac
+  if [[ -n "${TEST_CLAUDE_PID:-}" ]]; then
+    printf '  %s /path with spaces/claude\n' "$TEST_CLAUDE_PID"
+  fi
+  printf '%s\n' '2147483646 claude-helper'
+  exit 0
+fi
 if [[ "${TZ:-}" = UTC ]]; then
   printf '%s\n' "$TEST_START"
 else
@@ -69,7 +83,7 @@ bash -c 'exit 0' &
 dead_pid=$!
 wait "$dead_pid"
 failures=0
-for scenario in timezone custom sibling registered invalid-start invalid-custom invalid-dead invalid-dead-type invalid-registry-dir attribution; do
+for scenario in timezone custom sibling registered missing-config missing-sessions invalid-start invalid-custom invalid-dead invalid-dead-type invalid-registry-dir attribution; do
   (
     export TEST_ROOT="$T/$scenario" TEST_USER_TEMP="$T/$scenario-no-pytest"
     target="$TEST_ROOT/-project/$live"
@@ -80,12 +94,12 @@ for scenario in timezone custom sibling registered invalid-start invalid-custom 
         export CLAUDE_CONFIG_DIR="$T/custom-config"
         record_dir="$CLAUDE_CONFIG_DIR/sessions"
         ;;
-      registered|invalid-registry-dir) record_dir="$HOME/.config/claude-$scenario/sessions" ;;
+      registered|missing-*|invalid-registry-dir) record_dir="$HOME/.config/claude-$scenario/sessions" ;;
       sibling) record_dir="$HOME/.claude-work/sessions" ;;
       attribution) target="$TEST_ROOT/-personal-notes/notes" ;;
     esac
     mkdir -p "$target" "$record_dir"
-    if [[ "$scenario" = registered || "$scenario" = invalid-registry-dir ]]; then
+    if [[ "$record_dir" = "$HOME/.config/"* ]]; then
       for attempt in 1 2; do
         CLAUDE_CONFIG_DIR="${record_dir%/sessions}" MEGAVIBE_SESSION_TMPDIR=0 bash "$TMP_HOOK" </dev/null || exit 1
       done
@@ -118,6 +132,10 @@ for scenario in timezone custom sibling registered invalid-start invalid-custom 
           touch "$record_dir"  # A non-directory sessions path cannot be read.
         fi
       fi
+      case "$scenario" in
+        missing-config) mv "${record_dir%/sessions}" "$T/offline-config" ;;
+        missing-sessions) mv "$record_dir" "$T/offline-sessions" ;;
+      esac
       if [[ "$scenario" = invalid-* ]]; then
         mkdir "$TEST_ROOT/-project/$dead"
         touch -t 200001010000 "$TEST_ROOT/-project/$dead"
@@ -128,14 +146,28 @@ for scenario in timezone custom sibling registered invalid-start invalid-custom 
       chmod 700 "${record_dir%/sessions}"
       rm -rf "${record_dir%/sessions}"
     fi
+    if [[ "$record_dir" = "$HOME/.config/"* ]]; then rm "$registry"; fi
     rm -f "$record_dir/$live.json"
     [[ -f "$target/live-work" ]] || exit 1
     case "$scenario" in
+      missing-config|missing-sessions|invalid-registry-dir)
+        condition='missing registered config directory'
+        case "$scenario" in
+          missing-sessions) condition='missing registered sessions directory' ;;
+          invalid-registry-dir)
+            [[ -d "$TEST_ROOT/-project/$dead" ]] || exit 1
+            condition='unreadable registered'
+            ;;
+        esac
+        [[ $(wc -l < "$T/$scenario.report") -eq 1 ]] || exit 1
+        grep -Fq "skipped session scratch sweep due to $condition" "$T/$scenario.report"
+        ;;
       invalid-*)
         [[ -d "$TEST_ROOT/-project/$dead" &&
            $(cat "$T/$scenario.report") = 'scratch-own: skipped session scratch sweep due to 1 invalid session record(s)' ]]
         ;;
       attribution) grep -Eq '/-personal-notes/notes: [0-9]+ kB$' "$T/$scenario.report" ;;
+      *) [[ ! -s "$T/$scenario.report" ]] ;;
     esac
   ) || { echo "FAIL: $scenario orphan protection" >&2; failures=1; }
 done
@@ -159,6 +191,7 @@ for scenario in symlink oversized too-many-lines torn garbage; do
       { printf '%s\n' "$trap_config"; printf 'garbage\n%.0s' {1..256}; } > "$registry"
       ;;
     torn)
+      mkdir -p "$HOME/.config/claude-torn/sessions"
       printf '%s\n%s' "$trap_config" "$HOME/.config/claude-torn" > "$registry"
       ;;
     garbage)
@@ -169,6 +202,7 @@ for scenario in symlink oversized too-many-lines torn garbage; do
   CLAUDE_CONFIG_DIR="$HOME/.config/claude-new" bash "$TMP_HOOK" </dev/null
   if [[ "$scenario" = garbage || "$scenario" = torn ]]; then
     grep -Fxq "$HOME/.config/claude-new" "$registry"
+    mkdir -p "$HOME/.config/claude-new/sessions"
   else
     cmp "$T/registry-before" "$registry"
     if [[ "$scenario" = symlink ]]; then [[ -L "$registry" ]]; fi
@@ -215,6 +249,22 @@ printf '{"sessionId":' > "$damaged"
 [[ $(cat "$T/damaged-report") = 'scratch-own: skipped session scratch sweep due to 1 invalid session record(s)' ]] || exit 1
 if command -v lsof >/dev/null; then [[ ! -e "$Y/pytest-0" ]] || exit 1; fi
 rm "$damaged"
+export TEST_CLAUDE_PID=$$
+mkdir -p "$Y/pytest-0"
+touch -t 200001010000 "$Y/pytest-0"
+for mode in extra failed malformed timeout; do
+  TEST_PS_MODE="$mode" "$OWN" sweep-orphans "$current" >/dev/null 2>"$T/$mode-report"
+  [[ -d "$P/$dead" && -d "$TEST_ROOT/t/tempdead" ]] || {
+    echo "FAIL: session scratch removed with process scan mode $mode" >&2
+    exit 1
+  }
+  case "$mode" in
+    extra) reason='1 unrecorded Claude process(es)' ;;
+    *) reason='inconclusive Claude process scan' ;;
+  esac
+  [[ $(cat "$T/$mode-report") = "scratch-own: skipped session scratch sweep due to $reason" ]]
+done
+if command -v lsof >/dev/null; then [[ ! -e "$Y/pytest-0" ]] || exit 1; fi
 rc=0
 out=$("$OWN" sweep-orphans "$current" 2>"$T/report") || rc=$?
 if [[ $(id -u) != 0 ]]; then [[ $rc = 0 ]]; else [[ $rc = 4 ]]; fi
@@ -228,7 +278,12 @@ if [[ $(id -u) = 0 ]]; then [[ -d "$P/$foreign" && -f "$P/$foreign_child/fixture
 [[ -d "$Y/pytest-1" && -d "$Y/pytest-2" && -L "$Y/pytest-current" && -d "$Y/pytest-not-number" ]]
 if command -v lsof >/dev/null; then [[ ! -e "$Y/pytest-0" ]]; else [[ -d "$Y/pytest-0" ]]; fi
 exec 9<&-
-mkdir "$P/$hook_orphan"
+unset TEST_CLAUDE_PID
+rm "$HOME/.claude/sessions/"*.json
+rmdir "$HOME/.claude/sessions"
+export CLAUDE_CONFIG_DIR="$T/absent-config" TEST_ROOT="$T/zero-live"
+P="$TEST_ROOT/-project"
+mkdir -p "$P/$hook_orphan"
 [[ -z $(cd "$TMPDIR" && printf '{"session_id":"%s"}\n' "$current" | bash "$HOOK") ]]
 touch -t 200001010000 "$P/$hook_orphan"
 (cd "$T" && printf '{"session_id":"%s"}\n' "$current" | bash "$HOOK") | grep -q 'freed .* from 1 ended sessions'
