@@ -1439,6 +1439,7 @@ fi
 #
 # megavibe usage probe run|status: the Codex usage probe (scripts/usage-probe.sh); the PA's node runs it, see README.
 # megavibe usage forecast: the recent-pace forecast for both subscriptions (usage-route.sh forecast).
+# megavibe usage sprint: the end-of-window sprint state for both subscriptions (usage-route.sh sprint), then the advice.
 if [ "${1:-}" = "usage" ]; then
   shift
   _s="$MEGAVIBE_HOME/scripts/usage-probe.sh"; _r="$MEGAVIBE_HOME/scripts/usage-route.sh"
@@ -1447,7 +1448,24 @@ if [ "${1:-}" = "usage" ]; then
     probe) shift; [ -f "$_s" ] || { echo "megavibe usage: usage-probe.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }; exec bash "$_s" "$@" ;;
     forecast) [ -f "$_r" ] || { echo "megavibe usage: usage-route.sh not installed" >&2; exit 1; }
       for _p in claude codex; do MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" forecast --peek; done; exit 0 ;;
-    *) echo "usage: megavibe usage probe {run [--every MIN]|status} | megavibe usage forecast" >&2; exit 2 ;;
+    sprint) [ -f "$_r" ] || { echo "megavibe usage: usage-route.sh not installed" >&2; exit 1; }
+      # --peek and a shape check: an older installed router has no sprint mode and would run its default, state-writing one
+      _out=""
+      for _p in claude codex; do
+        _l=$(MEGAVIBE_ROUTER_PROVIDER=$_p bash "$_r" sprint --peek 2>/dev/null)
+        case "$_l" in "$_p|sprint|"*|"$_p|-|"*) _out="$_out$_l"$'\n' ;;
+          *) echo "megavibe usage: $_r has no sprint state (an older install); run bash ~/.megavibe/setup.sh to update it" >&2; exit 1 ;; esac
+      done
+      # the advice is rendered from those rows; a router without sprint-render falls through to its ordinary routing row, so every
+      # rendered line must be a sprint sentence, else nothing is published
+      _adv=$(printf '%s' "$_out" | bash "$_r" sprint-render --peek 2>/dev/null)
+      if [ -n "$_adv" ]; then
+        while IFS= read -r _a; do
+          case "$_a" in "usage sprint: "*) ;; *) echo "megavibe usage: $_r has no sprint-render (an older install); run bash ~/.megavibe/setup.sh to update it" >&2; exit 1 ;; esac
+        done <<<"$_adv"
+      fi
+      printf '%s' "$_out"; [ -z "$_adv" ] || printf '%s\n' "$_adv"; exit 0 ;;
+    *) echo "usage: megavibe usage probe {run [--every MIN]|status} | megavibe usage forecast | megavibe usage sprint" >&2; exit 2 ;;
   esac
 fi
 
