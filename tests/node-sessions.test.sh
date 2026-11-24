@@ -18,7 +18,7 @@ PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 
 B="$T/bin"; mkdir -p "$B"
-printf '#!/bin/bash\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\n[ -z "${TMUX_NOSERVER:-}" ] || { echo "no server running on /nowhere" >&2; exit 1; }\n[ "${TMUX_FAIL_VERB:-}" != "$1" ] || exit 1\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
+printf '#!/bin/bash\n[ -z "${MEGAVIBE_PARENT_SESSION+x}" ] || echo leak >> "%s/tmux.leak"\n[ -z "${TMUX_BROKEN:-}" ] || { echo "protocol version mismatch" >&2; exit 1; }\n[ -z "${TMUX_NOSERVER:-}" ] || { echo "no server running on /nowhere" >&2; exit 1; }\n[ "${TMUX_FAIL_VERB:-}" != "$1" ] || exit 1\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$T" "$REAL_TMUX" "$SOCK" > "$B/tmux"
 # megavibe stub: one line per call, then it stays alive like a session would.
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nprintf "%%s %%s\\n" "$3" "${MEGAVIBE_PARENT_SESSION-unset}" >> "%s/megavibe.parents"\nexec sleep 600\n' "$T" "$T" > "$B/megavibe"
 printf '#!/bin/bash\necho testmac\n' > "$B/scutil"
@@ -199,6 +199,7 @@ MEGAVIBE_PARENT_SESSION= ctl session start indep --dir "$D" --task "$TASK" --win
 MEGAVIBE_PARENT_SESSION=override-9 ctl session start overr --dir "$D" --task "$TASK" --window w-overr
 unset CLAUDE_CODE_SESSION_ID
 check "explicit empty override: the helper gets no parent although a session runs the command" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "indep " "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "indep " "$T/megavibe.parents"'
+check "an explicit parent override never reaches the tmux client environment (a new server would hand it to every later window)" '[ ! -e "$T/tmux.leak" ]'
 check "explicit override: the helper gets the named parent, not the caller" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "overr override-9" "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "overr override-9" "$T/megavibe.parents"'
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

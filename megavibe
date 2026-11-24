@@ -19,7 +19,8 @@ MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 # MEGAVIBE_PARENT_SESSION (which session launched this one) is read once and removed from the
 # environment: claude and every tool under it inherit the wrapper's environment and would hand it
 # to a launch of their own, linking a grandchild to its grandparent. It is put back only for the
-# wrapper's own re-exec (restore_launch_parent), which reads it again.
+# wrapper's own re-exec (restore_launch_parent), which reads it again, and for the `node` and `assistant`
+# dispatch, which hand an explicit value to the window they open through an explicit `env` word.
 capture_launch_parent() {
   LAUNCH_PARENT_SET="${MEGAVIBE_PARENT_SESSION+x}"
   LAUNCH_PARENT="${MEGAVIBE_PARENT_SESSION-}"
