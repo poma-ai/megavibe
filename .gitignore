@@ -21,6 +21,7 @@ build/
 /.claude/skills/
 /.claude/agents/
 /.claude/settings.json
+/.claude/shared-memory-full.md
 /.claude/verify.sh
 /.claude/verify.sh.example
 
