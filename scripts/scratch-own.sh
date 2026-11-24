@@ -2,10 +2,15 @@
 set -euo pipefail
 
 # Resolve the harness default centrally so a moved scratch volume stays visible.
-if [[ -z "${TMPDIR:-}" && "${1:-}" != stamp ]]; then
-  TMPDIR=$("$(dirname "$0")/scratch-root.sh" base)
-  export TMPDIR
-fi
+case "${1:-}" in
+  stamp|session-tmpdir|register-config-dir|sweep-orphans) ;;
+  *)
+    if [[ -z "${TMPDIR:-}" ]]; then
+      TMPDIR=$("$(dirname "$0")/scratch-root.sh" base)
+      export TMPDIR
+    fi
+    ;;
+esac
 
 # Directory descriptors keep cleanup anchored even if a name is replaced mid-walk.
 exec python3 - "$0" "$@" <<'PY'
@@ -14,16 +19,27 @@ import fcntl
 import fnmatch
 import json
 import os
+import pwd
 import re
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import datetime
 
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 MARK = ".megavibe-review-copy"
-SID = re.compile(r"[A-Za-z0-9-]+")
+SID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
+TEMP_MARK = ".sid"
+CONFIG_REGISTRY = "claude-config-dirs"
+CONFIG_BYTES = 64 * 1024
+CONFIG_LINES = 256
+MISSING = object()
+UID = os.getuid()
 REVIEW = ("claude-review-scratch.*", "codex-review-scratch.*")
 NOW = time.time()
 RESUME_CUTOFF = NOW - 3600
@@ -183,13 +199,14 @@ def owned(parent, name, path, info, sid, started, registered, cleaning):
     return False
 
 
-def tree(fd, device, path, mounts, scratchpad=False):
+def tree(fd, device, path, mounts, scratchpad=False, owner_only=False):
     root = os.fstat(fd)
     newest, blocks, keep = root.st_mtime, root.st_blocks, False
     for name in os.listdir(fd):
         child = os.path.join(path, name)
         info = entry(fd, name)
-        if info.st_dev != device or child in mounts:
+        if (info.st_dev != device or child in mounts
+                or (owner_only and info.st_uid != UID)):
             raise ValueError("mount boundary")
         newest = max(newest, info.st_mtime)
         if scratchpad:
@@ -198,7 +215,7 @@ def tree(fd, device, path, mounts, scratchpad=False):
             with directory(name, fd) as sub:
                 if not same_entry(info, os.fstat(sub)):
                     raise ValueError("entry changed")
-                modified, allocated, protected = tree(sub, device, child, mounts, scratchpad)
+                modified, allocated, protected = tree(sub, device, child, mounts, scratchpad, owner_only)
                 newest = max(newest, modified)
                 blocks += allocated
                 keep |= protected
@@ -243,33 +260,54 @@ def remove_file(parent, name, expected):
     os.unlink(name, dir_fd=parent)
 
 
-def remove(parent, name, expected, path, mounts, scratchpad=False):
+def remove(parent, name, expected, path, mounts, cutoff=None, owner_only=False,
+           preserve_temp_root=False, protect_reviewers=False):
     with directory(name, parent) as fd:
         info = os.fstat(fd)
         if not same_entry(info, expected) or path in mounts:
             raise ValueError("entry changed")
-        if scratchpad and info.st_mtime >= RESUME_CUTOFF:
+        if cutoff is not None and info.st_mtime >= cutoff:
             raise ValueError("entry changed")
         children = os.listdir(fd)
-        if scratchpad and ".keep" in children:
+        if owner_only and info.st_uid != UID:
+            raise ValueError("foreign owner")
+        if cutoff is not None and ".keep" in children:
             raise ValueError("entry protected")
+        if protect_reviewers and any(fnmatch.fnmatchcase(name, pattern) for pattern in REVIEW):
+            try:
+                if reviewer_running(fd, path):
+                    return True, 0
+            except FAILURES:
+                return True, 0
         writable(fd, info)
+        retained = False
+        blocks = 0
         # Keep the ownership marker until the rest has gone, so a retry can
         # still identify a copy after a partial deletion.
-        for child in sorted(children, key=lambda name: name == MARK):
+        for child in sorted(children, key=lambda name: name in (MARK, TEMP_MARK)):
+            if child == TEMP_MARK and (preserve_temp_root or (protect_reviewers and retained)):
+                continue
             child_path = os.path.join(path, child)
             item = entry(fd, child)
-            if item.st_dev != info.st_dev or child_path in mounts:
+            if (item.st_dev != info.st_dev or child_path in mounts
+                    or (owner_only and item.st_uid != UID)):
                 raise ValueError("mount boundary")
             if stat.S_ISDIR(item.st_mode):
-                remove(fd, child, item, child_path, mounts, scratchpad)
+                kept, removed = remove(fd, child, item, child_path, mounts, cutoff, owner_only,
+                                       protect_reviewers=protect_reviewers)
+                retained |= kept
+                blocks += removed
                 continue
-            if scratchpad and item.st_mtime >= RESUME_CUTOFF:
+            if cutoff is not None and item.st_mtime >= cutoff:
                 raise ValueError("entry changed")
             remove_file(fd, child, item)
+            blocks += file_blocks(item)
         if not same_entry(entry(parent, name), info):
             raise ValueError("entry changed")
-        os.rmdir(name, dir_fd=parent)
+        if not preserve_temp_root and not retained:
+            os.rmdir(name, dir_fd=parent)
+            blocks += info.st_blocks
+        return retained, blocks
 
 
 def sweep_entry(fd, name, path, device, mounts):
@@ -291,7 +329,7 @@ def sweep_entry(fd, name, path, device, mounts):
         return None
     writable(fd, os.fstat(fd))
     if is_dir:
-        remove(fd, name, info, path, mounts, scratchpad=True)
+        remove(fd, name, info, path, mounts, cutoff=RESUME_CUTOFF)
     else:
         remove_file(fd, name, info)
     return allocated
@@ -331,13 +369,10 @@ def sweep_session(project, sid, expected, path, device, mounts, report):
 def sweep_scratchpads(script, sid, mounts, report):
     # Use the same root list and project levels as disk-watch. Resolve paths
     # for mount lookup, and open each directory relative to its pinned parent.
-    if "\n" in os.environ.get("CLAUDE_CODE_TMPDIR", ""):
-        raise ValueError("invalid session root path")
-    roots = output(os.path.join(os.path.dirname(os.path.abspath(script)),
-                                "scratch-root.sh"), "roots").split(b"\n")
+    roots = root_paths(script, "roots")
     seen = set()
     count = blocks = 0
-    for root in filter(None, map(os.fsdecode, roots)):
+    for root in roots:
         try:
             root_info = os.lstat(root)
             if not stat.S_ISDIR(root_info.st_mode):
@@ -347,7 +382,7 @@ def sweep_scratchpads(script, sid, mounts, report):
                     raise ValueError("entry changed")
                 physical = os.path.realpath(root)
                 for name in os.listdir(fd):
-                    if name.startswith("."):
+                    if name == "t" or name.startswith("."):
                         continue
                     project_path = os.path.join(physical, name)
                     path = os.path.join(project_path, sid)
@@ -381,6 +416,481 @@ def sweep_scratchpads(script, sid, mounts, report):
     return seen, count, (blocks + 1) // 2
 
 
+def root_paths(script, command):
+    if "\n" in os.environ.get("CLAUDE_CODE_TMPDIR", ""):
+        raise ValueError("invalid session root path")
+    helper = os.path.join(os.path.dirname(os.path.abspath(script)), "scratch-root.sh")
+    return list(filter(None, map(os.fsdecode, output(helper, command).splitlines())))
+
+
+def canonical_temp(path):
+    if not os.path.isabs(path) or path != label(path):
+        raise ValueError("invalid temp path")
+    path = path.rstrip("/") or "/"
+    if path != os.path.normpath(path):
+        raise ValueError("noncanonical temp path")
+    if sys.platform == "darwin" and (path in ("/tmp", "/var")
+                                     or path.startswith(("/tmp/", "/var/"))):
+        path = "/private" + path
+    return path
+
+
+@contextmanager
+def pinned_dir(path, create=False):
+    # Open every component without following symlinks, including root ancestors.
+    parent, name = os.path.split(path)
+    if not name:
+        with directory(path) as fd:
+            yield fd
+        return
+    with pinned_dir(parent) as fd:
+        with child_dir(fd, name, create) as child:
+            yield child
+
+
+@contextmanager
+def child_dir(parent, name, create=False):
+    if create:
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass
+    with directory(name, parent) as fd:
+        yield fd
+
+
+def safe_dir(info, device, path, mounts):
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid == UID
+            and info.st_dev == device and path not in mounts)
+
+
+def marker_sid(fd, name):
+    info = entry(fd, TEMP_MARK)
+    if info.st_uid != UID or info.st_nlink != 1 or info.st_size > 4096:
+        return None
+    sid = read_at(fd, TEMP_MARK).decode("ascii").removesuffix("\n")
+    return sid if SID.fullmatch(sid) and sid[:8] == name else None
+
+
+def system_temp():
+    if sys.platform == "darwin":
+        return os.fsdecode(output("getconf", "DARWIN_USER_TEMP_DIR", timeout=1).strip())
+    return "/tmp"
+
+
+def session_tmpdir(script, sid):
+    envfile = os.environ.get("CLAUDE_ENV_FILE")
+    if not envfile or len(sid) >= 4096 or os.environ.get("MEGAVIBE_SESSION_TMPDIR") == "0":
+        return
+    pinned = os.environ.get("TMPDIR", "").rstrip("/")
+    if (pinned and pinned not in ("/tmp", "/private/tmp")
+            and pinned != system_temp().rstrip("/")):
+        return
+    root, = map(canonical_temp, root_paths(script, "root"))
+    short = sid[:8]
+    path = os.path.join(root, "t", short)
+    # Leave room for socket filenames, including on macOS's 104-byte sockaddr_un.
+    if len(os.fsencode(path + "/ctl.sock")) >= 90:
+        return
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+    with os.fdopen(os.open(envfile, flags, 0o600), "w", encoding="utf-8",
+                   errors="surrogateescape") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            return
+        with pinned_dir(root, create=True) as fd:
+            root_info = os.fstat(fd)
+            if root_info.st_uid != UID or root_info.st_mode & 0o022:
+                return
+            with child_dir(fd, "t", create=True) as temp:
+                info = os.fstat(temp)
+                if info.st_uid != UID or info.st_mode & 0o022 or info.st_dev != root_info.st_dev:
+                    return
+                try:
+                    os.mkdir(short, 0o700, dir_fd=temp)
+                except FileExistsError:
+                    if short not in os.listdir(temp):
+                        return
+                    with directory(short, temp) as child:
+                        info = os.fstat(child)
+                        if (info.st_uid != UID or stat.S_IMODE(info.st_mode) != 0o700
+                                or info.st_dev != root_info.st_dev or marker_sid(child, short) != sid):
+                            return
+                        os.utime(child, None)
+                else:
+                    with directory(short, temp) as child:
+                        os.fchmod(child, 0o700)
+                        marker = os.open(TEMP_MARK, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                                         os.O_NOFOLLOW, 0o600, dir_fd=child)
+                        with os.fdopen(marker, "w", encoding="ascii") as identity_file:
+                            identity_file.write(sid + "\n")
+                stream.write(f"export TMPDIR={shlex.quote(path)}; "
+                             '[ -L "$TMPDIR" ] || [ -d "$TMPDIR" ] || mkdir -m 700 -p "$TMPDIR"\n')
+
+
+def old_tree(parent, name, info, path, mounts, cutoff):
+    with directory(name, parent) as fd:
+        if not same_entry(info, os.fstat(fd)):
+            raise ValueError("entry changed")
+        newest, blocks, keep = tree(fd, info.st_dev, path, mounts, True, True)
+    return blocks if not keep and newest < cutoff else None
+
+
+def session_temps(roots, sid, cmd, mounts, report):
+    count = blocks = 0
+    matched = []
+    seen = set()
+    cutoff = RESUME_CUTOFF if cmd == "clean-end" else float("inf")
+    for path in roots:
+        temp_path = os.path.join(path, "t")
+        short = sid[:8]
+        target = os.path.join(temp_path, short)
+        if target in seen:
+            continue
+        seen.add(target)
+        try:
+            with pinned_dir(path) as root, directory("t", root) as temp:
+                device = os.fstat(root).st_dev
+                if (os.fstat(root).st_uid != UID
+                        or not safe_dir(os.fstat(temp), device, temp_path, mounts)
+                        or short not in os.listdir(temp)):
+                    continue
+                info = entry(temp, short)
+                if not safe_dir(info, device, target, mounts):
+                    continue
+                with directory(short, temp) as fd:
+                    if not same_entry(info, os.fstat(fd)) or marker_sid(fd, short) != sid:
+                        continue
+                matched.append(target)
+                if cmd == "other":
+                    continue
+                if cmd == "list":
+                    print(f"{size(target)}\t{target}")
+                    continue
+                allocated = old_tree(temp, short, info, target, mounts, cutoff)
+                if allocated is not None:
+                    retained, removed = remove(
+                        temp, short, info, target, mounts, cutoff, owner_only=True,
+                        preserve_temp_root=(cmd == "clean-unit"), protect_reviewers=True)
+                    if removed or not retained:
+                        count += 1
+                    blocks += removed
+        except FileNotFoundError:
+            continue
+        except FAILURES as exc:
+            report(target, exc)
+    return count, (blocks + 1) // 2, matched
+
+
+def parse_process_start(value):
+    if not isinstance(value, str):
+        raise ValueError("invalid process start")
+    text = " ".join(value.split())
+    if not re.fullmatch(
+            r"[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}", text):
+        raise ValueError("invalid process start")
+    started = datetime.strptime(text, "%a %b %d %H:%M:%S %Y")
+    if started.strftime("%a").lower() != text[:3].lower():
+        raise ValueError("invalid process start weekday")
+    return started
+
+
+def process_matches(pid, recorded):
+    # An inconclusive check keeps the session but cannot account for a Claude process.
+    started = None if recorded is MISSING else parse_process_start(recorded)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return None
+    if started is None:
+        return True
+    try:
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
+                                capture_output=True, text=True, timeout=1,
+                                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
+        if result.returncode != 0 or result.stderr:
+            return None
+        return parse_process_start(result.stdout) == started
+    except FAILURES:
+        return None
+
+
+def config_path(value):
+    if not value.startswith(b"/") or re.search(rb"[\x00-\x1f\x7f]", value):
+        return None
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def config_lines(data):
+    if len(data) <= CONFIG_BYTES and data.count(b"\n") <= CONFIG_LINES:
+        # Writers terminate each entry with a newline.
+        if data and not data.endswith(b"\n"):
+            raise ValueError("unterminated registry entry")
+        return data.split(b"\n")[:-1]
+    raise ValueError("registry over its limits")
+
+
+def register_config_dir():
+    home = os.environ["HOME"]
+    value = os.environ.get("CLAUDE_CONFIG_DIR", "").encode("utf-8")
+    config = config_path(value)
+    if (config is None or len(value) >= CONFIG_BYTES
+            or config.rstrip("/") == os.path.join(home, ".claude")):
+        return
+    with pinned_dir(home) as parent, child_dir(parent, ".megavibe", create=True) as root:
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK
+        fd = os.open(CONFIG_REGISTRY, flags, 0o600, dir_fd=root)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != UID or info.st_nlink != 1:
+                return
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.fchmod(fd, 0o600)
+            data = stream.read(CONFIG_BYTES + 1)
+            try:
+                if value in config_lines(data):
+                    return
+            except ValueError:
+                pass
+            addition = (b"\n" if data and not data.endswith(b"\n") else b"") + value + b"\n"
+            if (len(data) + len(addition) <= CONFIG_BYTES
+                    and data.count(b"\n") + addition.count(b"\n") <= CONFIG_LINES):
+                os.write(fd, addition)
+
+
+def registered_config_dirs(home):
+    try:
+        with pinned_dir(os.path.join(home, ".megavibe")) as root:
+            data = read_at(root, CONFIG_REGISTRY, CONFIG_BYTES + 1)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    # A registry that cannot be trusted (symlink, oversize, torn write) raises ValueError.
+    return [path for line in config_lines(data) if (path := config_path(line)) is not None]
+
+
+def live_sessions(current):
+    live = {current}
+    matched = set()
+    invalid = 0
+    limit = 1024 * 1024
+    home = os.environ["HOME"]
+    configs = [os.path.join(home, ".claude")]
+    try:
+        registered = set(registered_config_dirs(home))
+    except (OSError, ValueError):
+        return live, matched, "1 invalid session record(s)"
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        configs.append(os.environ["CLAUDE_CONFIG_DIR"])
+    for name in os.listdir(home):
+        if not name.startswith(".claude"):
+            continue
+        config = os.path.join(home, name)
+        try:
+            if stat.S_ISDIR(os.stat(config).st_mode):
+                configs.append(config)
+        except FileNotFoundError:
+            continue
+    seen = set()
+    for config in dict.fromkeys([*configs, *sorted(registered)]):
+        kind, source = "config", config
+        try:
+            if config in registered:
+                # An unreadable config can hide its sessions directory.
+                with directory(os.path.realpath(config)):
+                    pass
+            kind, source = "sessions", os.path.join(config, "sessions")
+            path = os.path.realpath(source)
+            with directory(path) as fd:
+                info = os.fstat(fd)
+                identity = (info.st_dev, info.st_ino)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                for name in os.listdir(fd):
+                    if not name.endswith(".json"):
+                        continue
+                    try:
+                        data = read_at(fd, name, limit + 1)
+                        if len(data) > limit:
+                            raise ValueError("session record too large")
+                        record = json.loads(data)
+                        if not isinstance(record, dict):
+                            raise ValueError("invalid session record")
+                        sid, pid = record.get("sessionId"), record.get("pid")
+                        if not (isinstance(sid, str) and SID.fullmatch(sid)
+                                and type(pid) is int and 0 < pid <= 2147483647):
+                            raise ValueError("invalid session record")
+                        match = process_matches(pid, record.get("procStart", MISSING))
+                        if match is not False:
+                            live.add(sid)
+                        if match:
+                            matched.add(pid)
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, ValueError, RecursionError):
+                        invalid += 1
+        except FileNotFoundError:
+            if config in registered:
+                return live, matched, f"missing registered {kind} directory {label(source)}"
+        except OSError:
+            if config in registered:
+                return live, matched, f"unreadable registered {kind} directory {label(source)}"
+            invalid += 1
+    return live, matched, f"{invalid} invalid session record(s)" if invalid else None
+
+
+def claude_processes():
+    result = subprocess.run(["ps", "-U", str(UID), "-o", "pid=,comm="],
+                            capture_output=True, check=True, timeout=2,
+                            env={**os.environ, "LC_ALL": "C"})
+    if result.stderr:
+        raise ValueError("incomplete process listing")
+    processes = set()
+    for line in result.stdout.splitlines():
+        row = re.fullmatch(rb"[ \t]*([1-9][0-9]{0,9})[ \t]+([^ \t].*)", line)
+        if not row or int(row[1]) > 2147483647:
+            raise ValueError("invalid process row")
+        if os.path.basename(row[2]) == b"claude":
+            processes.add(int(row[1]))
+    return processes
+
+
+def sweep_pytest(cutoff, mounts, report):
+    lsof = shutil.which("lsof")
+    if not lsof:
+        return 0
+    base = canonical_temp(system_temp())
+    path = os.path.join(base, "pytest-of-" + pwd.getpwuid(UID).pw_name)
+    blocks = 0
+    try:
+        with pinned_dir(base) as root, directory(os.path.basename(path), root) as parent:
+            device = os.fstat(root).st_dev
+            if not safe_dir(os.fstat(parent), device, path, mounts):
+                return 0
+            for name in os.listdir(parent):
+                if not re.fullmatch(r"pytest-[0-9]+", name):
+                    continue
+                target = os.path.join(path, name)
+                try:
+                    info = entry(parent, name)
+                    if not safe_dir(info, device, target, mounts) or info.st_mtime >= cutoff:
+                        continue
+                    allocated = old_tree(parent, name, info, target, mounts, cutoff)
+                    if allocated is None:
+                        continue
+                    # lsof can report symlinks in the tree, but +D without -x
+                    # does not traverse them or cross mount points.
+                    result = subprocess.run([lsof, "+D", target], stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, timeout=1)
+                    if result.returncode == 1 and not result.stdout and not result.stderr:
+                        remove(parent, name, info, target, mounts, cutoff, True)
+                        blocks += allocated
+                except FAILURES as exc:
+                    report(target, exc)
+    except FileNotFoundError:
+        pass
+    return blocks
+
+
+def sweep_session_orphans(script, live, cutoff, mounts, report):
+    ended = set()
+    live_uuids = {sid.lower() for sid in live if UUID.fullmatch(sid)}
+    blocks = 0
+    for path in dict.fromkeys(map(canonical_temp, root_paths(script, "roots"))):
+        try:
+            with pinned_dir(path) as root:
+                root_info = os.fstat(root)
+                if root_info.st_uid != UID or ".keep" in os.listdir(root):
+                    continue
+                for project in os.listdir(root):
+                    project_path = os.path.join(path, project)
+                    try:
+                        info = entry(root, project)
+                        if not safe_dir(info, root_info.st_dev, project_path, mounts):
+                            continue
+                        # Harness slugs encode absolute project paths and start with a dash.
+                        if project != "t" and not project.startswith("-"):
+                            print(f"scratch-own: {label(project_path)}: {size(project_path)} kB",
+                                  file=sys.stderr)
+                            continue
+                        with directory(project, root) as parent:
+                            if not same_entry(info, os.fstat(parent)):
+                                raise ValueError("entry changed")
+                            if ".keep" in os.listdir(parent):
+                                continue
+                            for name in os.listdir(parent):
+                                target = os.path.join(project_path, name)
+                                try:
+                                    info = entry(parent, name)
+                                    if not safe_dir(info, root_info.st_dev, target, mounts):
+                                        continue
+                                    if project != "t" and not UUID.fullmatch(name):
+                                        print(f"scratch-own: {label(target)}: {size(target)} kB",
+                                              file=sys.stderr)
+                                        continue
+                                    if info.st_mtime >= cutoff:
+                                        continue
+                                    sid = name
+                                    if project == "t":
+                                        with directory(name, parent) as fd:
+                                            if not same_entry(info, os.fstat(fd)):
+                                                raise ValueError("entry changed")
+                                            sid = marker_sid(fd, name)
+                                    if not sid or sid in live or sid.lower() in live_uuids:
+                                        continue
+                                    allocated = old_tree(parent, name, info, target, mounts, cutoff)
+                                    if allocated is not None:
+                                        remove(parent, name, info, target, mounts, cutoff, True)
+                                        blocks += allocated
+                                        ended.add(sid)
+                                except FileNotFoundError:
+                                    continue
+                                except FAILURES as exc:
+                                    report(target, exc)
+                    except FAILURES as exc:
+                        report(project_path, exc)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except FAILURES as exc:
+            report(path, exc)
+    return blocks, len(ended)
+
+
+def sweep_orphans(script, current, mounts, report):
+    hours = os.environ.get("MEGAVIBE_SCRATCH_ORPHAN_HOURS") or "24"
+    if not re.fullmatch(r"[0-9]{1,9}", hours):
+        raise ValueError("invalid orphan age")
+    if not int(hours):
+        return
+    cutoff = NOW - int(hours) * 3600
+    try:
+        live, matched, reason = live_sessions(current)
+    except FAILURES:
+        reason = "inconclusive session record discovery"
+    if reason is None:
+        try:
+            unrecorded = len(claude_processes() - matched)
+            if unrecorded:
+                reason = f"{unrecorded} unrecorded Claude process(es)"
+        except FAILURES:
+            reason = "inconclusive Claude process scan"
+    blocks = ended = 0
+    if reason:
+        print(f"scratch-own: skipped session scratch sweep due to {reason}", file=sys.stderr)
+    else:
+        blocks, ended = sweep_session_orphans(script, live, cutoff, mounts, report)
+    try:
+        blocks += sweep_pytest(cutoff, mounts, report)
+    except FAILURES as exc:
+        report("pytest runs", exc)
+    if ended or blocks:
+        print(f"freed {blocks / 2048:.0f} MB from {ended} ended sessions")
+
+
 def size(path):
     raw = output("du", "-skx", path).split(b"\t", 1)[0]
     if not raw.isdigit():
@@ -392,7 +902,7 @@ def label(path):
     return re.sub(r"[\x00-\x1f\x7f]", "?", path)
 
 
-def scan_shared(cmd, sid, arg, stamp, paths, mounts, swept, report):
+def scan_shared(cmd, sid, arg, stamp, paths, mounts, swept, report, short_dirs=()):
     started = None
     if sid:
         try:
@@ -424,6 +934,7 @@ def scan_shared(cmd, sid, arg, stamp, paths, mounts, swept, report):
     count = total = 0
     others = []
     session_dirs = os.environ.get("MEGAVIBE_SCRATCH_SESSION_DIRS", "").splitlines()
+    session_dirs.extend(short_dirs)
 
     def visit(parent, name, path):
         nonlocal count, total
@@ -539,9 +1050,13 @@ def footprint_paths(stamps, boot, bases):
 def main():
     script = sys.argv.pop(1)
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if (cmd not in ("stamp", "register", "list", "other", "clean-unit", "clean-end")
+    if cmd == "register-config-dir" and len(sys.argv) == 2:
+        register_config_dir()
+        return 0
+    if (cmd not in ("stamp", "register", "list", "other", "clean-unit", "clean-end",
+                        "session-tmpdir", "sweep-orphans")
             or (cmd != "register" and len(sys.argv) > 3)):
-        raise ValueError("usage: scratch-own.sh stamp SID | register [SID] PATH... | list SID | other [N] | clean-unit SID | clean-end SID")
+        raise ValueError("usage: scratch-own.sh stamp SID | register [SID] PATH... | list SID | other [N] | clean-unit SID | clean-end SID | session-tmpdir SID | register-config-dir | sweep-orphans SID")
     arg = sys.argv[2] if len(sys.argv) >= 3 else ""
     if cmd == "other" and arg and not re.fullmatch(r"[0-9]{1,6}", arg):
         raise ValueError("invalid entry count")
@@ -557,9 +1072,11 @@ def main():
             raise ValueError("register requires a session ID argument or CLAUDE_CODE_SESSION_ID")
         if not paths:
             raise ValueError("register requires at least one path")
-    if (not SID.fullmatch(sid) and (sid or cmd != "other")
-            or cmd == "clean-end" and sid.startswith("-")):
+    if not SID.fullmatch(sid) and (sid or cmd != "other"):
         raise ValueError("invalid session id")
+    if cmd == "session-tmpdir":
+        session_tmpdir(script, sid)
+        return 0
     stamps = os.path.join(os.environ["HOME"], ".megavibe", "scratch-start")
     stamp = os.path.join(stamps, sid)
     if cmd == "stamp":
@@ -582,6 +1099,10 @@ def main():
         errors += 1
         print(f"scratch-own: skipped {label(path)} ({type(exc).__name__})", file=sys.stderr)
 
+    if cmd == "sweep-orphans":
+        sweep_orphans(script, sid, mounts, report)
+        return 4 if errors else 0
+
     # SessionEnd also sweeps the session directory itself, where attribution is
     # unnecessary. Delete scratch directly so it frees space without filling Trash.
     swept = set()
@@ -592,13 +1113,36 @@ def main():
         except FAILURES as exc:
             report("session roots", exc)
 
+    count = total = 0
+    short_dirs = []
+    skip_shared = False
+    if sid and cmd in ("list", "other", "clean-unit", "clean-end"):
+        try:
+            # The short TMPDIR is measured and cleaned as a single attributed tree.
+            # If a Bash call inherited it, do not scan its children a second time.
+            temp = os.path.realpath(os.environ["TMPDIR"])
+            roots = tuple(map(canonical_temp, root_paths(script, "roots")))
+            for root in roots:
+                short_base = os.path.join(root, "t")
+                if temp == short_base or temp.startswith(short_base + "/"):
+                    if cmd == "other":
+                        os.environ["TMPDIR"] = system_temp()
+                    else:
+                        skip_shared = True
+                    break
+            count, total, short_dirs = session_temps(roots, sid, cmd, mounts, report)
+        except FAILURES as exc:
+            report("session temp roots", exc)
     try:
-        count, total = scan_shared(cmd, sid, arg, stamp, paths, mounts, swept, report)
+        if not skip_shared:
+            shared_count, shared_total = scan_shared(cmd, sid, arg, stamp, paths, mounts,
+                                                    swept, report, short_dirs)
+            count += shared_count
+            total += shared_total
     except FAILURES as exc:
         if cmd != "clean-end":
             raise
         report("shared temp base", exc)
-        count = total = 0
     if cmd == "clean-end":
         print(f"scratch cleanup: removed {count} entries, {total} kB; "
               f"scratchpad {pad_count} entries, {pad_kb} kB", file=sys.stderr)
