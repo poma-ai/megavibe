@@ -29,5 +29,16 @@ fresh
 run '{"session_id":"s3","model":{"display_name":"x"}}'
 check 'no rate_limits: no row, no record' '[ ! -e "$T/mv/usage/claude.jsonl" ] && [ ! -e "$T/mv/usage/claude-shape.json" ]'
 
+# a window key appearing with unchanged percentages is recorded at once (the 5-minute throttle must not hide it)
+fresh
+run '{"session_id":"s4","rate_limits":{"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+run '{"session_id":"s4","rate_limits":{"five_hour":{},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+check 'five_hour key appears, same percentages: windows sees it immediately' '[ "$(w)" = "windows: seven_day reported, five_hour reported" ]'
+
+# a FIFO planted at the shape record must not block the statusline (the row is still written)
+fresh; mkdir -p "$T/mv/usage"
+mkfifo "$T/mv/usage/claude-shape.json" 2>/dev/null
+check 'FIFO at the shape record: the row is still written and the call returns' '{ run "{\"session_id\":\"s5\",\"rate_limits\":{\"seven_day\":{\"used_percentage\":1,\"resets_at\":1796065200}}}"; [ -s "$T/mv/usage/claude.jsonl" ]; }'
+
 printf 'passed=%s failed=%s\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

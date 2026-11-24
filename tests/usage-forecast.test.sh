@@ -77,6 +77,27 @@ check 'first minute of a window: a forecast exists (used 1 + pace x 168 h), neve
 o=$(fc)
 check 'an old window outside every horizon adds nothing' 'near "$(f 3)" 1.0 0.1'
 
+# a late-logged row of a window that ended before the horizon began is no use inside it (reader finding: 0% became 250%)
+OLD=$((NOW - 7 * 3600))
+{ printf '{"t":%s,"sd":{"p":50,"r":%s}}\n' "$((NOW - 30 * 3600))" "$OLD"; printf '{"t":%s,"sd":{"p":60,"r":%s}}\n' "$((NOW - 3600))" "$OLD"; ramp 5 0 0 0 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'late row of a window that ended before the 6 h horizon: no phantom 6 h burn (pace stays under 0.3, was 1.2)' 'awk -v x="$(f 3)" "BEGIN{exit !(x < 0.3)}"'
+
+# reset timestamps a couple of seconds apart (two sessions) are one window, not two
+{ ramp 12 0 20 32 $R; ramp 12 0 19 31 $((R + 2)) ; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'reset jitter of 2 s: one window, pace about 1 per hour' 'near "$(f 3)" 1.0 0.25'
+
+# a fresh first-minute reading with no other history: never blank
+row 0 1 $((NOW + 604800 - 60)) > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'single reading 60 s after the reset: forecast exists, basis week' '[ "$(f 7)" = week ] && [ -n "$(f 4)" ]'
+
+# history that begins inside the horizon: a lagging low reading later does not erase the first one
+{ row 5 30 $R; row 4 29 $R; row 0 31 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'lagging reading in a window with no older baseline: used is 31 - 30 over the span' 'near "$(f 3)" 0.2 0.1'
+
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
