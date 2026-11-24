@@ -200,7 +200,7 @@ check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && awk -v
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex readings 29 h and 23 h ago: only the 24 h horizon holds one (12 points over the 24 h horizon)' '[ "$(f 7)" = 24h ] && near "$(f 3)" 0.5 0.05'
 
-# probe-style history: one rollout file per half-hour reading over 24 h must all count (the forecast reads 60 files, not 6)
+# probe-style history: one rollout file per half-hour reading over 24 h must all count (the forecast reads up to 3000 files, not 6)
 mkdir -p "$T/codex/sessions/p"; : > "$T/codex/sessions/x/rollout-1.jsonl"
 for i in $(seq 0 47); do m=$((i * 30)); u=44; [ "$m" -gt 360 ] && u=$((20 + (1440 - m) / 50)); codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/p/rollout-$(printf %02d $i).jsonl"; done
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
@@ -227,7 +227,7 @@ check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == co
 mkdir -p "$T/codex/sessions/many"; : > "$T/codex/sessions/x/rollout-1.jsonl"
 for i in $(seq 0 139); do m=$((i * 3)); u=20; [ "$m" -lt 180 ] && u=$(awk -v m="$m" 'BEGIN { printf "%.2f", 20 + (180 - m) / 30 }'); codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/many/rollout-$(printf %03d $i).jsonl"; done
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex, 140 one-reading rollouts: the baseline beyond the newest 60 files counts (pace about 1, not 2)' 'awk -v x="$(f 3)" "BEGIN{exit !(x > 0.7 && x < 1.3)}"'
+check 'codex, 140 one-reading rollouts: the baseline beyond the newest 60 files counts (the cap is 3000) (pace about 1, not 2)' 'awk -v x="$(f 3)" "BEGIN{exit !(x > 0.7 && x < 1.3)}"'
 rm -r "$T/codex/sessions/many"
 
 # Codex: 481 one-reading rollouts, three minutes apart over 24 h (0 to 40 in the first 4 h, flat after): a file cap lost the rise

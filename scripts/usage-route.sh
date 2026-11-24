@@ -34,9 +34,10 @@
 # selected one (a second account's rows in the same file) are not summed in; so is the old window after an early or
 # unscheduled reset whose resets_at is still ahead (errs low, only the week after such a reset). Known gaps: reset stamps
 # jittering by more than 3 minutes, or chained across the boundary of two windows, can split or merge windows.
-# SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less), and
-# Codex histories come from at most 60 rollout files, about 30 h at the probe cadence, so the Codex 7-day pace
-# (forecast_7d, basis 7d) sees only that much; the 6 h / 24 h blend is covered. Raise the file cap if the 7-day figure matters.
+# SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less), and the
+# Codex history is the 3000 most recently written rollout files of the last 8 days (one file per codex exec call): beyond
+# that, or in the 2-minute Codex cache (15 s when it is empty), a very busy account's older baselines or newest reading are
+# missed. The forecast is clipped at 999. forecast_7d on Codex follows the same limits.
 # The bands still decide on the straight-line projection (hysteresis and the `under` guard were tuned on it); balance
 # and the advisory use the forecast. Reported by the `forecast` mode only: status and pace lines are byte-identical.
 #
@@ -120,7 +121,7 @@ if [ "$PROVIDER" = codex ]; then
   FILE=""; STATE="${MEGAVIBE_CODEX_STATE:-$MV/usage/codex-route-state.json}"; STALE=86400
 fi
 
-# Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six most recently written rollout files
+# Codex rows in the history's shape ({t, sd:{p,r}, fh:{p,r}}) from the six (3000 for the forecast modes) most recently written rollout files
 # of the last 8 days (by mtime, sorted over the whole list: a resumed session keeps appending to an old file).
 # Bounded: at most 1 MB read per file, and the result is cached for 2 minutes (the hook runs on every Agent call).
 # Every usable row is kept (a slice could drop the window's highest reading). Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
