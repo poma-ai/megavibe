@@ -156,6 +156,7 @@ check 'a rise that ended hours ago and is flat since is not a burst (the endpoin
 check 'the line carries the five-hour used percent as its tenth field' '[ "$(f 10)" = 40 ]'
 o=$(/bin/bash "$UR" sprint-advice)
 check 'the advice names the projected five-hour window when there is one' '[[ "$o" == *"five-hour window is projected at 40%"* ]]'
+check 'the advice limits each unit to about 30 minutes (the horizon the five-hour projection covers) and says to re-read before the next' '[[ "$o" == *"about 30 minutes or less"* ]] && [[ "$o" == *"before the next unit"* ]]'
 check 'the advice names the public command to re-read, not the uninstalled script path' '[[ "$o" == *"megavibe usage sprint"* ]] && [[ "$o" != *"usage-route.sh sprint"* ]]'
 # steady use at 3 points per hour with 5-minute heartbeat rows and 3.8 h left is not a burst (the rise is rated over the
 # time since the lower reading): true end about 84, so the sprint must stay on

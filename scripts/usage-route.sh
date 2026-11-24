@@ -282,7 +282,7 @@ emit_forecast() {
 sprint_sentence() {
   LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v fhu="${fhu:-}" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
     printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is projected at %s%% (used plus its recent climb, continued through the reading age and a 30-minute unit), and a unit must fit that too with one point in reserve there as well", fhu) : "")
-    printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", "megavibe usage sprint", t, ot
+    printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, keep each unit to about 30 minutes or less (the horizon the projections cover) and re-read it before the next unit; inside this window %d%% replaces the %d%% target for this subscription only. ", "megavibe usage sprint", t, ot
     printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
 }
 if [ "$MODE" = sprint-render ]; then
@@ -501,7 +501,7 @@ if [ "$MODE" = sprint ]; then
   OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2100; [ "$STALE" -ge 2100 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
-  # The five-hour window climbing fast: its rise (the highest rate over every pair of a recent and an earlier reading, at least 5 minutes of span), continued for a
+  # The five-hour window climbing fast: its rise (the highest rate over every pair of a recent and an earlier reading, at least a minute of span, five for a one-point tick), continued for a
   # 30-minute unit, is added to its used percent before the 85 check.
   case "$s_flr" in ''|*[!0-9.]*) s_flr=null ;; esac
   s_fhadd=$(jq -r --argjson now "$NOW" --argjson lr "${s_flr:-null}" 'def sec: if . > 100000000000 then . / 1000 else . end;
@@ -510,7 +510,7 @@ if [ "$MODE" = sprint ]; then
       # EVERY recent endpoint pair counts (no single anchor an equal repeat or a one-point follow-up could move away from the evidence):
       # each row of the last hour is a possible high, paired with every earlier row within 30 minutes of it, or with the row just before it
       # whatever its age up to two hours (sparse sampling, e.g. a probe every 30 minutes). Each pair rates its rise over the real interval
-      # (at least 5 minutes) and continues it through the age of the high plus a 30-minute unit; the highest wins.
+      # (at least a minute, five for a one-point tick) and continues it through the age of the high plus a 30-minute unit; the highest wins.
       | ([range(0; $rows | length) as $hi | $rows[$hi] as $H | select($H.t >= $now - 3600)
           | range(0; $hi) as $lo | $rows[$lo] as $L
           | select(($H.t - $L.t) <= 1800 or ($lo == $hi - 1 and ($H.t - $L.t) <= 7200))
