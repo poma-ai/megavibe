@@ -587,6 +587,8 @@ def process_matches(pid, recorded):
 
 def live_sessions(current):
     live = {current}
+    invalid = 0
+    limit = 1024 * 1024
     path = os.path.join(os.environ["HOME"], ".claude", "sessions")
     try:
         with directory(path) as fd:
@@ -594,19 +596,28 @@ def live_sessions(current):
                 if not name.endswith(".json"):
                     continue
                 try:
-                    record = json.loads(read_at(fd, name, 1024 * 1024))
-                except (FileNotFoundError, ValueError):
+                    data = read_at(fd, name, limit + 1)
+                    if len(data) > limit:
+                        raise ValueError("session record too large")
+                    record = json.loads(data)
+                except FileNotFoundError:
+                    continue
+                except (OSError, ValueError, RecursionError):
+                    invalid += 1
                     continue
                 if not isinstance(record, dict):
+                    invalid += 1
                     continue
                 sid, pid = record.get("sessionId"), record.get("pid")
-                if (isinstance(sid, str) and SID.fullmatch(sid)
-                        and type(pid) is int and 0 < pid <= 2147483647
-                        and process_matches(pid, record.get("procStart"))):
+                if not (isinstance(sid, str) and SID.fullmatch(sid)
+                        and type(pid) is int and 0 < pid <= 2147483647):
+                    invalid += 1
+                    continue
+                if process_matches(pid, record.get("procStart")):
                     live.add(sid)
     except FileNotFoundError:
         pass
-    return live
+    return live, invalid
 
 
 def sweep_pytest(cutoff, mounts, report):
@@ -646,14 +657,7 @@ def sweep_pytest(cutoff, mounts, report):
     return blocks
 
 
-def sweep_orphans(script, current, mounts, report):
-    hours = os.environ.get("MEGAVIBE_SCRATCH_ORPHAN_HOURS") or "24"
-    if not re.fullmatch(r"[0-9]{1,9}", hours):
-        raise ValueError("invalid orphan age")
-    if not int(hours):
-        return
-    cutoff = NOW - int(hours) * 3600
-    live = live_sessions(current)
+def sweep_session_orphans(script, live, cutoff, mounts, report):
     ended = set()
     blocks = 0
     for path in dict.fromkeys(map(canonical_temp, root_paths(script, "roots"))):
@@ -710,12 +714,29 @@ def sweep_orphans(script, current, mounts, report):
             continue
         except FAILURES as exc:
             report(path, exc)
+    return blocks, len(ended)
+
+
+def sweep_orphans(script, current, mounts, report):
+    hours = os.environ.get("MEGAVIBE_SCRATCH_ORPHAN_HOURS") or "24"
+    if not re.fullmatch(r"[0-9]{1,9}", hours):
+        raise ValueError("invalid orphan age")
+    if not int(hours):
+        return
+    cutoff = NOW - int(hours) * 3600
+    live, invalid = live_sessions(current)
+    blocks = ended = 0
+    if invalid:
+        print(f"scratch-own: skipped session scratch sweep due to {invalid} invalid session record(s)",
+              file=sys.stderr)
+    else:
+        blocks, ended = sweep_session_orphans(script, live, cutoff, mounts, report)
     try:
         blocks += sweep_pytest(cutoff, mounts, report)
     except FAILURES as exc:
         report("pytest runs", exc)
     if ended or blocks:
-        print(f"freed {blocks / 2048:.0f} MB from {len(ended)} ended sessions")
+        print(f"freed {blocks / 2048:.0f} MB from {ended} ended sessions")
 
 
 def size(path):

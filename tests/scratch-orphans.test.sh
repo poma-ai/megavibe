@@ -68,13 +68,23 @@ touch "$P/recent" "$P/live" "$P/old-parent/new-child" "$Y/pytest-2/fixture"
 exec 9< "$Y/pytest-1/fixture"
 MEGAVIBE_SCRATCH_ORPHAN_HOURS=0 "$OWN" sweep-orphans current
 [[ -d "$P/dead" && -d "$Y/pytest-0" ]]
+damaged="$HOME/.claude/sessions/damaged.json"
+printf '{"sessionId":' > "$damaged"
+"$OWN" sweep-orphans current >/dev/null 2>"$T/damaged-report"
+[[ -d "$P/dead" && -d "$TEST_ROOT/t/tempdead" ]] || {
+  echo "FAIL: session scratch removed with a damaged record" >&2
+  exit 1
+}
+[[ $(cat "$T/damaged-report") = 'scratch-own: skipped session scratch sweep due to 1 invalid session record(s)' ]] || exit 1
+if command -v lsof >/dev/null; then [[ ! -e "$Y/pytest-0" ]] || exit 1; fi
+rm "$damaged"
 rc=0
 out=$("$OWN" sweep-orphans current 2>"$T/report") || rc=$?
 if [[ $(id -u) != 0 ]]; then [[ $rc = 0 ]]; else [[ $rc = 4 ]]; fi
 [[ "$out" =~ ^freed\ [0-9]+\ MB\ from\ 5\ ended\ sessions$ ]]
 grep -Eq 'free-folder.*[0-9]+ kB' "$T/report"
 for sid in current live idle recent old-parent guarded -odd; do [[ -d "$P/$sid" ]]; done
-for sid in dead reused orphan linked; do [[ ! -e "$P/$sid" ]]; done
+for sid in dead reused orphan linked; do [[ ! -e "$P/$sid" ]] || exit 1; done
 [[ -d "$TEST_ROOT/free-folder/notes" && -f "$T/outside/data" && -d "$TEST_ALIAS/-project/aliased-session" ]]
 [[ ! -e "$TEST_ROOT/t/tempdead" && -d "$TEST_ROOT/t/tempidle" && -d "$TEST_ROOT/t/badmark0" ]]
 if [[ $(id -u) = 0 ]]; then [[ -d "$P/foreign" && -f "$P/foreign-child/fixture" ]]; fi
