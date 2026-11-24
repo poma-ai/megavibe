@@ -103,7 +103,9 @@ case "$cmd" in
       GOT=$(find "$DESTR" -type f -print0 | tr -cd '\0' | wc -c | tr -d ' ')
       [ "$GOT" = "$NKEEP" ] || die "incomplete copy: $GOT of $NKEEP files arrived: $(head -c 200 "$WORK/cpio.err" 2>/dev/null)"
     fi
-    { printf '%s\nsource %s\nmade %s\nfiles %s\n' "$MAGIC" "$TOP" "$(date +%Y-%m-%dT%H:%M:%S)" "$NKEEP"
+    { printf '%s\n' "$MAGIC"
+      if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then printf 'session %s\n' "${CLAUDE_CODE_SESSION_ID//[$'\n\r']/?}"; fi
+      printf 'source %s\nmade %s\nfiles %s\n' "$TOP" "$(date +%Y-%m-%dT%H:%M:%S)" "$NKEEP"
       if [ -s "$WORK/skipped" ]; then echo "skipped (over ${MAXKB} KB, reserved or not a file):"; cat "$WORK/skipped"; fi; } > "$DEST/$MARK" || die "cannot write the copy's marker"
     [ -f "$DEST/$MARK" ] && [ ! -L "$DEST/$MARK" ] && [ "$(head -1 "$DEST/$MARK")" = "$MAGIC" ] || die "the copy's marker is not a regular file"
     OK=1
