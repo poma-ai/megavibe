@@ -87,8 +87,10 @@ for project in "$T/fresh project" "$T/existing"; do
   check "second init is byte-identical (${project##*/})" cmp -s "$T/settings.before" "$project/.claude/settings.json"
 done
 check 'init installs an executable wrapper' test -x "$T/init-home/.megavibe/scripts/guard-run.sh"
-HOME="$T/plain-home" bash "$REPO/init.sh" "$T/plain" > "$T/init.log" 2>&1
+HOME="$T/plain-home" bash "$REPO/init.sh" "$T/plain" > "$T/init.log" 2> "$T/init.err"
 check 'init uses plain absolute paths when installation is impossible' settings_match "$T/plain" ''
+check 'init warns on stderr when the wrapper cannot be installed' grep -Fxq \
+  "guard-run.sh not installed: PreToolUse guards fall back to plain hook paths and fail open if the project's .claude is removed" "$T/init.err"
 
 mkdir -p "$T/repo/.agent"
 git -C "$T/repo" init -q
@@ -126,6 +128,16 @@ guard "git worktree remove \"$T/repo-review/sub\""
 check 'Bash guard blocks the launch directory itself' verdict 2 'launch directory'
 guard 'git worktree remove -- ./repo-review'
 check 'Bash guard blocks an ancestor relative to payload cwd' verdict 2 'launch directory'
+guard "git -C $T worktree remove $T/repo-review"
+check 'Bash guard blocks an absolute target with git -C' verdict 2 'launch directory'
+guard "cd $T && git worktree remove repo-review"
+check 'Bash guard blocks a target relative to the leading cd' verdict 2 'launch directory'
+guard "git -C 'fresh project' worktree remove ../repo-review"
+check 'Bash guard resolves a quoted relative git -C from payload cwd' verdict 2 'launch directory'
+guard "cd '$T/fresh project'; git -C .. worktree remove repo-review"
+check 'Bash guard resolves a relative git -C from the leading cd' verdict 2 'launch directory'
+guard "cd '$T/fresh project'; git -C .. worktree remove repo"
+check 'Bash guard allows another worktree with cd and git -C' verdict 0
 guard "git worktree remove '$T/repo'"
 check 'Bash guard allows another worktree' verdict 0
 guard "git worktree remove '$T/repo-review'" 1

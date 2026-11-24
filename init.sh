@@ -314,6 +314,8 @@ expand_hook_commands() {
   root=$(cd "$PROJECT" && pwd -P) || return 1
   if [[ -f "$GUARD_RUN" && -x "$GUARD_RUN" ]]; then
     runner='"$HOME/.megavibe/scripts/guard-run.sh" '
+  else
+    echo "guard-run.sh not installed: PreToolUse guards fall back to plain hook paths and fail open if the project's .claude is removed" >&2
   fi
   jq --arg root "$root/" --arg runner "$runner" '
     .hooks.PreToolUse[]?.hooks[]? |= (

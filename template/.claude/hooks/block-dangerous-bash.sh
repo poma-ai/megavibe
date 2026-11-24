@@ -18,16 +18,39 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # If we couldn't parse the command, allow it (don't block on parse errors)
 [ -n "$COMMAND" ] || exit 0
 
-# Match only a standalone git invocation with a literal path and leading flags.
-# Resolve relative paths from the tool payload, without evaluating shell text.
+# Match a git invocation with literal paths and an optional leading cd.
+# Resolve relative paths from the payload cwd, then cd and git -C in order.
 if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
-  _launch_remove='^[[:blank:]]*git[[:blank:]]+worktree[[:blank:]]+remove[[:blank:]]+(--?[A-Za-z][A-Za-z-]*[[:blank:]]+)*(--[[:blank:]]+)?'
-  _launch_remove+=$'("([^"\\\\$`!]*)"|\'([^\']*)\'|([A-Za-z0-9_./-]+))[[:space:]]*$'
+  _literal_path=$'("([^"\\\$`!]*)"|\'([^\']*)\'|([A-Za-z0-9_./-]+))'
+  _launch_remove="^[[:blank:]]*(cd[[:blank:]]+$_literal_path[[:blank:]]*(&&|;)[[:blank:]]*)?"
+  _launch_remove+="git[[:blank:]]+(-C[[:blank:]]+$_literal_path[[:blank:]]+)?"
+  _launch_remove+='worktree[[:blank:]]+remove[[:blank:]]+(--?[A-Za-z][A-Za-z-]*[[:blank:]]+)*(--[[:blank:]]+)?'
+  _launch_remove+="$_literal_path[[:space:]]*$"
   if [[ "$COMMAND" =~ $_launch_remove ]]; then
-    _target="${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
+    # Each literal path has one capture per quoting form.
+    _cd_path="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
+    _git_c="${BASH_REMATCH[9]}${BASH_REMATCH[10]}${BASH_REMATCH[11]}"
+    _target="${BASH_REMATCH[15]}${BASH_REMATCH[16]}${BASH_REMATCH[17]}"
+    _base=''
+    if [[ -n "$_cd_path" || -n "$_git_c" || "$_target" != /* ]]; then
+      _base=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
+    fi
+    if [[ -n "${BASH_REMATCH[1]}" && ( -z "$_cd_path" || "$_cd_path" == -* ) ]]; then
+      _target=''
+    fi
+    for _path in "$_cd_path" "$_git_c"; do
+      [[ -n "$_path" ]] || continue
+      if [[ "$_path" != /* ]]; then
+        if [[ "$_base" != /* ]]; then _target=''; break; fi
+        _path="$_base/$_path"
+      fi
+      if ! _base=$(CDPATH= cd -P -- "$_path" 2>/dev/null && pwd -P); then
+        _target=''
+        break
+      fi
+    done
     if [[ -n "$_target" && "$_target" != /* ]]; then
-      _payload_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
-      if [[ "$_payload_cwd" == /* ]]; then _target="$_payload_cwd/$_target"; else _target=''; fi
+      if [[ "$_base" == /* ]]; then _target="$_base/$_target"; else _target=''; fi
     fi
     if [[ -n "$_target" ]] &&
        _target=$(CDPATH= cd -P -- "$_target" 2>/dev/null && pwd -P) &&
