@@ -13,13 +13,14 @@ PCT=$(echo "$INPUT" | jq -r '.context_window.used_percentage // 0' | cut -d. -f1
 # seven_day}.{used_percentage,resets_at} is account-wide, present only for
 # subscribers and only after the first API response. One row per change or per
 # five minutes, a plain O_APPEND write (a row is far below PIPE_BUF). Every step
-# is allowed to fail: the statusline must never block on this.
+# is allowed to fail: the statusline must never block on this. claude-shape.json records which windows and fields
+# Claude Code actually sent (key names only, never values), so a window it does not report is visible in one place.
 RL_OUT=$(echo "$INPUT" | jq -r --argjson t "$(date +%s)" --arg sid "$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null | cut -c1-12)" '
   select(.rate_limits != null)
   | {t:$t, sid:$sid,
      fh:{p:.rate_limits.five_hour.used_percentage, r:.rate_limits.five_hour.resets_at},
      sd:{p:.rate_limits.seven_day.used_percentage, r:.rate_limits.seven_day.resets_at}} as $r
-  | ([$r.fh.p, $r.sd.p] | @csv), ($r | tojson)' 2>/dev/null) || RL_OUT=""
+  | ([$r.fh.p, $r.sd.p, $r.fh.r, $r.sd.r, (.rate_limits | with_entries(.value |= (if type == "object" then (to_entries | map(select(.value != null) | .key)) else type end)) | tojson | gsub(" "; ""))] | @csv), ($r | tojson)' 2>/dev/null) || RL_OUT=""
 if [ -n "$RL_OUT" ]; then
   RL_KEY=${RL_OUT%%$'\n'*}; RL_ROW=${RL_OUT#*$'\n'}
   RL_DIR="${MEGAVIBE_HOME:-$HOME/.megavibe}/usage"; RL_LAST="$RL_DIR/.claude-last"
@@ -34,6 +35,9 @@ if [ -n "$RL_OUT" ]; then
     mkdir -p "$RL_DIR" 2>/dev/null \
       && { [ ! -e "$RL_DIR/claude.jsonl" ] || [ -f "$RL_DIR/claude.jsonl" ]; } \
       && printf '%s\n' "$RL_ROW" >> "$RL_DIR/claude.jsonl" 2>/dev/null \
+      && { [ ! -e "$RL_DIR/.claude-shape.$$" ] && { [ ! -e "$RL_DIR/claude-shape.json" ] || [ -f "$RL_DIR/claude-shape.json" ]; } \
+           && echo "$INPUT" | jq -c '.rate_limits | with_entries(.value |= (if type == "object" then (to_entries | map(select(.value != null) | .key)) else type end))' > "$RL_DIR/.claude-shape.$$" 2>/dev/null \
+           && mv -f "$RL_DIR/.claude-shape.$$" "$RL_DIR/claude-shape.json" 2>/dev/null; true; } \
       && printf '%s %s\n' "$RL_KEY" "$RL_NOW" > "$RL_LAST.$$" 2>/dev/null \
       && mv -f "$RL_LAST.$$" "$RL_LAST" 2>/dev/null || true
   fi

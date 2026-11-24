@@ -100,7 +100,7 @@ check 'an FSTALE in the environment does not reach the ordinary forecast' '[ -n 
 o=$(sp)
 check 'burst in the last 90 minutes: the short pace counts, no sprint (reason no-room, basis says burst)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = no-room ] && [[ "$(f 8)" == *burst* ]]'
 fo=$(/bin/bash "$UR" forecast)
-check 'the ordinary forecast of the same history is untouched by the burst rule (basis 24h)' '[ "$(printf "%s" "$fo" | cut -d"|" -f7)" = 24h ]'
+check 'the ordinary forecast of the same history is untouched by the burst rule (basis 6h+24h, no +burst)' '[ "$(printf "%s" "$fo" | cut -d"|" -f7)" = "6h+24h" ]'
 { row 1200 84 $R; row 360 88 $R; row 80 89 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'one point in 75 minutes with 2.5 h left is still a sprint (rated 2 points over 75 minutes, a small pace)' '[ "$(f 2)" = sprint ]'
@@ -187,7 +187,7 @@ RB=$((NOW + 3600))
 { row 100 80 $RB; row 5 93 $RB; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'weekly 80 at -100 min, 93 at -5 min, one hour left: no sprint' '[ "$(f 2)" = "-" ]'
 { row 100 80 $RB; row 5 93 $RB; row 0 94 $RB; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
-check 'the same plus a fresh 94 now (a one-point follow-up): still no sprint (every recent endpoint pair counts, not only the newest level)' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
+check 'the same plus a fresh 94 now (a one-point follow-up): still no sprint (the trailing pace over the horizons already exceeds the burst rate here, so the basis carries no +burst)' '[ "$(f 2)" = "-" ]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
@@ -312,7 +312,7 @@ check 'five-hour window at 40: sprint' '[ "$(f 2)" = sprint ]'
 # a drop inside the window: trend unreliable, the week average stands in and is still a forecast
 { row 1500 80 $R; row 720 70 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'drop in the window: the week average stands in (basis week, plus burst for the 20-point rise since the previous reading) and a decision is made' '[[ "$(f 8)" == week* ]] && [ -n "$(f 2)" ] && [ -n "$(f 5)" ]'
+check 'drop in the window: the trailing paces stand in (a lagging low reading cannot break them; burst for the 20-point rise since the previous reading) and a decision is made' '[[ "$(f 8)" == 6h* ]] && [ -n "$(f 2)" ] && [ -n "$(f 5)" ]'
 
 # knobs
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
@@ -438,7 +438,7 @@ adv() { /bin/bash "$UR" sprint-advice; }
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(adv)
 check 'advice: one line, for Claude only (the Codex reading is old)' '[ "$(printf "%s\n" "$o" | grep -c .)" = 1 ] && [[ "$o" == "usage sprint: Claude "* ]]'
-check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.59 points per hour"* ]] && [[ "$o" == *"95%"* ]] && [[ "$o" == *"whole account"* ]]'
+check 'advice names the numbers: hours, used, spare, per-hour, 99 and 95' '[[ "$o" == *"2.5 h"* ]] && [[ "$o" == *"90% used"* ]] && [[ "$o" == *"to 99%"* ]] && [[ "$o" == *"3.58 points per hour"* ]] && [[ "$o" == *"95%"* ]] && [[ "$o" == *"whole account"* ]]'
 check 'advice says what to do and what does not move' '[[ "$o" == *"top model tier"* ]] && [[ "$o" == *"hardest open work"* ]] && [[ "$o" == *"100% backstop"* ]] && [[ "$o" == *"review floor"* ]]'
 { codex "$((NOW - 25 * 3600))" 50 "$R"; codex "$((NOW - 6 * 3600))" 55 "$R"; codex "$((NOW - 600))" 56 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(adv)
