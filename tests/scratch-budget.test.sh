@@ -152,6 +152,80 @@ rm -f "$T/p/.agent/LOGS/.scratch-stopped.$SID"
 o=$(printf '{"hook_event_name":"Stop","session_id":"%s","stop_hook_active":false,"background_tasks":[]}' "$SID" \
   | (cd "$T/p" && HOME="$T/home" MEGAVIBE_BG_WATCH=0 CLAUDE_CODE_TMPDIR=$T/moved MEGAVIBE_SCRATCH_BUDGET_GB=1 bash .claude/hooks/watch-background.sh))
 check "BG_WATCH=0 does not silence the scratch check" 'printf "%s" "$o" | jq -e ".decision == \"block\"" >/dev/null'
+# Exercise both checks against the same overdue task and over-budget session.
+stop_payload() { (cd "$T/p" && CLAUDE_CODE_TMPDIR=$T/moved MEGAVIBE_SCRATCH_BUDGET_GB=1 bash .claude/hooks/watch-background.sh); }
+bg_state="$T/p/.agent/LOGS/.bg-tasks.$SID.jsonl"
+overdue=$(printf '{"id":"bt1","kind":"shell","path":"","started":%s,"nudged":0}' "$old_start")
+tasks='[{"id":"bt1","type":"shell","status":"running","command":"sleep 99"}]'
+payload=$(jq -nc --arg sid "$SID" --argjson tasks "$tasks" '{hook_event_name:"Stop",session_id:$sid,background_tasks:$tasks}')
+printf '%s\n' "$overdue" > "$bg_state"
+o=$(printf '%s' "$payload" | MEGAVIBE_DISK_WATCH=0 stop_payload)
+check "DISK_WATCH=0 keeps only the background block" '[[ "$o" == *bt1* && "$o" != *"scratch is over"* ]]'
+rm -f "$T/p/.agent/LOGS/.scratch-stopped.$SID"
+o=$(printf '%s' "$payload" | jq '.background_tasks=[] | .agent_type="main"' | stop_payload)
+check "main Stop in a named agent session still checks scratch" '[[ "$o" == *"scratch is over"* ]]'
+rm -f "$T/p/.agent/LOGS/.scratch-stopped.$SID"
+for agent_fields in '{"agent_id":"a1"}' '{"transcript_path":"/x/SID/subagents/agent-a1.jsonl"}' '{"hook_event_name":"SubagentStop","agent_id":"a1","agent_type":"Explore"}'; do
+  printf '%s\n' "$overdue" > "$bg_state"
+  o=$(printf '%s' "$payload" | jq --argjson fields "${agent_fields/SID/$SID}" '. + $fields' | stop_payload)
+  check "subagent Stop is silent ($agent_fields)" '[ -z "$o" ] && [ "$(cat "$bg_state")" = "$overdue" ]'
+done
+printf '%s\n' "$overdue" > "$T/p/.agent/LOGS/.bg-tasks.ab.jsonl"
+o=$(printf '%s' "$payload" | jq '.session_id="a/b"' | stop_payload)
+check "malformed session IDs cannot block on another session's tasks" '[ -z "$o" ] && [ "$(cat "$T/p/.agent/LOGS/.bg-tasks.ab.jsonl")" = "$overdue" ]'
+
+# A named pipe in place of a latch must never delay Stop.
+latch="$T/p/.agent/LOGS/.scratch-stopped.$SID"
+rm -f "$latch"; mkfifo "$latch"
+printf '%s' "$payload" | jq '.background_tasks=[]' > "$T/stop.json"
+CLAUDE_CODE_TMPDIR=$T/moved MEGAVIBE_SCRATCH_BUDGET_GB=1 python3 - "$T" <<'PYTHON'
+import os, signal, subprocess, sys
+root = sys.argv[1]
+with open(root + "/stop.json") as payload:
+    hook = subprocess.Popen(["/bin/bash", ".claude/hooks/watch-background.sh"],
+                            cwd=root + "/p", stdin=payload, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        out, _ = hook.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        os.killpg(hook.pid, signal.SIGKILL)
+        hook.communicate()
+        sys.exit(1)
+    sys.exit(bool(hook.returncode or out))
+PYTHON
+check "Stop returns promptly and silently with a FIFO scratch latch" '[ $? -eq 0 ]'
+rm -f "$latch"
+
+# A symlinked project under the harness root does not own an external session directory.
+mkdir -p "$T/external/$SID/scratchpad"
+mv "$S/huge.bin" "$T/external/$SID/scratchpad/"
+ln -s "$T/external" "$T/moved/claude-$U/-external"
+o=$(stop)
+check "an external project reached through a symlink cannot block Stop" '[ -z "$o" ]'
+rm -f "$T/moved/claude-$U/-external"
+mv "$T/external/$SID/scratchpad/huge.bin" "$S/"
+
+# Simulate a disk probe with a child that outlives the Stop deadline.
+# Keep its PID so the fixture can reap it even when this test fails.
+installed="$HOME/.megavibe/scripts/disk-watch.sh"
+mv "$installed" "$installed.keep"
+cat > "$installed" <<'EOS'
+#!/bin/bash
+sleep 15 &
+echo "$!" > "$PROBE_PID_FILE"
+wait "$!"
+EOS
+chmod +x "$installed"
+o=$(PROBE_PID_FILE="$T/probe.pid" stop)
+pid=$(cat "$T/probe.pid")
+alive=0
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  alive=1
+  kill "$pid" 2>/dev/null
+fi
+check "Stop deadline leaves no probe child alive and allows Stop" '[ -n "$pid" ] && [ "$alive" = 0 ] && [ -z "$o" ]'
+mv "$installed.keep" "$installed"
+
 chmod -R u+rwX "$T/moved/claude-$U/-proj/$SID"; rm -f "$S/huge.bin"
 o=$(stop); check "Stop under budget: allowed" '[ -z "$o" ]'
 mkdir "$S/mv-review-copy.inside"

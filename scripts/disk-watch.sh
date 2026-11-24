@@ -45,6 +45,7 @@ bounded() {
     if (!$pid) { POSIX::setpgid(0, 0); exec @ARGV or exit 127 }
     POSIX::setpgid($pid, $pid);
     $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 };
+    $SIG{TERM} = sub { kill "KILL", -$pid; exit 143 };
     alarm $seconds; waitpid($pid, 0);
     exit($? & 127 ? 128 + ($? & 127) : $? >> 8)' "$n" "$@"
   elif command -v timeout &>/dev/null; then timeout "$n" "$@"
@@ -144,7 +145,7 @@ scratch_dirs() {
     [ -e "$r" ] || { [ ! -L "$r" ] || failed=4; continue; }
     [ -d "$r" ] && [ -r "$r" ] && [ -x "$r" ] || { failed=4; continue; }
     for project in "$r"/*; do
-      [ -d "$project" ] || continue
+      [ -d "$project" ] && [ ! -L "$project" ] || continue
       [ -x "$project" ] || { failed=4; continue; }
       d=$project/$sid
       [ -d "$d" ] && [ ! -L "$d" ] || continue

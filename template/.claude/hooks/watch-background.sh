@@ -71,13 +71,12 @@ INPUT=$(cat 2>/dev/null || echo "")
   IFS= read -r -d "" SID
   IFS= read -r -d "" STOP_ACTIVE
 } < <(printf '%s' "$INPUT" | jq -j '
-  [ (.hook_event_name // ""), (.tool_name // ""), (.session_id // "default"),
+  [ (.hook_event_name // ""), (.tool_name // ""), (.session_id | strings | select(test("\\A[A-Za-z0-9-]{1,64}\\z"))) // "",
     (.stop_hook_active // false | tostring)
   ] | map(. + "\u0000") | join("")' 2>/dev/null) || true
 EVENT="${EVENT:-}"; TOOL="${TOOL:-}"; STOP_ACTIVE="${STOP_ACTIVE:-false}"
 
-SID=$(printf '%s' "${SID:-default}" | tr -cd 'A-Za-z0-9-' | cut -c1-64)
-SID="${SID:-default}"
+[ -n "${SID:-}" ] || exit 0
 mkdir -p ".agent/LOGS" 2>/dev/null || true
 STATE=".agent/LOGS/.bg-tasks.${SID}.jsonl"
 NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
@@ -239,6 +238,13 @@ fi
 # This stop was caused by a block from a Stop hook (ours or another). Never
 # block again inside that cycle, or the turn can never end.
 [ "$STOP_ACTIVE" = "true" ] && exit 0
+# A named main session can carry agent_type. The agent ID and transcript
+# identify agent context when the harness routes it through Stop.
+STOP_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""') || exit 0
+[ -z "$STOP_AGENT" ] || exit 0
+case "$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""')" in
+  */"$SID"/subagents/agent-*.jsonl) exit 0 ;;
+esac
 
 # The session's own scratch over its budget (default 2 GB, MEGAVIBE_SCRATCH_BUDGET_GB; 0 off; opt out
 # with MEGAVIBE_DISK_WATCH=0): refuse "done" once, the way an unwatched task does. The block repeats only
@@ -267,24 +273,26 @@ $r}"; fi
   fi
   exit 0
 }
-SCR_SID=$(printf '%s' "$INPUT" | jq -er '.session_id | select(type == "string" and test("^[A-Za-z0-9-]{1,64}$"))' 2>/dev/null) || SCR_SID=""
-if [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -x "$DW" ] && [ -n "$SCR_SID" ] &&
-   command -v perl >/dev/null 2>&1 &&
-   [ -z "$(printf '%s' "$INPUT" | jq -r '.agent_id // .agent_type // ""' 2>/dev/null || echo unknown)" ]; then
-  SCR_RC=0   # one 8 s deadline for the whole probe (resolving roots, globbing, du); a timeout (rc 142) lets Stop pass
+if [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -x "$DW" ] &&
+   command -v perl >/dev/null 2>&1; then
+  SCR_RC=0   # one 8 s deadline for the whole probe (resolving roots, globbing, du); a timeout lets Stop pass
   SCR_ROW=$(perl -e '
     pipe(my $reader, my $writer) or exit 125;
     my $pid = fork; exit 125 unless defined $pid;
-    if (!$pid) { close $reader; open STDOUT, ">&", $writer or exit 125;
+    if (!$pid) { setpgrp(0, 0) or exit 125; close $reader; open STDOUT, ">&", $writer or exit 125;
                  close $writer; exec @ARGV or exit 127 }
     close $writer;
-    $SIG{ALRM} = sub { kill "KILL", $pid; exit 124 };
+    $SIG{ALRM} = sub {
+      kill "TERM", -$pid; select(undef, undef, undef, 0.3);
+      kill "KILL", -$pid; exit 124;
+    };
     alarm 8; local $/; my $row = <$reader>; waitpid($pid, 0);
     my $status = $?; print $row if defined $row; exit($status & 127 ? 125 : $status >> 8);
-  ' bash "$DW" scratch --kb "$SCR_SID" 2>/dev/null) || SCR_RC=$?
+  ' bash "$DW" scratch --kb "$SID" 2>/dev/null) || SCR_RC=$?
   SCR_KB=${SCR_ROW%%$'\t'*}; SCR_LINE=${SCR_ROW#*$'\t'}; case "$SCR_KB" in ''|*[!0-9]*) SCR_KB=0 ;; esac
-  if [ "$SCR_RC" -eq 3 ]; then
-    SCR_ST=".agent/LOGS/.scratch-stopped.${SID}"
+  SCR_ST=".agent/LOGS/.scratch-stopped.${SID}"
+  if [ "$SCR_RC" -eq 3 ] && [ ! -L "$SCR_ST" ] &&
+     { [ ! -e "$SCR_ST" ] || [ -f "$SCR_ST" ]; }; then
     SCR_LAST=$(cat "$SCR_ST" 2>/dev/null | tr -d ' \n'); case "$SCR_LAST" in ''|*[!0-9]*) SCR_LAST=0 ;; esac
     if [ "$SCR_KB" -ge $((SCR_LAST + 262144)) ]; then
       SCR_REASON="This session's own scratch is over its budget: ${SCR_LINE}. A round is not done while its copies exist. Remove what finished rounds and runs left (use scratch-own.sh list / clean-unit for session-owned temp entries and review-copy.sh remove for copies inside the session scratchpad). If something large must stay, move it to megavibe-deliverables/ or name it and its size in your report, then finish: this check does not repeat until the scratch grows another 256 MB."

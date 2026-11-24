@@ -75,8 +75,11 @@ def reviewer_running(fd, path):
     if data is not None:
         if not re.fullmatch(rb"[1-9][0-9]{0,9}", data):
             raise ValueError("invalid reviewer PID")
+        pid = int(data)
+        if pid > 2147483647:
+            raise ValueError("invalid reviewer PID")
         try:
-            os.kill(int(data), 0)
+            os.kill(pid, 0)
         except ProcessLookupError:
             pass
         except PermissionError:
@@ -124,7 +127,8 @@ def owned(parent, name, path, info, sid, started, nested, cmd):
             if lines[0] != b"mv-review-copy-v1":
                 return False
             if len(lines) > 1 and lines[1].startswith(b"session "):
-                return lines[1] == b"session " + sid.encode()
+                return (lines[1] == b"session " + sid.encode()
+                        and (not cmd.startswith("clean-") or newer(path, info, started)))
         elif not any(fnmatch.fnmatchcase(name, pattern)
                      for pattern in (*REVIEW, *PRODUCER, "pip-*")):
             try:
@@ -240,15 +244,25 @@ def main():
     if sid:
         try:
             info = os.lstat(stamp)
-            if not stat.S_ISREG(info.st_mode):
+            if not stat.S_ISREG(info.st_mode) or info.st_mtime <= 0:
                 raise ValueError("invalid session stamp")
             started = info.st_mtime
         except FileNotFoundError:
             pass
-    base = os.path.realpath(os.environ["TMPDIR"])
-    if base == "/":
-        raise ValueError("invalid temp base")
+    temp = os.environ["TMPDIR"]
+    base = os.path.realpath(temp)
     cleaning = cmd.startswith("clean-")
+    if base == "/" or (cleaning and (not os.path.isabs(temp) or not os.path.isdir(temp))):
+        raise ValueError("invalid temp base")
+    if cleaning:
+        # The system aliases are part of standard macOS temp paths. Other
+        # symlinks must not redirect a destructive scan into a different tree.
+        expected = os.path.abspath(temp)
+        if sys.platform == "darwin" and (expected == "/tmp" or
+                expected.startswith(("/tmp/", "/var/"))):
+            expected = "/private" + expected
+        if base != expected:
+            raise ValueError("symlinked temp base")
     mounts = set()
     if os.path.isfile("/proc/self/mountinfo"):
         with open("/proc/self/mountinfo") as stream:

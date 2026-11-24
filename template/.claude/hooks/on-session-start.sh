@@ -29,8 +29,8 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 
 # Set the cutoff before the context checks, including in a fresh project.
 STAMP_HELPER="$HOME/.megavibe/scripts/scratch-own.sh"
-if [ -x "$STAMP_HELPER" ] && command -v perl >/dev/null 2>&1; then
-  STAMP_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null) || STAMP_SID=""
+if [ -x "$STAMP_HELPER" ] && command -v perl >/dev/null 2>&1 &&
+   STAMP_SID=$(printf '%s' "$INPUT" | jq -er '.session_id | strings | select(test("\\A[A-Za-z0-9-]+\\z"))' 2>/dev/null); then
   perl -e 'alarm shift; exec @ARGV' 3 "$STAMP_HELPER" stamp "$STAMP_SID" >/dev/null 2>&1 || true
 fi
 
