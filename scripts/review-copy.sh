@@ -59,7 +59,7 @@ case "$cmd" in
       while :; do case $p in ./*) p=${p#./} ;; *) break ;; esac; done
       if [ "$p" = . ]; then PATHS=(); SPECS=(); break; fi    # "." is the whole repository
       case "/$p/" in /../*|*/../*) die "path $p leaves the repository" ;; esac
-      case $p in /*|-*|'') die "path $p must be relative and not an option" ;; esac
+      case $p in /*|'') die "path $p must be relative" ;; esac
       SPECS+=(":(top,literal)$p")
     done
     TOP=$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null) || die "$REPO is not a git checkout"
@@ -97,7 +97,9 @@ case "$cmd" in
     if [ "$NKEEP" -gt 0 ]; then
       # cpio pass-through, not tar: macOS tar reads a literal ._name file as AppleDouble metadata and drops it
       # (and fails on a big resource fork); cpio -p copies the bytes, NUL-delimited names, modes kept.
-      ( cd "$TOP" && COPYFILE_DISABLE=1 cpio -p0dm "$DEST" < "$WORK/keep" >/dev/null 2>"$WORK/cpio.err" ) || die "copying the files failed: $(head -c 200 "$WORK/cpio.err" 2>/dev/null)"
+      ( cd "$TOP" && COPYFILE_DISABLE=1 cpio -p0dm "$DESTR" < "$WORK/keep" >/dev/null 2>"$WORK/cpio.err" ) || die "copying the files failed: $(head -c 200 "$WORK/cpio.err" 2>/dev/null)"
+      GOT=$(find "$DESTR" -type f -print0 | tr -cd '\0' | wc -c | tr -d ' ')
+      [ "$GOT" = "$NKEEP" ] || die "incomplete copy: $GOT of $NKEEP files arrived: $(head -c 200 "$WORK/cpio.err" 2>/dev/null)"
     fi
     { printf '%s\nsource %s\nmade %s\nfiles %s\n' "$MAGIC" "$TOP" "$(date +%Y-%m-%dT%H:%M:%S)" "$NKEEP"
       if [ -s "$WORK/skipped" ]; then echo "skipped (over ${MAXKB} KB, reserved or not a file):"; cat "$WORK/skipped"; fi; } > "$DEST/$MARK" || die "cannot write the copy's marker"
@@ -125,9 +127,11 @@ case "$cmd" in
       if [ -L "$c" ] || [ ! -d "$c" ] || [ -L "$c/$MARK" ] || [ ! -f "$c/$MARK" ] || [ "$(head -1 "$c/$MARK" 2>/dev/null)" != "$MAGIC" ]; then
         echo "review-copy: refusing $c (no valid marker, a symlink or missing)" >&2; rc=1; continue
       fi
+      if command -v chflags >/dev/null 2>&1; then chflags -R nouchg "$c" 2>/dev/null || true; fi   # flags first: a locked directory refuses chmod
       chmod -R u+rwX "$c" 2>/dev/null || true
-      if command -v chflags >/dev/null 2>&1; then chflags -R nouchg "$c" 2>/dev/null || true; fi   # a locked file would refuse the delete
-      rm -rf "$c"
+      # everything but the marker first: if this fails half way the marker stays and remove can be run again
+      if find "$c" -mindepth 1 -maxdepth 1 ! -name "$MARK" -exec rm -rf {} + 2>/dev/null && rm -f "$c/$MARK" && rmdir "$c" 2>/dev/null; then :
+      else echo "review-copy: could not remove $c completely (marker kept, run remove again)" >&2; rc=1; fi
     done
     exit $rc
     ;;

@@ -410,7 +410,7 @@ scratch() {
     while IFS= read -r -d '' dir; do
       if kb=$(size_kb "$dir"); then printf -v escaped '%q' "$dir"; printf '%s\t%s\n' "$kb" "$escaped" >> "$WORK/old";
       else warn "unreadable size: $dir"; fi
-      find "$dir" \( -name .git -o -name pyvenv.cfg \) -print0 -prune > "$WORK/markers" || warn "incomplete copy search: $dir"
+      find "$dir" \( -name .git -o -name pyvenv.cfg -o -name .megavibe-review-copy \) -print0 -prune > "$WORK/markers" || warn "incomplete copy search: $dir"
       while IFS= read -r -d '' marker; do
         parent=${marker%/*}
         if kb=$(size_kb "$parent"); then printf -v escaped '%q' "$parent"; printf '%s\t%s\n' "$kb" "$escaped" >> "$WORK/copies";

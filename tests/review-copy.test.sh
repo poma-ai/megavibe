@@ -113,6 +113,19 @@ mkdir -p "$H/.megavibe-review-copy"; echo m > "$H/.megavibe-review-copy/f"
 C=$(bash "$RC" make) || C=''
 check "a marker-named directory in the repo is skipped, the copy is valid and removable" '[ -n "$C" ] && [ -f "$C/.megavibe-review-copy" ] && bash "$RC" remove "$C" && [ ! -e "$C" ]'
 rm -rf "$H/.megavibe-review-copy"
+# TMPDIR that is itself a symlink: the copy must be complete (macOS cpio exits 0 and drops everything through a symlink)
+mkdir -p "$T/realtmp"; ln -s "$T/realtmp" "$T/linktmp"
+C=$(TMPDIR="$T/linktmp" bash "$RC" make) || C=''
+check "a symlinked TMPDIR gives a complete copy" '[ -n "$C" ] && [ -f "$C/a.txt" ] && [ -f "$C/dd/f.txt" ]'
+[ -n "$C" ] && TMPDIR="$T/linktmp" bash "$RC" remove "$C"; rm -f "$T/linktmp"
+# a path starting with a dash can be selected
+echo d > "$H/-dash.txt"; C=$(bash "$RC" make -- -dash.txt) || C=''
+check "a file named -dash.txt can be selected as a PATH" '[ -f "$C/-dash.txt" ] && [ ! -e "$C/a.txt" ]'
+[ -n "$C" ] && bash "$RC" remove "$C"; rm -f "$H/-dash.txt"
+# remove with a locked (read-only + uchg) subdirectory completes, or keeps the marker so it can be retried
+C=$(bash "$RC" make) || C=''; mkdir -p "$C/lockdir"; echo l > "$C/lockdir/f"; chmod -R a-w "$C/lockdir"; command -v chflags >/dev/null 2>&1 && chflags -R uchg "$C/lockdir"
+bash "$RC" remove "$C" >/dev/null 2>&1
+check "remove clears flags and modes of a locked subdirectory and deletes the copy" '[ ! -e "$C" ]'
 # a file one byte over the cap is skipped (the cap is exact, not floored to whole KB)
 head -c 2049 /dev/zero > "$H/over.bin"; head -c 2048 /dev/zero > "$H/exact.bin"
 C=$(bash "$RC" make --max-file-kb 2) || C=''
