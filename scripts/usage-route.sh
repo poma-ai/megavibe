@@ -139,7 +139,7 @@ _rollout_tails() {
 # the highest now, so what matters is that every stretch of time is represented, not how many files there are. Files are bucketed by
 # age relative to the newest file (10 minutes for the last 6 hours, 1 hour beyond), ranked inside their bucket newest first, and read
 # in rank order (every bucket's newest, then every bucket's second newest, ...) until a total byte budget ($3, default 128 MB) or a
-# time budget ($4, default 1.5 s, counted from after the list is read) runs out, but always at least 50 files: a heavy history degrades to a coarser sample, never to unknown. A slice with no rate_limits record is widened once, up to $1. Each file is read only
+# time budget ($4, default 1.5 s, counted from after the list is read) runs out, but always at least 50 files; the read order is the horizon-edge buckets first, then every bucket in a low-discrepancy order, so a heavy history degrades to a coarser sample (every stretch of time thinner) and keeps the baselines. A slice with no rate_limits record is widened once, up to $1. Each file is read only
 # from its tail, at most $1 bytes and at most budget / (files of rank 0) (at least 64 KB), keeping the last $2 lines that mention
 # rate_limits. Without perl, the newest 400 files.
 _rollout_sample() {
@@ -149,9 +149,17 @@ _rollout_sample() {
       exit 0 unless @f;
       my $t0 = time;   # the clock starts after the list is in: a slow listing must not spend the reading time
       @f = sort { $b->[0] <=> $a->[0] } @f; my $top = $f[0][0]; my (%cnt, @r);
-      for my $x (@f) { my $age = $top - $x->[0]; my $b = $age < 21600 ? int($age / 600) : 36 + int(($age - 21600) / 3600); push @r, [$cnt{$b}++, $x->[0], $x->[1]] }
+      my $bk = sub { my $age = shift; $age < 21600 ? int($age / 600) : 36 + int(($age - 21600) / 3600) };
+      for my $x (@f) { my $b = $bk->($top - $x->[0]); push @r, [$cnt{$b}++, $x->[0], $x->[1], $b] }
       my $per = int($budget / (scalar(keys %cnt) || 1)); $per = 65536 if $per < 65536; $per = $nb if $per > $nb;
-      @r = sort { $a->[0] <=> $b->[0] or $b->[1] <=> $a->[1] } @r; my $used = 0;
+      # read order, so that running out of budget coarsens coverage instead of losing a stretch of time: first the newest
+      # two files of the buckets around the 6 h, 24 h and 7 d horizons (the baselines of the paces) and of the newest bucket,
+      # then every bucket\x27s newest file in a low-discrepancy order over the buckets, then the next ranks the same way
+      my %pri = (0 => 1); for my $a (21600, 86400, 604800) { my $b = $bk->($a); for my $d (-1, 0, 1) { $pri{$b + $d} = 1 if exists $cnt{$b + $d} } }
+      my $lds = sub { my $v = $_[0] * 0.6180339887; $v - int($v) };
+      @r = sort { my ($ca, $cb) = (($pri{$a->[3]} && $a->[0] <= 1) ? 0 : $a->[0] == 0 ? 1 : 2, ($pri{$b->[3]} && $b->[0] <= 1) ? 0 : $b->[0] == 0 ? 1 : 2);
+                  $ca <=> $cb or ($ca == 2 ? $a->[0] <=> $b->[0] : 0) or $lds->($a->[3]) <=> $lds->($b->[3]) or $b->[1] <=> $a->[1] } @r;
+      my $used = 0;
       my $n = 0;
       for my $x (@r) { last if $n >= 50 and (time - $t0 > $tmax or $used >= $budget); my $f = $x->[2]; next unless -f $f; open(my $h, "<", $f) or next; $n++;
         my $sz = -s $h; my $want = $sz < $per ? $sz : $per; seek($h, $sz - $want, 0); $used += $want;

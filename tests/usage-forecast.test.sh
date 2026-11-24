@@ -277,6 +277,23 @@ start=$SECONDS; o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); mt=$((SECONDS - start))
 check 'codex, 450 files of 3.4 MB (1.5 GB of tails): a forecast, not unknown, inside 4 s' '[ -n "$(f 4)" ] && [ "$mt" -lt 4 ]'
 rm -r "$BG"
 
+# 222 rollouts over 8 days (every 10 minutes for 6 hours, then hourly), each a usage record followed by 6 MB of tool output (about 1.1 GB of tails: more than the default
+# 128 MB budget can widen into): the budget must run out evenly, and the 24 h baseline survives (reader finding: 40 printed, 120 expected)
+GENP='
+  my ($dir, $now, $base, $r, $pad) = @ARGV;
+  for my $h (0 .. 221) { my $m = $h < 36 ? $h * 10 : ($h - 30) * 60; my $u = $m < 1200 ? 40 : $m > 1440 ? 0 : 40 * (1440 - $m) / 240;
+    my @g = gmtime($now - $m * 60); my $f = sprintf("%s/rollout-%04d.jsonl", $dir, $h); open(my $o, ">", $f) or die;
+    printf $o q({"timestamp":"%04d-%02d-%02dT%02d:%02d:%02dZ","payload":{"rate_limits":{"limit_id":"codex","primary":{"used_percent":%.2f,"window_minutes":10080,"resets_at":%d}}}}) . "\n", $g[5] + 1900, $g[4] + 1, $g[3], $g[2], $g[1], $g[0], $u, $r;
+    if ($pad) { truncate($o, 6_000_000) } close $o; my $mt = $base - $m * 60; utime($mt, $mt, $f) }'
+PD="$T/codex/sessions/padded"; mkdir -p "$PD"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+perl -e "$GENP" "$PD" "$NOW" "$BASE" "$R" 0
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); fsmall=$(f 4)
+rm -r "$PD"; mkdir -p "$PD"
+perl -e "$GENP" "$PD" "$NOW" "$BASE" "$R" 1
+o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc); fpad=$(f 4)
+check 'codex, 222 rollouts padded to 6 MB (far more than the budget widens into): within 2 points of the same readings unpadded' 'near "$fpad" "$fsmall" 2'
+rm -r "$PD"
+
 # the sampler reads at least 50 files whatever the clock says, and widens a slice that holds no record
 mkdir -p "$T/codex/sessions/clk"; : > "$T/codex/sessions/x/rollout-1.jsonl"
 for i in $(seq 0 59); do m=$((i * 3)); u=$(awk -v m="$m" 'BEGIN { printf "%.2f", 30 + (180 - m) / 12 }'); codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/clk/rollout-$(printf %03d $i).jsonl"; done
