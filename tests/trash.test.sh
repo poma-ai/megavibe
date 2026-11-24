@@ -235,7 +235,8 @@ check "a broken python3 falls back to rmtrash instead of failing every rm" '[ $r
 # 3. Review due thresholds and the machine-wide hook stamp.
 review_due_tests() {
 unset MEGAVIBE_TRASH_REVIEW_COUNT MEGAVIBE_TRASH_REVIEW_MB MEGAVIBE_TRASH_REVIEW_AGE_DAYS_MB MEGAVIBE_TRASH_REVIEW_AGE_DAYS
-local PROJ="$T/proj" out
+unset MEGAVIBE_TRASH_REVIEW CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENTRYPOINT
+local PROJ="$T/proj" out status label attended kind entrypoint payload expected stamp
 mkdir -p "$PROJ/.agent" "$HOME/.megavibe/scripts" "$MEGAVIBE_TRASH_DIR" "$MEGAVIBE_TRASH_LEDGER_DIR"
 cp "$REPO/scripts/trash-review.py" "$HOME/.megavibe/scripts/"
 fixture() {
@@ -267,15 +268,50 @@ check "77 items and 264 KB are quiet" '[ -z "$(hook "{}")" ]'
 check "count=0 restores legacy due thresholds" '[ -n "$(MEGAVIBE_TRASH_REVIEW_COUNT=0 $RV nudge --peek)" ]'
 fixture 1 102400 0 gone
 check "100 MB of young items is quiet even with a large vanished entry" '[ -z "$(hook "{}")" ]'
-check "status counts the collision-renamed entry and reports the dropped record" '$RV status | grep -q "^1 unreviewed.*100 MB" && $RV status | grep -q "1 .*dropped"'
+status=$($RV status)
+check "status drops and reports a genuinely gone item" 'printf "%s\n" "$status" | grep -q "^1 unreviewed.*100 MB" && printf "%s\n" "$status" | grep -q "^1 stale record(s) dropped"'
 chmod 100 "$MEGAVIBE_TRASH_DIR"
-check "unreadable Trash does not drop records" '! $RV status | grep -q "dropped"'
+check "unreadable Trash does not drop records" 'status=$($RV status) && [[ "$status" != *dropped* ]]'
 chmod 700 "$MEGAVIBE_TRASH_DIR"
 printf '\377invalid\n' >> "$MEGAVIBE_TRASH_LEDGER_DIR/ledger.jsonl"
 check "an unreadable ledger record prevents dropping" '! $RV status | grep -q "dropped"'
 fixture 1 102400 8 gone
+mv "$MEGAVIBE_TRASH_DIR/foo 2" "$MEGAVIBE_TRASH_DIR/foo renamed"
+status=$($RV status)
+check "a Trash rename keeps the record unreviewed and drops only the gone item" 'printf "%s\n" "$status" | grep -q "^1 unreviewed.*100 MB" && printf "%s\n" "$status" | grep -q "^1 stale record(s) dropped"'
+check "the renamed item still makes review due" '$RV nudge --peek | grep -q "^1 unreviewed"'
+mv "$MEGAVIBE_TRASH_DIR/foo renamed" "$MEGAVIBE_TRASH_DIR/foo 2"
+python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$MEGAVIBE_TRASH_DIR/foo 2" "$MEGAVIBE_TRASH_DIR/FOO 2"
+status=$($RV status)
+check "a case-only Trash rename keeps the record unreviewed" 'printf "%s\n" "$status" | grep -q "^1 unreviewed.*100 MB" && printf "%s\n" "$status" | grep -q "^1 stale record(s) dropped"'
+mv "$MEGAVIBE_TRASH_DIR/FOO 2" "$MEGAVIBE_TRASH_DIR/foo renamed"
+mv "$MEGAVIBE_TRASH_DIR/foo renamed" "$MEGAVIBE_TRASH_DIR/foo 2"
+
+stamp="$MEGAVIBE_TRASH_LEDGER_DIR/nudge.json"
+while IFS='|' read -r label attended kind entrypoint payload expected; do
+  /bin/rm -f "$stamp"
+  out=$(CLAUDE_CODE_SESSION_ATTENDED="$attended" CLAUDE_CODE_ENVIRONMENT_KIND="$kind" \
+        CLAUDE_CODE_ENTRYPOINT="$entrypoint" hook "$payload")
+  if [ "$expected" = emits ]; then
+    check "$label emits and stamps" '[ -n "$out" ] && [ -s "$stamp" ]'
+  else
+    check "$label stays silent and leaves no stamp" '[ -z "$out" ] && [ ! -e "$stamp" ]'
+  fi
+done <<'CASES'
+explicit attendance with dontAsk|1|||{"permission_mode":"dontAsk"}|emits
+explicit attendance with SDK entrypoint|1||sdk-cli|{}|emits
+explicit attendance with unattended payload|1|||{"is_interactive":false,"scheduled":true}|emits
+bridge with no explicit attendance||bridge|sdk-cli|{}|emits
+bridge with unattended payload||bridge|sdk-cli|{"is_interactive":false}|silent
+interactive payload with dontAsk|||sdk-cli|{"is_interactive":true,"permission_mode":"dontAsk"}|emits
+dontAsk alone||||{"permission_mode":"dontAsk"}|emits
+plain attended control||||{}|emits
+explicitly unattended bridge|0|bridge|sdk-cli|{"is_interactive":true}|silent
+CASES
 check "unattended and subagent hooks are silent" '[ -z "$(hook "{\"agent_id\":\"x\"}")" ] && [ -z "$(CLAUDE_CODE_ENTRYPOINT=sdk-cli hook "{}")" ] && [ -z "$(hook "{\"is_interactive\":false}")" ] && [ -z "$(CLAUDE_CODE_SESSION_ATTENDED=0 hook "{}")" ] && [ -z "$(hook "{\"scheduled\":true}")" ]'
+check "inferred unattended calls leave no stamp" '[ ! -e "$stamp" ]'
 out=$(hook '{"session_id":"one"}')
+check "the attended session emits and stamps after the unattended bridge" '[ -n "$out" ] && [ -s "$stamp" ]'
 check "100 MB with an eight-day-old entry is due and reports the drop" 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"AskUserQuestion\") and contains(\"dropped\")" >/dev/null'
 check "the stamp silences another session at the same state" '[ -z "$(hook "{\"session_id\":\"two\"}")" ]'
 fixture 2 102400 8

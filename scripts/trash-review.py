@@ -441,16 +441,17 @@ def reviewable():
     return out
 
 
-def missing_entry(r, roots):
-    """Confirm absence only from a readable, pinned Trash, using the recorded entry."""
+def entry_present(r, roots):
+    """Check identity anywhere in a pinned Trash. None means absence cannot be confirmed."""
     root = root_of(r)
     path = r.get("trash_path")
     if (not isinstance(path, str) or "\0" in path or not r.get("id")
-            or type(r.get("dev")) is not int or type(r.get("ino")) is not int):
-        return False
+            or type(r.get("dev")) is not int or r["dev"] < 0
+            or type(r.get("ino")) is not int or r["ino"] <= 0):
+        return None
     parent, name = os.path.split(path)
     if parent != root or name in ("", ".", ".."):
-        return False
+        return None
     if root not in roots:
         roots[root] = None
         if root_ok(root):
@@ -459,28 +460,28 @@ def missing_entry(r, roots):
                 fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                 # Claims may temporarily remove the entry from its recorded path.
                 if root == TRASH and os.path.lexists(CLAIM) and os.listdir(CLAIM):
-                    return False
+                    return None
+                devices_by_inode = {}
                 with os.scandir(fd) as entries:
                     for entry in entries:
                         if entry.name.startswith(".megavibe-empty-"):
-                            return False
+                            return None
                         if root != TRASH and entry.name == ".megavibe-claim" and os.listdir(claim_dir(root)):
-                            return False
-                roots[root], fd = fd, None
+                            return None
+                        st = os.lstat(entry.name, dir_fd=fd)
+                        devices_by_inode.setdefault(st.st_ino, set()).add(st.st_dev)
+                roots[root] = devices_by_inode
             except (OSError, UnicodeError):
                 pass
             finally:
                 if fd is not None:
                     os.close(fd)
-    fd = roots[root]
-    if fd is None:
-        return False
-    try:
-        return not ident_matches(r, os.stat(name, dir_fd=fd, follow_symlinks=False))
-    except FileNotFoundError:
-        return True
-    except (OSError, UnicodeError):
-        return False
+    devices_by_inode = roots[root]
+    if devices_by_inode is None:
+        return None
+    # Keep an older record too if the same inode was restored and re-trashed under a new record.
+    devices = devices_by_inode.get(r["ino"], ())
+    return bool(devices) if r.get("trash_root") else r["dev"] in devices
 
 
 def pending():
@@ -488,19 +489,15 @@ def pending():
     done = {r.get("id") for r in read(REVIEWED) if r.get("ok")}
     errors, roots, out = [], {}, []
     dropped = 0
-    try:
-        for r in ledger(errors):
-            if r.get("id") in done:
-                continue
-            r["in_trash"] = same_entry(r)
-            if not r["in_trash"] and not errors and missing_entry(r, roots):
-                dropped += 1
-            else:
-                out.append(r)
-    finally:
-        for fd in roots.values():
-            if fd is not None:
-                os.close(fd)
+    for r in ledger(errors):
+        if r.get("id") in done:
+            continue
+        present = True if same_entry(r) else entry_present(r, roots)
+        r["in_trash"] = present is True
+        if present is False and not errors:
+            dropped += 1
+        else:
+            out.append(r)
     return out, dropped
 
 

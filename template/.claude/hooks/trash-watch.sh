@@ -20,17 +20,23 @@ INPUT=$(cat 2>/dev/null || echo "")
 # Hook stdin/stdout are pipes even for attended runs, and remote sessions can have
 # no controlling tty. Suppress explicit unattended signals and bound ambiguous cases
 # (including cron inside a live session) with a machine-wide due-state stamp.
-# Remote Control bridge processes also use SDK entrypoints.
-if [ "${CLAUDE_CODE_ENVIRONMENT_KIND:-}" != "bridge" ]; then
-  [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = "0" ] && exit 0
-  case "${CLAUDE_CODE_ENTRYPOINT:-}" in sdk*|ci|headless) exit 0 ;; esac
-fi
-printf '%s' "$INPUT" | jq -e '
-  type == "object" and
+[ "${CLAUDE_CODE_SESSION_ATTENDED:-}" = "0" ] && exit 0
+ATTENDANCE=$(printf '%s' "$INPUT" | jq -ers '
+  select(length == 1) | .[0] |
+  select(type == "object" and
   ((.agent_id // "") == "") and
-  ((.transcript_path // "") | test("/subagents/agent-[^/]+\\.jsonl$") | not) and
-  (.is_interactive != false and .scheduled != true and .permission_mode != "dontAsk")
-' >/dev/null 2>&1 || exit 0
+  ((.transcript_path // "") | test("/subagents/agent-[^/]+\\.jsonl$") | not)) |
+  if .is_interactive == false or .scheduled == true then "unattended"
+  elif .is_interactive == true then "attended"
+  else "unknown" end
+' 2>/dev/null) || exit 0
+if [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" != "1" ]; then
+  [ "$ATTENDANCE" = "unattended" ] && exit 0
+  # Remote Control bridge processes also use SDK entrypoints.
+  if [ "$ATTENDANCE" = "unknown" ] && [ "${CLAUDE_CODE_ENVIRONMENT_KIND:-}" != "bridge" ]; then
+    case "${CLAUDE_CODE_ENTRYPOINT:-}" in sdk*|ci|headless) exit 0 ;; esac
+  fi
+fi
 
 DIR="${MEGAVIBE_TRASH_LEDGER_DIR:-${HOME:-}/.megavibe/trash}"
 REVIEW="${HOME:-}/.megavibe/scripts/trash-review.py"
