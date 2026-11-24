@@ -239,6 +239,16 @@ check 'five-hour flat at 50 sampled 31 minutes apart: still a sprint' '[ "$(f 2)
 printf '{"t":%s,"sd":{"p":85,"r":%s},"fh":{"p":79,"r":%s}}\n{"t":%s,"sd":{"p":85,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 363))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'a projection just under 85 prints under 85 (floored), not 85' 'awk -v x="$(f 10)" "BEGIN{exit !(x != \"\" && x < 85)}"'
+# an equal repeat reading (a normal five-minute heartbeat, or a same-second Codex record) must not erase a five-hour surge: 65 at -36 minutes,
+# 82 at -5, 82 again now
+printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":65,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n' \
+  "$((NOW - 2160))" "$R2" "$FR" "$((NOW - 300))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 65, 82, then 82 again (a heartbeat): still 5h-hot (the rise is measured to the first reading at that level)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":65,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n' \
+  "$((NOW - 4500))" "$R2" "$FR" "$((NOW - 4200))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 65 then 82 seventy minutes ago and flat since: the surge is more than an hour old, so no climb is counted and the sprint is allowed' '[ "$(f 2)" = sprint ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
