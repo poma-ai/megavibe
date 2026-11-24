@@ -509,7 +509,10 @@ if [ "$MODE" = sprint ]; then
       # anchored to the NEWEST row of the live window, not to now: the evidence does not age out of a wall-clock lookback while the
       # history is unchanged (the sprint own 35-minute freshness rule bounds how old the newest row may be)
       | ($rows | last) as $nw
-      | def climb($h): [$rows[] | select(.t >= $nw.t - $h)] as $w
+      # when the lookback holds only the newest reading (sparse sampling, e.g. a probe every 30 minutes), the nearest earlier reading of
+      # the live window within two hours supplies the slope, divided by the real interval
+      | def climb($h): [$rows[] | select(.t >= $nw.t - $h)] as $w0
+          | (if ($w0 | length) >= 2 then $w0 else ([$rows[] | select(.t < $nw.t and ($nw.t - .t) <= 7200)] | last) as $pv | if $pv == null then $w0 else [$pv, $nw] end end) as $w
           | if ($w | length) < 2 then 0 else ($w | first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * (1800 + ([($now - $b.t), 0] | max))) end) end;
       if $nw == null then 0 else [climb(1800), climb(600)] | max end' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac

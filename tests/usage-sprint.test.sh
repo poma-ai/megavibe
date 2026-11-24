@@ -227,6 +227,14 @@ check 'five-hour 74 at -31 min and 82 at -26 min (the older reading is outside 3
 { rowfh 40 72 $R2 72; rowfh 35 72 $R2 73; rowfh 30 72 $R2 74; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour 72, 73, 74 at -40, -35, -30 minutes: projection covers the reading age plus the unit (86 or more, so 5h-hot)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# sparse sampling (a Codex probe every ~30 minutes): five-hour 20, 40, 60, 80 at -93, -62, -31, 0 minutes, weekly flat: the 30-minute lookback holds
+# only the newest sample, so the nearest earlier sample of the live window supplies the slope (about 20 points per 31 minutes)
+{ rowfh 93 58 $R2 20; rowfh 62 58 $R2 40; rowfh 31 58 $R2 60; rowfh 0 58 $R2 80; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 20, 40, 60, 80 sampled 31 minutes apart: 5h-hot (the slope comes from the nearest earlier sample, divided by the real interval)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+{ rowfh 93 58 $R2 50; rowfh 62 58 $R2 50; rowfh 31 58 $R2 50; rowfh 0 58 $R2 50; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour flat at 50 sampled 31 minutes apart: still a sprint' '[ "$(f 2)" = sprint ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
