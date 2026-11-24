@@ -149,7 +149,7 @@ none() {   # no evidence: the normal band, in the shape of the mode asked for
   exit 0
 }
 # Pace has no routing fallback: without jq it is silent, and never blocks a caller.
-case "$MODE" in pace|forecast|sprint-advice) command -v jq >/dev/null 2>&1 || exit 0 ;; esac
+case "$MODE" in pace|forecast|sprint-advice|sprint-render) command -v jq >/dev/null 2>&1 || exit 0 ;; esac
 command -v jq >/dev/null 2>&1 || { { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; }; }
 case "$NOW" in ''|*[!0-9]*) { [ "$MODE" = advisory ] && exit 0; [ "$MODE" = band ] && { echo normal; exit 0; }; none; } ;; esac
 

@@ -341,6 +341,10 @@ HALFR
 chmod +x "$T/mvhalf/scripts/usage-route.sh"
 ho=$(HOME="$T/home" MEGAVIBE_HOME="$T/mvhalf" /bin/bash "$REPO/megavibe" usage sprint 2>"$T/half.err"); hrc=$?
 check 'megavibe usage sprint with a router that has sprint but no sprint-render: refuses (exit 1, upgrade message), prints no routing row' '[ "$hrc" = 1 ] && [[ "$ho" != *normal* ]] && [ -s "$T/half.err" ]'
+# sprint-render without jq stays silent (it printed the ordinary default row 'normal|||')
+mkdir -p "$T/nojq"; for c in bash cat awk date head tail tr printf sed cut mktemp wc; do p=$(command -v "$c") && [ -x "$p" ] && ln -sf "$p" "$T/nojq/$c"; done
+nj=$(printf 'claude|sprint|2.0|90|90|9|4.5|x|ok|\n' | PATH="$T/nojq" /bin/bash "$UR" sprint-render 2>&1)
+check 'sprint-render without jq prints nothing (no stray default row)' '[ -z "$nj" ]'
 # `megavibe usage sprint` renders its advice from the rows it printed (one read per provider), not from a second read
 mkdir -p "$T/mvstub/scripts" "$T/mvstub/usage"
 cat > "$T/mvstub/scripts/usage-route.sh" <<'STUBR'
