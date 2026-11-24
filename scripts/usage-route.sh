@@ -187,7 +187,7 @@ emit_forecast() {
     | [ $all[] | select(type == "object")
         | select((.t | type) == "number" and (.sd.p? | type) == "number" and (.sd.r? | type) == "number")
         | {t, p: .sd.p, r: (.sd.r | sec)}
-        | select(.t > 0 and .t <= $now and .p >= 0 and .p <= 1000 and .r > 0) ] as $rows
+        | select(.t > 0 and .t <= $now and .p >= 0 and .p <= 1000 and .r > 0 and .r <= $now + 608400) ] as $rows
     | ($rows | map(.r) | unique) as $ru
     | ($rows | map(. + {rk: (.r as $x | [$ru[] | select(. <= $x and $x - . <= 180)] | min)})) as $rows
     | [ $rows[] | select((.r - $reset | fabs) <= 180) ] | (map(.t) | max) as $lastt
