@@ -46,6 +46,7 @@ for index, (label, filename, old, new) in enumerate(mutations):
     shutil.copytree(repo / "template/.claude/hooks", root / "template/.claude/hooks")
     shutil.copytree(repo / "scripts", root / "scripts")
     shutil.copy2(repo / "README.md", root / "README.md")
+    shutil.copy2(repo / "README-compaction-readiness.md", root / "README-compaction-readiness.md")
     shutil.copy2(repo / "template/CLAUDE.md", root / "template/CLAUDE.md")
     (root / "tests").mkdir()
     shutil.copy2(repo / "tests/compact-readiness.test.sh", root / "tests")
@@ -672,7 +673,7 @@ has '[report truncated;' 'large helper failure bounded'
 eq "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext | length < 7000')" true 'tier payload bounded'
 
 echo "== Documented advisory protocol"
-for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
+for doc in "$REPO/README.md" "$REPO/README-compaction-readiness.md"; do
   OUT=$(cat "$doc")
   has 'This check is advisory' 'advisory contract'
   has 'covered-through <newest filename>' 'coverage format'
@@ -681,6 +682,17 @@ for doc in "$REPO/README.md" "$REPO/template/CLAUDE.md"; do
   has 'It never certifies readiness or acknowledges pending rows' 'mark scope'
   lacks '--staged-handled' 'acknowledgement instructions removed'
 done
+# template/CLAUDE.md keeps the short rule and points at README-compaction-readiness.md for the full semantics
+OUT=$(cat "$REPO/template/CLAUDE.md")
+has 'Advisory: run `.claude/hooks/compact-readiness.sh' 'short rule: advisory contract'
+has 'MEGAVIBE_READY_TASKS_MIN_EVENTS' 'short rule: event threshold'
+has 'run the same command with `--mark`' 'short rule: mark step'
+has 'only membership in that list establishes coverage' 'short rule: membership'
+has 'never certifies readiness or acknowledges pending rows' 'short rule: mark scope'
+has 'backtick-fenced examples are ignored' 'short rule: fenced examples'
+has 'MEGAVIBE_READY_ADVISORY_LIMIT' 'short rule: advisory limit'
+has 'README-compaction-readiness.md' 'short rule: pointer to full semantics'
+lacks '--staged-handled' 'short rule: acknowledgement instructions removed'
 
 echo "compact-readiness tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

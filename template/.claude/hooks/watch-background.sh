@@ -53,7 +53,7 @@ set -u
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
-[ "${MEGAVIBE_BG_WATCH:-1}" = "0" ] && exit 0
+BG_OFF=0; [ "${MEGAVIBE_BG_WATCH:-1}" = "0" ] && BG_OFF=1   # opts out of the background-task checks only; the scratch check at Stop follows MEGAVIBE_DISK_WATCH
 
 CHECK_SECS="${MEGAVIBE_BG_CHECK_SECS:-300}"
 case "$CHECK_SECS" in ''|*[!0-9]*) CHECK_SECS=300 ;; esac
@@ -71,13 +71,12 @@ INPUT=$(cat 2>/dev/null || echo "")
   IFS= read -r -d "" SID
   IFS= read -r -d "" STOP_ACTIVE
 } < <(printf '%s' "$INPUT" | jq -j '
-  [ (.hook_event_name // ""), (.tool_name // ""), (.session_id // "default"),
+  [ (.hook_event_name // ""), (.tool_name // ""), (.session_id | strings | select(test("\\A[A-Za-z0-9-]{1,64}\\z"))) // "",
     (.stop_hook_active // false | tostring)
   ] | map(. + "\u0000") | join("")' 2>/dev/null) || true
 EVENT="${EVENT:-}"; TOOL="${TOOL:-}"; STOP_ACTIVE="${STOP_ACTIVE:-false}"
 
-SID=$(printf '%s' "${SID:-default}" | tr -cd 'A-Za-z0-9-' | cut -c1-64)
-SID="${SID:-default}"
+[ -n "${SID:-}" ] || exit 0
 mkdir -p ".agent/LOGS" 2>/dev/null || true
 STATE=".agent/LOGS/.bg-tasks.${SID}.jsonl"
 NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
@@ -86,6 +85,11 @@ NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
 task_file() {  # id -> the harness's output file for it, or ""
   local uid f
   uid=$(id -u 2>/dev/null || echo 0)
+  local mv=""
+  if command -v perl >/dev/null 2>&1; then   # root lookup, glob and file test on a moved volume: one 3 s deadline, local paths still searched on a timeout
+    mv=$(perl -e 'alarm shift; exec @ARGV' 3 bash -c 'r=$("$1" root 2>/dev/null) || exit 0; for f in "$r"/*/*/tasks/"$2".output; do [ -e "$f" ] && { printf "%s" "$f"; exit 0; }; done' _ "$HOME/.megavibe/scripts/scratch-root.sh" "$1" 2>/dev/null) || mv=""
+  fi
+  [ -z "$mv" ] || { printf '%s' "$mv"; return 0; }
   for f in "${TMPDIR:-/tmp}"/claude-"$uid"/*/*/tasks/"$1".output \
            /private/tmp/claude-"$uid"/*/*/tasks/"$1".output \
            /tmp/claude-"$uid"/*/*/tasks/"$1".output; do
@@ -96,6 +100,7 @@ task_file() {  # id -> the harness's output file for it, or ""
 
 # ---------------------------------------------------------------- PostToolUse
 if [ "$EVENT" = "PostToolUse" ]; then
+  [ "$BG_OFF" = 1 ] && exit 0
   case "$TOOL" in
     Bash)
       BG=$(printf '%s' "$INPUT" | jq -r '.tool_input.run_in_background // false' 2>/dev/null || echo false)
@@ -233,9 +238,75 @@ fi
 # This stop was caused by a block from a Stop hook (ours or another). Never
 # block again inside that cycle, or the turn can never end.
 [ "$STOP_ACTIVE" = "true" ] && exit 0
+# A named main session can carry agent_type. The agent ID and transcript
+# identify agent context when the harness routes it through Stop.
+STOP_AGENT=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""') || exit 0
+[ -z "$STOP_AGENT" ] || exit 0
+case "$(printf '%s' "$INPUT" | jq -r '.transcript_path // ""')" in
+  */"$SID"/subagents/agent-*.jsonl) exit 0 ;;
+esac
 
+# The session's own scratch over its budget (default 2 GB, MEGAVIBE_SCRATCH_BUDGET_GB; 0 off; opt out
+# with MEGAVIBE_DISK_WATCH=0): refuse "done" once, the way an unwatched task does. The block repeats only
+# when the scratch has grown another 256 MB since the last one, so a session that cleaned up, moved the
+# large thing to a deliverable, or named it and its size in its report is not blocked again.
+DW="${HOME:-}/.megavibe/scripts/disk-watch.sh"
+SCR_REASON=""; SCR_KB=0; SCR_ST=""
+# One block for everything this Stop has to say: the scratch reason and the background-task reason travel
+# together, because the second Stop of a cycle (stop_hook_active) exits at once and would swallow whichever
+# check came second. The scratch latch is recorded before the block is printed: if it cannot be written,
+# a block would repeat on every Stop.
+emit_stop() {  # extra reason text (may be empty); exits
+  local r="$1" json
+  if [ -n "$SCR_REASON" ]; then r="${SCR_REASON}${r:+
+
+$r}"; fi
+  [ -n "$r" ] || exit 0
+  json=$(jq -nc --arg r "$r" '{decision: "block", reason: $r}' 2>/dev/null) || json=""
+  if [ -n "$json" ]; then
+    if [ -n "$SCR_REASON" ] && [ -n "$SCR_ST" ] && ! printf '%s' "$SCR_KB" > "$SCR_ST" 2>/dev/null; then
+      # latch not writable: drop the scratch part so it cannot repeat on every Stop, keep the rest
+      r=${r#"$SCR_REASON"}; r=${r#$'\n\n'}; SCR_REASON=""
+      [ -n "$r" ] && json=$(jq -nc --arg r "$r" '{decision: "block", reason: $r}' 2>/dev/null) || json=""
+    fi
+    [ -z "$json" ] || printf '%s\n' "$json"
+  fi
+  exit 0
+}
+if [ "${MEGAVIBE_DISK_WATCH:-1}" != "0" ] && [ -x "$DW" ] &&
+   command -v perl >/dev/null 2>&1; then
+  SCR_RC=0   # one 8 s deadline for the whole probe (resolving roots, globbing, du); a timeout lets Stop pass
+  SCR_ROW=$(perl -e '
+    pipe(my $reader, my $writer) or exit 125;
+    my $pid = fork; exit 125 unless defined $pid;
+    if (!$pid) { setpgrp(0, 0) or exit 125; close $reader; open STDOUT, ">&", $writer or exit 125;
+                 close $writer; exec @ARGV or exit 127 }
+    close $writer;
+    $SIG{ALRM} = sub {
+      kill "TERM", -$pid; select(undef, undef, undef, 0.3);
+      kill "KILL", -$pid; exit 124;
+    };
+    alarm 8; local $/; my $row = <$reader>; waitpid($pid, 0);
+    my $status = $?; print $row if defined $row; exit($status & 127 ? 125 : $status >> 8);
+  ' bash "$DW" scratch --kb "$SID" 2>/dev/null) || SCR_RC=$?
+  SCR_KB=${SCR_ROW%%$'\t'*}; SCR_LINE=${SCR_ROW#*$'\t'}; case "$SCR_KB" in ''|*[!0-9]*) SCR_KB=0 ;; esac
+  SCR_ST=".agent/LOGS/.scratch-stopped.${SID}"
+  if [ "$SCR_RC" -eq 3 ] && [ ! -L "$SCR_ST" ] &&
+     { [ ! -e "$SCR_ST" ] || [ -f "$SCR_ST" ]; }; then
+    SCR_LAST=$(cat "$SCR_ST" 2>/dev/null | tr -d ' \n'); case "$SCR_LAST" in ''|*[!0-9]*) SCR_LAST=0 ;; esac
+    if [ "$SCR_KB" -ge $((SCR_LAST + 262144)) ]; then
+      SCR_REASON="This session's own scratch is over its budget: ${SCR_LINE}. A round is not done while its copies exist. Remove what finished rounds and runs left (use scratch-own.sh list / clean-unit for session-owned temp entries and review-copy.sh remove for copies inside the session scratchpad). If something large must stay, move it to megavibe-deliverables/ or name it and its size in your report, then finish: this check does not repeat until the scratch grows another 256 MB."
+    else
+      SCR_REASON=""
+    fi
+  elif [ "$SCR_RC" -eq 0 ]; then
+    rm -f ".agent/LOGS/.scratch-stopped.${SID}" 2>/dev/null || true   # a timed-out measurement (rc 124/142) keeps the latch
+  fi
+fi
+
+[ "$BG_OFF" = 1 ] && emit_stop ""
 REG=$(printf '%s' "$INPUT" | jq -c '.background_tasks // [] | map(select(type=="object"))' 2>/dev/null || echo "[]")
-[ "$REG" != "[]" ] || { : > "$STATE" 2>/dev/null; exit 0; }
+[ "$REG" != "[]" ] || { : > "$STATE" 2>/dev/null; emit_stop ""; }
 
 # Join the registry's running tasks with what this session recorded. A task
 # the registry no longer lists is over; a running task this file never saw
@@ -272,14 +343,14 @@ RESULT=$(jq -nc --argjson reg "$REG" --argjson st "$STATE_JSON" --argjson now "$
        | .age = ($now - .started)
        | .due = ((.covered | not) and (.watcher | not) and .age >= $secs and ($now - .nudged) >= $secs))) as $rows
   | {rows: $rows, due: ($rows | map(select(.due)))}' 2>/dev/null) || exit 0
-[ -n "$RESULT" ] || exit 0
+[ -n "$RESULT" ] || emit_stop ""
 
 DUE=$(printf '%s' "$RESULT" | jq -c '.due' 2>/dev/null || echo "[]")
 if [ "$DUE" = "[]" ]; then
   printf '%s' "$RESULT" | jq -c '.rows[] | {id, path, kind, started, nudged}' > "$STATE.tmp.$$" 2>/dev/null \
     && mv -f "$STATE.tmp.$$" "$STATE" 2>/dev/null
   rm -f "$STATE.tmp.$$" 2>/dev/null
-  exit 0
+  emit_stop ""
 fi
 
 # Record the nudge before emitting it, so a crash between the two costs a
@@ -292,5 +363,4 @@ LIST=$(printf '%s' "$DUE" | jq -r '.[] | "- \(.kind) task \(.id), \(.age / 60 | 
 REASON="Background tasks are running with no completion notification and no heartbeat watching them:
 $LIST
 For each: read the output now (tail -c 2000 for a bash task; for a subagent, wc -l and the last entry's tool names — never the whole transcript). Judge it against what the task is: a build at +0 growth is hung, an idle server at +0 is fine, repeating restart or traceback lines are a crashloop — act on that, do not keep waiting. Then arm a Monitor heartbeat on each (every ${BEAT_SECS}s: byte or entry delta plus tail) so the next check does not depend on you remembering, and report in one line per task. Silence is not success. (MEGAVIBE_BG_WATCH=0 switches this check off; MEGAVIBE_BG_CHECK_SECS sets the interval, 60–600.)"
-jq -nc --arg r "$REASON" '{decision: "block", reason: $r}'
-exit 0
+emit_stop "$REASON"

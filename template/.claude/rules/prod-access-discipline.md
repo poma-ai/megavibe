@@ -59,13 +59,12 @@ in the `default` namespace is untouched.
 - Go in deliberately: `MEGAVIBE_ALLOW_PROD_EXEC=1`, per session, when a human
   has decided to.
 
-Parsing uses Python's `shlex`, not a regex. A regex first cut was defeated by
-`bash -c "kubectl exec …"`, by `kube'ctl' exec`, by a backslash-newline
-continuation between `kubectl` and `exec`, and by `COLOR=#ff00aa kubectl exec …`
-(a `#` inside a word is not a comment) — and it wrongly blocked
-`kubectl get pod exec` by scanning every word for the verb instead of parsing
-the subcommand. Shell is not a regular language. Without `python3` the guard
-skips rather than blocks, the same posture `rm-to-trash.sh` takes.
+Parsing uses Python's `shlex`, not a regex (a regex first cut was defeated by
+`bash -c`, quoting, line continuations and `#` inside a word). Without
+`python3` the guard skips rather than blocks, as `rm-to-trash.sh` does; when
+`python3` is there but the check fails to run, it blocks if the text names an
+exec-class verb. A `$( )` inside double quotes is checked as a command, since
+bash runs it.
 
 The obviously-mutating verbs (`apply`, `patch`, `delete`, `scale`,
 `rollout restart`) are **not** blocked: nobody mistakes those for reads, and
@@ -93,11 +92,8 @@ runs against production data by what it is established to do, never by its URL,
 the page's name, the size of its output or its HTTP method: a GET does whatever
 the code behind it does, and legacy pages act on load.
 
-On 2026-11-15 a "read-only" comparison of admin pages, run before and after a
-routing change, requested one page that queues a mail to every active customer
-on each plain GET. Six requests queued about 70,000 mails; about 9,300 were
-delivered before anyone looked. The page had been classified by its name and
-the size of its output. Its code was 71 lines.
+Example (2026-11-15): six plain GETs of a "read-only" admin page queued about
+70,000 mails; the page had been classified by its name and output size.
 
 - **Establish the effects of each route before you request it**, browser
   navigation included, from evidence that applies to it: the handler and what

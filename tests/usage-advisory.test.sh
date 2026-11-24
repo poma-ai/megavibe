@@ -18,6 +18,11 @@ case "$1" in
   band) [ -n "${STUB_BAND_FAIL:-}" ] && exit 3; echo "${STUB_BAND:-normal}" ;;
   balance) echo "${STUB_BALANCE:--|}" ;;
   advisory) echo "${STUB_ADVISORY:-}" ;;
+  sprint-advice)
+    printf '%s' "${2:-}" > "${STUB_ARGLOG:-/dev/null}"
+    [ -n "${STUB_SPRINT_SLEEP:-}" ] && { { sleep "$STUB_SPRINT_SLEEP" & }; sleep "$STUB_SPRINT_SLEEP"; }
+    [ -n "${STUB_SPRINT:-}" ] && printf '%s\n' "$STUB_SPRINT"
+    exit "${STUB_SPRINT_RC:-0}" ;;
   forecast) if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = codex ]; then echo "${STUB_FC_CODEX:-}"; else echo "${STUB_FC_CLAUDE:-}"; fi ;;
   pace)
     if [ -n "${STUB_SLEEP:-}" ]; then
@@ -28,7 +33,7 @@ case "$1" in
 esac
 STUB
 FLAG="$P/.agent/LOGS/.usage-band.s1"
-reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
+reset() { rm -f "$FLAG"; unset STUB_SLEEP STUB_CHILD STUB_SPRINT STUB_SPRINT_SLEEP STUB_SPRINT_RC STUB_FC_CLAUDE STUB_FC_CODEX STUB_BAND STUB_BALANCE STUB_ADVISORY STUB_BAND_FAIL; export STUB_PACE_CLAUDE='claude||||||' STUB_PACE_CODEX='codex||||||'; }
 # pace line: provider|used|elapsed|linear|recent_rate|recent_proj|remaining
 claude_pace() { export STUB_PACE_CLAUDE="claude|$1|$2|$3|$4|$5|3"; }
 codex_pace() { export STUB_PACE_CODEX="codex|$1|$2|$3|$4|$5|3"; }
@@ -129,5 +134,110 @@ if [ -n "$OLD_HOOK" ] && [ -f "$OLD_HOOK" ]; then
     done
   done
 fi
+
+# ---- end-of-window sprint advice (usage-route.sh sprint-advice) ---------------------------------------------------
+SC='usage sprint: Claude weekly window resets in 2.5 h. Top model tier on the hardest open work; the 100% backstop and the review floor are unchanged.'
+SX='usage sprint: Codex weekly window resets in 1.0 h. Top model tier on the hardest open work; the 100% backstop and the review floor are unchanged.'
+reset; claude_pace 90 98 91 '' ''; codex_pace 60 30 75 '' ''
+ev PreToolUse | run | ctx >/dev/null; k0=$(cat "$FLAG")
+check 'no sprint: the flag keeps its four fields (nothing changes for a session that never sprints)' '[ "$k0" = "normal:-:9:7" ]'
+export STUB_SPRINT="$SC"
+o=$(ev PreToolUse | run | ctx)
+check 'sprint starts mid-session: the advice is spoken, with the projections line' '[[ "$o" == *"$SC"* ]] && [[ "$o" == *"projections claude 91"* ]]'
+check 'sprint state is in the flag' '[ "$(cat "$FLAG")" = "normal:-:9:7:sc" ]'
+o=$(ev PreToolUse | run)
+check 'same sprint state: silent' '[ -z "$o" ]'
+claude_pace 90 98 81 '' ''
+o=$(ev PreToolUse | run | ctx)
+check 'bucket move inside a sprint: projections line only' '[ "$o" = "usage router: projections claude 81 (linear), codex 75 (linear)" ]'
+o=$(ev SessionStart | run | ctx)
+check 'SessionStart restates the sprint advice' '[[ "$o" == *"$SC"* ]]'
+export STUB_SPRINT="$SC
+$SX"
+o=$(ev PreToolUse | run | ctx)
+check 'second subscription joins: both sentences' '[[ "$o" == *"$SC"* ]] && [[ "$o" == *"$SX"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:scx" ]'
+export STUB_SPRINT="$SC"
+o=$(ev PreToolUse | run | ctx)
+check 'one of two leaves the sprint: withdrawn for that one by name, the other restated' '[[ "$o" == *"sprint advice for Codex no longer applies"* ]] && [[ "$o" != *"for Claude no longer"* ]] && [[ "$o" == *"$SC"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:sc" ]'
+export STUB_SPRINT_SLEEP=30
+s=$SECONDS; o=$(ev PreToolUse | run | ctx); e=$((SECONDS - s))
+check "sprint call times out mid-sprint: unknown, not over (no withdrawal, flag kept; $e s)" '[ "$e" -lt 10 ] && [[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:sc" ]'
+unset STUB_SPRINT_SLEEP; export STUB_SPRINT_RC=3
+o=$(ev PreToolUse | run | ctx)
+check 'sprint call fails mid-sprint: unknown too' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7:sc" ]'
+unset STUB_SPRINT_RC; export STUB_SPRINT="${SC%; the 100*}"
+o=$(ev SessionStart | run | ctx)
+check 'a cut-off sentence (no closing words) is not relayed' '[[ "$o" != *"usage sprint: Claude"* ]]'
+export STUB_SPRINT="$SC"; ev PreToolUse | run >/dev/null
+unset STUB_SPRINT
+o=$(ev PreToolUse | run | ctx)
+check 'sprint over (reset or target reached): withdrawn once, in words' '[[ "$o" == *"end-of-window sprint advice for Claude no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:8:7" ]'
+o=$(ev PreToolUse | run)
+check 'after the withdrawal: silent' '[ -z "$o" ]'
+reset; export STUB_BAND=over STUB_ADVISORY='over advice.' STUB_SPRINT="$SC"; claude_pace 90 98 91 '' ''
+o=$(ev SessionStart | run | ctx)
+check 'over band and sprint together: band advice first, then the sprint sentence' '[[ "$o" == "over advice. $SC"* ]]'
+reset; export STUB_SPRINT='something else entirely'; claude_pace 90 98 91 '' ''
+o=$(ev SessionStart | run | ctx)
+check 'output that is not a sprint sentence is never relayed' '[[ "$o" != *"something else"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u" ]'
+reset; export STUB_SPRINT="$SC" STUB_SPRINT_SLEEP=30; claude_pace 90 98 91 '' ''
+s=$SECONDS; o=$(ev SessionStart | run | ctx); e=$((SECONDS - s))
+check "slow sprint call with a child holding stdout: under 10 s ($e s), no sprint text" '[ "$e" -lt 10 ] && [[ "$o" != *"usage sprint"* ]]'
+reset; export STUB_SPRINT="$SC" STUB_BAND_FAIL=1
+o=$(ev SessionStart | run)
+check 'failed band call: silent, sprint included' '[ -z "$o" ]'
+unset STUB_BAND_FAIL
+reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:sc' > "$FLAG"
+o=$(ev PreToolUse | (cd "$P" && PATH="$T/nobin" /bin/bash "$HOOK") | ctx)
+check 'no perl mid-sprint: the sprint state is unknown, not over (no withdrawal, flag kept)' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:u:u:sc" ]'
+reset; claude_pace 90 98 91 '' ''; export STUB_SPRINT="${SC% the 100*} $(printf 'x%.0s' $(seq 1 1300)) the 100% backstop and the review floor are unchanged."
+o=$(ev SessionStart | run | ctx)
+check 'an overlong line is not relayed, in part or whole' '[[ "$o" != *"usage sprint"* ]]'
+reset; claude_pace 50 40 147 '' ''; codex_pace 60 30 222 '' ''; export STUB_SLEEP=30 STUB_SPRINT_SLEEP=30 STUB_SPRINT="$SC"
+s=$SECONDS; o=$(ev SessionStart | run); e=$((SECONDS - s))
+check "slow pace calls AND a slow sprint call: still under the 10 s hook deadline ($e s)" '[ "$e" -lt 9 ]'
+# the hook asks for sprint-advice with --peek: an older installed router has no such mode and would run its state-writing default
+reset; export STUB_ARGLOG="$T/sprint-arg" STUB_SPRINT="$SC"; claude_pace 90 98 91 '' ''
+ev PreToolUse | run >/dev/null
+check 'the hook calls sprint-advice with --peek' '[ "$(cat "$T/sprint-arg" 2>/dev/null)" = "--peek" ]'
+unset STUB_ARGLOG STUB_SPRINT
+# a failed band lookup keeps the whole previous flag, so the sprint withdrawal after recovery is emitted exactly once
+reset; claude_pace 90 98 91 '' ''; printf 'over:codex:9:6:sc' > "$FLAG"; export STUB_BAND_FAIL=1
+ev PreToolUse | run >/dev/null
+check 'a failed band call leaves the previous flag byte for byte (the sprint field stays in field five)' '[ "$(cat "$FLAG")" = "over:codex:9:6:sc" ]'
+unset STUB_BAND_FAIL; export STUB_BAND=over STUB_BALANCE='codex|lean on codex.'
+o=$(ev PreToolUse | run | ctx)
+check 'after recovery with the sprint over: the withdrawal is emitted' '[[ "$o" == *"advice for Claude no longer applies"* ]]'
+o=$(ev PreToolUse | run | ctx)
+check 'and not a second time' '[[ "$o" != *"no longer applies"* ]]'
+unset STUB_BAND STUB_BALANCE
+# a failed band lookup for a session that never sprinted behaves exactly as before (balance advice is emitted, flag from the half-built key)
+reset; printf 'over:claude:10:5' > "$FLAG"; export STUB_BAND_FAIL=1 STUB_BALANCE='codex|lean on codex.'
+o=$(ev PreToolUse | run | ctx)
+check 'failed band call, four-field previous flag, balance changes: the balance advice is still emitted and the flag is written as before' '[[ "$o" == *"lean on codex"* ]] && [ "$(cat "$FLAG")" = ":codex" ]'
+unset STUB_BAND_FAIL STUB_BALANCE
+# terminating the hook while the router runs leaves no temp file behind
+reset; claude_pace 90 98 91 '' ''; export STUB_SPRINT_SLEEP=3 STUB_SPRINT="$SC"
+TD=$(mktemp -d); ev SessionStart > "$TD/in.json"; ( cd "$P" && TMPDIR="$TD" exec bash "$HOOK" < "$TD/in.json" >/dev/null 2>&1 ) & HP=$!
+sleep 1; kill -TERM "$HP" 2>/dev/null; wait "$HP"; HRC=$?; sleep 4
+check 'a cancelled hook exits 0 (the hook never fails the session)' '[ "$HRC" = 0 ]'
+check 'the hook terminated by SIGTERM while the router runs leaves no usage-sprint temp file' '[ -z "$(ls "$TD" 2>/dev/null | grep usage-sprint)" ]'
+unset STUB_SPRINT_SLEEP STUB_SPRINT
+# per-provider unknown: one provider's check failing does not hide the other one's change
+reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:scx' > "$FLAG"
+export STUB_SPRINT='usage sprint-unknown: Codex'
+o=$(ev PreToolUse | run | ctx)
+check 'Claude left the sprint while Codex is unknown: Claude withdrawn by name, Codex kept in the flag' '[[ "$o" == *"advice for Claude no longer applies"* ]] && [[ "$o" != *"Codex no longer"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u:sx" ]'
+printf 'normal:-:9:u:sc' > "$FLAG"; export STUB_SPRINT="$SC
+usage sprint-unknown: Codex"
+o=$(ev PreToolUse | run | ctx)
+check 'Claude still sprinting, Codex unknown and never announced: flag stays sc, no withdrawal' '[[ "$o" != *"no longer applies"* ]] && [ "$(cat "$FLAG")" = "normal:-:9:u:sc" ]'
+unset STUB_SPRINT
+# a failed band lookup checks nothing: the sprint state the session was told stands (no false withdrawal)
+reset; export STUB_BAND_FAIL=1; printf 'over:-:9:u:sc' > "$FLAG"
+o=$(ev PreToolUse | run | ctx)
+check 'band call fails while a sprint is active: no sprint withdrawal' '[[ "$o" != *"sprint advice"* ]] && [[ "$(cat "$FLAG")" == *:sc ]]'
+unset STUB_BAND_FAIL
+check 'no temp files left behind (sprint)' '[ -z "$(ls "$TMPDIR" | grep usage-)" ]'
 printf 'usage-advisory: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

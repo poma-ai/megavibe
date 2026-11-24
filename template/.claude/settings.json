@@ -185,6 +185,11 @@
           {
             "type": "command",
             "command": ".claude/hooks/on-session-end.sh"
+          },
+          {
+            "type": "command",
+            "command": ".claude/hooks/scratch-end.sh",
+            "timeout": 10
           }
         ]
       }
