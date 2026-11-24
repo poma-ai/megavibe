@@ -150,7 +150,7 @@ BUDGET=$(_int "${MEGAVIBE_SCRATCH_BUDGET_GB:-}" 2)
 scratch_dirs() {
   local sid=$1 roots r project d phys seen=$'\n' failed=0
   case "$sid" in ''|-*|*[!A-Za-z0-9-]*) return 4 ;; esac
-  roots=$(bounded 3 "$(dirname "$0")/scratch-root.sh" roots) || return 4
+  roots=$(bounded 4 "$(dirname "$0")/scratch-root.sh" roots) || return 4
   [ -n "$roots" ] || return 4
   while IFS= read -r r; do
     [ -e "$r" ] || { [ ! -L "$r" ] || failed=4; continue; }

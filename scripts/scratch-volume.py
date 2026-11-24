@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import sys
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ BOOT = Path("/private/tmp" if sys.platform == "darwin" else "/")
 HIDDEN = ".megavibe-scratch"
 REGISTRY = "scratch-volumes.jsonl"
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+ACCESS = os.R_OK | os.W_OK | os.X_OK
 GIB = 1024**3
 
 
@@ -55,6 +57,16 @@ def safe_line(path):
     return not any(ord(c) < 32 or ord(c) == 127 for c in str(path))
 
 
+def probe(directory_fd):
+    name = ".probe-" + os.urandom(16).hex()
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=directory_fd)
+    try:
+        os.unlink(name, dir_fd=directory_fd)
+    finally:
+        os.close(fd)
+
+
 def mounts(home, record=None):
     flags = os.O_NOFOLLOW | os.O_NONBLOCK
     flags |= os.O_RDWR | os.O_CREAT | os.O_APPEND if record else os.O_RDONLY
@@ -68,7 +80,7 @@ def mounts(home, record=None):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != UID or info.st_mode & 0o022:
             raise PermissionError("unsafe scratch volume registry")
-        fcntl.flock(stream, fcntl.LOCK_EX if record else fcntl.LOCK_SH)
+        fcntl.flock(stream, (fcntl.LOCK_EX if record else fcntl.LOCK_SH) | fcntl.LOCK_NB)
         stream.seek(0)
         paths = []
         for line in stream:
@@ -96,18 +108,21 @@ def select(project, home):
         if project_mount(mount) != mount or not os.path.samestat(os.stat(mount), os.fstat(mounted)):
             raise OSError("project volume is no longer mounted")
         space = os.fstatvfs(mounted)
-        if space.f_flag & os.ST_RDONLY or not os.access(mount, os.W_OK | os.X_OK):
+        if space.f_flag & os.ST_RDONLY or not os.access(mount, ACCESS):
             raise PermissionError("project volume is read-only or unwritable")
         if space.f_bavail * space.f_frsize < 5 * GIB or space.f_bavail * 20 < space.f_blocks:
             raise OSError("project volume is nearly full")
         with directory(HIDDEN, mounted, create=True, protected=True) as shared:
+            if not os.access(base.parent, ACCESS):
+                raise PermissionError("project scratch parent is inaccessible")
             with directory(str(UID), shared, create=True, private=True) as scratch:
-                home.mkdir(mode=0o700, parents=True, exist_ok=True)
-                mounts(home, record=mount)
                 if (project_mount(project) != mount or base.resolve(strict=True) != base
                         or not os.path.samestat(os.stat(base), os.fstat(scratch))
-                        or not os.access(base, os.W_OK | os.X_OK)):
+                        or not os.access(base, ACCESS)):
                     raise OSError("project scratch is no longer available")
+                probe(scratch)
+                home.mkdir(mode=0o700, parents=True, exist_ok=True)
+                mounts(home, record=mount)
     return base
 
 
@@ -135,7 +150,7 @@ def discover(project, home):
             continue
 
 
-def main(args):
+def resolve(args):
     command, project, *defaults = args
     home = Path(os.environ.get("MEGAVIBE_HOME") or Path.home() / ".megavibe")
     if command == "discover":
@@ -153,10 +168,28 @@ def main(args):
             base = select(project, home)
         except (OSError, ValueError, RuntimeError):
             print("megavibe: could not use project-volume scratch; using default scratch", file=sys.stderr)
+            return 1
         else:
             if base is not None:
                 print(base)
 
 
+def main(args):
+    message = ("project-volume scratch selection timed out; using default scratch"
+               if args[0] == "select" else "scratch volume discovery timed out")
+
+    def timed_out(_signum, _frame):
+        os.write(2, f"megavibe: {message}\n".encode())
+        os._exit(124)
+
+    previous = signal.signal(signal.SIGALRM, timed_out)
+    signal.alarm(3)
+    try:
+        return resolve(args)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))

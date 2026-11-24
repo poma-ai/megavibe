@@ -2504,17 +2504,11 @@ rc_name_prefix() { printf '%s' "${CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX:-${P
 # Export the automatic choice only in Claude's process. A launcher restart
 # rechecks availability and an explicit environment value always wins.
 launch_claude() {
-  local base resolver="$MEGAVIBE_HOME/scripts/scratch-volume.py"
+  local base resolver="$MEGAVIBE_HOME/scripts/scratch-root.sh"
   if [[ ! ${CLAUDE_CODE_TMPDIR+x} && ${MEGAVIBE_SCRATCH_FOLLOWS_PROJECT:-1} != 0 && -f "$resolver" ]]; then
-    if command -v python3 >/dev/null 2>&1 &&
-       base=$(MEGAVIBE_HOME="$MEGAVIBE_HOME" python3 "$resolver" select "$LAUNCH_PROJECT"); then
-      if [[ -n "$base" ]]; then
-        if [[ -d "$base" && ! -L "$base" ]]; then
-          export CLAUDE_CODE_TMPDIR="$base"
-        else
-          printf '%s\n' 'megavibe: project-volume scratch disappeared; using default scratch' >&2
-        fi
-      fi
+    if base=$(MEGAVIBE_HOME="$MEGAVIBE_HOME" bash "$resolver" select-volume "$LAUNCH_PROJECT") &&
+       [[ -n "$base" ]]; then
+      export CLAUDE_CODE_TMPDIR="$base"
     fi
   fi
   exec claude "$@"

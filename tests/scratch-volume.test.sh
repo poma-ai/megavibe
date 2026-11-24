@@ -70,7 +70,29 @@ with patch.dict(os.environ, clear=False), patch.object(volume, "device", device)
             rejected(project)
         with patch.object(volume.os, "mkdir", side_effect=PermissionError):
             rejected(project)
+        hidden = base.parent
+        for mode in (0o200, 0o600):
+            hidden.mkdir(mode=mode)
+            rejected(project)
+            hidden.rmdir()
+        access = os.access
+        def missing_read(path, mode):
+            if path == mount and mode & os.R_OK:
+                return False
+            return access(path, mode)
+        with patch.object(volume.os, "access", side_effect=missing_read):
+            rejected(project)
         assert run(alias) == ([str(base)], [])
+        assert not list(base.iterdir())  # the write probe is removed
+        for mode in (0o200, 0o600):
+            base.chmod(mode)
+            out, err = run(project)
+            assert not out and len(err) == 1 and "default scratch" in err[0]
+        base.chmod(0o700)
+        with (home / volume.REGISTRY).open("r+") as registry:
+            volume.fcntl.flock(registry, volume.fcntl.LOCK_EX)
+            out, err = run(project)
+            assert not out and len(err) == 1 and "default scratch" in err[0]
         assert run(project) == ([str(base)], [])  # idempotent
         assert stat.S_IMODE(base.stat().st_mode) == 0o700 and base.stat().st_uid == os.getuid()
         assert not list(volume.discover(project, home))  # harness root has yet to be used
@@ -125,6 +147,23 @@ module['main'](sys.argv[1:])
         (scripts / "scratch-volume.py").write_text(f"print({str(temp / 'missing')!r})")
         missing = subprocess.run([*command, alias], env=env, text=True, capture_output=True, check=True)
         assert missing.stdout == "unset\n" and missing.stderr.count("\n") == 1
+        (scripts / "scratch-volume.py").write_text("import time; time.sleep(20)")
+        stalled = subprocess.run([*command, alias], env=env, text=True, capture_output=True,
+                                 check=True, timeout=4)
+        assert stalled.stdout == "unset\n"
+        assert len(stalled.stderr.splitlines()) == 1 and "timed out" in stalled.stderr
+        (scripts / "scratch-volume.py").write_text(f"""
+import runpy
+import sys
+import time
+module = runpy.run_path({str(repo / 'scripts/scratch-volume.py')!r})
+module['main'].__globals__['project_mount'] = lambda _: time.sleep(20)
+sys.exit(module['main'](sys.argv[1:]))
+""")
+        alarm = subprocess.run([sys.executable, scripts / "scratch-volume.py", "select", alias],
+                               env=env, text=True, capture_output=True, timeout=4)
+        assert alarm.returncode == 124 and not alarm.stdout
+        assert len(alarm.stderr.splitlines()) == 1 and "timed out" in alarm.stderr
         root.rename(root.with_name("saved"))
         root.symlink_to(root.with_name("saved"))
         assert not list(volume.discover(temp, home))

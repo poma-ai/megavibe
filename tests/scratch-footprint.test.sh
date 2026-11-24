@@ -80,3 +80,27 @@ awk -v elapsed="$elapsed" 'BEGIN { exit !(elapsed < 4) }'
    -f "$TMPDIR/mv-review-copy.fixture/.megavibe-review-copy" &&
    -f "$CLAUDE_CODE_TMPDIR/claude-$(id -u)/keep" ]]
 printf '%s\nstalled du returned in %ss\n' "$expected" "$elapsed"
+
+python3 - "$HOME/.megavibe/scripts" <<'PYTEST'
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+scripts = Path(sys.argv[1])
+root = scripts / "scratch-root.sh"
+env = dict(os.environ, CLAUDE_CODE_TMPDIR="/")
+default = Path("/private/tmp" if sys.platform == "darwin" else "/tmp") / f"claude-{os.getuid()}"
+resolver = scripts / "scratch-volume.py"
+resolver.write_text("import time; print('/partial', flush=True); time.sleep(20)")
+result = subprocess.run([root, "roots"], env=env, text=True, capture_output=True,
+                        check=True, timeout=4)
+assert result.stdout.splitlines() == [str(default)], result
+assert len(result.stderr.splitlines()) == 1 and "timed out" in result.stderr
+resolver.write_text("print('/partial'); raise SystemExit(1)")
+result = subprocess.check_output([root, "roots"], text=True, timeout=4)
+moved = Path(os.environ["CLAUDE_CODE_TMPDIR"]) / default.name
+assert result.splitlines() == [str(moved), str(default)], result
+assert subprocess.check_output([root, "root"], env=env, text=True).strip() == str(default)
+assert subprocess.check_output([root, "base"], env=env, text=True).strip() == "/tmp"
+PYTEST
