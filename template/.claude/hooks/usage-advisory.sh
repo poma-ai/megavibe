@@ -77,12 +77,13 @@ SPR=""; SK=""
 if [ -n "$BAND" ]; then
   src=1
   if [ "$SECONDS" -lt 3 ] && command -v perl &>/dev/null && sf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint.XXXXXX" 2>/dev/null); then
+    trap 'rm -f "$sf" 2>/dev/null' EXIT; trap 'exit 143' TERM INT HUP   # a hook cancelled while the router runs still removes its file
     ( perl -e 'alarm 5; exec @ARGV' bash "$UR" sprint-advice --peek >"$sf" </dev/null; exit $? ) 2>/dev/null   # the subshell keeps bash's "Alarm clock" notice off the hook's stderr
     src=$?
     # whole sentences only: a line cut off by the deadline, or longer than any real one, lacks the closing words
     SPR=$(cut -c1-1200 "$sf" 2>/dev/null | grep -E '^usage sprint: (Claude|Codex) .*unchanged\.$' | head -n 2)
     UNK=$(cut -c1-80 "$sf" 2>/dev/null | grep -E '^usage sprint-unknown: (Claude|Codex)$')
-    rm -f "$sf"
+    rm -f "$sf"; trap - EXIT TERM INT HUP
     # a provider whose own check could not run keeps the letter the session was last told; the others are decided now
     case "$SPR" in *"usage sprint: Claude "*) SK="c" ;; esac
     case "$UNK" in *Claude*) case "${PS:-}" in s*c*) SK="${SK:-c}" ;; esac ;; esac

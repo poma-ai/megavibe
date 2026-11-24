@@ -216,6 +216,12 @@ reset; printf 'over:claude:10:5' > "$FLAG"; export STUB_BAND_FAIL=1 STUB_BALANCE
 o=$(ev PreToolUse | run | ctx)
 check 'failed band call, four-field previous flag, balance changes: the balance advice is still emitted and the flag is written as before' '[[ "$o" == *"lean on codex"* ]] && [ "$(cat "$FLAG")" = ":codex" ]'
 unset STUB_BAND_FAIL STUB_BALANCE
+# terminating the hook while the router runs leaves no temp file behind
+reset; claude_pace 90 98 91 '' ''; export STUB_SPRINT_SLEEP=3 STUB_SPRINT="$SC"
+TD=$(mktemp -d); ev SessionStart > "$TD/in.json"; ( cd "$P" && TMPDIR="$TD" exec bash "$HOOK" < "$TD/in.json" >/dev/null 2>&1 ) & HP=$!
+sleep 1; kill -TERM "$HP" 2>/dev/null; wait "$HP" 2>/dev/null; sleep 4
+check 'the hook terminated by SIGTERM while the router runs leaves no usage-sprint temp file' '[ -z "$(ls "$TD" 2>/dev/null | grep usage-sprint)" ]'
+unset STUB_SPRINT_SLEEP STUB_SPRINT
 # per-provider unknown: one provider's check failing does not hide the other one's change
 reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:scx' > "$FLAG"
 export STUB_SPRINT='usage sprint-unknown: Codex'

@@ -39,6 +39,13 @@ R6=$((NOW + 6 * 3600))
 { row 1500 60 $R6; row 360 61 $R6; row 5 62 $R6; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'six hours left: not a sprint (reason outside), still nine fields' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = outside ] && [ "$(nf)" = 9 ] && [ -z "$(f 6)" ]'
+# outside the window and switched off the projection is not computed: the last field is empty, never the raw five-hour reading
+{ printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":65,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":84,"r":%s}}\n' "$((NOW - 1200))" "$R6" "$((NOW + 3600))" "$NOW" "$R6" "$((NOW + 3600))"; } > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'outside the window: the five-hour projection field is empty (not the raw 84)' '[ "$(f 9)" = outside ] && [ -z "$(f 10)" ]'
+o=$(MEGAVIBE_SPRINT=0 sp)
+check 'switched off: the five-hour projection field is empty (not the raw 84)' '[ "$(f 9)" = off ] && [ -z "$(f 10)" ]'
+{ row 1500 60 $R6; row 360 61 $R6; row 5 62 $R6; } > "$MEGAVIBE_USAGE_FILE"
 o=$(MEGAVIBE_SPRINT_HOURS=8 sp)
 check 'MEGAVIBE_SPRINT_HOURS=8 widens the window' '[ "$(f 2)" = sprint ]'
 o=$(MEGAVIBE_SPRINT_HOURS=abc sp)

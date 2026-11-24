@@ -491,8 +491,8 @@ if [ "$MODE" = sprint ]; then
   IFS='|' read -r s_used s_rem s_fh s_flr < <(jq -r '[(.wk.used // ""), (.wk.rem // ""), (.mx.fh.p // ""), (.mx.fh.r // "")] | map(tostring) | join("|")' <<<"$DECISION" 2>/dev/null) || true
   s_in=$(LC_ALL=C awk -v r="${s_rem:-}" -v h="$SHOURS" 'BEGIN { if (r !~ /^[0-9]+([.][0-9]+)?$/ || r + 0 <= 0) print "none"; else if (r + 0 < 600) print "out"; else if (r + 0 <= h * 3600) print "in"; else print "out" }')
   s_hl=""; [ "$s_in" = none ] || s_hl=$(LC_ALL=C awk -v r="$s_rem" 'BEGIN { printf "%.1f", r / 3600 }')
-  if [ "${MEGAVIBE_SPRINT:-1}" = 0 ]; then printf '%s|-|%s|%s|||||off|%s\n' "$PROVIDER" "$s_hl" "${s_used:-}" "${s_fh:-}"; exit 0; fi
-  if [ "$s_in" != in ]; then printf '%s|-|%s|%s|||||outside|%s\n' "$PROVIDER" "$s_hl" "${s_used:-}" "${s_fh:-}"; exit 0; fi
+  if [ "${MEGAVIBE_SPRINT:-1}" = 0 ]; then printf '%s|-|%s|%s|||||off|\n' "$PROVIDER" "$s_hl" "${s_used:-}"; exit 0; fi
+  if [ "$s_in" != in ]; then printf '%s|-|%s|%s|||||outside|\n' "$PROVIDER" "$s_hl" "${s_used:-}"; exit 0; fi
   # inside the window a cached Codex reading is not good enough: run once more past the cache
   if [ "$PROVIDER" = codex ] && [ "$SPRINT_FRESH" != 1 ] && [ -z "${MEGAVIBE_NOW:-}" ] && [ "${CODEX_CACHED:-0}" = 1 ]; then
     fresh=$(_MEGAVIBE_SPRINT_FRESH=1 MEGAVIBE_ROUTER_PROVIDER=codex bash "$0" sprint 2>/dev/null)
