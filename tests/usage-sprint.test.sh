@@ -260,10 +260,17 @@ check 'five-hour 65 then 82 seventy minutes ago and flat since: the surge is mor
 check 'five-hour 74 (-11 min), 78 (-6 min): 5h-hot' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 { rowfh 30 70 $R2 74; rowfh 11 70 $R2 74; rowfh 6 70 $R2 78; rowfh 0 70 $R2 79; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'the same plus a fresh 79 now (a one-point follow-up): still 5h-hot (every recent endpoint pair counts)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# whole-percent uncertainty in the five-hour slope: 60 five minutes ago, 63 now (the readings can be 60.05 and 63.95), 2 h left
+{ rowfh 5 60 $R2 60; rowfh 0 60 $R2 63; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'five-hour 60 then 63 five minutes later: 5h-hot (a three-point rise is rated four over the interval, like the weekly burst)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# the advice prints the five-hour projection at one decimal and states the reserve there too
+printf '{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":79,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 363))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
+o=$(/bin/bash "$UR" sprint-advice)
+check 'the advice shows the five-hour projection with its decimal (84.9) and a reserve for it' '[[ "$o" == *"projected at 84.9%"* ]] && [[ "$o" == *"one point in reserve there"* ]]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'five-hour 78 -> 81 over 29 minutes: the tenth field is the projection (84 to 90: the highest pair rate), not 81' 'awk -v x="$(f 10)" "BEGIN{exit !(x > 83 && x < 90)}"'
+check 'five-hour 78 -> 81 over 29 minutes: the tenth field is the projection (84 to 100: the highest pair rate), not 81' 'awk -v x="$(f 10)" "BEGIN{exit !(x > 83 && x < 100)}"'
 
 # the five-hour window is hot: top-tier work would only hit that limit
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 88; } > "$MEGAVIBE_USAGE_FILE"

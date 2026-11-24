@@ -281,7 +281,7 @@ emit_forecast() {
 # one advice sentence from a sprint row held in $p (provider) $hl $u $fc $spare $spend $fhu
 sprint_sentence() {
   LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v fhu="${fhu:-}" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
-    printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is projected at %d%% (used plus its recent climb over a 30-minute unit), and a unit must fit that too", fhu) : "")
+    printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is projected at %s%% (used plus its recent climb over a 30-minute unit), and a unit must fit that too with one point in reserve there as well", fhu) : "")
     printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", "megavibe usage sprint", t, ot
     printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
 }
@@ -513,7 +513,9 @@ if [ "$MODE" = sprint ]; then
           | range(0; $hi) as $lo | $rows[$lo] as $L
           | select(($H.t - $L.t) <= 1800 or ($lo == $hi - 1 and ($H.t - $L.t) <= 7200))
           | select(($H.fh.p - $L.fh.p) > 0)
-          | (($H.fh.p - $L.fh.p) / ([($H.t - $L.t), 300] | max) * (1800 + ([($now - $H.t), 0] | max)))] | max) // 0' <<<"$HISTORY" 2>/dev/null)
+          # whole-percent readings: a rise of 2 points or more is rated one point higher (like the weekly burst); a single one-point
+          # tick is noise and rated as it reads
+          | ((if ($H.fh.p - $L.fh.p) >= 2 then ($H.fh.p - $L.fh.p + 1) else ($H.fh.p - $L.fh.p) end) / ([($H.t - $L.t), 300] | max) * (1800 + ([($now - $H.t), 0] | max)))] | max) // 0' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"
