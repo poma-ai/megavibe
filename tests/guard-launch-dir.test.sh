@@ -155,12 +155,15 @@ guard 'git worktree remove repo-review' 0 "$T/repo" "$T"
 check 'non-Git launch directory allows git worktree remove' verdict 0
 
 ln -s "$T/repo-review" "$T/launch-link"
+ln -s "$T" "$T/ancestor-link"
 touch "$T/repo-review/file"
-mkdir -p "$T/other/nested" "$T/target"
+mkdir -p "$T/other/nested" "$T/other/repo" "$T/target"
 for command in \
   "rm -r '$T/repo-review'" \
   "rm -rf '$T/repo-review/..'" \
-  'rm -r launch-link' \
+  'rm -r launch-link/' \
+  'rm -r launch-link/.' \
+  'rm -r ancestor-link/repo-review' \
   'rm -r repo-review' \
   "cd 'other/nested' && rm -r ../../repo-review" \
   'mv repo-review x' \
@@ -178,6 +181,7 @@ for command in \
   check "launch path blocks ${command//"$T"/<scratch>}" verdict 2 'Finish and exit this session'
 done
 for command in 'rm repo-review/file' 'rm -r other' 'rm missing/..' \
+  'rm launch-link' 'rm ancestor-link' 'mv launch-link x' \
   'mv other x' 'mv other repo-review' 'mv -t repo-review other' \
   'echo rm -r repo-review' 'command -v rm repo-review'; do
   guard "$command"
@@ -197,6 +201,48 @@ guard 'rm -r other' 0 "$T" "$T/other"
 check 'launch path protects a non-Git project too' verdict 2 'Finish and exit this session'
 guard 'rm -r repo-review' 0 "$T" "$T/launch-link"
 check 'launch path resolves a symlinked project directory' verdict 2 'Finish and exit this session'
+
+launch_case() {
+  local expected="$1" cwd="$2" launch="$3" command="$4"
+  guard "$command" 0 "$cwd" "$launch"
+  local message=
+  if [ "$expected" = 2 ]; then message='Finish and exit this session'; fi
+  command=${command//"$T"/<scratch>}
+  check "launch traversal ($expected) ${command//$'\n'/\\n}" verdict "$expected" "$message"
+}
+launch_case 2 "$T/repo" "$T/repo" 'true; cd .. && mv repo moved'
+launch_case 2 "$T/other" "$T/repo-review" "cd -- '$T' && mv repo-review moved"
+launch_case 2 "$T/other" "$T/repo" $'true\ncd -- ..\nmv repo moved'
+launch_case 2 "$T/other" "$T/repo" 'false || cd ..; mv repo moved'
+launch_case 2 "$T/other" "$T/repo" $'cd .. &&\nmv repo moved'
+launch_case 0 "$T" "$T/repo" 'true; cd other && rm -r repo'
+launch_case 0 "$T" "$T/repo" 'cd "$DEST"; rm -r repo'
+launch_case 2 "$T" "$T/repo" "cd \"\$DEST\"; mv '$T/repo' moved"
+launch_case 2 "$T/other" "$T/repo" "cd \"\$DEST\"; cd '$T'; mv repo moved"
+launch_case 0 "$T" "$T/repo" 'cd -; rm -r repo'
+launch_case 0 "$T" "$T/repo" 'cd; rm -r repo'
+launch_case 0 "$T" "$T/repo" 'cd missing && rm -r repo'
+launch_case 2 "$T" "$T/repo" 'cd missing || mv repo moved'
+launch_case 2 "$T/other" "$T/repo" "(cd '$T' && mv repo x)"
+launch_case 0 "$T" "$T/repo" "(cd '$T/other' && rm -r repo); true"
+launch_case 2 "$T" "$T/repo" '(cd other); mv repo moved'
+launch_case 2 "$T" "$T/repo" 'cd other | true; mv repo moved'
+launch_case 0 "$T/other" "$T/repo" 'true | cd ..; rm -r repo'
+launch_case 2 "$T/other" "$T/repo" 'true | (cd .. && mv repo moved)'
+launch_case 0 "$T/other" "$T/repo" '(cd ..) | rm -r repo'
+for shell in bash sh zsh dash; do
+  launch_case 2 "$T" "$T/repo" "$shell -c 'mv repo moved'"
+done
+launch_case 2 "$T/other" "$T/repo" "bash -c 'mv \"$T/repo\" \"$T/moved\"'"
+launch_case 2 "$T/repo-review/sub" "$T/repo-review" "bash -c \"bash -c 'mv .. moved'\""
+launch_case 2 "$T" "$T/repo" "eval 'mv repo moved'"
+launch_case 2 "$T/other" "$T/repo" "eval 'cd ..'; mv repo moved"
+launch_case 0 "$T" "$T/repo" 'bash -c "mv repo moved$SUFFIX"'
+launch_case 0 "$T" "$T/repo" "bash -n -c 'mv repo moved'"
+launch_case 0 "$T" "$T/repo" "bash -c 'cd other'; rm -r other/repo"
+launch_case 2 "$T" "$T/repo-review" "bash -c 'git -C \"$T/repo\" worktree remove \"$T/repo-other\"'"
+launch_case 2 "$T" "$T/repo-review" "eval 'git worktree remove repo-other'"
+launch_case 0 "$T" "$T/repo-review" "bash -c 'git worktree prune'"
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

@@ -248,16 +248,40 @@ def rs(a):
 
 REDIR = {">", ">>", ">|", ">&", "<", "<<", "<<<", "<&", "<<-"}
 PUNCT = re.compile(r";;|&&|\|\||\|&|>>|>\||<<<|<<-|<<|<&|>&|[;&|()<>]")
+DYNAMIC = "\x01x"
+NEWLINE = "\x01n"
 
 
-def nl_split(s):
+def paren_end(s, start):
+    depth, end = 1, start + 2
+    while end < len(s) and depth:
+        depth += (s[end] == "(") - (s[end] == ")")
+        end += 1
+    return end
+
+
+def nl_split(s, launch_scan=False):
     """Newlines outside quotes separate commands; comments end at the newline; quoted text is untouched."""
     out, q, i, n = [], None, 0, len(s)
     while i < n:
         c = s[i]
         if c == "\\" and q != "'" and i + 1 < n:
             d = s[i + 1]
-            out.append(c + (PH[d] if d in PH else d)); i += 2; continue
+            if launch_scan and q == '"' and d in '$`':
+                out.append(d)  # shlex keeps these backslashes, but the shell removes them
+            else:
+                out.append(c + (PH[d] if d in PH else d))
+            i += 2; continue
+        if launch_scan and q != "'" and (c in '$`' or (q is None and c in '*?[')):
+            out.append(DYNAMIC)
+            if s.startswith("$(", i):
+                i = paren_end(s, i)
+            elif c == "`":
+                end = s.find("`", i + 1)
+                i = end + 1 if end != -1 else i + 1
+            else:
+                i += 1
+            continue
         if q:
             if c == q: q = None
             out.append(PH.get(c, c) if c != q and q is not None else c)
@@ -267,7 +291,7 @@ def nl_split(s):
             while i < n and s[i] != "\n": i += 1
             continue
         elif c == "\n":
-            out.append(" ; ")
+            out.append(" " + NEWLINE + " " if launch_scan else " ; ")
         else:
             out.append(c)
         i += 1
@@ -293,9 +317,7 @@ def subst_bodies(s):
             if c == "'": q = None
         elif c in "'\"" and (q is None or c == q): q = None if q else c
         elif c == "$" and s[i + 1:i + 2] == "(":
-            d, j = 1, i + 2
-            while j < n and d:
-                d += (s[j] == "(") - (s[j] == ")"); j += 1
+            j = paren_end(s, i)
             out.append(s[i + 2:j - 1]); i = j; continue
         elif c == "`":
             j = s.find("`", i + 1)
@@ -304,8 +326,8 @@ def subst_bodies(s):
     return out
 
 
-def tokens(s):
-    lx = shlex.shlex(nl_split(strip_heredocs(s)), posix=True, punctuation_chars=True)
+def tokens(s, launch_scan=False):
+    lx = shlex.shlex(nl_split(strip_heredocs(s), launch_scan), posix=True, punctuation_chars=True)
     lx.whitespace_split = True
     lx.commenters = ""
     out = []
@@ -315,17 +337,27 @@ def tokens(s):
     return out
 
 
-def pipelines(toks):
-    groups, pipe, cur = [], [], []
+def command_parts(toks):
+    cur = []
     for t in toks:
-        if t and all(ch in ";&|()" for ch in t):
-            if cur: pipe.append(cur); cur = []
-            if t in ("(", ")"): pipe.append([t])
-            if t not in ("|", "|&", "(", ")"):
-                if pipe: groups.append(pipe); pipe = []
+        if t == NEWLINE or (t and all(ch in ";&|()" for ch in t)):
+            if cur:
+                yield cur
+                cur = []
+            yield t
         else:
             cur.append(t)
-    if cur: pipe.append(cur)
+    if cur:
+        yield cur
+
+
+def pipelines(toks):
+    groups, pipe = [], []
+    for part in command_parts(toks):
+        if isinstance(part, list): pipe.append(part)
+        elif part in ("(", ")"): pipe.append([part])
+        elif part not in ("|", "|&"):
+            if pipe: groups.append(pipe); pipe = []
     if pipe: groups.append(pipe)
     return groups
 
@@ -528,13 +560,13 @@ def analyse(s, st, depth=0):
 
 def launch_path(word, cwd):
     word = rs(word)
-    if not word:
+    if not word or DYNAMIC in word or "\x00" in word:
         return None
     if word.startswith("~/"):
         word = os.path.expanduser(word)
     if os.path.isabs(word):
         return word
-    if os.path.isabs(cwd):
+    if cwd and os.path.isabs(cwd):
         return os.path.join(cwd, word)
     return None
 
@@ -587,50 +619,157 @@ def linked_worktree(launch):
         return False
 
 
+def launch_groups(code):
+    """Group command parts into pipelines and scoped subshells for literal shell lists."""
+    groups, pipe, stack = [], [], []
+    prior, continuation = ";", False
+    for part in command_parts(tokens(code, launch_scan=True)):
+        if part == "(":
+            stack.append((groups, pipe, prior))
+            groups, pipe, prior, continuation = [], [], ";", False
+        elif part == ")" and stack:
+            body = groups + [(prior, pipe, False)] if pipe else groups
+            groups, pipe, prior = stack.pop()
+            pipe.append(tuple(body))
+            continuation = False
+        elif isinstance(part, list):
+            if pipe and isinstance(pipe[-1], tuple) and not continuation:
+                continue  # redirects following a subshell
+            pipe.append(part)
+            continuation = False
+        elif part in ("|", "|&"):
+            # A pipeline's stages share the incoming cwd. A following newline is continuation.
+            continuation = True
+        elif pipe and not (part == NEWLINE and continuation):
+            groups.append((prior, pipe, part == "&"))
+            pipe, prior, continuation = [], ";" if part == NEWLINE else part, False
+    if stack:
+        raise ValueError("unclosed subshell")
+    if pipe:
+        groups.append((prior, pipe, False))
+    return groups
+
+
+def launch_cd(args, cwd):
+    """Return possible success and failure cwd states for a literal shell cd."""
+    if args[:1] == ["--"]:
+        args = args[1:]
+    dest = launch_path(args[0], cwd) if len(args) == 1 and not args[0].startswith("-") else None
+    if dest is None:
+        return {None}, {None}
+    # Default cd is logical. Check the written path first so a missing intermediate
+    # directory or a symlink loop cannot look like a successful cd after normalization.
+    logical = os.path.normpath(dest)
+    if os.path.isdir(dest) and os.path.isdir(logical) and os.access(logical, os.X_OK):
+        return {logical}, set()
+    return set(), {cwd}
+
+
+def shell_body(args):
+    for i, arg in enumerate(args):
+        if not re.fullmatch(r"-[A-Za-z]+", arg) or "n" in arg:
+            break
+        if "c" in arg:
+            if i + 1 < len(args) and DYNAMIC not in args[i + 1]:
+                return rs(args[i + 1])
+            break
+    return None
+
+
+class LaunchMatch(Exception):
+    pass
+
+
 def launch_reason(launch, cwd):
     ancestors = set()
     linked = None
-    for index, pipe in enumerate(pipelines(tokens(CMD))):
-        for raw in pipe:
-            words = strip_redirs(raw)
-            i, _ = resolve(words, skip_lookups=True)
-            if i is None:
-                continue
-            verb, args = os.path.basename(rs(words[i])), words[i + 1:]
-            if (index == 0 and len(pipe) == 1 and words[:1] == ["cd"]
-                    and len(args) == 1 and not args[0].startswith("-")):
-                dest = launch_path(args[0], cwd)
-                if dest and os.path.isdir(dest):
-                    cwd = os.path.realpath(dest)
-            if verb == "git" and len(pipe) == 1 and worktree_remove(args):
-                if linked is None:
-                    linked = linked_worktree(launch)
-                if linked:
-                    return "LAUNCH_GIT"
-            if verb not in ("rm", "rmtrash", "trash.sh", "mv"):
-                continue
-            if not ancestors:
-                ancestor = launch
-                while True:
-                    try:
-                        st = os.stat(ancestor)
-                        ancestors.add((st.st_dev, st.st_ino))
-                    except OSError:
-                        pass
-                    parent = os.path.dirname(ancestor)
-                    if parent == ancestor:
-                        break
-                    ancestor = parent
-            for arg in launch_targets(verb, args):
-                path = launch_path(arg, cwd)
-                if path is None:
-                    continue
+
+    def inspect(raw, cwd, depth, piped):
+        nonlocal linked
+        unchanged = {cwd}, {cwd}
+        if isinstance(raw, tuple):
+            success, failure = walk(raw, {cwd}, depth)
+            return ({cwd} if success else set()), ({cwd} if failure else set())
+
+        words = strip_redirs(raw)
+        i, _ = resolve(words, skip_lookups=True)
+        if i is None:
+            return unchanged
+        verb, args = os.path.basename(rs(words[i])), words[i + 1:]
+        if i == 0 and words[0] in ("true", "false"):
+            return ({cwd}, set()) if verb == "true" else (set(), {cwd})
+        if verb == "cd" and all(ASSIGN.match(w) or w in ("command", "builtin") for w in words[:i]):
+            return launch_cd(args, cwd)
+        if verb in ("pushd", "popd"):
+            return {None}, {None}
+
+        # As in the rewrite hook's substitution traversal, parse nested code in
+        # a fresh scope. Only literal code is visible, up to four nested bodies.
+        # Dynamic eval can also change the caller's cwd, so subsequent relative paths
+        # are unknown until a literal absolute cd. Absolute operands still get checked.
+        if verb == "eval":
+            if depth < 4 and all(DYNAMIC not in arg for arg in args):
+                return walk(launch_groups(rs(" ".join(args))), {cwd}, depth + 1)
+            return {None}, {None}
+        if verb in SHELLS and depth < 4:
+            body = shell_body(args)
+            if body is not None:
+                walk(launch_groups(body), {cwd}, depth + 1)
+
+        if verb == "git" and not piped and worktree_remove(args):
+            if linked is None:
+                linked = linked_worktree(launch)
+            if linked:
+                raise LaunchMatch("LAUNCH_GIT")
+        if verb not in ("rm", "rmtrash", "trash.sh", "mv"):
+            return unchanged
+        if not ancestors:
+            ancestor = launch
+            while True:
                 try:
-                    st = os.stat(path)
+                    st = os.stat(ancestor)
+                    ancestors.add((st.st_dev, st.st_ino))
                 except OSError:
-                    continue
-                if (st.st_dev, st.st_ino) in ancestors:
-                    return "LAUNCH_PATH"
+                    pass
+                parent = os.path.dirname(ancestor)
+                if parent == ancestor:
+                    break
+                ancestor = parent
+        for arg in launch_targets(verb, args):
+            path = launch_path(arg, cwd)
+            if path is None:
+                continue
+            try:
+                # Intermediate links resolve. A trailing slash (or final '/.') also
+                # follows a directory link, while a bare link is the entry removed.
+                st = os.stat(path) if path.endswith("/") else os.lstat(path)
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) in ancestors:
+                raise LaunchMatch("LAUNCH_PATH")
+        return unchanged
+
+    def walk(groups, incoming, depth):
+        entry, succeeded, failed = incoming, incoming, set()
+        for prior, pipe, background in groups:
+            if prior not in ("&&", "||"):
+                entry = succeeded | failed
+            run = succeeded if prior == "&&" else failed if prior == "||" else succeeded | failed
+            next_success = succeeded.copy() if prior == "||" else set()
+            next_failure = failed.copy() if prior == "&&" else set()
+            piped = len(pipe) > 1
+            for directory in run:
+                for raw in pipe:
+                    success, failure = inspect(raw, directory, depth, piped)
+                    next_success.update({directory} if piped else success)
+                    next_failure.update({directory} if piped else failure)
+            succeeded, failed = (entry, set()) if background else (next_success, next_failure)
+        return succeeded, failed
+
+    try:
+        walk(launch_groups(CMD), {cwd or None}, 0)
+    except LaunchMatch as match:
+        return str(match)
     return None
 
 
@@ -644,7 +783,7 @@ launch = os.environ.get("GUARD_LAUNCH")
 if launch:
     try:
         reason = launch_reason(launch, os.environ.get("TR_CWD", ""))
-    except ValueError:
+    except (ValueError, RecursionError):
         reason = None
     if reason:
         print(reason)
