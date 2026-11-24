@@ -122,6 +122,22 @@ run 4040 MEGAVIBE_PARENT_SESSION=carry-A $(printf '%s' "$carried" | tr '\n' ' ')
 run 4041 MEGAVIBE_PARENT_SESSION=carry-A
 [ "$(field .parentPid 4041)" = "null" ] || fail "without the carried values the old id no longer resolves"
 
+# R1: the first launch records its parent; the parent then runs /clear (same pid, new id); the update-restart
+# re-exec (restore_launch_parent) must still carry the parent, explicit or inferred from the ancestry.
+# The test shell ($$) plays the live parent: only its registry file changes id.
+reexec() { # reexec <first pid> <second pid> [env assignments...]: first launch, parent /clear, re-exec, second launch
+  local out
+  out=$(cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" CLAUDE_CONFIG_DIR="$T/cfg" "${@:3}" bash -c 'set -eu; source "$1"; capture_launch_parent; record_launch "$2"; printf "{\"pid\":%s,\"sessionId\":\"cleared-B\",\"cwd\":\"/r1\"}\n" "$3" > "$CLAUDE_CONFIG_DIR/sessions/$3.json"; restore_launch_parent; env | grep "^MEGAVIBE_[A-Z_]*=" | grep -v "^MEGAVIBE_HOME="' _ "$T/fn.sh" "$1" "$PARENT")
+  (cd "$T" && env -i PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home" CLAUDE_CONFIG_DIR="$T/cfg" $(printf '%s' "$out" | tr '\n' ' ') bash -c 'set -eu; source "$1"; capture_launch_parent; record_launch "$2"' _ "$T/fn.sh" "$2")
+}
+PARENT=$$
+printf '{"pid":%s,"sessionId":"orig-A","cwd":"/r1"}\n' "$PARENT" > "$T/cfg/sessions/$PARENT.json"
+reexec 4050 4051 MEGAVIBE_PARENT_SESSION=orig-A
+[ "$(field .parentPid 4051)" = "$PARENT" ] || fail "R1 explicit: a parent that ran /clear before the re-exec must stay linked (got $(field .parentPid 4051))"
+[ "$(field .parentSessionId 4051)" = "orig-A" ] || fail "R1 explicit: parentSessionId kept"
+[ "$(field .parentCwd 4051)" = "/r1" ] || fail "R1 explicit: parentCwd kept"
+rm -f "$T/cfg/sessions/$PARENT.json"
+
 # A bad pid writes nothing.
 run 'abc' MEGAVIBE_PARENT_SESSION=aaaa-1111
 [ ! -e "$T/home/launches/abc.json" ] || fail "non-numeric pid wrote a record"

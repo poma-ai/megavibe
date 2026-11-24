@@ -1509,6 +1509,8 @@ if [ "${1:-}" = "node" ]; then
   _s="$MEGAVIBE_HOME/scripts/megavibe-node.sh"
   [ -f "$_s" ] || _s="$SCRIPT_DIR/scripts/megavibe-node.sh"
   [ -f "$_s" ] || { echo "megavibe node: megavibe-node.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
+  # An explicit parent (set, even empty) crosses the dispatch: capture_launch_parent removed it from the environment.
+  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"; fi
   exec bash "$_s" "$@"
 fi
 
@@ -1542,7 +1544,7 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
     echo "Starting the personal assistant (first run may take a few seconds)…"
     # Another assistant launch (or the node) may create the session meanwhile; has-session decides below.
     tmux new-session -d -s "$PERSONAL_TMUX" -c "$PERSONAL_DIR" \
-      env MEGAVIBE_HOME="$MEGAVIBE_HOME" bash "$PA_START" \
+      env MEGAVIBE_HOME="$MEGAVIBE_HOME" ${LAUNCH_PARENT_SET:+"MEGAVIBE_PARENT_SESSION=${LAUNCH_PARENT:-}"} bash "$PA_START" \
       2>/dev/null || true
     if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
       echo "Error: could not start the personal assistant (tmux: $PERSONAL_TMUX)."
@@ -2511,6 +2513,11 @@ record_launch() {
   fi
   if [ -n "$parent_pid" ] && [ -z "$parent_cwd" ]; then
     parent_cwd=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$parent_pid.json" 2>/dev/null) || parent_cwd=""
+  fi
+  if [ -n "$parent" ]; then
+    # Keep what was resolved while the parent's id was still current: a later re-exec (restart after an
+    # update) resolves from these, because the parent may have run /clear in between (new id, same pid).
+    LAUNCH_PARENT_SET=x; LAUNCH_PARENT="$parent"; LAUNCH_PPID="$parent_pid"; LAUNCH_PCWD="$parent_cwd"
   fi
   (
     umask 077

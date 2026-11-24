@@ -194,6 +194,12 @@ unset CLAUDE_CODE_SESSION_ID
 ctl session start unlinked --dir "$D" --task "$TASK" --window w-unlinked
 check "start from a session: the wrapper is told that session is the parent" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "linked parent-sess-1" "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "linked parent-sess-1" "$T/megavibe.parents"'
 check "start with no session around: the wrapper gets the empty value, not an absent one" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "unlinked " "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "unlinked " "$T/megavibe.parents"'
+export CLAUDE_CODE_SESSION_ID=parent-sess-1
+MEGAVIBE_PARENT_SESSION= ctl session start indep --dir "$D" --task "$TASK" --window w-indep
+MEGAVIBE_PARENT_SESSION=override-9 ctl session start overr --dir "$D" --task "$TASK" --window w-overr
+unset CLAUDE_CODE_SESSION_ID
+check "explicit empty override: the helper gets no parent although a session runs the command" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "indep " "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "indep " "$T/megavibe.parents"'
+check "explicit override: the helper gets the named parent, not the caller" 'for i in 1 2 3 4 5 6 7 8 9 10; do grep -qx "overr override-9" "$T/megavibe.parents" 2>/dev/null && break; sleep 0.5; done; grep -qx "overr override-9" "$T/megavibe.parents"'
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
