@@ -15,7 +15,7 @@ check 'no record yet: unknown' '[[ "$(w)" == "windows: unknown"* ]]'
 # Claude Code 2.1.331 on a Max plan sends only seven_day
 run '{"session_id":"s1","rate_limits":{"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
 check 'seven_day only: the row carries sd and a null fh' 'jq -e ".fh.p == null and .sd.p == 18" "$T/mv/usage/claude.jsonl" >/dev/null'
-check 'seven_day only: the shape record lists key names, no values' '[ "$(cat "$T/mv/usage/claude-shape.json")" = "{\"seven_day\":[\"resets_at\",\"used_percentage\"]}" ]'
+check 'seven_day only: the shape record lists key names, no values' '[ "$(cat "$T/mv/usage/claude-shape.json")" = "{\"seven_day\":[\"used_percentage\",\"resets_at\"]}" ]'
 check 'seven_day only: windows says five_hour is not reported' '[[ "$(w)" == *"seven_day reported"*"five_hour not reported by Claude Code"* ]]'
 
 # the documented shape with both windows
@@ -34,6 +34,13 @@ fresh
 run '{"session_id":"s4","rate_limits":{"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
 run '{"session_id":"s4","rate_limits":{"five_hour":{"used_percentage":2,"resets_at":1796000000},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
 check 'five_hour key appears, same percentages: windows sees it immediately' '[ "$(w)" = "windows: seven_day reported, five_hour reported" ]'
+
+# a key appearing inside a window object with the same percentages is recorded at once; a null percentage is not a reading
+fresh
+run '{"session_id":"s7","rate_limits":{"five_hour":{"used_percentage":null},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+check 'five_hour with a null percentage: not reported' '[[ "$(w)" == *"five_hour not reported"* ]]'
+run '{"session_id":"s7","rate_limits":{"five_hour":{"used_percentage":null,"resets_at":5},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+check 'a new key in the window object, same percentages: the shape record follows at once' 'jq -e ".five_hour == [\"resets_at\"]" "$T/mv/usage/claude-shape.json" >/dev/null'
 
 # a window sent as null or as an empty object is not reported
 fresh

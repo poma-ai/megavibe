@@ -191,7 +191,7 @@ emit_forecast() {
     | ($rows | map(.r) | unique) as $ru
     | ($rows | map(. + {rk: (.r as $x | [$ru[] | select(. <= $x and $x - . <= 180)] | min)})) as $rows
     | [ $rows[] | select((.r - $reset | fabs) <= 180) ] | (map(.t) | max) as $lastt
-    | if $w == null or $lastt == null or $w.stale or $reset <= $now or $reset > $now + 604800 or $now - $lastt > $stale then "|||||"
+    | if $w == null or $lastt == null or $w.stale or $reset <= $now or $reset > $now + 604800 + 600 or $now - $lastt > $stale then "|||||"
       else
         (($reset - $now) / 3600) as $left
         | def trailing($h):
@@ -200,13 +200,13 @@ emit_forecast() {
                 | . as $rs | ($rs | map(.r) | max) as $wr | ($wr - 604800) as $ws
                 | select($wr > $t0)   # a window that ended before the horizon began used nothing inside it (a late-logged row of it is no use)
                 | [ $rs[] | select(.t >= $t0) ] as $in
-                | [ $rs[] | select(.t < $t0) | .p ] as $bf
+                | [ $rs[] | select(.t < $t0) ] as $bfr | ($bfr | map(.p)) as $bf | (if ($bf | length) > 0 then ($bf | max) else null end) as $bm
                 | select(($in | length) > 1 or ($bf | length) > 0 or $ws >= $t0)   # a lone reading of an older window is no baseline
                 | select(($in | length) > 0)
-                | (if ($bf | length) > 0 then ($bf | max) elif $ws >= $t0 then 0 else ($in | sort_by(.t) | first | .p) end) as $sv
-                # the use counts from the baseline reading, not from the horizon start: a gap in readings must not overstate the pace
+                | (if $bm != null then $bm elif $ws >= $t0 then 0 else ($in | sort_by(.t) | first | .p) end) as $sv
+                # the use counts from the newest reading before the horizon (the baseline), not from the horizon start: a gap in readings must not overstate the pace
                 | { used: ([($rs | map(.p) | max) - $sv, 0] | max),
-                    first: (if ($bf | length) > 0 then ([($rs | map(select(.p == ($bf | max) and .t < $t0) | .t) | max), $ws] | max) elif $ws >= $t0 then $ws else ($in | map(.t) | min) end) } ] as $g
+                    first: (if $bm != null then ([($bfr | map(.t) | max), $ws] | max) elif $ws >= $t0 then $ws else ($in | map(.t) | min) end) } ] as $g
             | if ($g | length) == 0 then null
               else (($now - ($g | map(.first) | min)) / 3600) as $span
                 | if $span >= 0.5 then (($g | map(.used) | add) / $span) else null end

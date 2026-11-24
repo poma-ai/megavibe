@@ -107,6 +107,20 @@ check 'gap after the baseline: the 3 points count over the 10 h since the baseli
 o=$(fc)
 check 'reset wobble of one minute across a half hour: one window, pace about 1 per hour' 'near "$(f 3)" 1.0 0.3'
 
+# dense history with one lagging low reading far back: the baseline is the NEWEST reading before the horizon, so a
+# one-point lag does not look like a 30 h gap (reader finding: forecast 72 instead of 114)
+{ row 30 50 $R; ramp 29.9 6.1 49 49 $R; ramp 6 0 50 56 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'dense lagging baseline: blend of the real 6 h pace (1.0) and 24 h pace (0.25), forecast about 113 (was 72 when read as a 30 h gap)' 'near "$(f 3)" 0.69 0.1 && near "$(f 4)" 113.5 4'
+# a fresh reading whose reset is a minute or two past one window ahead (reset jitter) is still a forecast
+{ row 0 1 $((NOW + 604800 + 90)); row 0 1 $((NOW + 604800 - 60)); } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'first minute with a reset 90 s beyond a window ahead: not blank' '[ -n "$(f 4)" ]'
+# speed: 5000 flat readings must stay far under the advisory 3 s budget
+awk -v n="$NOW" -v r="$R" 'BEGIN { for (i = 5000; i >= 0; i--) printf "{\"t\":%d,\"sd\":{\"p\":40,\"r\":%d}}\n", n - i * 10, r }' > "$MEGAVIBE_USAGE_FILE"
+start=$SECONDS; o=$(fc)
+check '5000 readings: the forecast returns in under 2 s' '[ $((SECONDS - start)) -lt 2 ] && [ -n "$(f 4)" ]'
+
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)

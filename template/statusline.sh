@@ -20,7 +20,7 @@ RL_OUT=$(echo "$INPUT" | jq -r --argjson t "$(date +%s)" --arg sid "$(echo "$INP
   | {t:$t, sid:$sid,
      fh:{p:.rate_limits.five_hour.used_percentage, r:.rate_limits.five_hour.resets_at},
      sd:{p:.rate_limits.seven_day.used_percentage, r:.rate_limits.seven_day.resets_at}} as $r
-  | ([$r.fh.p, $r.sd.p, (.rate_limits.five_hour != null)] | @csv), ($r | tojson)' 2>/dev/null) || RL_OUT=""
+  | ([$r.fh.p, $r.sd.p, (.rate_limits | with_entries(.value |= (if type == "object" then (to_entries | map(select(.value != null) | .key)) else type end)) | tojson)] | @csv), ($r | tojson)' 2>/dev/null) || RL_OUT=""
 if [ -n "$RL_OUT" ]; then
   RL_KEY=${RL_OUT%%$'\n'*}; RL_ROW=${RL_OUT#*$'\n'}
   RL_DIR="${MEGAVIBE_HOME:-$HOME/.megavibe}/usage"; RL_LAST="$RL_DIR/.claude-last"
@@ -36,7 +36,7 @@ if [ -n "$RL_OUT" ]; then
       && { [ ! -e "$RL_DIR/claude.jsonl" ] || [ -f "$RL_DIR/claude.jsonl" ]; } \
       && printf '%s\n' "$RL_ROW" >> "$RL_DIR/claude.jsonl" 2>/dev/null \
       && { [ ! -e "$RL_DIR/.claude-shape.$$" ] && { [ ! -e "$RL_DIR/claude-shape.json" ] || [ -f "$RL_DIR/claude-shape.json" ]; } \
-           && echo "$INPUT" | jq -c '.rate_limits | with_entries(.value |= (if type == "object" then keys else type end))' > "$RL_DIR/.claude-shape.$$" 2>/dev/null \
+           && echo "$INPUT" | jq -c '.rate_limits | with_entries(.value |= (if type == "object" then (to_entries | map(select(.value != null) | .key)) else type end))' > "$RL_DIR/.claude-shape.$$" 2>/dev/null \
            && mv -f "$RL_DIR/.claude-shape.$$" "$RL_DIR/claude-shape.json" 2>/dev/null; true; } \
       && printf '%s %s\n' "$RL_KEY" "$RL_NOW" > "$RL_LAST.$$" 2>/dev/null \
       && mv -f "$RL_LAST.$$" "$RL_LAST" 2>/dev/null || true
