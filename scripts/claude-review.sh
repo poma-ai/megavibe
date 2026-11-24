@@ -411,6 +411,7 @@ trap 'terminate 129 HUP' HUP
 
 SC=$(mktemp -d "${TMPDIR:-/tmp}/claude-review-scratch.XXXXXX") || die "cannot create the scratch dir"
 SC=$(CDPATH= cd -- "$SC" && pwd -P)
+printf '%s\n' "$$" > "$SC/.pid"
 mkdir "$SC/tmp" "$SC/in"
 SLUG=$(printf '%s' "$SC" | sed 's/[^A-Za-z0-9]/-/g')
 TOOLDIR="/private/tmp/claude-$(id -u)/$SLUG"

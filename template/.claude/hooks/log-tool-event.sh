@@ -554,7 +554,7 @@ fi
 DISK_MSG=""
 if [ "$DISK_CHECK_NOW" -eq 1 ] && [ "$IN_COOLDOWN" -eq 0 ]; then
   DISK_OUT_FILE="${LOGDIR}/.disk-msg.${SID}.$$"
-  DISK_SCRIPT="$DISK_SCRIPT" DISK_LEVEL_FILE="$DISK_LEVEL_FILE" DISK_STAMP_FILE="$DISK_STAMP_FILE" DISK_MINS="$DISK_MINS" \
+  DISK_SESSION_ID="$SID_FULL" DISK_SCRIPT="$DISK_SCRIPT" DISK_LEVEL_FILE="$DISK_LEVEL_FILE" DISK_STAMP_FILE="$DISK_STAMP_FILE" DISK_MINS="$DISK_MINS" \
     perl -e 'use Fcntl qw(:flock);
       open(my $l, ">>", shift) or exit 75; flock($l, LOCK_EX|LOCK_NB) or exit 75;
       # The fd is close-on-exec, so an exec would drop the lock: stay as the
