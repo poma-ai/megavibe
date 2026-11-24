@@ -32,8 +32,16 @@ check 'no rate_limits: no row, no record' '[ ! -e "$T/mv/usage/claude.jsonl" ] &
 # a window key appearing with unchanged percentages is recorded at once (the 5-minute throttle must not hide it)
 fresh
 run '{"session_id":"s4","rate_limits":{"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
-run '{"session_id":"s4","rate_limits":{"five_hour":{},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+run '{"session_id":"s4","rate_limits":{"five_hour":{"used_percentage":2,"resets_at":1796000000},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
 check 'five_hour key appears, same percentages: windows sees it immediately' '[ "$(w)" = "windows: seven_day reported, five_hour reported" ]'
+
+# a window sent as null or as an empty object is not reported
+fresh
+run '{"session_id":"s6","rate_limits":{"five_hour":null,"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+check 'five_hour null: not reported' '[[ "$(w)" == *"five_hour not reported"* ]]'
+fresh
+run '{"session_id":"s6","rate_limits":{"five_hour":{},"seven_day":{"used_percentage":18,"resets_at":1796065200}}}'
+check 'five_hour empty object: not reported' '[[ "$(w)" == *"five_hour not reported"* ]]'
 
 # a FIFO planted at the shape record must not block the statusline (the row is still written)
 fresh; mkdir -p "$T/mv/usage"

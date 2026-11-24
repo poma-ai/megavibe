@@ -14,6 +14,7 @@
 #   usage-route.sh pace       provider|used|elapsed_pct|linear_proj|recent_pts_per_day|recent_proj|remaining_days
 #                             display only; linear from 5% elapsed, recent from samples within the last 6h that span at least 2h
 #   usage-route.sh forecast   provider|used|fc_pace_per_h|forecast|spare|spend_per_h|basis|forecast_7d (see below; read-only)
+#   usage-route.sh windows    which Claude windows Claude Code reports (five_hour / seven_day), from the statusline's key-name record
 #   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
 #
 # Recent-pace forecast (added 2026-11-22, reworked 2026-11-24; extra trailing fields, nothing existing changed):
@@ -71,9 +72,9 @@ if [ "$MODE" = windows ]; then   # which Claude windows Claude Code actually rep
   SHAPE="$MV/usage/claude-shape.json"
   [ -f "$SHAPE" ] && [ -r "$SHAPE" ] && command -v jq >/dev/null 2>&1 || { echo "windows: unknown (no statusline record yet)"; exit 0; }
   jq -r 'if type != "object" then "windows: unknown (no statusline record yet)" else
-    (["five_hour", "seven_day"] | map(if $__loc__ and (. as $k | ($ARGS.named | length) >= 0) then . else . end)) as $_ | . as $s
-    | "windows: seven_day " + (if $s.seven_day then "reported" else "not reported" end)
-      + ", five_hour " + (if $s.five_hour then "reported" else "not reported by Claude Code (the 5-hour condition of the router sees nothing)" end) end' "$SHAPE" 2>/dev/null \
+    . as $s | def has($k): ($s[$k] | type) == "array" and (($s[$k] | index("used_percentage")) != null);
+    "windows: seven_day " + (if has("seven_day") then "reported" else "not reported" end)
+      + ", five_hour " + (if has("five_hour") then "reported" else "not reported by Claude Code (the 5-hour condition of the router sees nothing)" end) end' "$SHAPE" 2>/dev/null \
     || echo "windows: unknown (unreadable statusline record)"
   exit 0
 fi
@@ -203,8 +204,9 @@ emit_forecast() {
                 | select(($in | length) > 1 or ($bf | length) > 0 or $ws >= $t0)   # a lone reading of an older window is no baseline
                 | select(($in | length) > 0)
                 | (if ($bf | length) > 0 then ($bf | max) elif $ws >= $t0 then 0 else ($in | sort_by(.t) | first | .p) end) as $sv
+                # the use counts from the baseline reading, not from the horizon start: a gap in readings must not overstate the pace
                 | { used: ([($rs | map(.p) | max) - $sv, 0] | max),
-                    first: ([ ($in | map(.t) | min), (if ($bf | length) > 0 or $ws >= $t0 then ([$t0, $ws] | max) else empty end) ] | min) } ] as $g
+                    first: (if ($bf | length) > 0 then ([($rs | map(select(.p == ($bf | max) and .t < $t0) | .t) | max), $ws] | max) elif $ws >= $t0 then $ws else ($in | map(.t) | min) end) } ] as $g
             | if ($g | length) == 0 then null
               else (($now - ($g | map(.first) | min)) / 3600) as $span
                 | if $span >= 0.5 then (($g | map(.used) | add) / $span) else null end

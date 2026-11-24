@@ -98,6 +98,15 @@ check 'single reading 60 s after the reset: forecast exists, basis week' '[ "$(f
 o=$(fc)
 check 'lagging reading in a window with no older baseline: used is 31 - 30 over the span' 'near "$(f 3)" 0.2 0.1'
 
+# a gap in readings must not overstate the pace: 50 at 10 h ago, then silence, then 53 flat for the last 30 minutes
+{ row 10 50 $R; ramp 0.5 0 53 53 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'gap after the baseline: the 3 points count over the 10 h since the baseline reading, not over the 6 h horizon' 'awk -v x="$(f 3)" "BEGIN{exit !(x < 0.45)}"'
+# reset times that wobble across a half hour (two sessions, one minute apart) are one window
+{ ramp 12 0 20 32 $((NOW + 300000 - 1830 + 1800 + 30)); ramp 12 0 19 31 $((NOW + 300000 - 1830 + 1800 - 30)); } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'reset wobble of one minute across a half hour: one window, pace about 1 per hour' 'near "$(f 3)" 1.0 0.3'
+
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
@@ -138,11 +147,11 @@ o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex, two readings an hour apart: a trailing pace of 1 per hour' '[ "$(f 7)" = "6h+24h" ] && near "$(f 3)" 1 0.01'
 { codex "$((NOW - 30 * 3600))" 10 "$R"; codex "$((NOW - 6 * 3600))" 16 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && awk -v x="$(f 3)" "BEGIN{exit !(x > 0.4 && x < 2)}"'
+check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && awk -v x="$(f 3)" "BEGIN{exit !(x > 0.2 && x < 1)}"'
 
 { codex "$((NOW - 29 * 3600))" 20 "$R"; codex "$((NOW - 23 * 3600))" 32 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex readings 29 h and 23 h ago: only the 24 h horizon holds one (12 points over 24 h)' '[ "$(f 7)" = 24h ] && near "$(f 3)" 0.5 0.05'
+check 'codex readings 29 h and 23 h ago: only the 24 h horizon holds one (12 points over the 29 h since the baseline reading)' '[ "$(f 7)" = 24h ] && near "$(f 3)" 0.414 0.05'
 
 # probe-style history: one rollout file per half-hour reading over 24 h must all count (the forecast reads 60 files, not 6)
 mkdir -p "$T/codex/sessions/p"; : > "$T/codex/sessions/x/rollout-1.jsonl"
@@ -164,7 +173,7 @@ rm -r "$T/codex/sessions/b"
 ramp 30 0 25 55 $R > "$MEGAVIBE_USAGE_FILE"
 { codex "$((NOW - 30 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=claude /bin/bash "$REPO/scripts/usage-route.sh" balance --peek)
-check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~14"* ]]'
+check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~13"* ]]'
 
 # ---- the probe: run by the PA's node only, throttled, never scheduled by itself -----------------------------------
 cat > "$T/bin/codex" <<'STUB'
