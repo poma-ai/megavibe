@@ -28,7 +28,9 @@
 # the last field is the forecast at the 7-day pace. Unknown only with no history, no window or a stale newest reading.
 # A stretch with no rows is a stretch with no session open, not evidence of uniform use: the pace is the use over the horizon
 # (or since the window start), a gap is not guessed at, and a pace needs a span of at least an hour. Windows that overlap the
-# selected one (a second account's rows in the same file) are not summed in.
+# selected one (a second account's rows in the same file) are not summed in; so is the old window after an early or
+# unscheduled reset whose resets_at is still ahead (errs low, only the week after such a reset). Known gaps: reset stamps
+# jittering by more than 3 minutes, or chained across the boundary of two windows, can split or merge windows.
 # SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less), and
 # Codex histories come from at most 60 rollout files, about 30 h at the probe cadence, so the Codex 7-day pace
 # (forecast_7d, basis 7d) sees only that much; the 6 h / 24 h blend is covered. Raise the file cap if the 7-day figure matters.
