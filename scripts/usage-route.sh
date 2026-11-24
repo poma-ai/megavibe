@@ -125,10 +125,19 @@ fi
 # Bounded: at most 1 MB read per file, and the result is cached for 2 minutes (the hook runs on every Agent call).
 # Every usable row is kept (a slice could drop the window's highest reading). Invalid evidence is dropped before it can count: a negative or non-numeric reading, a reading dated in the
 # future; a window listed twice keeps the HIGHER usage, so entry order can never turn 95% into spare capacity.
+# The last $2 lines that mention rate_limits from the last $1 bytes of each file named on stdin, in ONE process (a fork pair
+# per file made hundreds of rollouts a multi-second scan); without perl, the per-file loop.
+_rollout_tails() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'my ($nb, $nl) = @ARGV; while (my $f = <STDIN>) { chomp $f; next unless -f $f; open(my $h, "<", $f) or next; my $sz = -s $h; seek($h, $sz > $nb ? $sz - $nb : 0, 0); my @l = grep { index($_, q("rate_limits")) >= 0 } <$h>; splice(@l, 0, @l - $nl) if @l > $nl; print @l; close $h }' "$1" "$2" 2>/dev/null
+  else
+    while IFS= read -r f; do [ -f "$f" ] && tail -c "$1" "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n "$2"; done
+  fi
+}
 codex_row() {
   local root="${MEGAVIBE_CODEX_HOME:-${CODEX_HOME:-$HOME/.codex}}/sessions" f cache="$MV/usage/codex-row.cache" nf=6 nl=200 nb=1048576
-  # the forecast needs 24 h of readings: a probe (or any codex exec) writes one rollout file per call, so six files are only about 3 h and 400 cover 8 days of probes
-  [ "$FCMODE" != 1 ] || { nf=400 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
+  # the forecast needs 24 h of readings: a probe (or any codex exec) writes one rollout file per call, so six files are only about 3 h and 3000 cover 8 days of calls
+  [ "$FCMODE" != 1 ] || { nf=3000 nl=3000 nb=16777216; cache="$MV/usage/codex-row-forecast.cache"; }
   [ -d "$root" ] || return 0
   # The cache is skipped when a test pins the clock (MEGAVIBE_NOW): fixtures change between calls. It is also
   # skipped for the sprint decision inside the window (SPRINT_FRESH): a reading written since must count.
@@ -136,16 +145,15 @@ codex_row() {
     local at; at=$(head -n 1 "$cache" 2>/dev/null)
     # a cached window that has since reset is no evidence of the new one: the cache is dropped at once, not after 2 minutes
     case "$at" in ''|*[!0-9]*) ;; *) if [ "$((NOW - at))" -ge 0 ] && [ "$((NOW - at))" -lt 120 ] \
-        && { [ "$(tail -n +2 "$cache" 2>/dev/null | head -c 2 | tr -d '[:space:]')" = "" ] || tail -n +2 "$cache" 2>/dev/null | jq -e --argjson now "$NOW" '(map(.sd.r? // 0) | max) > $now' >/dev/null 2>&1; }; then tail -n +2 "$cache" 2>/dev/null; return 0; fi ;; esac
+        && { { [ "$(tail -n +2 "$cache" 2>/dev/null | head -c 2 | tr -d '[:space:]')" = "" ] && [ "$((NOW - at))" -lt 15 ]; } || tail -n +2 "$cache" 2>/dev/null | jq -e --argjson now "$NOW" '(map(.sd.r? // 0) | max) > $now' >/dev/null 2>&1; }; then tail -n +2 "$cache" 2>/dev/null; return 0; fi ;; esac
   fi
   local -a sf; if stat -c %Y / >/dev/null 2>&1; then sf=(-c '%Y %n'); else sf=(-f '%m %N'); fi
   # `find -exec ... +` runs the command once per chunk, so sorting INSIDE it (ls -t) is only right per chunk:
   # print "mtime path" per file and sort the whole list instead.
   local rows
   rows=$(perl -e 'alarm 3; exec @ARGV' find -H "$root" -type f -name 'rollout-*.jsonl' -mtime -8 -exec stat "${sf[@]}" {} + 2>/dev/null \
-    | sort -rn | head -n "$nf" | cut -d' ' -f2- | while IFS= read -r f; do
-    [ -f "$f" ] && tail -c "$nb" "$f" 2>/dev/null | grep -a '"rate_limits"' | tail -n "$nl"
-  done | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
+    | sort -rn | head -n "$nf" | cut -d' ' -f2- | _rollout_tails "$nb" "$nl" \
+    | jq -cR --argjson now "$NOW" 'fromjson? | select(type == "object") | (.payload.rate_limits? // null) as $rl
       | select(($rl | type) == "object" and (($rl.limit_id // "codex") == "codex"))
       | ((.timestamp? // "") | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) as $t
       | select($t <= $now + 300)

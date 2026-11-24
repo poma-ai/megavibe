@@ -230,6 +230,23 @@ o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex, 140 one-reading rollouts: the baseline beyond the newest 60 files counts (pace about 1, not 2)' 'awk -v x="$(f 3)" "BEGIN{exit !(x > 0.7 && x < 1.3)}"'
 rm -r "$T/codex/sessions/many"
 
+# Codex: 481 one-reading rollouts, three minutes apart over 24 h (0 to 40 in the first 4 h, flat after): a file cap lost the rise
+# (reader finding: 40 printed, 135 expected); all of them must be read, in a few seconds
+mkdir -p "$T/codex/sessions/flood"; : > "$T/codex/sessions/x/rollout-1.jsonl"
+for i in $(seq 0 480); do m=$((i * 3)); u=40; [ "$m" -gt 1200 ] && u=$(awk -v m="$m" 'BEGIN { printf "%.2f", 40 * (1440 - m) / 240 }'); [ "$m" -gt 1440 ] && u=0; codex "$((NOW - m * 60))" "$u" "$R" > "$T/codex/sessions/flood/rollout-$(printf %04d $i).jsonl"; done
+start=$SECONDS; o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
+check 'codex, 481 rollouts over 24 h: the early rise is seen (forecast about 96, not 40) and the read takes under 6 s' '[ $((SECONDS - start)) -lt 6 ] && awk -v x="$(f 4)" "BEGIN{exit !(x > 80)}"'
+rm -r "$T/codex/sessions/flood"
+
+# an EMPTY warm cache hides the first valid reading for seconds, not two minutes
+RE=$(mktemp -d "$T/re.XXXXXX"); mkdir -p "$RE/sessions/z"; N1=$(date +%s)
+: > "$RE/sessions/z/rollout-1.jsonl"
+env -u MEGAVIBE_NOW MEGAVIBE_CODEX_HOME="$RE" MEGAVIBE_ROUTER_PROVIDER=codex /bin/bash "$REPO/scripts/usage-route.sh" forecast > /dev/null
+cx "$N1" 2 "$((N1 + 400000))" >> "$RE/sessions/z/rollout-1.jsonl"
+sleep 16
+o=$(env -u MEGAVIBE_NOW MEGAVIBE_CODEX_HOME="$RE" MEGAVIBE_ROUTER_PROVIDER=codex /bin/bash "$REPO/scripts/usage-route.sh" forecast)
+check 'codex, empty warm cache then a first reading: seen after 15 s, not hidden for 2 minutes' '[ -n "$(f 4)" ]'
+
 # ---- the probe: run by the PA's node only, throttled, never scheduled by itself -----------------------------------
 cat > "$T/bin/codex" <<'STUB'
 #!/bin/bash
