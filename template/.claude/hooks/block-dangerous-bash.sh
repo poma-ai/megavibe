@@ -1163,6 +1163,11 @@ def coarse(s):
 ESC_PH = {"\\\\": "\x03", "\\\x22": "\x01", "\\\x27": "\x02", "\\(": "\x04", "\\)": "\x05",
           "\\;": "\x06", "\\&": "\x07", "\\|": "\x08", "\\<": "\x0e", "\\>": "\x0f"}
 ESC_BACK = {v: k for k, v in ESC_PH.items()}
+# inside a quoted span (also one starting mid-word: --message="a (b)") operators and spaces are
+# inert stand-ins, so the non-POSIX tokenizer keeps the word whole; unq() restores them
+QIN = {";": "\x11", "&": "\x12", "|": "\x13", "(": "\x14", ")": "\x15", "<": "\x16", ">": "\x17",
+       " ": "\x19", "\t": "\x1a"}
+ESC_BACK.update({v: k for k, v in QIN.items()})
 def nl_seps(s):
     # newlines outside quotes become " ; "; inside a quoted word (a bash -c script) they stay, so
     # comments in that script still end at their line. An unclosed single quote is a literal.
@@ -1175,6 +1180,7 @@ def nl_seps(s):
         if c == "\\" and q != "\x27": out.append(ESC_PH.get(s[i:i + 2], s[i:i + 2])); i += 2; continue
         if q:
             if c == q: q = None
+            elif c in QIN: out.append(QIN[c]); i += 1; continue
         elif c == "\x22" or (c == "\x27" and s.find("\x27", i + 1) >= 0): q = c
         elif c == "\n": out.append(" ; "); i += 1; continue
         out.append(c); i += 1

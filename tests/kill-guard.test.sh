@@ -322,6 +322,11 @@ passes "quoted staging context with a space, attached" 'kubectl exec --context="
 passes "multi-line case with a pattern named pkill in \$( )" "$(printf 'git commit -m "$(case "$cmd" in\n  pkill) echo '"'"'Document worker cleanup'"'"';;\n  *) echo '"'"'Document cleanup'"'"';;\nesac)"')"
 blocks "multi-line case with pkill in the arm body" "$(printf 'x="$(case "$cmd" in\n  stop) pkill -f worker;;\nesac)"')"
 
+# 4ee. From the final round (Codex): quoted spans that start mid-word.
+passes "attached --message with parentheses and a kill verb" 'git commit --message="Document (tmux kill-server)"'
+blocks "the same message, then a real kill" 'git commit --message="Document (tmux kill-server)"; tmux kill-server'
+blocks "bash -c with a quoted body still checked" 'bash -c "tmux kill-server"'
+
 # 5. Text that only mentions kill verbs stays allowed.
 passes "heredoc body mentions kill-server" "$(printf 'cat > notes.md <<EOF\nnever run tmux kill-server or pkill here\nEOF')"
 passes "quoted heredoc body with nested quotes" "$(printf 'cat <<'"'"'EOF'"'"'\necho "\$(tmux show -t "\$t")"; tmux kill-server\nEOF')"
