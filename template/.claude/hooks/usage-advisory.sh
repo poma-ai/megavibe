@@ -97,8 +97,8 @@ if [ -n "$BAND" ]; then
 else
   # No band answer: nothing was checked, so the sprint state the session was last told stands.
   # (the whole previous flag is kept: a flag written from a failed lookup would put the sprint letters in the wrong field)
-  case "${PS:-}" in sc|sx|scx) SK="$PS" ;; esac
-  [ -z "$PREVKEY" ] || KEY="$PREVKEY"
+  # Only a flag that carries a sprint field is kept whole; a session that never sprinted keeps the ordinary behaviour.
+  case "${PS:-}" in sc|sx|scx) SK="$PS"; [ -z "$PREVKEY" ] || KEY="$PREVKEY" ;; esac
 fi
 # SessionStart (a fresh session, /clear, a compaction) always restates a non-normal state: the
 # model may have lost the earlier advisory. PreToolUse speaks only when the state changed.

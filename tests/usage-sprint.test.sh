@@ -246,7 +246,7 @@ check 'five-hour flat at 50 sampled 31 minutes apart: still a sprint' '[ "$(f 2)
 # the printed projection never rounds up to the gate: 79 at -363 s, 80 now is about 84.96 projected and prints below 85
 printf '{"t":%s,"sd":{"p":85,"r":%s},"fh":{"p":79,"r":%s}}\n{"t":%s,"sd":{"p":85,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 363))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
-check 'a projection just under 85 prints under 85 (floored), not 85' 'awk -v x="$(f 10)" "BEGIN{exit !(x != \"\" && x < 85)}"'
+check 'a projection of 84.96 prints 85 (rounded up) and is 5h-hot, so the printed budget is never optimistic and agrees with the gate' '[ "$(f 10)" = 85 ] && [ "$(f 9)" = 5h-hot ]'
 # an equal repeat reading (a normal five-minute heartbeat, or a same-second Codex record) must not erase a five-hour surge: 65 at -36 minutes,
 # 82 at -5, 82 again now
 printf '{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":65,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n{"t":%s,"sd":{"p":65,"r":%s},"fh":{"p":82,"r":%s}}\n' \
@@ -266,9 +266,9 @@ check 'the same plus a fresh 79 now (a one-point follow-up): still 5h-hot (every
 { rowfh 5 60 $R2 60; rowfh 0 60 $R2 63; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'five-hour 60 then 63 five minutes later: 5h-hot (a three-point rise is rated four over the interval, like the weekly burst)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 # the advice prints the five-hour projection at one decimal and states the reserve there too
-printf '{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":79,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 363))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
+printf '{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":70,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":71,"r":%s}}\n' "$((NOW - 1200))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"
 o=$(/bin/bash "$UR" sprint-advice)
-check 'the advice shows the five-hour projection with its decimal (84.9) and a reserve for it' '[[ "$o" == *"projected at 84.9%"* ]] && [[ "$o" == *"one point in reserve there"* ]]'
+check 'the advice shows the five-hour projection with its decimal (72.5) and a reserve for it' '[[ "$o" == *"projected at 72.5%"* ]] && [[ "$o" == *"one point in reserve there"* ]]'
 # a rise of two points or more is rated over its measured interval (at least a minute): 50 seven minutes ago, 50 two minutes ago, 53 now
 printf '{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":50,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":50,"r":%s}}\n{"t":%s,"sd":{"p":60,"r":%s},"fh":{"p":53,"r":%s}}\n' \
   "$((NOW - 420))" "$R2" "$FR" "$((NOW - 120))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
@@ -280,6 +280,9 @@ rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"
 ( cd "$T"; env -u MEGAVIBE_NOW TMPDIR="$T/tmpx" PATH="$T/shim2:$PATH" MEGAVIBE_CODEX_HOME="$T/codex2" /bin/bash "$UR" sprint-advice >/dev/null 2>&1 & p=$!; sleep 0.8; kill -ALRM $p 2>/dev/null; wait $p 2>/dev/null ) 2>/dev/null
 sleep 2
 check 'an outer SIGALRM while a provider call runs leaves no usage-sprint-adv temp file behind' '[ "$(ls "$T/tmpx" 2>/dev/null | grep -c usage-sprint-adv)" = 0 ]'
+# 78 then 80 eighteen minutes later projects 84.954: the printed budget rounds UP (85) so a unit sized on it cannot overshoot, and it is hot
+printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":78,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 1090))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'five-hour 78 then 80 (1090 s apart): rounded up to 85 and 5h-hot (the unrounded 84.954 would have been a sprint printed as 84.9)' '[ "$(f 10)" = 85 ] && [ "$(f 9)" = 5h-hot ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)

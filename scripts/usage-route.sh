@@ -522,11 +522,11 @@ if [ "$MODE" = sprint ]; then
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"
-    else if (fh ~ /^[0-9]+([.][0-9]+)?$/ && fh + fhadd >= 85) print "5h-hot"
+    else if (fh ~ /^[0-9]+([.][0-9]+)?$/ && ((fh + fhadd) * 10 > 849 + 0.0000001)) print "5h-hot"
     else if (spare + 0 < 2 || used + 0 > t - 2 || ot + 0 >= t + 0) print "no-room"
     else print "ok" }')
   s_state="-"; [ "$s_reason" != ok ] || s_state=sprint
-  s_fhp=$(LC_ALL=C awk -v fh="${s_fh:-}" -v add="$s_fhadd" 'BEGIN { if (fh !~ /^[0-9]+([.][0-9]+)?$/) exit; v = int((fh + add) * 10) / 10; print v }')
+  s_fhp=$(LC_ALL=C awk -v fh="${s_fh:-}" -v add="$s_fhadd" 'BEGIN { if (fh !~ /^[0-9]+([.][0-9]+)?$/) exit; x = (fh + add) * 10; c = (x == int(x)) ? x : int(x) + 1; print c / 10 }')
   printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$PROVIDER" "$s_state" "$s_hl" "${s_used:-}" "$s_fc" "$s_spare" "$s_spend" "$s_basis" "$s_reason" "${s_fhp:-}"
   exit 0
 fi

@@ -211,6 +211,11 @@ check 'after recovery with the sprint over: the withdrawal is emitted' '[[ "$o" 
 o=$(ev PreToolUse | run | ctx)
 check 'and not a second time' '[[ "$o" != *"no longer applies"* ]]'
 unset STUB_BAND STUB_BALANCE
+# a failed band lookup for a session that never sprinted behaves exactly as before (balance advice is emitted, flag from the half-built key)
+reset; printf 'over:claude:10:5' > "$FLAG"; export STUB_BAND_FAIL=1 STUB_BALANCE='codex|lean on codex.'
+o=$(ev PreToolUse | run | ctx)
+check 'failed band call, four-field previous flag, balance changes: the balance advice is still emitted and the flag is written as before' '[[ "$o" == *"lean on codex"* ]] && [ "$(cat "$FLAG")" = ":codex" ]'
+unset STUB_BAND_FAIL STUB_BALANCE
 # per-provider unknown: one provider's check failing does not hide the other one's change
 reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:scx' > "$FLAG"
 export STUB_SPRINT='usage sprint-unknown: Codex'
