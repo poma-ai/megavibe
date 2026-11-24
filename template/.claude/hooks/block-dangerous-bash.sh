@@ -616,11 +616,33 @@ case "$COMMAND" in
   *) _MAYBE_KUBE=0 ;;
 esac
 if [ "$_MAYBE_KUBE" = "1" ] && [ "${MEGAVIBE_ALLOW_PROD_EXEC:-0}" != "1" ] && command -v python3 &>/dev/null; then
-  _VERDICT=$(printf '%s' "$COMMAND" | python3 -c '
+  _VERDICT=$(printf '%s' "$COMMAND" | python3 -I -c '
 import os, re, shlex, sys
 
-CMD = sys.stdin.read().replace("\\\n", "")   # shell removes line continuations first
-CMD = CMD.replace("\n", " ; ")                # a newline separates commands; shlex would eat it
+RAW = sys.stdin.read().replace("\\\n", "")   # shell removes line continuations first
+CMD = RAW.replace("\n", " ; ")                # a newline separates commands; shlex would eat it
+# The same text without heredoc bodies (git commit -m "$(cat <<EOF ... EOF)" quotes examples), for
+# the substitution check below. A delimiter line matches exactly (<<- strips leading tabs).
+
+def in_arith(line, pos):
+    # is pos inside a $(( ... )) on this line? (<< there is a shift, no heredoc)
+    return any(m.start() < pos < m.end() for m in re.finditer(r"\$\(\(.*?\)\)", line))
+def heredoc_openers(line):
+    # (dash, delimiter) for each <<WORD on a line; a quoted delimiter is taken whole, spaces included;
+    # a << inside $(( )) is a shift, no heredoc
+    return [(m.group(1), m.group(3) if m.group(3) is not None else m.group(4))
+            for m in re.finditer(r"(?<!<)<<(?!<)(-?)\s*(?:([\x27\"])(.*?)\2|\\?([^\s;|&<>()\x27\"]+))", line)
+            if not in_arith(line, m.start())]
+_out, _pend, _lines = [], [], RAW.split("\n")
+_closes = lambda d, dash, k: any((x.lstrip("\t") if dash else x) == d for x in _lines[k + 1:])
+for _k, _l in enumerate(_lines):
+    if _pend:
+        if (_l.lstrip("\t") if _pend[0][1] else _l) == _pend[0][0]: _pend.pop(0)
+        continue
+    _out.append(_l)
+    # a heredoc only when a later line closes it ("a << b" in a string, $((1 << 3)) are none)
+    _pend = [(d, bool(x)) for x, d in heredoc_openers(_l) if _closes(d, bool(x), _k)]
+NOHD = "\n".join(_out)
 EXEC_VERBS = {"exec", "attach", "cp", "debug", "port-forward", "rsh", "node-shell", "proxy"}
 KUBE_BINS = {"kubectl", "kubecolor", "oc", "k"}
 WRAPPERS = {"sudo", "env", "command", "nice", "time", "nohup", "stdbuf", "doas"}
@@ -702,7 +724,8 @@ def scan(argv, depth=0):
     if depth > 3 or not argv: return False
     i = 0
     while i < len(argv) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i])
-                             or os.path.basename(argv[i]) in WRAPPERS):
+                             or os.path.basename(argv[i]) in WRAPPERS
+                             or (not XLEGACY and argv[i] in ("do", "then", "else", "elif", "if", "while", "until", "!", "{", "}"))):
         # The block message tells you to re-run with this prefix. The hook is a
         # separate process reading the Claude Code environment, so an inline
         # assignment would never reach it - honour it here or the documented
@@ -730,15 +753,194 @@ def scan(argv, depth=0):
     if nonprod(flag_value(argv, ["--context"])): return False
     return True
 
-t = toks(CMD)
-if t is None:
-    # Unbalanced quotes: the shell would reject this anyway. Only flag it when the
-    # raw text plausibly holds a kube exec, so a broken echo is not blocked.
-    print("block" if re.search(r"(kubectl|oc)\b[^\n]*\b(exec|attach|cp|debug|port-forward)\b", CMD) else "ok")
-else:
-    hit = any(scan(c) for c in commands(t))
-    print("block" if (hit and not local_context()) else "ok")
-' 2>/dev/null || echo ok)
+WORD_RE = re.compile(r"[A-Za-z_!{]+")
+CPOS_KW = ("then", "do", "else", "elif", "if", "while", "until", "!", "{")
+def sub_end(s, j, d=0):
+    # s[j] is the first character after "$(" / "<(" / ">(": the index just past the matching ")",
+    # or None. Each $( ) is its own frame with its own quote state (a ")" or a quote inside a
+    # nested "$( ... )" belongs to that frame); comments, ${ }, backticks and case arms are read
+    # the way bash reads them, case/esac only in command position.
+    n, q, depth, bedge, bbr, arms, cpos = len(s), None, 1, True, 0, 0, True
+    if d > 50: return None
+    while j < n:
+        ch = s[j]
+        if q == "\x27":
+            if ch == "\x27": q = None
+            j += 1; continue
+        if ch == "\\": j += 2; bedge = False; continue
+        if ch == "$" and s[j + 1:j + 2] == "(":
+            k = sub_end(s, j + 2, d + 1)
+            if k is None: return None
+            j = k; bedge = False; cpos = False; continue
+        if ch == "`":
+            k = j + 1
+            while k < n and s[k] != "`": k += 2 if s[k] == "\\" else 1
+            if k >= n: return None
+            j = k + 1; bedge = False; continue
+        if q == "\x22":
+            if ch == "\x22": q = None
+            j += 1; continue
+        if ch == "$" and s[j + 1:j + 2] == "{": bbr += 1; j += 2; bedge = False; continue
+        if ch == "}" and bbr: bbr -= 1; j += 1; bedge = False; continue
+        if ch == "#" and bedge and not bbr:              # a comment inside the body: to its newline
+            while j < n and s[j] != "\n": j += 1
+            continue
+        if bedge and not ch.isspace():                  # a word starts: is it in command position?
+            m = WORD_RE.match(s, j); w = m.group(0) if m else ""
+            if cpos and w == "case": arms += 1
+            elif cpos and w == "esac" and arms: arms -= 1
+            cpos = w in CPOS_KW
+        if ch in ";&|(\n": cpos = True
+        if ch in "\x27\x22": q = ch
+        elif ch == "(": depth += 1
+        elif ch == ")" and arms > 0 and depth == 1: pass    # the end of a case pattern
+        elif ch == ")":
+            depth -= 1
+            if depth == 0: return j + 1
+        bedge = ch in " \t\n;&|()"
+        j += 1
+    return None
+
+def subst(s):
+    # (Like subst() in the kill guard below, which masks a body as "$_".) Mask every command substitution that runs ($( ), backticks, <( ), >( )) outside single
+    # quotes, double-quoted ones included, and return (masked text, bodies). The bodies are
+    # checked on their own; the masked text then tokenizes even when the bodies hold quotes of
+    # their own (2026-11-23: "$(tmux show -t "$t")" broke the tokenizer, and the guard passed).
+    # None when a substitution does not close: the caller falls back to coarse().
+    out, bodies, i, n, dq, edge, br = [], [], 0, len(s), False, True, 0    # edge: a word starts; br: ${ depth
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            out.append(s[i:i + 2]); i += 2; edge = False; continue
+        if c == "$" and s[i + 1:i + 2] == "{":
+            br += 1; out.append("${"); i += 2; edge = False; continue
+        if c == "}" and br:
+            br -= 1; out.append(c); i += 1; edge = False; continue
+        if c == "#" and not dq and edge and not br:
+            while i < n and s[i] != "\n": i += 1      # a comment: bash runs none of it
+            continue
+        if c == "\x27" and not dq:
+            j = s.find("\x27", i + 1)
+            if j < 0:                                   # unclosed (# don\x27t ...): a literal, as main reads it
+                out.append(c); i += 1; edge = False; continue
+            out.append(s[i:j + 1]); i = j + 1; edge = False; continue
+        if c == "\x22":
+            dq = not dq; out.append(c); i += 1; edge = False; continue
+        if c == "`":
+            j = i + 1
+            while j < n and s[j] != "`":
+                j += 2 if s[j] == "\\" else 1
+            if j >= n: return None
+            bodies.append(s[i + 1:j]); out.append("_"); i = j + 1; edge = False; continue
+        if s[i:i + 2] in ("$(", "<(", ">(") and not (dq and c != "$"):
+            j = sub_end(s, i + 2)
+            if j is None: return None
+            bodies.append(s[i + 2:j - 1]); out.append("_"); i = j; edge = False; continue
+        out.append(c); i += 1; edge = c in " \t\n;&|("
+    return "".join(out), bodies
+
+def body_cmds(s):
+    # the commands of a substitution body with quoted punctuation kept as words (echo \x27|\x27 is
+    # no pipe): non-POSIX shlex keeps quotes on a word, each word is unquoted afterwards
+    ph, o, i, q = {}, [], 0, None          # \x22 \| \; ... outside single quotes: placeheld
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and q != "\x27" and i + 1 < len(s):
+            k = "\x00%d\x00" % len(ph)
+            ph[k] = s[i:i + 2]; o.append(k); i += 2; continue
+        if q:
+            if c == q: q = None
+        elif c in "\x27\x22" and (c == "\x22" or s.find("\x27", i + 1) >= 0): q = c
+        o.append(c); i += 1
+    s = "".join(o)
+    back = lambda t: re.sub("\x00(\\d+)\x00", lambda m: ph["\x00%s\x00" % m.group(1)], t)
+    lx = shlex.shlex(s, posix=False, punctuation_chars=True)
+    lx.whitespace_split = True; lx.commenters = ""
+    try: raw = list(lx)
+    except ValueError: return None
+    out, cur, k = [], [], 0
+    while k < len(raw):
+        t = raw[k]; k += 1
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=", t) and k < len(raw) and raw[k] == "(":
+            d = 0                                   # cmd=( ... ): an array literal, not a command
+            while k < len(raw):
+                d += raw[k].count("(") - raw[k].count(")") if not raw[k].strip(";&|()") else 0
+                k += 1
+                if d <= 0: break
+            cur.append(t + "()"); continue
+        if t in OPS or (t and not t.strip(";&|()")):
+            if cur: out.append(cur)
+            cur = []
+        else:
+            try: cur.append("".join(shlex.split(back(t))).translate(QBACK))
+            except ValueError: cur.append(back(t))
+    if cur: out.append(cur)
+    return out
+
+QOPS = {";": "\x11", "&": "\x12", "|": "\x13", "(": "\x14", ")": "\x15", "<": "\x16", ">": "\x17", "\n": "\x18",
+        " ": "\x19", "\t": "\x1a"}               # spaces too: --context="Team A/staging" stays one word
+XLEGACY = False
+QBACK = {ord(v): k for k, v in QOPS.items()}
+
+def qmask(t):
+    # inside quoted spans (also inside a word: --message="a; b") operator characters and the
+    # spaces become inert stand-ins, so only unquoted operators separate commands in the added
+    # view below; the quoted words themselves stay (-n "staging", "--help")
+    out, i, n = [], 0, len(t)
+    while i < n:
+        c = t[i]
+        if c == "\\": out.append(t[i:i + 2]); i += 2; continue
+        if c in "\x27\x22":
+            j = i + 1
+            while j < n and t[j] != c: j += 2 if (c == "\x22" and t[j] == "\\") else 1
+            if j >= n: out.append(t[i:]); break
+            out.append(c + "".join(QOPS.get(ch, ch) for ch in t[i + 1:j]) + c); i = j + 1; continue
+        out.append(c); i += 1
+    return "".join(out)
+
+def hits(s, depth=0, sub=None):
+    # A substitution runs even inside double quotes, where the posix tokenizer keeps it inside
+    # one word: check every body on its own first (read from `sub`, the text without heredoc bodies).
+    m = subst(s if sub is None else sub) if depth < 4 else None
+    if m is not None and any(hits(b, depth + 1) for b in m[1]): return True
+    if depth:                    # a body: comments out (subst), then lines become commands
+        cmds = body_cmds(qmask(m[0] if m is not None else s).replace("\n", " ; "))
+        if cmds is not None: return any(scan(c) for c in cmds)
+        s = s.replace("\n", " ; ")
+    if m is not None and not depth:
+        # the top level once more, comments and heredoc bodies out and substitutions masked, with
+        # ");" read as a separator: POD=$(kubectl get ...); kubectl exec ... and for p in $(...); do
+        # kubectl exec ... were glued into the previous command. An added view: it only adds blocks.
+        cmds = body_cmds(qmask(m[0]).replace("\n", " ; "))
+        if cmds is not None and any(scan(c) for c in cmds): return True
+        # the raw top-level text (heredoc bodies included) is the job of main_verdict(), read as before
+        return False
+    t = toks(s)
+    if t is None:
+        # Unbalanced quotes: the shell would reject this anyway. Only flag it when the
+        # raw text plausibly holds a kube exec, so a broken echo is not blocked.
+        return bool(re.search(r"(kubectl|oc)\b[^\n]*\b(exec|attach|cp|debug|port-forward)\b", s))
+    return any(scan(c) for c in commands(t))
+
+def main_verdict():
+    # the verdict exactly as the guard reached it before this change (its unbalanced-quote fallback
+    # is not exempted by a local context): whatever it blocks stays blocked
+    t = toks(CMD)
+    if t is None:
+        return bool(re.search(r"(kubectl|oc)\b[^\n]*\b(exec|attach|cp|debug|port-forward)\b", CMD))
+    global XLEGACY
+    XLEGACY = True                       # the scan as it was before this change
+    try: return any(scan(c) for c in commands(t)) and not local_context()
+    finally: XLEGACY = False
+
+print("block" if main_verdict() or (hits(CMD, 0, NOHD) and not local_context()) else "ok")
+' 2>/dev/null || echo died)
+  case "$_VERDICT" in ok|block) ;; *) _VERDICT=died ;; esac   # empty or garbled output: as if it died
+  if [ "$_VERDICT" = "died" ]; then     # the check could not run: block only a visible exec-class verb
+    # an exec-class verb after kubectl/oc/kubecolor in the same segment
+    # the verb right after kubectl's own flags (kubectl -n x exec, --context=y exec), not any later word
+    if printf '%s' "$_TE" | grep -Eq '(^|[^[:alnum:]_.-])(kubectl|kubecolor|oc|k)([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+(exec|attach|port-forward|debug|cp|rsh|node-shell|proxy)([^[:alnum:]_.-]|$)'; then _VERDICT=block; else _VERDICT=ok; fi
+  fi
   if [ "$_VERDICT" = "block" ]; then
     echo "Blocked: cluster exec-class command (exec/attach/cp/debug/port-forward) against a namespace that is not visibly non-prod." >&2
     echo "This is a WRITE, not a read: it runs a process inside a live container and can OOM-kill the server in a zero-headroom pod." >&2
@@ -766,30 +968,70 @@ fi
 # stops nothing; any other bootstrap form stays blocked).
 # Parsed with shlex like the exec guard above, so the words inside quotes, an
 # echo, a commit message or a heredoc body are not commands; `bash -c "pkill x"`,
-# `sudo pkill x` and `env X=1 pkill x` are. Escape hatch for a human decision:
+# `sudo pkill x`, `env X=1 pkill x`, `eval`, `find -exec` and every command substitution
+# (inside double quotes too) are. Text that cannot be tokenized fails CLOSED: a kill verb
+# anywhere in it blocks (2026-11-23: nested quotes in "$( )" made the tokenizer fail, the
+# guard passed `tmux kill-server`, and the live tmux server died). A check that cannot run
+# blocks when the text visibly names a kill verb (a broken python3 must not block all tmux).
+# A tmux kill verb passes only with -L and a literal non-"default" name that is not the $TMUX
+# socket (inside tmux, $TMUX overrides TMUX_TMPDIR, so only -L reaches another server; any -S
+# keeps the block). HACK: a net, not a wall; the README lists what it does not read
+# (tmux sequences and prefixes, trap, heredocs fed to a shell, more wrappers). Escape hatch for a human decision:
 # MEGAVIBE_ALLOW_KILL=1 (environment or an inline prefix). Needs python3; without
 # it the guard is skipped (same posture as the other guards here).
 # ---------------------------------------------------------------------------
 case "$COMMAND" in
   *pkill*|*killall*|*tmux*|*launchctl*) _MAYBE_KILL=1 ;;
-  *) _MAYBE_KILL=0 ;;
+  *) _MAYBE_KILL=0
+     # pk''ill, tm\<newline>ux: only when the case-folded text hints at one, strip quotes, backslashes
+     # and newlines with case kept (printenv TMUX is no tmux). Not ${//}: quadratic in bash 3.2.
+     case "$_TE" in
+       *pkill*|*killall*|*tmux*|*launchctl*)
+         case "$(printf '%s' "$COMMAND" | tr -d "\"'\\\\\n")" in
+           *pkill*|*killall*|*tmux*|*launchctl*) _MAYBE_KILL=1 ;;
+         esac ;;
+     esac ;;
 esac
 if [ "$_MAYBE_KILL" = "1" ] && [ "${MEGAVIBE_ALLOW_KILL:-0}" != "1" ] && command -v python3 &>/dev/null; then
-  _KV=$(printf '%s' "$COMMAND" | python3 -c '
+  _KV=$(printf '%s' "$COMMAND" | python3 -I -c '
 import os, re, shlex, sys
 
 CMD = sys.stdin.read()
+RAW_CMD = CMD
 # Heredoc bodies are text, not commands: drop the body of EVERY heredoc started on a line
-# (cat <<A <<B has two), up to its delimiter line.
-out, pending = [], []
-for line in CMD.split("\n"):
+# (cat <<A <<B has two), up to its delimiter line: matched exactly, as bash does (<<- strips
+# leading tabs only; an indented "  EOF" inside a commit message does not close it).
+# A <<WORD counts only when a later line closes it: "mention <<EOF" in a commit message or
+# $((1 << SHIFT)) would otherwise swallow every later line, a kill included.
+
+def in_arith(line, pos):
+    # is pos inside a $(( ... )) on this line? (<< there is a shift, no heredoc)
+    return any(m.start() < pos < m.end() for m in re.finditer(r"\$\(\(.*?\)\)", line))
+def heredoc_openers(line):
+    # (dash, delimiter) for each <<WORD on a line; a quoted delimiter is taken whole, spaces included;
+    # a << inside $(( )) is a shift, no heredoc
+    return [(m.group(1), m.group(3) if m.group(3) is not None else m.group(4))
+            for m in re.finditer(r"(?<!<)<<(?!<)(-?)\s*(?:([\x27\"])(.*?)\2|\\?([^\s;|&<>()\x27\"]+))", line)
+            if not in_arith(line, m.start())]
+out, pending, LINES = [], [], CMD.split("\n")
+closes = lambda d, dash, k: any((x.lstrip("\t") if dash else x) == d for x in LINES[k + 1:])
+for k, line in enumerate(LINES):
     if pending:
-        if line.strip() == pending[0]: pending.pop(0)
+        if (line.lstrip("\t") if pending[0][1] else line) == pending[0][0]: pending.pop(0)
         continue
     out.append(line)
-    pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
-CMD = "\n".join(out).replace("\\\n", "")
-CMD = CMD.replace("\n", " ; ")
+    pending = [(d, bool(x)) for x, d in heredoc_openers(line) if closes(d, bool(x), k)]
+CMD_NL = "\n".join(out).replace("\\\n", "")
+CMD = CMD_NL.replace("\n", " ; ")
+# the text exactly as the guard prepared it before this change, for main_view() below
+_mo, _mp = [], []
+for line in RAW_CMD.split("\n"):
+    if _mp:
+        if line.strip() == _mp[0]: _mp.pop(0)
+        continue
+    _mo.append(line)
+    _mp = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", line)
+CMD_MAIN = "\n".join(_mo).replace("\\\n", "").replace("\n", " ; ")
 
 # The bootstrap exception holds only when the WHOLE command text is that one simple command: nothing
 # before it, no wrapper, no substitution, no second command. Reading around the words (an env
@@ -819,7 +1061,260 @@ def split_tokens(s):
     except ValueError:
         return None
 
+WORD_RE = re.compile(r"[A-Za-z_!{]+")
+CPOS_KW = ("then", "do", "else", "elif", "if", "while", "until", "!", "{")
+def sub_end(s, j, d=0):
+    # s[j] is the first character after "$(" / "<(" / ">(": the index just past the matching ")",
+    # or None. Each $( ) is its own frame with its own quote state (a ")" or a quote inside a
+    # nested "$( ... )" belongs to that frame); comments, ${ }, backticks and case arms are read
+    # the way bash reads them, case/esac only in command position.
+    n, q, depth, bedge, bbr, arms, cpos = len(s), None, 1, True, 0, 0, True
+    if d > 50: return None
+    while j < n:
+        ch = s[j]
+        if q == "\x27":
+            if ch == "\x27": q = None
+            j += 1; continue
+        if ch == "\\": j += 2; bedge = False; continue
+        if ch == "$" and s[j + 1:j + 2] == "(":
+            k = sub_end(s, j + 2, d + 1)
+            if k is None: return None
+            j = k; bedge = False; cpos = False; continue
+        if ch == "`":
+            k = j + 1
+            while k < n and s[k] != "`": k += 2 if s[k] == "\\" else 1
+            if k >= n: return None
+            j = k + 1; bedge = False; continue
+        if q == "\x22":
+            if ch == "\x22": q = None
+            j += 1; continue
+        if ch == "$" and s[j + 1:j + 2] == "{": bbr += 1; j += 2; bedge = False; continue
+        if ch == "}" and bbr: bbr -= 1; j += 1; bedge = False; continue
+        if ch == "#" and bedge and not bbr:              # a comment inside the body: to its newline
+            while j < n and s[j] != "\n": j += 1
+            continue
+        if bedge and not ch.isspace():                  # a word starts: is it in command position?
+            m = WORD_RE.match(s, j); w = m.group(0) if m else ""
+            if cpos and w == "case": arms += 1
+            elif cpos and w == "esac" and arms: arms -= 1
+            cpos = w in CPOS_KW
+        if ch in ";&|(\n": cpos = True
+        if ch in "\x27\x22": q = ch
+        elif ch == "(": depth += 1
+        elif ch == ")" and arms > 0 and depth == 1: pass    # the end of a case pattern
+        elif ch == ")":
+            depth -= 1
+            if depth == 0: return j + 1
+        bedge = ch in " \t\n;&|()"
+        j += 1
+    return None
+
+def subst(s):
+    # Mask every command substitution that runs ($( ), backticks, <( ), >( )) outside single
+    # quotes, double-quoted ones included, and return (masked text, bodies). The bodies are
+    # checked on their own; the masked text then tokenizes even when the bodies hold quotes of
+    # their own (2026-11-23: "$(tmux show -t "$t")" broke the tokenizer, and the guard passed).
+    # None when a substitution does not close: the caller falls back to coarse().
+    out, bodies, i, n, dq, edge, br = [], [], 0, len(s), False, True, 0    # edge: a word starts; br: ${ depth
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            out.append(s[i:i + 2]); i += 2; edge = False; continue
+        if c == "$" and s[i + 1:i + 2] == "{":
+            br += 1; out.append("${"); i += 2; edge = False; continue
+        if c == "}" and br:
+            br -= 1; out.append(c); i += 1; edge = False; continue
+        if c == "#" and not dq and edge and not br:
+            while i < n and s[i] != "\n": i += 1      # a comment: bash runs none of it
+            continue
+        if c == "\x27" and not dq:
+            j = s.find("\x27", i + 1)
+            if j < 0:                                   # unclosed (# don\x27t ...): a literal, as main reads it
+                out.append(c); i += 1; edge = False; continue
+            out.append(s[i:j + 1]); i = j + 1; edge = False; continue
+        if c == "\x22":
+            dq = not dq; out.append(c); i += 1; edge = False; continue
+        if c == "`":
+            j = i + 1
+            while j < n and s[j] != "`":
+                j += 2 if s[j] == "\\" else 1
+            if j >= n: return None
+            bodies.append(s[i + 1:j]); out.append("$_"); i = j + 1; edge = False; continue
+        if s[i:i + 2] in ("$(", "<(", ">(") and not (dq and c != "$"):
+            j = sub_end(s, i + 2)
+            if j is None: return None
+            bodies.append(s[i + 2:j - 1]); out.append("$_"); i = j; edge = False; continue
+        out.append(c); i += 1; edge = c in " \t\n;&|("
+    return "".join(out), bodies
+
+W = r"(?<![\w.-])"
+def coarse(s):
+    # Text that cannot be parsed: block when a kill verb appears as a word at all. A false block
+    # costs a human decision (MEGAVIBE_ALLOW_KILL=1); a false pass cost the tmux server.
+    if s and not s.startswith("\x00"):
+        u = re.sub(r"[\x22\x27\\]", "", s)              # kill-"server" is kill-server
+        if u != s and coarse("\x00" + u): return True
+    s = s.lstrip("\x00")
+    if re.search(W + r"(pkill|killall)(?![\w.-])", s): return True
+    if re.search(W + r"tmux(?![\w.-])", s) and re.search(W + r"kill-(server|session|window|pane)(?![\w-])", s): return True
+    if re.search(W + r"launchctl(?![\w.-])", s) and re.search(W + r"(bootout|unload|remove|stop|kill|bootstrap|disable)(?![\w-])|kickstart(\s+-\w+)*\s+-\w*k", s): return True
+    return False
+
+ESC_PH = {"\\\\": "\x03", "\\\x22": "\x01", "\\\x27": "\x02", "\\(": "\x04", "\\)": "\x05",
+          "\\;": "\x06", "\\&": "\x07", "\\|": "\x08", "\\<": "\x0e", "\\>": "\x0f"}
+ESC_BACK = {v: k for k, v in ESC_PH.items()}
+def nl_seps(s):
+    # newlines outside quotes become " ; "; inside a quoted word (a bash -c script) they stay, so
+    # comments in that script still end at their line. An unclosed single quote is a literal.
+    # An escaped quote or backslash OUTSIDE single quotes becomes a placeholder (unq() restores it):
+    # non-POSIX shlex ends a quoted word at an escaped quote ("a\x5c"" ...), which swallowed a kill.
+    # Inside single quotes a backslash is literal, so nothing there is replaced.
+    out, i, n, q = [], 0, len(s), None
+    while i < n:
+        c = s[i]
+        if c == "\\" and q != "\x27": out.append(ESC_PH.get(s[i:i + 2], s[i:i + 2])); i += 2; continue
+        if q:
+            if c == q: q = None
+        elif c == "\x22" or (c == "\x27" and s.find("\x27", i + 1) >= 0): q = c
+        elif c == "\n": out.append(" ; "); i += 1; continue
+        out.append(c); i += 1
+    return "".join(out)
+
+def case_patterns_out(t):
+    # case WORD in PAT) ...;; PAT) ...;; esac: the patterns are words to match, not commands
+    # (a pattern named pkill is no kill); the arm bodies stay and are checked
+    # One forward pass (a lazy regex over the whole text backtracked for seconds on many "case"
+    # words without an "esac"): each case ... in ... esac span, in order, patterns replaced by ";".
+    if "esac" not in t: return t
+    out, pos = [], 0
+    for m in re.finditer(r"(?<![\w-])case(?![\w-])", t):
+        if m.start() < pos: continue
+        i_in = re.compile(r"\sin(?![\w-])").search(t, m.end())
+        e = re.compile(r"(?<![\w-])esac(?![\w-])").search(t, i_in.end()) if i_in else None
+        if not e: break
+        out.append(t[pos:i_in.end()])
+        out.append(re.sub(r"(^|;;|;&|;;&)(\s*)\(?(?:\x22[^\x22]*\x22|\x27[^\x27]*\x27|[^;()\n\x22\x27])*\)", r"\1\2 ; ", t[i_in.end():e.start()]))   # quoted ) in a pattern is text
+        pos = e.start()
+    out.append(t[pos:])
+    return "".join(out)
+
+def drop_heredocs(t):
+    # heredoc bodies (closed ones) out of a shell text, as for the whole command above; returns the
+    # text and the bodies of UNQUOTED heredocs, whose $( ) and backticks bash still runs
+    lines, out, pend, live, body = t.split("\n"), [], [], [], []
+    for k, line in enumerate(lines):
+        if pend:
+            if (line.lstrip("\t") if pend[0][1] else line) == pend[0][0]:
+                if pend[0][2]: live.append("\n".join(body))
+                pend.pop(0); body = []
+            else: body.append(line)
+            continue
+        out.append(line)
+        pend = [(d, bool(x), not q) for x, q, d in heredoc_openers_q(line)
+                if any((y.lstrip("\t") if x else y) == d for y in lines[k + 1:])]
+    return "\n".join(out), live
+
+def heredoc_openers_q(line):
+    # (dash, quoted, delimiter) for each <<WORD on a line
+    # groups: 1 dash, 2 quote char, 3 quoted delimiter, 4 a backslash (\EOF quotes too), 5 bare word
+    return [(m.group(1), bool(m.group(2) or m.group(4)), m.group(3) if m.group(3) is not None else m.group(5))
+            for m in re.finditer(r"(?<!<)<<(?!<)(-?)\s*(?:([\x27\"])(.*?)\2|(\\)?([^\s;|&<>()\x27\"]+))", line)
+            if not in_arith(line, m.start())]
+
+def live_body_kills(b, depth):
+    # $( ) and backticks inside an unquoted heredoc body run (an escaped \$( or \` does not): check each
+    i, n = 0, len(b)
+    while i < n:
+        c = b[i]
+        if c == "\\": i += 2; continue
+        if b.startswith("$(", i):
+            j = sub_end(b, i + 2)
+            if j is None: return coarse(b[i:])
+            if check(b[i + 2:j - 1], depth + 1): return True
+            i = j; continue
+        if c == "`":
+            j = i + 1
+            while j < n and b[j] != "`": j += 2 if b[j] == "\\" else 1
+            if j >= n: return coarse(b[i:])
+            if check(b[i + 1:j], depth + 1): return True
+            i = j + 1; continue
+        i += 1
+    return False
+
+def check(s, depth=0):
+    if depth > 4: return coarse(s)
+    if depth and "<<" in s:
+        s, live = drop_heredocs(s)
+        if any(live_body_kills(b, depth) for b in live): return True
+    m = subst(s)
+    if m is None: return coarse(s)
+    masked, bodies = m
+    if any(check(b, depth + 1) for b in bodies): return True
+    masked = case_patterns_out(masked)               # before newlines become separators (multi-line case)
+    masked = nl_seps(masked)                         # unquoted newlines separate; escapes placeheld
+    t = split_tokens(masked)
+    if t is None: return coarse(masked)
+    return any(scan(c, depth) for c in commands(t))
+
+def tmux_verb(argv):
+    # the first word after tmux global options; -c, -f, -L, -S and -T take a value, attached
+    # (-Lname, -vLname) or as the next word (-vL name)
+    i = 1
+    while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
+        a = argv[i]; i += 1
+        if a == "--": break
+        m = re.match(r"^-[A-Za-z0-9]*?[LScfT](.*)$", a)
+        if m and not m.group(1): i += 1
+    return argv[i] if i < len(argv) else None
+
+def other_server(argv):
+    # tmux -L NAME talks to that server even inside tmux (where $TMUX names the live socket and wins
+    # over TMUX_TMPDIR). Allowed only when every selector is -L with a literal name other than
+    # "default" that is not the socket $TMUX names (compared case-insensitively, as macOS paths are),
+    # no -S is given (a path can alias the live socket in ways not visible here), and the command
+    # neither switches user nor makes links (ln) that could retarget the name before tmux runs.
+    socks, i = [], 1
+    while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
+        a = argv[i]; i += 1
+        if a == "--": break
+        m = re.match(r"^-[A-Za-z0-9]*?([LScfT])(.*)$", a)
+        if m:
+            v = m.group(2)
+            if not v:
+                if i >= len(argv): return False
+                v = argv[i]; i += 1
+            if m.group(1) in "LS": socks.append((m.group(1), v))
+    if not socks or any(k == "S" for k, _ in socks): return False
+    if re.search(r"(?<![\w.-])(sudo|doas|su|runuser|pkexec)(?![\w.-])", RAW_CMD): return False   # another user
+    if re.search(r"(?<![\w.-])ln(?![\w.-])", RAW_CMD): return False                              # links made here
+    livep = os.environ.get("TMUX", "").rsplit(",", 2)[0]     # socket,pid,session: the path may hold commas
+    live = os.path.basename(livep).lower()
+    live_real = os.path.realpath(livep).lower() if livep else ""
+    for _, v in socks:                                   # only -L remains here (any -S returned above)
+        if not v or re.search(r"[$`*?\[~{]", v): return False
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", v) or not v.strip("."): return False    # not . or ..
+        # the socket is <TMUX_TMPDIR or /tmp>/tmux-UID/NAME; a symlink there named NAME could
+        # point at the default socket. A TMUX_TMPDIR set in the command itself must be literal.
+        env_dir = os.environ.get("TMUX_TMPDIR") or "/tmp"
+        if not env_dir.startswith("/"): return False      # relative: resolved after any cd, not here
+        dirs = {env_dir, "/tmp", "/private/tmp"}
+        if re.search(r"TMUX_TMPDIR\s*\+=", re.sub(r"[\x22\x27\\]", "", RAW_CMD)): return False    # appended
+        if len(re.findall(r"TMUX_TMPDIR=", re.sub(r"[\x22\x27\\]", "", RAW_CMD))) != len(re.findall(r"TMUX_TMPDIR=", RAW_CMD)):
+            return False                                # assigned in pieces: the directory is not known here
+        for mm in re.finditer(r"TMUX_TMPDIR=", RAW_CMD):     # an assignment (not -u, not a mention)
+            lit = re.compile(r"TMUX_TMPDIR=(/[A-Za-z0-9._/-]+)(?=$|[\s;&|)])").match(RAW_CMD, mm.start())
+            if not lit or RAW_CMD[mm.start() - 1:mm.start()] in ("\x22", "\x27"): return False
+            dirs.add(lit.group(1))
+        paths = [os.path.join(d, "tmux-%d" % os.getuid(), v) for d in dirs]
+        names = [v] + [os.path.basename(os.path.realpath(x)) for x in paths]
+        if any(x.lower() in ("default", "", live) for x in names): return False
+        if live_real and any(os.path.realpath(x).lower() == live_real for x in paths): return False
+        if any(os.path.realpath(x).lower() == os.path.realpath(os.path.join(os.path.dirname(x), "default")).lower()
+               for x in paths): return False                        # NAME and default are one socket
+    return True
+
 def unq(tok):
+    tok = "".join(ESC_BACK.get(ch, ch) for ch in tok)
     try:
         w = shlex.split(tok)
         return "".join(w) if w else ""
@@ -827,9 +1322,17 @@ def unq(tok):
         return tok
 
 def commands(tokens):
-    cur = []
-    for t in tokens:
-        if t in OPS:
+    cur, k = [], 0
+    while k < len(tokens):
+        t = tokens[k]; k += 1
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=", t) and k < len(tokens) and tokens[k] == "(":
+            d = 0                                   # cmd=( ... ): an array literal, not a command
+            while k < len(tokens):
+                if not tokens[k].strip(";&|()"): d += tokens[k].count("(") - tokens[k].count(")")
+                k += 1
+                if d <= 0: break
+            cur.append(t + "()"); continue
+        if t in OPS or (t and not t.strip(";&|()")):     # "(x);" arrives as ")" + ";" glued: ");"
             if cur: yield [unq(x) for x in cur]
             cur = []
         else:
@@ -872,7 +1375,8 @@ def user_agent_bootstrap(argv):
     return path.startswith(pre) and path.endswith(".plist") and "/" not in path[len(pre):] and len(path) > len(pre) + 6
 
 def scan(argv, depth=0):
-    if depth > 3 or not argv: return False
+    if not argv: return False
+    if depth > 6: return coarse(" ".join(argv))     # too deep to follow: judge the words
     i = 0
     while i < len(argv):
         a = argv[i]; b = os.path.basename(a)
@@ -885,6 +1389,7 @@ def scan(argv, depth=0):
             i += 1
             while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
                 opt = argv[i]; i += 1
+                if b == "command" and re.match(r"^-[A-Za-z]*[vV]", opt): return False   # command -v NAME: a lookup
                 if b == "env" and re.match(r"^(-[A-Za-z]*S|--split-string)", opt) and any("launchctl" in x for x in [opt] + argv[i:]): return True   # env -S runs a split string: not parsed here, so blocked
                 if opt == "--": break
                 if opt in WRAPPER_OPTS[b] and i < len(argv): i += 1
@@ -900,14 +1405,23 @@ def scan(argv, depth=0):
     if base in SHELLS:
         for j, a in enumerate(argv[1:], 1):
             if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
-                t = split_tokens(argv[j + 1])
-                if t is None: return False
-                return any(scan(c, depth + 1) for c in commands(t))
+                if LEGACY:                     # main_view: the body as the guard read it before this change
+                    t = split_tokens(argv[j + 1])
+                    return t is not None and any(scan(c, depth + 1) for c in commands(t))
+                return check(argv[j + 1], depth + 1)
+        return False
+    if base == "eval":
+        return check(" ".join(argv[1:]), depth + 1)
+    if base == "find":
+        for j, a in enumerate(argv):
+            if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                k = next((x for x in range(j + 1, len(argv)) if argv[x] in (";", "+")), len(argv))
+                if scan(argv[j + 1:k], depth + 1): return True
         return False
     if base in KILLERS:
         return not ("--help" in argv or "-h" in argv)
     if base == "tmux":
-        return verb(argv, {"-L", "-S", "-f", "-c", "-T"}) in TMUX_VERBS
+        return tmux_verb(argv) in TMUX_VERBS and not other_server(argv)
     if base == "launchctl":
         v = verb(argv, set())
         if v == "kickstart": return any(re.match(r"^-[A-Za-z]*k[A-Za-z]*$", x) for x in argv[1:])
@@ -915,15 +1429,64 @@ def scan(argv, depth=0):
         return v in LAUNCHCTL_VERBS
     return False
 
-t = split_tokens(CMD)
-if t is None:
-    print("ok")
-else:
-    print("block" if any(scan(c) for c in commands(t)) else "ok")
-' 2>/dev/null || echo ok)
+LEGACY = False
+def main_view(c):
+    # the command as the guard read it before substitutions were checked (no masking, no comment
+    # handling): whatever that view blocks stays blocked, so a scanner mistake can only add blocks
+    global LEGACY
+    t = split_tokens(c)
+    if t is None: return False
+    cmds, cur = [], []
+    for x in t:                          # the separators main used (no grouped ");" here)
+        if x in OPS:
+            if cur: cmds.append([unq(w) for w in cur])
+            cur = []
+        else: cur.append(x)
+    if cur: cmds.append([unq(w) for w in cur])
+    LEGACY = True                        # shell bodies read as before, too
+    try: return any(scan(x) for x in cmds)
+    finally: LEGACY = False
+
+# $( ) and backticks in an UNQUOTED top-level heredoc body run too (cat <<EOF ... $(cmd) ... EOF)
+def top_live(raw):
+    # bodies of unquoted heredocs whose opener stands outside quotes (a <<EOF inside a quoted
+    # commit message is text); quote state is followed across lines, bodies are not scanned for it
+    lines, live, pend, body, q = raw.split("\n"), [], [], [], None
+    for k, line in enumerate(lines):
+        if pend:
+            if (line.lstrip("\t") if pend[0][1] else line) == pend[0][0]:
+                if pend[0][2]: live.append("\n".join(body))
+                pend.pop(0); body = []
+            else: body.append(line)
+            continue
+        vis, i = [], 0
+        while i < len(line):
+            c = line[i]
+            if q:
+                if c == q: q = None
+                vis.append(" "); i += 1; continue
+            if c == "\\": vis.append("  "); i += 2; continue
+            if c in "\x27\x22": q = c; vis.append(" "); i += 1; continue
+            vis.append(c); i += 1
+        pend = [(d, bool(x), not qd) for x, qd, d in heredoc_openers_q(line)
+                if line.find("<<") >= 0 and "<<" in "".join(vis)
+                and any((y.lstrip("\t") if x else y) == d for y in lines[k + 1:])]
+    return live
+
+TOP_LIVE = top_live(RAW_CMD.replace("\\\n", "")) if "<<" in RAW_CMD else []
+print("block" if check(CMD_NL) or main_view(CMD_MAIN) or any(live_body_kills(b, 0) for b in TOP_LIVE) else "ok")
+' 2>/dev/null || echo died)
+  case "$_KV" in ok|block) ;; *) _KV=died ;; esac             # empty or garbled output: as if it died
+  if [ "$_KV" = "died" ]; then          # the check could not run: block only a visible kill verb
+    # pkill/killall where a command starts; tmux kill verbs only with tmux in the same segment
+    if printf '%s' "$_TE" | grep -Eq '(^|[;&|(]|(^|[^[:alnum:]_.-])(then|do|sudo|env|exec|nohup|time))[[:space:]]*(pkill|killall)([^[:alnum:]_.-]|$)' \
+       || printf '%s' "$_TE" | grep -Eq '(^|[^[:alnum:]_.-])tmux[^;&|]*[[:space:]](kill-(server|session|window|pane)|killp|killw)([^[:alnum:]_.-]|$)' \
+       || { [[ $_TE == *launchctl* ]] && printf '%s' "$_TE" | grep -Eq 'launchctl[^;&|]*[[:space:]](bootout|unload|remove|stop|kill|bootstrap|disable)([^[:alnum:]_.-]|$)|launchctl[^;&|]*kickstart.*-[[:alnum:]]*k'; }; then _KV=block; else _KV=ok; fi
+  fi
   if [ "$_KV" = "block" ]; then
     echo "Blocked: pkill/killall or a tmux/launchctl kill command." >&2
     echo "A pattern kill can hit the tmux server and every remote-control session with it (2026-10-15 18:35). Kill only a PID you started yourself (kill \$!, then ps -p), never a pattern, a server or a service." >&2
+    echo "A throwaway tmux server you started yourself: env -u TMUX tmux -L <name> ..., and stop it with the same -L <name>: a literal name (not default, no \$variable or \$( )) passes, without -S, sudo, ln or a non-literal TMUX_TMPDIR in the same call." >&2
     echo "If a human has decided to: re-run with MEGAVIBE_ALLOW_KILL=1." >&2
     exit 2
   fi

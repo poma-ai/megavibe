@@ -17,6 +17,8 @@ Use one of these instead:
 - **Foreground in a terminal the user is watching** — for things you want them to see in real time.
 - **Named tmux session** — for things genuinely meant to outlive the current Claude session: `tmux new -d -s <project>-<purpose> '<command>'`. The session name is how the user finds and kills it later.
 
+**A throwaway tmux server for a test needs `-L`, not `TMUX_TMPDIR`.** Inside tmux, `$TMUX` names the live server's socket and tmux uses it in preference to `TMUX_TMPDIR`, so `export TMUX_TMPDIR=$(mktemp -d); tmux kill-server` kills the LIVE server and every session on it (2026-11-23: the assistant, five repo sessions and the node died that way). Use `env -u TMUX tmux -L <name> ...` for every command, with a literal name (not `$$` or another variable: the guard cannot see what it expands to), and stop it only with the same `-L <name>`; `block-dangerous-bash.sh` allows a tmux kill verb only with a literal `-L` name other than `default` that is not the live socket (`-S` is always blocked).
+
 ## Backgrounded work gets a heartbeat
 
 `run_in_background` and an async `Agent` return at once and promise a
