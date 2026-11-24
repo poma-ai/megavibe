@@ -10,7 +10,7 @@
 #                               CRITICAL, or UNKNOWN when df could not answer (one bounded df,
 #                               no directory scan)
 #
-# Env: MEGAVIBE_DISK_WARN_GB (15), MEGAVIBE_DISK_CRIT_GB (8), MEGAVIBE_DISK_STEP_GB (1),
+# Env: MEGAVIBE_DISK_WARN_GB (unset: the larger of 40 GB and 15 percent of the volume), MEGAVIBE_DISK_CRIT_GB (8), MEGAVIBE_DISK_STEP_GB (1),
 #      MEGAVIBE_DISK_PATH (default $HOME — the volume whose free space is measured).
 #      GB here is 1024^3 bytes, as `df -h` counts it.
 #
@@ -25,8 +25,11 @@ _int() {
   [ "${#v}" -gt 6 ] && { echo "$2"; return; }
   echo "$v"
 }
-WARN=$(_int "${MEGAVIBE_DISK_WARN_GB:-}" 15); [ "$WARN" -ge 1 ] || WARN=15
-CRIT=$(_int "${MEGAVIBE_DISK_CRIT_GB:-}" 8);  [ "$CRIT" -le "$WARN" ] || CRIT=$WARN
+# Warn line: MEGAVIBE_DISK_WARN_GB when set (a fixed number of GB); otherwise the larger of 40 GB
+# and 15 percent of the volume, so a big disk is warned early too (a 460 GB disk at 69 GB).
+WARN_FIXED=$(_int "${MEGAVIBE_DISK_WARN_GB:-}" 0); [ "$WARN_FIXED" -ge 1 ] || WARN_FIXED=0
+WARN=$WARN_FIXED; [ "$WARN" -ge 1 ] || WARN=40
+CRIT=$(_int "${MEGAVIBE_DISK_CRIT_GB:-}" 8);  [ "$WARN_FIXED" -lt 1 ] || [ "$CRIT" -le "$WARN" ] || CRIT=$WARN   # without a fixed warn line, level() clamps per volume
 STEP=$(_int "${MEGAVIBE_DISK_STEP_GB:-}" 1);  [ "$STEP" -ge 1 ] || STEP=1
 P="${MEGAVIBE_DISK_PATH:-$HOME}"
 KB_PER_GB=1048576
@@ -43,11 +46,26 @@ bounded() {
 
 # df -Pk row: "<fs, may contain spaces> <total> <used> <avail> <N%> <mount, may contain spaces>".
 # Anchor on the N% field rather than counting columns from the left.
-df_row() { bounded 3 df -Pk "$P" 2>/dev/null | awk 'NR==2 { for (i = NF; i >= 3; i--) if ($i ~ /^[0-9]+%$/) { cap = i; break }
-  if (cap && $(cap-1) ~ /^[0-9]+$/) { m = ""; for (j = cap + 1; j <= NF; j++) m = m (j > cap + 1 ? " " : "") $j; print $(cap-1) "\t" m } }'; }
+# Prints "<avail kB>\t<total kB>\t<mount>" for the path ($1, default $P).
+df_row() { bounded 3 df -Pk "${1:-$P}" 2>/dev/null | awk 'NR==2 { for (i = 5; i <= NF; i++) if ($i ~ /^[0-9]+%$/ && $(i-1) ~ /^-?[0-9]+$/ && $(i-2) ~ /^[0-9]+$/ && $(i-3) ~ /^[0-9]+$/) { cap = i; break }
+  if (cap) { m = ""; for (j = cap + 1; j <= NF; j++) m = m (j > cap + 1 ? " " : "") $j; print $(cap-1) "\t" $(cap-3) "\t" m } }'; }
+row_avail() { printf '%s' "${1%%"$TAB"*}"; }
+row_rest() { printf '%s' "${1#*"$TAB"}"; }
+row_total() { local r; r=$(row_rest "$1"); printf '%s' "${r%%"$TAB"*}"; }
+row_mount() { local r; r=$(row_rest "$1"); printf '%s' "${r#*"$TAB"}"; }
 gb() { awk -v k="$1" 'BEGIN { printf "%.1f", k / 1048576 }'; }
-level() { # kb [previous level]: leave a worse level only once clear of its threshold by STEP
-  local kb=$1 prev=${2:-} warn=$((WARN * KB_PER_GB)) crit=$((CRIT * KB_PER_GB)) step=$((STEP * KB_PER_GB))
+warn_kb_for() { # total kB -> the warn line in kB for that volume (exact: no rounding to whole GB)
+  if [ "$WARN_FIXED" -ge 1 ]; then echo $((WARN_FIXED * KB_PER_GB)); return; fi
+  local t=${1:-0} w; case "$t" in ''|*[!0-9]*) t=0 ;; esac
+  w=$((t * 15 / 100)); [ "$w" -ge $((40 * KB_PER_GB)) ] || w=$((40 * KB_PER_GB)); echo "$w"
+}
+warn_gb_for() { gb "$(warn_kb_for "${1:-0}")"; }
+crit_kb_for() { # total kB -> the critical line in kB for that volume (never above its warn line)
+  local c=$((CRIT * KB_PER_GB)) w; w=$(warn_kb_for "${1:-0}"); [ "$c" -le "$w" ] || c=$w; echo "$c"
+}
+level() { # kb [previous level] [total kB]: leave a worse level only once clear of its threshold by STEP
+  local kb=$1 prev=${2:-} warn crit step=$((STEP * KB_PER_GB))
+  warn=$(warn_kb_for "${3:-0}"); crit=$(crit_kb_for "${3:-0}")
   if [ "$kb" -lt "$crit" ]; then echo CRITICAL
   elif [ "$prev" = CRITICAL ] && [ "$kb" -lt $((crit + step)) ]; then echo CRITICAL
   elif [ "$kb" -lt "$warn" ]; then echo LOW
@@ -59,7 +77,11 @@ top() {
   local c out="" skipped=0 sz
   SECONDS=0   # total budget for the scan: a session start must not wait on a slow disk
   local tmpglob="/tmp/claude-*"; [ -L /tmp ] && tmpglob=""   # /tmp is a symlink to /private/tmp on macOS: count it once
-  for c in "$HOME/.Trash" "$HOME/.local/share/Trash" /private/tmp/claude-* $tmpglob \
+  # A session temp root moved by CLAUDE_CODE_TMPDIR / MEGAVIBE_DATA_DIR is listed too.
+  local movedbase=""; movedbase=$(bounded 3 "$(dirname "$0")/scratch-root.sh" base 2>/dev/null) || movedbase=""
+  case "$movedbase" in /tmp|/private/tmp) movedbase="" ;; esac
+  local -a moved=(); [ -n "$movedbase" ] && moved=("$movedbase"/claude-*)
+  for c in "$HOME/.Trash" "$HOME/.local/share/Trash" /private/tmp/claude-* $tmpglob ${moved[@]+"${moved[@]}"} \
            "$PWD/.agent/ASSETS" "$PWD/.agent/LOGS" "$PWD/.worktrees" "$PWD/.venv" "$PWD/node_modules" \
            "$HOME/.megavibe/logs" "$HOME/.cache"; do
     [ -d "$c" ] || continue
@@ -81,21 +103,20 @@ top() {
           if (sk > 0) printf "  (%d location(s) could not be sized in time)\n", sk }'
 }
 
-status_line() { # kb mount level
-  printf 'disk: %s GB free on %s — %s (warn < %s GB, critical < %s GB)\n' "$(gb "$1")" "$2" "$3" "$WARN" "$CRIT"
+status_line() { # kb mount level [label] [total kB]
+  printf '%s: %s GB free on %s — %s (warn < %s GB, critical < %s GB)\n' "${4:-disk}" "$(gb "$1")" "$2" "$3" "$(warn_gb_for "${5:-0}")" "$(gb "$(crit_kb_for "${5:-0}")")"
 }
-
 case "${1:-check}" in
   check)
     row=$(df_row); [ -n "$row" ] || exit 0
-    kb=${row%%"$TAB"*}; mnt=${row#*"$TAB"}
-    lvl=$(level "$kb"); [ "$lvl" = OK ] && exit 0
-    status_line "$kb" "$mnt" "$lvl"; top
+    kb=$(row_avail "$row"); mnt=$(row_mount "$row")
+    lvl=$(level "$kb" "" "$(row_total "$row")"); [ "$lvl" = OK ] && exit 0
+    status_line "$kb" "$mnt" "$lvl" disk "$(row_total "$row")"; top
     ;;
   top) top ;;
   level)
     row=$(df_row); [ -n "$row" ] || { echo UNKNOWN; exit 0; }
-    kb=${row%%"$TAB"*}; level "$kb"
+    level "$(row_avail "$row")" "" "$(row_total "$row")"
     ;;
   watch)
     iv=$(_int "${2:-}" 60); [ "$iv" -ge 30 ] || iv=30
@@ -106,7 +127,7 @@ case "${1:-check}" in
         fails=$((fails + 1))
         [ "$fails" -ge 3 ] && { echo "disk: cannot read free space on $P, watch stopped"; exit 1; }
       else
-        fails=0; kb=${row%%"$TAB"*}; lvl=$(level "$kb" "$last_lvl")
+        fails=0; kb=$(row_avail "$row"); lvl=$(level "$kb" "$last_lvl" "$(row_total "$row")")
         if [ -z "$last_kb" ]; then delta=""
         else delta=$(awk -v a="$kb" -v b="$last_kb" 'BEGIN { printf " (%+.1f GB)", (a - b) / 1048576 }'); fi
         moved=0
@@ -124,5 +145,5 @@ case "${1:-check}" in
       sleep "$iv"
     done
     ;;
-  *) echo "usage: disk-watch.sh check | top | watch [secs]" >&2; exit 2 ;;
+  *) echo "usage: disk-watch.sh check | top | level | watch [secs]" >&2; exit 2 ;;
 esac

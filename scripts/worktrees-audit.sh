@@ -395,8 +395,13 @@ scratch() {
   local parent root dir marker kb escaped
   : > "$WORK/scratch-roots"
   for root in ${ROOTS[@]+"${ROOTS[@]}"}; do printf '%s\0' "$root" >> "$WORK/scratch-roots"; done
-  for parent in /private/tmp/claude-* "${TMPDIR:-/tmp}"/claude-*; do
+  local seen=$'\n' sbase phys
+  sbase=$("${BASH_SOURCE[0]%/*}/scratch-root.sh" base 2>/dev/null) || sbase=/tmp
+  for parent in /private/tmp/claude-* "${TMPDIR:-/tmp}"/claude-* "$sbase"/claude-*; do
     [[ -d $parent ]] || continue
+    phys=$(cd -P -- "$parent" 2>/dev/null && pwd) || phys=$parent   # /tmp and /private/tmp are one folder
+    [[ $seen == *$'\n'"$phys"$'\n'* ]] && continue
+    seen+="$phys"$'\n'
     find "$parent" -type d -name scratchpad -print0 -prune >> "$WORK/scratch-roots" || warn "incomplete scratch search: $parent"
   done
   : > "$WORK/old"; : > "$WORK/copies"

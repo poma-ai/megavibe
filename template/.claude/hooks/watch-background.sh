@@ -86,6 +86,11 @@ NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
 task_file() {  # id -> the harness's output file for it, or ""
   local uid f
   uid=$(id -u 2>/dev/null || echo 0)
+  local mv=""
+  if command -v perl >/dev/null 2>&1; then   # root lookup, glob and file test on a moved volume: one 3 s deadline, local paths still searched on a timeout
+    mv=$(perl -e 'alarm shift; exec @ARGV' 3 bash -c 'r=$("$1" root 2>/dev/null) || exit 0; for f in "$r"/*/*/tasks/"$2".output; do [ -e "$f" ] && { printf "%s" "$f"; exit 0; }; done' _ "$HOME/.megavibe/scripts/scratch-root.sh" "$1" 2>/dev/null) || mv=""
+  fi
+  [ -z "$mv" ] || { printf '%s' "$mv"; return 0; }
   for f in "${TMPDIR:-/tmp}"/claude-"$uid"/*/*/tasks/"$1".output \
            /private/tmp/claude-"$uid"/*/*/tasks/"$1".output \
            /tmp/claude-"$uid"/*/*/tasks/"$1".output; do

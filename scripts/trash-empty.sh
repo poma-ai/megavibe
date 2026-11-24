@@ -180,7 +180,9 @@ def harness_re(home):
         r"^(?:/bin|/usr/bin|/usr/local/bin|/opt/homebrew/bin)/(?:zsh|bash) (?:-[A-Za-z]+ )*-c (?:-[A-Za-z]+ )*source "
         + re.escape(home) + r"/\.claude/shell-snapshots/snapshot-(?:zsh|bash)-[0-9]+-[a-z0-9]+\.sh 2>/dev/null \|\| true && (?:.* && )?eval '"
         + _WS + r"(~/\.megavibe/scripts/trash-empty\.sh)( --all)?" + _WS
-        + r"' < /dev/null && pwd -P >\| /tmp/claude-[0-9a-f]+-cwd$", re.S)
+        # the cwd file sits in /tmp, or in $CLAUDE_CODE_TMPDIR when that moves the session temp root
+        # (measured: <dir>/claude-<hex>-cwd); a path with a space or quote never matches: fail closed
+        + r"' < /dev/null && pwd -P >\| (?:/[A-Za-z0-9_+-][A-Za-z0-9_.+-]*)+/claude-[0-9a-f]+-cwd$", re.S)
 
 
 def ps_table():
