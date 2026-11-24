@@ -201,6 +201,16 @@ reset; export STUB_ARGLOG="$T/sprint-arg" STUB_SPRINT="$SC"; claude_pace 90 98 9
 ev PreToolUse | run >/dev/null
 check 'the hook calls sprint-advice with --peek' '[ "$(cat "$T/sprint-arg" 2>/dev/null)" = "--peek" ]'
 unset STUB_ARGLOG STUB_SPRINT
+# a failed band lookup keeps the whole previous flag, so the sprint withdrawal after recovery is emitted exactly once
+reset; claude_pace 90 98 91 '' ''; printf 'over:codex:9:6:sc' > "$FLAG"; export STUB_BAND_FAIL=1
+ev PreToolUse | run >/dev/null
+check 'a failed band call leaves the previous flag byte for byte (the sprint field stays in field five)' '[ "$(cat "$FLAG")" = "over:codex:9:6:sc" ]'
+unset STUB_BAND_FAIL; export STUB_BAND=over STUB_BALANCE='codex|lean on codex.'
+o=$(ev PreToolUse | run | ctx)
+check 'after recovery with the sprint over: the withdrawal is emitted' '[[ "$o" == *"advice for Claude no longer applies"* ]]'
+o=$(ev PreToolUse | run | ctx)
+check 'and not a second time' '[[ "$o" != *"no longer applies"* ]]'
+unset STUB_BAND STUB_BALANCE
 # per-provider unknown: one provider's check failing does not hide the other one's change
 reset; claude_pace 90 98 91 '' ''; printf 'normal:-:9:u:scx' > "$FLAG"
 export STUB_SPRINT='usage sprint-unknown: Codex'
