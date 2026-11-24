@@ -18,6 +18,33 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # If we couldn't parse the command, allow it (don't block on parse errors)
 [ -n "$COMMAND" ] || exit 0
 
+# Match only a standalone git invocation with a literal path and leading flags.
+# Resolve relative paths from the tool payload, without evaluating shell text.
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
+  _launch_remove='^[[:blank:]]*git[[:blank:]]+worktree[[:blank:]]+remove[[:blank:]]+(--?[A-Za-z][A-Za-z-]*[[:blank:]]+)*(--[[:blank:]]+)?'
+  _launch_remove+=$'("([^"\\\\$`!]*)"|\'([^\']*)\'|([A-Za-z0-9_./-]+))[[:space:]]*$'
+  if [[ "$COMMAND" =~ $_launch_remove ]]; then
+    _target="${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
+    if [[ -n "$_target" && "$_target" != /* ]]; then
+      _payload_cwd=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
+      if [[ "$_payload_cwd" == /* ]]; then _target="$_payload_cwd/$_target"; else _target=''; fi
+    fi
+    if [[ -n "$_target" ]] &&
+       _target=$(CDPATH= cd -P -- "$_target" 2>/dev/null && pwd -P) &&
+       _launch=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P); then
+      while :; do
+        if [[ "$_launch" -ef "$_target" ]]; then
+          printf 'Blocked: git worktree remove would remove the session launch directory (%s).\n' "$CLAUDE_PROJECT_DIR" >&2
+          exit 2
+        fi
+        [ "$_launch" != / ] || break
+        _launch=${_launch%/*}
+        _launch=${_launch:-/}
+      done
+    fi
+  fi
+fi
+
 # A formatter at the end of a pipeline otherwise hides the check's status from
 # the following destructive command. Keep this gate fork-free and before the
 # slower Python parser. Mask quoted text so commit messages remain prose.

@@ -875,7 +875,29 @@ if [ "${1:-}" = "worktree" ]; then
     remove)
       NAME="${2:-}"; [ -n "$NAME" ] || { echo "usage: megavibe worktree remove <name>"; exit 2; }
       WT="$(dirname "$MAIN")/${REPO}-${NAME}"
+      # From a linked checkout, --show-toplevel returns that checkout. Recognize
+      # its own name relative to the primary checkout before reporting it missing.
+      if [ ! -d "$WT" ] && IFS= read -r -d '' _primary < <(git worktree list --porcelain -z); then
+        _primary=${_primary#worktree }
+        _candidate="${_primary%/*}/${_primary##*/}-${NAME}"
+        if [[ "$_candidate" -ef "$MAIN" ]]; then WT="$_candidate"; fi
+      fi
       [ -d "$WT" ] || { echo "No worktree at $WT"; exit 1; }
+      for _location in 'current directory' 'launch directory'; do
+        if [ "$_location" = 'current directory' ]; then
+          _dir=$(pwd -P)
+        else
+          [ -n "${CLAUDE_PROJECT_DIR:-}" ] || continue
+          _dir=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P) || continue
+        fi
+        while [ -n "$_dir" ]; do
+          if [[ "$_dir" -ef "$WT" ]]; then
+            printf 'Refusing to remove %s because it contains the %s.\n' "$WT" "$_location" >&2
+            exit 1
+          fi
+          _dir=${_dir%/*}
+        done
+      done
       # The symlinks point at the main checkout's real .agent/.claude. Removing
       # the worktree must not follow them — git does not, but say so plainly
       # because "rm -rf a directory containing a symlink to my project memory"
@@ -1776,7 +1798,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
@@ -1900,13 +1922,21 @@ if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.cla
   # point at the old location is due too.
   if [ "$_ps_due" = 0 ] && command -v jq >/dev/null 2>&1; then
     _ps_root=$(cd "$MEGAVIBE_HOME/personal" && pwd -P) || _ps_due=1
-    jq -e -n --arg root "${_ps_root:-}/" \
+    _ps_runner=''
+    if [[ -f "$HOME/.megavibe/scripts/guard-run.sh" && -x "$HOME/.megavibe/scripts/guard-run.sh" ]]; then
+      _ps_runner='"$HOME/.megavibe/scripts/guard-run.sh" '
+    fi
+    jq -e -n --arg root "${_ps_root:-}/" --arg runner "$_ps_runner" \
           --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
           --slurpfile p "$MEGAVIBE_HOME/personal/.claude/settings.json" '
-        def regs(x; f): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
-                         | .hooks[]? | (.command // "" | f) as $c | "\($e)\t\($m)\t\($c)"] | unique;
-        def expand: if startswith(".claude/hooks/") then "\"" + $root + . + "\"" else . end;
-        (regs($t[0]; expand) - regs($p[0]; .)) | length == 0' >/dev/null 2>&1 || _ps_due=1
+        def expand($e): if startswith(".claude/hooks/") then
+          (if $e == "PreToolUse" and test("^\\.claude/hooks/(block-dangerous-bash|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$")
+           then $runner else "" end) + "\"" + $root + . + "\""
+          else . end;
+        def regs(x; $template): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
+                         | .hooks[]? | (.command // "" | if $template then expand($e) else . end) as $c
+                         | "\($e)\t\($m)\t\($c)"] | unique;
+        (regs($t[0]; true) - regs($p[0]; false)) | length == 0' >/dev/null 2>&1 || _ps_due=1
   fi
   if [ -n "$_ps_sum" ] && [ "$_ps_due" = 1 ]; then
     echo "  Syncing the personal assistant's hooks..." >&2

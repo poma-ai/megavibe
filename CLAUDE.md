@@ -23,6 +23,7 @@ Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a s
 | `template/statusline.sh` | Context usage progress bar | Low |
 | `template/.claude/settings.json` | Hook registrations template | Medium — when hooks change |
 | `template/.claude/hooks/*.sh` | Hook scripts template (canonical list in init.sh) | Medium |
+| `scripts/guard-run.sh` | Runs the five blocking PreToolUse guards from the project or the installed template and blocks the tool call if both copies are unavailable | High — guard dispatch |
 | `template/.claude/hooks/rules-dedupe.sh`, `tests/rules-dedupe.test.sh` | One copy of the megavibe rules per directory tree: Claude Code loads parent directories' `.claude/rules/` too, so a project nested in a megavibe parent keeps no copy of the rules the parent carries (run by `init.sh` and on SessionStart startup/resume). Deletes only untracked, regular copies identical to the template (any content under `init.sh`, which always overwrote them) | Medium — deletes files |
 | `template/.claude/agents/summarizer.md` | Summarization agent (sonnet) — called by allocation or fallback per `delegation.md` | Low — rarely changes |
 | `template/.claude/agents/reviewer.md` | The independent reviewer (Sonnet at high effort, fresh context, runs things) — always available and never switchable off; called when allocated or required by the floor in `template/.claude/rules/delegation.md` | Medium — affects every review |

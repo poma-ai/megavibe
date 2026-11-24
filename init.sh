@@ -299,6 +299,32 @@ for hook in log-tool-event.sh block-dangerous-bash.sh rm-to-trash.sh block-stray
     HOOKS_MISSING=$((HOOKS_MISSING + 1))
   fi
 done
+# Install the runner at the same user-level path the hook shell will expand.
+GUARD_RUN="$HOME/.megavibe/scripts/guard-run.sh"
+if [ -f "$SCRIPT_DIR/scripts/guard-run.sh" ] &&
+   { [ ! -x "$GUARD_RUN" ] || ! cmp -s "$SCRIPT_DIR/scripts/guard-run.sh" "$GUARD_RUN"; }; then
+  if mkdir -p "${GUARD_RUN%/*}" 2>/dev/null; then
+    atomic_install "$SCRIPT_DIR/scripts/guard-run.sh" "$GUARD_RUN" 755 || true
+  fi
+fi
+
+# Anchor to the physical project path so a moved symlink cannot break hooks.
+expand_hook_commands() {
+  local root runner=''
+  root=$(cd "$PROJECT" && pwd -P) || return 1
+  if [[ -f "$GUARD_RUN" && -x "$GUARD_RUN" ]]; then
+    runner='"$HOME/.megavibe/scripts/guard-run.sh" '
+  fi
+  jq --arg root "$root/" --arg runner "$runner" '
+    .hooks.PreToolUse[]?.hooks[]? |= (
+      if (.command? // "" | test("^\\.claude/hooks/(block-dangerous-bash|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$"))
+      then .command = $runner + "\"" + $root + .command + "\""
+      else . end
+    )
+    | walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/"))
+           then .command = "\"" + $root + .command + "\"" else . end)' "$@"
+}
+
 # --- Merge hooks into .claude/settings.json (first time only) ---
 SETTINGS="$PROJECT/.claude/settings.json"
 # Per process: two overlapping init.sh runs on one project shared one fixed
@@ -334,17 +360,9 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     # plansDirectory: default it fleet-wide (set-if-absent) so plans persist into
     # .agent/PLANS instead of the user-global ~/.claude/plans/, but never clobber a
     # value the project set deliberately. Relative path resolves to project root.
-    # Rewrite relative hook paths to absolute (prevents breakage when session cd's to subdirectory)
-    # `pwd -P` resolves symlinks. Bare `pwd` would record the logical (symlink)
-    # path — if the symlink is later removed or its target moves, the hardcoded
-    # hook paths in settings.json break with "No such file or directory" and the
-    # session cannot run any tool. Always anchor to the canonical filesystem path.
-    ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
-    # Quote hook command paths to handle spaces in directory names (e.g., "POMA AI")
-    # Shell receives: "/path/with spaces/.claude/hooks/script.sh" (quoted = single arg)
     jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
         | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(.hooks |= map(select(((.command // "") | test("^(\"[^\"]*\\.claude/hooks/status-sync\\.sh\"|[^ \"]*\\.claude/hooks/status-sync\\.sh)$")) | not))) | map(select((.hooks | length) > 0))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
-      | jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
+      | expand_hook_commands \
       > "$SETTINGS_TMP"
     atomic_install "$SETTINGS_TMP" "$SETTINGS"
     rm -f "$SETTINGS_TMP"
@@ -355,11 +373,7 @@ if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
     atomic_install "$TEMPLATE_SETTINGS" "$PROJECT/.claude/settings.megavibe.json"
   fi
 else
-  # `pwd -P` for the same reason as the sync branch above: a logical path
-  # bakes a symlink into settings.json and breaks every hook if it moves.
-  ABS_PROJECT=$(cd "$PROJECT" && pwd -P)
-  jq --arg root "$ABS_PROJECT/" 'walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/")) then .command = "\"" + $root + .command + "\"" else . end)' \
-    "$TEMPLATE_SETTINGS" > "$SETTINGS_TMP"
+  expand_hook_commands "$TEMPLATE_SETTINGS" > "$SETTINGS_TMP"
   # Through atomic_install, not a bare `> "$SETTINGS"`. A redirect FOLLOWS a
   # symlink, so when this branch is reached because the existing settings.json
   # is an unreadable symlink, the redirect writes the unreadable target and
