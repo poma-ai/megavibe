@@ -216,6 +216,12 @@ check 'the live five-hour reset in milliseconds on one row, seconds on the other
 { rowfh 30 72 $R2 76; rowfh 5 72 $R2 76; rowfh 0 72 $R2 80; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'five-hour 76, 76, then 80 in the last five minutes: 5h-hot (the recent slope counts)' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
+# the five-hour surge evidence does not age out of a wall-clock lookback while the history is unchanged: 74 at -31 minutes, 82 at -26,
+# checked at -1.5 minutes and again a few minutes later with no new row
+FZ=$((NOW + 7200))
+printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":74,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":82,"r":%s}}\n' "$((NOW - 1860))" "$FZ" "$FR" "$((NOW - 1560))" "$FZ" "$FR" > "$MEGAVIBE_USAGE_FILE"
+o=$(sp)
+check 'five-hour 74 at -31 min and 82 at -26 min (the older reading is outside 30 minutes of now): still 5h-hot, anchored to the newest reading' '[ "$(f 2)" = "-" ] && [ "$(f 9)" = 5h-hot ]'
 # the line carries the PROJECTED five-hour use (used plus its climb over a 30-minute unit), not just the reading
 { rowfh 30 72 $R2 78; rowfh 15 72 $R2 80; rowfh 1 72 $R2 81; } > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
@@ -317,6 +323,25 @@ check 'megavibe usage sprint with an older installed router: refuses with an upg
 { row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
 ne=$(HOME="$T/home" MEGAVIBE_HOME="$T/mv" /bin/bash "$REPO/megavibe" usage sprint 2>/dev/null); nrc=$?
 check 'megavibe usage sprint with the current router: both provider lines, the advice, exit 0, no routing state written' '[ "$nrc" = 0 ] && [[ "$ne" == claude\|sprint\|* ]] && [[ "$ne" == *$'"'"'\ncodex|'"'"'* ]] && [[ "$ne" == *"usage sprint: Claude"* ]] && [ ! -e "$MEGAVIBE_USAGE_STATE" ]'
+
+# `megavibe usage sprint` renders its advice from the rows it printed (one read per provider), not from a second read
+mkdir -p "$T/mvstub/scripts" "$T/mvstub/usage"
+cat > "$T/mvstub/scripts/usage-route.sh" <<'STUBR'
+#!/bin/bash
+case "$1" in
+  sprint) if [ "${MEGAVIBE_ROUTER_PROVIDER:-claude}" = claude ]; then echo "claude|sprint|2.0|90|90|9|4.5|6h+24h|ok|"; else echo "codex|-||||||||"; fi ;;
+  sprint-advice) echo "usage sprint: STALE-SECOND-READ" ;;
+  sprint-render) cat > /dev/null; echo "usage sprint: Claude RENDERED-FROM-ROWS" ;;
+esac
+STUBR
+chmod +x "$T/mvstub/scripts/usage-route.sh"
+se=$(HOME="$T/home" MEGAVIBE_HOME="$T/mvstub" /bin/bash "$REPO/megavibe" usage sprint 2>/dev/null)
+check 'megavibe usage sprint: the advice comes from the rows it printed (sprint-render), not a second sprint-advice read' '[[ "$se" == *RENDERED-FROM-ROWS* ]] && [[ "$se" != *STALE-SECOND-READ* ]]'
+# sprint-render on the real router gives the same sentence as sprint-advice for the same history
+{ row 1500 84 $R; row 720 87 $R; row 360 89 $R; row 120 90 $R; row 5 90 $R; } > "$MEGAVIBE_USAGE_FILE"
+rr=$(MEGAVIBE_ROUTER_PROVIDER=claude /bin/bash "$UR" sprint | /bin/bash "$UR" sprint-render)
+ra=$(/bin/bash "$UR" sprint-advice)
+check 'sprint-render of the printed row equals sprint-advice for the same history' '[ -n "$rr" ] && [ "$rr" = "$ra" ]'
 
 # ---- sprint-advice: one sentence per sprinting subscription, nothing otherwise ------------------------------------
 adv() { /bin/bash "$UR" sprint-advice; }

@@ -1456,7 +1456,7 @@ if [ "${1:-}" = "usage" ]; then
         case "$_l" in "$_p|sprint|"*|"$_p|-|"*) _out="$_out$_l"$'\n' ;;
           *) echo "megavibe usage: $_r has no sprint state (an older install); run bash ~/.megavibe/setup.sh to update it" >&2; exit 1 ;; esac
       done
-      printf '%s' "$_out"; bash "$_r" sprint-advice --peek; exit 0 ;;
+      printf '%s' "$_out"; printf '%s' "$_out" | bash "$_r" sprint-render --peek; exit 0 ;;
     *) echo "usage: megavibe usage probe {run [--every MIN]|status} | megavibe usage forecast | megavibe usage sprint" >&2; exit 2 ;;
   esac
 fi

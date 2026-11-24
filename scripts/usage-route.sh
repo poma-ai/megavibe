@@ -17,6 +17,7 @@
 #   usage-route.sh status-pace internal: status fields followed by pace fields from one history snapshot
 #   usage-route.sh sprint     provider|state|hours_left|used|forecast|spare|spend_per_h|basis|reason|five_hour_projected (end-of-window sprint, see below; read-only)
 #   usage-route.sh sprint-advice  one sentence per subscription in the sprint state (Claude, then Codex), else nothing
+#   usage-route.sh sprint-render  the same sentences from sprint rows read on stdin (no second read of the history)
 #
 # Recent-pace forecast (added 2026-11-22; extra trailing fields, nothing existing changed): pace = 0.6 x the 6-hour
 # pace + 0.4 x the 24-hour pace inside the current window (whichever has no readings is "unknown", never zero;
@@ -34,7 +35,7 @@
 #                (nothing useful can start, and the per-hour figure would be absurd), or no live window
 #   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
 #                when called; an old reading under-states use and is no basis for spending the last points)
-#   5h-hot       the five-hour window is at 85 or more, counting its climb over the last 30 minutes continued for a
+#   5h-hot       the five-hour window is at 85 or more, counting its climb (the higher slope of the last 30 and last 10 minutes before the newest reading) continued for a
 #                30-minute unit: top-tier work would only hit that limit
 #   no-room      less than two points between the forecast, or the used percent, and the sprint target
 #                (MEGAVIBE_SPRINT_TARGET, 99; a whole number below 100, so the 100 backstop is never the aim):
@@ -276,6 +277,25 @@ emit_forecast() {
   ' <<<"$HISTORY" 2>/dev/null
 }
 
+# one advice sentence from a sprint row held in $p (provider) $hl $u $fc $spare $spend $fhu
+sprint_sentence() {
+  LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v fhu="${fhu:-}" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
+    printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is projected at %d%% (used plus its recent climb over a 30-minute unit), and a unit must fit that too", fhu) : "")
+    printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", "megavibe usage sprint", t, ot
+    printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
+}
+if [ "$MODE" = sprint-render ]; then
+  # Advice rendered from sprint rows on stdin (one `usage-route.sh sprint` line per provider), with no second read: a row appended to the
+  # history between a caller's read and its advice cannot leave the advice stale against the rows it printed.
+  [ "${MEGAVIBE_SPRINT:-1}" != 0 ] || exit 0
+  while IFS='|' read -r p st hl u fc spare spend _ _ fhu; do
+    case "$p" in claude|codex) ;; *) continue ;; esac
+    [ "$st" = sprint ] || continue
+    sprint_sentence
+  done
+  exit 0
+fi
+
 if [ "$MODE" = sprint-advice ]; then
   # One sentence per subscription in the sprint state. Advice for the session; nothing here changes a band,
   # the launch model or the balance preference.
@@ -291,10 +311,7 @@ if [ "$MODE" = sprint-advice ]; then
     [ -z "$pf" ] || rm -f "$pf"
     if [ "${pp:-}" != "$p" ]; then printf 'usage sprint-unknown: %s\n' "$([ "$p" = codex ] && echo Codex || echo Claude)"; continue; fi
     [ "${st:-}" = sprint ] || continue
-    LC_ALL=C awk -v who="$p" -v hl="$hl" -v u="$u" -v fc="$fc" -v spare="$spare" -v spend="$spend" -v fhu="${fhu:-}" -v t="$STARGET" -v ot="$TARGET" 'BEGIN {
-      printf "usage sprint: %s weekly window resets in %s h at %d%% used, recent-pace forecast ~%d%%: about %s points spare to %d%% (%s points per hour from now, for the whole account, would reach it; both are estimates from whole-percent readings, so count each unit'"'"'s own cost against the spare points)%s. ", (who == "codex" ? "Codex" : "Claude"), hl, u, fc, spare, t, spend, (fhu ~ /^[0-9]+([.][0-9]+)?$/ ? sprintf("; its five-hour window is projected at %d%% (used plus its recent climb over a 30-minute unit), and a unit must fit that too", fhu) : "")
-      printf "End-of-window exception: put this subscription'"'"'s top model tier on the hardest open work (for that work only, this outranks an over band'"'"'s advice to pin models down) for as long as `%s` reports sprint for this subscription, keep one point of the spare in reserve, and re-read it before each unit; inside this window %d%% replaces the %d%% target for this subscription only. ", "megavibe usage sprint", t, ot
-      printf "Mechanical work stays on cheap models; the 100%% backstop and the review floor are unchanged.\n" }'
+    sprint_sentence
   done
   exit 0
 fi
@@ -481,17 +498,20 @@ if [ "$MODE" = sprint ]; then
   OT=$TARGET; TARGET=$STARGET; SPRINT_BURST=1; FSTALE=2100; [ "$STALE" -ge 2100 ] || FSTALE=$STALE
   FC=$(emit_forecast) || FC=""
   IFS='|' read -r _ s_fc s_spare s_spend s_basis <<<"${FC:-||||}"
-  # The five-hour window climbing fast: its rise over the last 30 minutes (at least 5 minutes of span), continued for a
+  # The five-hour window climbing fast: its rise (the higher slope of the last 30 and last 10 minutes before the newest reading, at least 5 minutes of span), continued for a
   # 30-minute unit, is added to its used percent before the 85 check.
   case "$s_flr" in ''|*[!0-9.]*) s_flr=null ;; esac
   s_fhadd=$(jq -r --argjson now "$NOW" --argjson lr "${s_flr:-null}" 'def sec: if . > 100000000000 then . / 1000 else . end;
-      [.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now and .t >= $now - 1800)] | sort_by(.t)
+      [.[] | select(type == "object" and (.fh.p | type) == "number" and (.t | type) == "number" and .t <= $now)] | sort_by(.t)
       | map(select(($lr | type) == "number" and (.fh.r | type) == "number" and (((.fh.r | sec) - $lr) | fabs) <= 180)) as $rows
       # the climb over a 30-minute unit from the slope of the last 30 AND of the last 10 minutes (the higher counts: a flat-then-surge
       # is not averaged away); at least 5 minutes of span
-      | def climb($h): [$rows[] | select(.t >= $now - $h)] as $w
+      # anchored to the NEWEST row of the live window, not to now: the evidence does not age out of a wall-clock lookback while the
+      # history is unchanged (the sprint own 35-minute freshness rule bounds how old the newest row may be)
+      | ($rows | last) as $nw
+      | def climb($h): [$rows[] | select(.t >= $nw.t - $h)] as $w
           | if ($w | length) < 2 then 0 else ($w | first as $a | last as $b | ($b.fh.p - $a.fh.p) as $d | if $d <= 0 then 0 else ($d / ([($b.t - $a.t), 300] | max) * 1800) end) end;
-      [climb(1800), climb(600)] | max' <<<"$HISTORY" 2>/dev/null)
+      if $nw == null then 0 else [climb(1800), climb(600)] | max end' <<<"$HISTORY" 2>/dev/null)
   case "$s_fhadd" in ''|*[!0-9.]*) s_fhadd=0 ;; esac
   s_reason=$(LC_ALL=C awk -v fc="$s_fc" -v spare="$s_spare" -v used="${s_used:-}" -v fh="${s_fh:-}" -v fhadd="$s_fhadd" -v t="$STARGET" -v ot="$OT" 'BEGIN {
     if (fc !~ /^[0-9]+([.][0-9]+)?$/) print "no-forecast"
