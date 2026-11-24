@@ -28,7 +28,8 @@
 # the last field is the forecast at the 7-day pace. Unknown only with no history, no window or a stale newest reading.
 # A baseline reading much older than its horizon makes a sparse history overstate the pace (SHORTCUT: the reading is
 # taken as the horizon start; real histories are dense, and Codex is probed every 30 minutes on a PA Mac).
-# SHORTCUT: Codex histories come from at most 60 rollout files, about 30 h at the probe cadence, so the Codex 7-day pace
+# SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less), and
+# Codex histories come from at most 60 rollout files, about 30 h at the probe cadence, so the Codex 7-day pace
 # (forecast_7d, basis 7d) sees only that much; the 6 h / 24 h blend is covered. Raise the file cap if the 7-day figure matters.
 # The bands still decide on the straight-line projection (hysteresis and the `under` guard were tuned on it); balance
 # and the advisory use the forecast. Reported by the `forecast` mode only: status and pace lines are byte-identical.
@@ -189,7 +190,8 @@ emit_forecast() {
         | {t, p: .sd.p, r: (.sd.r | sec)}
         | select(.t > 0 and .t <= $now and .p >= 0 and .p <= 1000 and .r > 0 and .r <= $now + 608400) ] as $rows
     | ($rows | map(.r) | unique) as $ru
-    | ($rows | map(. + {rk: (.r as $x | [$ru[] | select(. <= $x and $x - . <= 180)] | min)})) as $rows
+    | ($ru | reduce .[] as $x ({prev: null, rep: null, m: {}}; if .prev != null and $x - .prev <= 180 then .m[($x | tostring)] = .rep | .prev = $x else .rep = $x | .m[($x | tostring)] = $x | .prev = $x end) | .m) as $rkm   # chains of resets within 3 minutes of each other are one window
+    | ($rows | map(. + {rk: $rkm[(.r | tostring)]})) as $rows
     | [ $rows[] | select((.r - $reset | fabs) <= 180) ] | (map(.t) | max) as $lastt
     | if $w == null or $lastt == null or $w.stale or $reset <= $now or $reset > $now + 604800 + 600 or $now - $lastt > $stale then "|||||"
       else
@@ -203,7 +205,7 @@ emit_forecast() {
                 | [ $rs[] | select(.t < $t0) ] as $bfr | ($bfr | map(.p)) as $bf | (if ($bf | length) > 0 then ($bf | max) else null end) as $bm
                 | select(($in | length) > 1 or ($bf | length) > 0 or $ws >= $t0)   # a lone reading of an older window is no baseline
                 | select(($in | length) > 0)
-                | (if $bm != null then $bm elif $ws >= $t0 then 0 else ($in | sort_by(.t) | first | .p) end) as $sv
+                | (if $bm != null then $bm elif $ws >= $t0 then 0 else ($in | (map(.t) | min) as $t1 | map(select(.t == $t1) | .p) | max) end) as $sv
                 # the use counts from the newest reading before the horizon (the baseline), not from the horizon start: a gap in readings must not overstate the pace
                 | { used: ([($rs | map(.p) | max) - $sv, 0] | max),
                     first: (if $bm != null then ([($bfr | map(.t) | max), $ws] | max) elif $ws >= $t0 then $ws else ($in | map(.t) | min) end) } ] as $g

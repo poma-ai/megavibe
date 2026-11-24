@@ -121,6 +121,17 @@ awk -v n="$NOW" -v r="$R" 'BEGIN { for (i = 5000; i >= 0; i--) printf "{\"t\":%d
 start=$SECONDS; o=$(fc)
 check '5000 readings: the forecast returns in under 2 s' '[ $((SECONDS - start)) -lt 2 ] && [ -n "$(f 4)" ]'
 
+# three sessions whose reset stamps chain 2 minutes apart (R, R+120, R+240) are still one window
+{ ramp 30 0 25 55 $R; ramp 30 0 25 55 $((R + 120)); ramp 30 0 25 55 $((R + 240)); } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'chained reset jitter: one window, pace about 1 per hour (was 2-3)' 'near "$(f 3)" 1.0 0.15'
+# two readings at the same second: the order they were written in cannot change the forecast
+{ printf '{"t":%s,"sd":{"p":29,"r":%s}}\n{"t":%s,"sd":{"p":30,"r":%s}}\n' "$((NOW - 7200))" "$R" "$((NOW - 7200))" "$R"; row 0 30 $R; } > "$MEGAVIBE_USAGE_FILE"
+a=$(fc)
+{ printf '{"t":%s,"sd":{"p":30,"r":%s}}\n{"t":%s,"sd":{"p":29,"r":%s}}\n' "$((NOW - 7200))" "$R" "$((NOW - 7200))" "$R"; row 0 30 $R; } > "$MEGAVIBE_USAGE_FILE"
+b=$(fc)
+check 'same-second readings in either order: same forecast' '[ "$a" = "$b" ]'
+
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
