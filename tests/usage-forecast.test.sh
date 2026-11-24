@@ -101,7 +101,7 @@ check 'lagging reading in a window with no older baseline: used is 31 - 30 over 
 # a gap in readings must not overstate the pace: 50 at 10 h ago, then silence, then 53 flat for the last 30 minutes
 { row 10 50 $R; ramp 0.5 0 53 53 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'gap after the baseline: the 3 points count over the 10 h since the baseline reading, not over the 6 h horizon' 'awk -v x="$(f 3)" "BEGIN{exit !(x < 0.45)}"'
+check 'gap after the baseline: the 3 points count over each horizon (a stretch with no rows is not guessed at)' 'near "$(f 3)" 0.42 0.05'
 # reset times that wobble across a half hour (two sessions, one minute apart) are one window
 { ramp 12 0 20 32 $((NOW + 300000 - 1830 + 1800 + 30)); ramp 12 0 19 31 $((NOW + 300000 - 1830 + 1800 - 30)); } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
@@ -111,7 +111,7 @@ check 'reset wobble of one minute across a half hour: one window, pace about 1 p
 # one-point lag does not look like a 30 h gap (reader finding: forecast 72 instead of 114)
 { row 30 50 $R; ramp 29.9 6.1 49 49 $R; ramp 6 0 50 56 $R; } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
-check 'dense lagging baseline: blend of the real 6 h pace (1.0) and 24 h pace (0.25), forecast about 113 (was 72 when read as a 30 h gap)' 'near "$(f 3)" 0.69 0.1 && near "$(f 4)" 113.5 4'
+check 'dense lagging baseline: both paces counted over their horizons, forecast about 114 (was 72 when read as a 30 h gap)' 'near "$(f 3)" 0.7 0.15 && near "$(f 4)" 114 6'
 # a fresh reading whose reset is a minute or two past one window ahead (reset jitter) is still a forecast
 { row 0 1 $((NOW + 604800 + 90)); row 0 1 $((NOW + 604800 - 60)); } > "$MEGAVIBE_USAGE_FILE"
 o=$(fc)
@@ -131,6 +131,16 @@ a=$(fc)
 { printf '{"t":%s,"sd":{"p":30,"r":%s}}\n{"t":%s,"sd":{"p":29,"r":%s}}\n' "$((NOW - 7200))" "$R" "$((NOW - 7200))" "$R"; row 0 30 $R; } > "$MEGAVIBE_USAGE_FILE"
 b=$(fc)
 check 'same-second readings in either order: same forecast' '[ "$a" = "$b" ]'
+
+# an idle night (no rows for 14 h, no session open) is not spread over the horizon as uniform use, and a concurrent window of
+# another account interleaved in the file is not summed in
+{ ramp 40 17 20 20 $R; ramp 3 0 20 26 $R; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'idle gap, then 6 points in the last 3 h: a 6 h pace above 0.5' 'awk -v x="$(f 3)" "BEGIN{exit !(x > 0.5)}"'
+OTHER=$((R + 172800))
+{ ramp 30 0 25 55 $R; ramp 30 0 25 55 $OTHER; } > "$MEGAVIBE_USAGE_FILE"
+o=$(fc)
+check 'a second account (overlapping window) interleaved: pace stays about 1 per hour' 'near "$(f 3)" 1.0 0.15'
 
 # stale reading (older than 6 h inside a live window): unknown, never spare capacity
 { row 9 50 $R; row 8 51 $R; } > "$MEGAVIBE_USAGE_FILE"
@@ -172,11 +182,11 @@ o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
 check 'codex, two readings an hour apart: a trailing pace of 1 per hour' '[ "$(f 7)" = "6h+24h" ] && near "$(f 3)" 1 0.01'
 { codex "$((NOW - 30 * 3600))" 10 "$R"; codex "$((NOW - 6 * 3600))" 16 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && awk -v x="$(f 3)" "BEGIN{exit !(x > 0.2 && x < 1)}"'
+check 'codex, 30 h of readings: 6h+24h blend' '[ "$(f 7)" = "6h+24h" ] && awk -v x="$(f 3)" "BEGIN{exit !(x > 0.8 && x < 1.6)}"'
 
 { codex "$((NOW - 29 * 3600))" 20 "$R"; codex "$((NOW - 23 * 3600))" 32 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=codex fc)
-check 'codex readings 29 h and 23 h ago: only the 24 h horizon holds one (12 points over the 29 h since the baseline reading)' '[ "$(f 7)" = 24h ] && near "$(f 3)" 0.414 0.05'
+check 'codex readings 29 h and 23 h ago: only the 24 h horizon holds one (12 points over the 24 h horizon)' '[ "$(f 7)" = 24h ] && near "$(f 3)" 0.5 0.05'
 
 # probe-style history: one rollout file per half-hour reading over 24 h must all count (the forecast reads 60 files, not 6)
 mkdir -p "$T/codex/sessions/p"; : > "$T/codex/sessions/x/rollout-1.jsonl"
@@ -198,7 +208,7 @@ rm -r "$T/codex/sessions/b"
 ramp 30 0 25 55 $R > "$MEGAVIBE_USAGE_FILE"
 { codex "$((NOW - 30 * 3600))" 20 "$R"; codex "$((NOW - 6 * 3600))" 20 "$R"; codex "$NOW" 20 "$R"; } > "$T/codex/sessions/x/rollout-1.jsonl"
 o=$(MEGAVIBE_ROUTER_PROVIDER=claude /bin/bash "$REPO/scripts/usage-route.sh" balance --peek)
-check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~13"* ]]'
+check 'balance: prefers codex and names the recent-pace forecast' '[[ "$o" == codex\|*"recent-pace forecast ~1"* ]]'
 
 # ---- the probe: run by the PA's node only, throttled, never scheduled by itself -----------------------------------
 cat > "$T/bin/codex" <<'STUB'

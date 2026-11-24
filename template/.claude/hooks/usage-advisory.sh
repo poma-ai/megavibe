@@ -42,7 +42,7 @@ proj() {   # provider -> "value|basis" or "unknown"
     MEGAVIBE_ROUTER_PROVIDER="$1" perl -e 'alarm 3; exec @ARGV' bash "$UR" pace >"$f" 2>/dev/null </dev/null
   fi
   IFS='|' read -r _ u _ lp _ rp _ <"$f" 2>/dev/null
-  # the recent-pace forecast (usage-route.sh forecast: provider|used|pace|forecast|spare|spend|basis); a stub or an
+  # the recent-pace forecast (usage-route.sh forecast: provider|used|pace|forecast|spare|spend|basis|forecast_7d); a stub or an
   # old script without the mode prints nothing usable and the headline stays the linear projection
   : >"$f"
   if command -v perl &>/dev/null; then

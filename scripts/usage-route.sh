@@ -26,8 +26,9 @@
 # 6h, 24h), else the 7-day pace (7d), else the window average (week, one reading only); forecast = used + pace x hours left;
 # spare = target - forecast (target 95, MEGAVIBE_USAGE_TARGET); spend = points per hour that would reach the target exactly;
 # the last field is the forecast at the 7-day pace. Unknown only with no history, no window or a stale newest reading.
-# A baseline reading much older than its horizon makes a sparse history overstate the pace (SHORTCUT: the reading is
-# taken as the horizon start; real histories are dense, and Codex is probed every 30 minutes on a PA Mac).
+# A stretch with no rows is a stretch with no session open, not evidence of uniform use: the pace is the use over the horizon
+# (or since the window start), a gap is not guessed at, and a pace needs a span of at least an hour. Windows that overlap the
+# selected one (a second account's rows in the same file) are not summed in.
 # SHORTCUT: the history is the last 5000 rows (about 7 days at one row per two minutes; denser logs keep less), and
 # Codex histories come from at most 60 rollout files, about 30 h at the probe cadence, so the Codex 7-day pace
 # (forecast_7d, basis 7d) sees only that much; the 6 h / 24 h blend is covered. Raise the file cap if the 7-day figure matters.
@@ -183,7 +184,7 @@ emit_forecast() {
   LC_ALL=C jq -r --argjson now "$NOW" --argjson stale "$STALE" --argjson decision "$DECISION" --argjson target "$TARGET" '
     . as $all
     | def sec: if . > 100000000000 then . / 1000 else . end;
-    def r1: . * 10 | round / 10;
+    def r1: . * 10 | round / 10 | if . == 0 then 0 else . end;
     $decision.wk as $w | ($decision.mx.sd.r // 0) as $reset
     | [ $all[] | select(type == "object")
         | select((.t | type) == "number" and (.sd.p? | type) == "number" and (.sd.r? | type) == "number")
@@ -198,20 +199,22 @@ emit_forecast() {
         (($reset - $now) / 3600) as $left
         | def trailing($h):
             ($now - $h * 3600) as $t0
+            | ($rkm[($reset | tostring)] // null) as $selk
             | [ $rows | group_by(.rk)[]   # one group per window: resets within 3 minutes of each other are one window
                 | . as $rs | ($rs | map(.r) | max) as $wr | ($wr - 604800) as $ws
+                | select(.[0].rk == $selk or $wr <= $reset - 604800 + 180)   # the selected window and the ones before it; a concurrent other window (another account) is not summed in
                 | select($wr > $t0)   # a window that ended before the horizon began used nothing inside it (a late-logged row of it is no use)
                 | [ $rs[] | select(.t >= $t0) ] as $in
                 | [ $rs[] | select(.t < $t0) ] as $bfr | ($bfr | map(.p)) as $bf | (if ($bf | length) > 0 then ($bf | max) else null end) as $bm
                 | select(($in | length) > 1 or ($bf | length) > 0 or $ws >= $t0)   # a lone reading of an older window is no baseline
                 | select(($in | length) > 0)
                 | (if $bm != null then $bm elif $ws >= $t0 then 0 else ($in | (map(.t) | min) as $t1 | map(select(.t == $t1) | .p) | max) end) as $sv
-                # the use counts from the newest reading before the horizon (the baseline), not from the horizon start: a gap in readings must not overstate the pace
+                # the use counts over the horizon (or since the window start): a stretch with no rows is a stretch with no session open, not evidence of uniform use
                 | { used: ([($rs | map(.p) | max) - $sv, 0] | max),
-                    first: (if $bm != null then ([($bfr | map(.t) | max), $ws] | max) elif $ws >= $t0 then $ws else ($in | map(.t) | min) end) } ] as $g
+                    first: (if $bm != null then ([$t0, $ws] | max) elif $ws >= $t0 then $ws else ($in | map(.t) | min) end) } ] as $g
             | if ($g | length) == 0 then null
               else (($now - ($g | map(.first) | min)) / 3600) as $span
-                | if $span >= 0.5 then (($g | map(.used) | add) / $span) else null end
+                | if $span >= 1 then (($g | map(.used) | add) / $span) else null end
               end;
         trailing(6) as $r6 | trailing(24) as $r24 | trailing(168) as $r7
         | ((604800 - ($reset - $now)) / 3600) as $el

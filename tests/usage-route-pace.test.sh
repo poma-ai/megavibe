@@ -290,10 +290,10 @@ check 'delayed-window status byte-identical' '[ "$o" = "over|95|110|86400|0|7d 9
 o=$(pace)
 check 'delayed-window pace uses status window, one sample has no recent estimate' '[ "$o" = "claude|95|85.714|110.833|||1" ]'
 o=$(route balance --peek)
-check 'balance never borrows the linear or recent estimate from another window (the forecast counts every window inside its horizon, by design)' '[[ "$o" == codex\|*"Claude 95% used (recent-pace forecast ~131% by week end) (linear estimate ~110% by week end); Codex"* ]]'
+check 'balance never borrows the linear or recent estimate from another window (the forecast sums only the selected window and the ones before it)' '[[ "$o" == codex\|*"Claude 95% used (recent-pace forecast ~110% by week end) (linear estimate ~110% by week end); Codex"* ]]'
 o=$(MEGAVIBE_TICK_CONF="$T/no.conf" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CLAUDE_CREDENTIALS="$T/credentials.json" TICK_LINEAR=0 /bin/bash "$REPO/scripts/tick.sh" --no-mark fixture/repo)
 usage=$(printf '%s\n' "$o" | grep '^usage:')
-check 'tick uses one window for used, linear, recent and remaining' '[[ "$usage" == "usage: Claude 95% used (recent-pace forecast ~131% by week end, spare -36 pts to 95%) (linear estimate ~110% by week end), resets in 24h [over] | Codex"* ]]'
+check 'tick uses one window for used, linear, recent and remaining' '[[ "$usage" == "usage: Claude 95% used (recent-pace forecast ~110% by week end, spare -15 pts to 95%) (linear estimate ~110% by week end), resets in 24h [over] | Codex"* ]]'
 
 # Interleaving a different live window must not discard the selected window's baseline.
 { row "$((NOW - 21600))" 90 "$((NOW + 86400))"; row "$((NOW - 18000))" 8 "$((NOW + 6 * 86400))"; row "$((NOW - 10800))" 95 "$((NOW + 86400))"; row "$NOW" 20 "$((NOW + 6 * 86400))"; row "$((NOW - 14400))" 92 "$((NOW + 86400))"; } > "$MEGAVIBE_USAGE_FILE"
