@@ -15,6 +15,7 @@ set -euo pipefail
 #   /rehydrate — full context recovery via Codex, or capped Gemini without Codex, then Claude
 
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
+LAUNCH_PROJECT="$PWD"
 
 if [ "${1:-}" = "remote" ]; then
   cat <<'EOF'
@@ -2500,6 +2501,19 @@ release_lock() {
 # folder name falls back to its generic name.
 rc_name_prefix() { printf '%s' "${CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX:-${PWD##*/}}"; }
 
+# Export the automatic choice only in Claude's process. A launcher restart
+# rechecks availability and an explicit environment value always wins.
+launch_claude() {
+  local base resolver="$MEGAVIBE_HOME/scripts/scratch-root.sh"
+  if [[ ! ${CLAUDE_CODE_TMPDIR+x} && ${MEGAVIBE_SCRATCH_FOLLOWS_PROJECT:-1} != 0 && -f "$resolver" ]]; then
+    if base=$(MEGAVIBE_HOME="$MEGAVIBE_HOME" bash "$resolver" select-volume "$LAUNCH_PROJECT") &&
+       [[ -n "$base" ]]; then
+      export CLAUDE_CODE_TMPDIR="$base"
+    fi
+  fi
+  exec claude "$@"
+}
+
 # ─── Resume path: minimal, never mutates directory ───────────────────
 
 if $IS_RESUME; then
@@ -2534,7 +2548,7 @@ if $IS_RESUME; then
   # Skip init.sh (LESSONS.md: never overwrite hooks mid-session)
   # Go straight to claude
   trap release_lock EXIT HUP INT TERM
-  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
   CLAUDE_PID=$!
   update_lock_pid "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
@@ -2806,7 +2820,7 @@ compute_router_args "$@"
 [ -n "$ROUTER_NOTE" ] && [ "$ROUTER_NOTE" != "normal: no change" ] && echo -e "  ${DIM}router: ${ROUTER_NOTE}  (MEGAVIBE_ROUTER=0 to disable; --model/--effort to choose yourself)${RESET}"
 
 while true; do
-  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
