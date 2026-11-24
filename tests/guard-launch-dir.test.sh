@@ -121,42 +121,82 @@ check 'launcher refuses from outside the launch worktree' verdict 1 'launch dire
 
 guard() {
   RC=0
-  OUT=$(payload "${3:-$T}" "$1" | CLAUDE_PROJECT_DIR="$T/repo-review/sub" \
+  OUT=$(payload "${3:-$T}" "$1" | CLAUDE_PROJECT_DIR="${4-$T/repo-review}" \
     MEGAVIBE_ALLOW_REMOVE_LAUNCH="${2:-0}" bash "$HOOKS/block-dangerous-bash.sh" 2>&1) || RC=$?
 }
-guard "git worktree remove \"$T/repo-review/sub\""
-check 'Bash guard blocks the launch directory itself' verdict 2 'launch directory'
-guard 'git worktree remove -- ./repo-review'
-check 'Bash guard blocks an ancestor relative to payload cwd' verdict 2 'launch directory'
-guard "git -C $T worktree remove $T/repo-review"
-check 'Bash guard blocks an absolute target with git -C' verdict 2 'launch directory'
-guard "cd $T && git worktree remove repo-review"
-check 'Bash guard blocks a target relative to the leading cd' verdict 2 'launch directory'
-guard "git -C 'fresh project' worktree remove ../repo-review"
-check 'Bash guard resolves a quoted relative git -C from payload cwd' verdict 2 'launch directory'
-guard "cd '$T/fresh project'; git -C .. worktree remove repo-review"
-check 'Bash guard resolves a relative git -C from the leading cd' verdict 2 'launch directory'
-guard "cd '$T/fresh project'; git -C .. worktree remove repo"
-check 'Bash guard allows another worktree with cd and git -C' verdict 0
-guard "git worktree remove '$T/repo'"
-check 'Bash guard allows another worktree' verdict 0
-guard "git worktree remove '$T/repo-review'" 1
-check 'Bash guard honors the launch-removal override' verdict 0
 
 git -C "$T/repo" worktree add --detach -q "$T/repo-other" HEAD
-guard 'git worktree remove repo-review' 0 "$T/repo"
-check 'Bash guard blocks launch worktree shorthand from the main checkout' verdict 2 'launch directory'
-guard 'git worktree remove repo-other' 0 "$T/repo"
-check 'Bash guard allows shorthand for a different linked worktree' verdict 0
-guard "cd $T/repo && git worktree remove repo-review"
-check 'Bash guard blocks launch worktree shorthand after cd' verdict 2 'launch directory'
-guard "git -C $T/repo worktree remove repo-review"
-check 'Bash guard blocks launch worktree shorthand with git -C' verdict 2 'launch directory'
-guard 'git worktree remove repo-review' 1 "$T/repo"
-check 'Bash guard honors the launch-removal override for shorthand' verdict 0
+git -C "$T/repo" config core.ignorecase true
 mkdir "$T/repo/repo-review"
-guard 'git worktree remove repo-review' 0 "$T/repo"
-check 'Bash guard uses the literal path when the relative directory exists' verdict 0
+for command in \
+  'git worktree remove repo-review' \
+  'git worktree remove -- ./repo-review' \
+  'git worktree remove repo-review/' \
+  'git worktree remove REPO-REVIEW' \
+  'git worktree remove repo-other' \
+  "git worktree remove '$T/repo-review'" \
+  "git -C '$T/repo' worktree remove --force -- repo-other" \
+  "cd '$T/repo' && git -C . worktree remove repo-other" \
+  'MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 git worktree remove repo-review' \
+  'env MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 git worktree remove repo-review' \
+  'export MEGAVIBE_ALLOW_REMOVE_LAUNCH=1; git worktree remove repo-review'; do
+  guard "$command" 0 "$T/repo"
+  check "linked launch blocks ${command//"$T"/<scratch>}" verdict 2 'Finish and exit this session'
+done
+guard 'git worktree prune' 0 "$T/repo-review"
+check 'linked launch allows git worktree prune' verdict 0
+guard 'git worktree remove repo-review' 1 "$T/repo"
+check 'linked launch honors the hook environment override' verdict 0
+guard 'git worktree remove repo-review' 0 "$T/repo" "$T/repo"
+check 'main checkout launch allows git worktree remove' verdict 0
+guard 'git worktree remove repo-review' 0 "$T/repo" "$T/missing"
+check 'missing launch directory allows git worktree remove' verdict 0
+guard 'git worktree remove repo-review' 0 "$T/repo" "$T"
+check 'non-Git launch directory allows git worktree remove' verdict 0
+
+ln -s "$T/repo-review" "$T/launch-link"
+touch "$T/repo-review/file"
+mkdir -p "$T/other/nested" "$T/target"
+for command in \
+  "rm -r '$T/repo-review'" \
+  "rm -rf '$T/repo-review/..'" \
+  'rm -r launch-link' \
+  'rm -r repo-review' \
+  "cd 'other/nested' && rm -r ../../repo-review" \
+  'mv repo-review x' \
+  'mv -- other repo-review x' \
+  'mv -t other repo-review' \
+  'mv -ttarget repo-review' \
+  'mv --target-directory=other repo-review' \
+  'trash.sh repo-review' \
+  '~/.megavibe/scripts/trash.sh repo-review' \
+  'rmtrash repo-review' \
+  'MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 rm -r repo-review' \
+  'env MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 mv repo-review x' \
+  'export MEGAVIBE_ALLOW_REMOVE_LAUNCH=1; rmtrash repo-review'; do
+  guard "$command"
+  check "launch path blocks ${command//"$T"/<scratch>}" verdict 2 'Finish and exit this session'
+done
+for command in 'rm repo-review/file' 'rm -r other' 'rm missing/..' \
+  'mv other x' 'mv other repo-review' 'mv -t repo-review other' \
+  'echo rm -r repo-review' 'command -v rm repo-review'; do
+  guard "$command"
+  check "launch path allows $command" verdict 0
+done
+guard 'rm ""' 0 "$T/repo-review"
+check 'empty operand does not match the launch directory' verdict 0
+if [[ "$T/REPO-REVIEW" -ef "$T/repo-review" ]]; then
+  guard 'rm -r REPO-REVIEW'
+  check 'launch path matches a case variant on a case-insensitive volume' verdict 2 'Finish and exit this session'
+fi
+guard 'rm -r repo-review' 1
+check 'launch path honors the hook environment override' verdict 0
+guard 'rm -r repo' 0 "$T" "$T/repo"
+check 'launch path protects the main checkout too' verdict 2 'Finish and exit this session'
+guard 'rm -r other' 0 "$T" "$T/other"
+check 'launch path protects a non-Git project too' verdict 2 'Finish and exit this session'
+guard 'rm -r repo-review' 0 "$T" "$T/launch-link"
+check 'launch path resolves a symlinked project directory' verdict 2 'Finish and exit this session'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

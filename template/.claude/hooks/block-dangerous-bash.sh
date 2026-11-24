@@ -18,78 +18,6 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command' 2>/dev/null || echo "")
 # If we couldn't parse the command, allow it (don't block on parse errors)
 [ -n "$COMMAND" ] || exit 0
 
-_is_launch_ancestor() {
-  local ancestor="$1" launch="$2"
-  while :; do
-    [[ "$launch" -ef "$ancestor" ]] && return 0
-    [[ "$launch" != / ]] || return 1
-    launch=${launch%/*}
-    launch=${launch:-/}
-  done
-}
-
-# Match a git invocation with literal paths and an optional leading cd.
-# Resolve relative paths from the payload cwd, then cd and git -C in order.
-if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
-  _literal_path=$'("([^"\\\$`!]*)"|\'([^\']*)\'|([A-Za-z0-9_./-]+))'
-  _launch_remove="^[[:blank:]]*(cd[[:blank:]]+$_literal_path[[:blank:]]*(&&|;)[[:blank:]]*)?"
-  _launch_remove+="git[[:blank:]]+(-C[[:blank:]]+$_literal_path[[:blank:]]+)?"
-  _launch_remove+='worktree[[:blank:]]+remove[[:blank:]]+(--?[A-Za-z][A-Za-z-]*[[:blank:]]+)*(--[[:blank:]]+)?'
-  _launch_remove+="$_literal_path[[:space:]]*$"
-  if [[ "$COMMAND" =~ $_launch_remove ]]; then
-    # Each literal path has one capture per quoting form.
-    _cd_path="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
-    _git_c="${BASH_REMATCH[9]}${BASH_REMATCH[10]}${BASH_REMATCH[11]}"
-    _target="${BASH_REMATCH[15]}${BASH_REMATCH[16]}${BASH_REMATCH[17]}"
-    _base=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
-    if [[ -n "${BASH_REMATCH[1]}" && ( -z "$_cd_path" || "$_cd_path" == -* ) ]]; then
-      _target=''
-    fi
-    for _path in "$_cd_path" "$_git_c"; do
-      [[ -n "$_path" ]] || continue
-      if [[ "$_path" != /* ]]; then
-        if [[ "$_base" != /* ]]; then _target=''; break; fi
-        _path="$_base/$_path"
-      fi
-      if ! _base=$(CDPATH= cd -P -- "$_path" 2>/dev/null && pwd -P); then
-        _target=''
-        break
-      fi
-    done
-    if [[ -n "$_target" ]] &&
-       _launch=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P); then
-      _literal=$_target
-      if [[ "$_literal" != /* ]]; then
-        if [[ "$_base" == /* ]]; then _literal="$_base/$_literal"; else _literal=''; fi
-      fi
-      _block_launch=0
-      if [[ -n "$_literal" ]] &&
-         _resolved=$(CDPATH= cd -P -- "$_literal" 2>/dev/null && pwd -P); then
-        _is_launch_ancestor "$_resolved" "$_launch" && _block_launch=1
-      elif [[ "$_base" == /* && -d "$_base" ]] && (
-        # Drain the NUL-delimited list and require Git to succeed even after a match.
-        set -o pipefail
-        git -C "$_base" worktree list --porcelain -z 2>/dev/null | {
-          _matched=1
-          while IFS= read -r -d '' _field; do
-            if [[ "$_field" == 'worktree '*"/${_target#/}" ]] &&
-               _is_launch_ancestor "${_field#worktree }" "$_launch"; then
-              _matched=0
-            fi
-          done
-          exit "$_matched"
-        }
-      ); then
-        _block_launch=1
-      fi
-      if [[ "$_block_launch" == 1 ]]; then
-        printf 'Blocked: git worktree remove would remove the session launch directory (%s).\n' "$CLAUDE_PROJECT_DIR" >&2
-        exit 2
-      fi
-    fi
-  fi
-fi
-
 # A formatter at the end of a pipeline otherwise hides the check's status from
 # the following destructive command. Keep this gate fork-free and before the
 # slower Python parser. Mask quoted text so commit messages remain prose.
@@ -272,12 +200,24 @@ esac
 
 _TRASH_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
 _TRASH_CMD=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]" | tr '[:upper:]' '[:lower:]')
+_CHECK_TRASH=0
 case "$_TRASH_CMD $(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" in
-  *trash*|*osascript*|*osacompile*)
+  *trash*|*osascript*|*osacompile*) _CHECK_TRASH=1 ;;
+esac
+
+_LAUNCH=''
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
+  case "$_TRASH_CMD" in
+    *worktree*remove*|*rm*|*mv*|*trash.sh*)
+      _LAUNCH=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P) || _LAUNCH='' ;;
+  esac
+fi
+
+if [[ "$_CHECK_TRASH" == 1 || -n "$_LAUNCH" ]]; then
     _TV=""
     if command -v python3 &>/dev/null; then
       read -r -d '' _TRASH_PY <<'PY' || true
-import os, re, shlex, sys
+import os, re, shlex, subprocess, sys
 
 CMD = os.environ.get("TR_CMD", "").replace("\\\n", "")
 TR = re.compile(r"\.Trash(es)?(?![A-Za-z0-9_.-])", re.I)
@@ -399,7 +339,7 @@ def strip_redirs(t):
     return out
 
 
-def resolve(t):
+def resolve(t, skip_lookups=False):
     i, via = 0, False
     while i < len(t):
         w = t[i]; b = os.path.basename(w)
@@ -410,6 +350,8 @@ def resolve(t):
             i += 1
             posn = 1 if b in ("timeout", "gtimeout", "flock") else 0
             while i < len(t) and (t[i].startswith("-") or ASSIGN.match(t[i]) or (b in ("uv", "poetry", "bundle", "pipx", "pnpm", "yarn", "npm") and t[i] in SUBCMD)):
+                if skip_lookups and b == "command" and re.match(r"^-[A-Za-z]*[vV]", t[i]):
+                    return None, via
                 i += 2 if t[i] in WRAP[b] else 1
             i += posn
             continue
@@ -584,11 +526,131 @@ def analyse(s, st, depth=0):
     return False
 
 
+def launch_path(word, cwd):
+    word = rs(word)
+    if not word:
+        return None
+    if word.startswith("~/"):
+        word = os.path.expanduser(word)
+    if os.path.isabs(word):
+        return word
+    if os.path.isabs(cwd):
+        return os.path.join(cwd, word)
+    return None
+
+
+def launch_targets(verb, args):
+    """Collect delete operands or mv sources, excluding its destination."""
+    operands, options, target_dir = [], True, False
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if options and arg == "--":
+            options = False
+        elif options and arg.startswith("-") and arg != "-":
+            if verb == "mv":
+                if arg in ("-t", "--target-directory"):
+                    i += 1
+                    target_dir = True
+                elif arg.startswith("--target-directory="):
+                    target_dir = True
+                elif not arg.startswith("--") and "t" in arg:
+                    target_dir = True
+                    if not arg.partition("t")[2]:
+                        i += 1
+        else:
+            operands.append(arg)
+            if verb != "mv":
+                options = False  # BSD rm and the Trash wrapper stop at the first operand
+    return operands[:-1] if verb == "mv" and not target_dir else operands
+
+
+def worktree_remove(args):
+    value_options = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in value_options else 1
+    return args[i:i + 2] == ["worktree", "remove"]
+
+
+def linked_worktree(launch):
+    def git_path(flag):
+        path = subprocess.check_output(
+            ["git", "-C", launch, "rev-parse", flag], stderr=subprocess.DEVNULL
+        ).rstrip(b"\n")
+        return os.path.realpath(os.path.join(launch, os.fsdecode(path)))
+
+    try:
+        return git_path("--git-dir") != git_path("--git-common-dir")
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def launch_reason(launch, cwd):
+    ancestors = set()
+    linked = None
+    for index, pipe in enumerate(pipelines(tokens(CMD))):
+        for raw in pipe:
+            words = strip_redirs(raw)
+            i, _ = resolve(words, skip_lookups=True)
+            if i is None:
+                continue
+            verb, args = os.path.basename(rs(words[i])), words[i + 1:]
+            if (index == 0 and len(pipe) == 1 and words[:1] == ["cd"]
+                    and len(args) == 1 and not args[0].startswith("-")):
+                dest = launch_path(args[0], cwd)
+                if dest and os.path.isdir(dest):
+                    cwd = os.path.realpath(dest)
+            if verb == "git" and len(pipe) == 1 and worktree_remove(args):
+                if linked is None:
+                    linked = linked_worktree(launch)
+                if linked:
+                    return "LAUNCH_GIT"
+            if verb not in ("rm", "rmtrash", "trash.sh", "mv"):
+                continue
+            if not ancestors:
+                ancestor = launch
+                while True:
+                    try:
+                        st = os.stat(ancestor)
+                        ancestors.add((st.st_dev, st.st_ino))
+                    except OSError:
+                        pass
+                    parent = os.path.dirname(ancestor)
+                    if parent == ancestor:
+                        break
+                    ancestor = parent
+            for arg in launch_targets(verb, args):
+                path = launch_path(arg, cwd)
+                if path is None:
+                    continue
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                if (st.st_dev, st.st_ino) in ancestors:
+                    return "LAUNCH_PATH"
+    return None
+
+
 def osa_text(s):
     s = re.sub(r'"[^"]*"', " ", rs(s))
     if re.search(r"(?<![A-Za-z0-9_])(empty|secure\s*empty)(?![A-Za-z0-9_])|emptyTrash|fndremty|key code 51", s, re.I): return True
     return bool(re.search(r"(?<![A-Za-z0-9_])trash(?![A-Za-z0-9_])", s, re.I) and re.search(r"(?<![A-Za-z0-9_])(delete|remove|erase)(?![A-Za-z0-9_])", s, re.I))
 
+
+launch = os.environ.get("GUARD_LAUNCH")
+if launch:
+    try:
+        reason = launch_reason(launch, os.environ.get("TR_CWD", ""))
+    except ValueError:
+        reason = None
+    if reason:
+        print(reason)
+        sys.exit(0)
+if os.environ.get("CHECK_TRASH") != "1":
+    sys.exit(0)
 
 try:
     st = {"vars": set(), "cwd": bool(TR.search(os.environ.get("TR_CWD", ""))), "interp": False, "osa": "", "subst": False, "stack": [], "pa": ""}
@@ -603,9 +665,20 @@ except ValueError:
     bad = TR.search(CMD) and re.search(r"(^|[^A-Za-z0-9_-])(rm|rmtrash|srm|shred|unlink|rmdir|rmtree)([^A-Za-z0-9_-]|$)|-delete|--del", CMD)
     print("BLOCK" if bad or (re.search(r"osascript|osacompile", CMD) and osa_text(CMD)) else "OK")
 PY
-      _TV=$(TR_CMD="$COMMAND" TR_CWD="$_TRASH_CWD" python3 -c "$_TRASH_PY" 2>/dev/null)
+      _TV=$(TR_CMD="$COMMAND" TR_CWD="$_TRASH_CWD" GUARD_LAUNCH="$_LAUNCH" \
+        CHECK_TRASH="$_CHECK_TRASH" python3 -c "$_TRASH_PY" 2>/dev/null)
     fi
-    if [ -z "$_TV" ]; then
+    case "$_TV" in
+      LAUNCH_GIT)
+        echo "Blocked: git worktree remove from a session launched in a linked worktree." >&2 ;;
+      LAUNCH_PATH)
+        echo "Blocked: removing or moving the session launch directory or one of its ancestors." >&2 ;;
+    esac
+    if [[ "$_TV" == LAUNCH_* ]]; then
+      echo "Finish and exit this session, then remove the worktree from another session, or set MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 in the harness environment." >&2
+      exit 2
+    fi
+    if [[ "$_CHECK_TRASH" == 1 && -z "$_TV" ]]; then
       if printf '%s %s' "$_TRASH_CMD" "$(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" | grep -Eq '\.trash' \
          && printf '%s' "$_TRASH_CMD" | grep -Eq '(^|[^[:alnum:]_-])(rm|rmtrash|srm|shred|unlink|rmdir|rmtree|rimraf)([^[:alnum:]_-]|$)|-delete|--del'; then
         _TV=BLOCK
@@ -617,8 +690,7 @@ PY
       echo "Blocked: emptying or deleting from the Trash. It is the only undo for agent deletes. Ask the user to empty it themselves." >&2
       exit 2
     fi
-    ;;
-esac
+fi
 
 # force-push to the trunk branch
 if echo "$COMMAND" | grep -Eqi 'git[[:space:]]+push[[:space:]]+.*--force.*[[:space:]]+(main|master)'; then
