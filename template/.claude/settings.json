@@ -92,6 +92,16 @@
     ],
     "SessionStart": [
       {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/scratch-tmpdir.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "startup",
         "hooks": [
           {
@@ -117,6 +127,11 @@
       {
         "matcher": "startup|resume",
         "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/scratch-orphans.sh",
+            "timeout": 8
+          },
           {
             "type": "command",
             "command": ".claude/hooks/start-context-watcher.sh"
