@@ -30,7 +30,7 @@
 #
 # End-of-window sprint (added 2026-11-23; advice only, no band, launch or balance decision reads it): quota left at a
 # reset is lost, and in the last hours the forecast is short-range enough to spend down to a tighter margin than
-# the week-long 95 target allows. state is `sprint` when ALL hold, else `-` with the reason in the last field:
+# the week-long 95 target allows. state is `sprint` when ALL hold, else `-` with the reason in the ninth field:
 #   outside      the weekly window has more than MEGAVIBE_SPRINT_HOURS (4) hours left, under 10 minutes left
 #                (nothing useful can start, and the per-hour figure would be absurd), or no live window
 #   no-forecast  no recent-pace forecast, or the newest reading is over 35 minutes old (Codex writes one only
@@ -306,7 +306,7 @@ if [ "$MODE" = sprint-advice ]; then
     # never as "not sprinting", so a slow Codex read cannot hide that Claude's sprint ended (or the reverse)
     pf=$(mktemp "${TMPDIR:-/tmp}/usage-sprint-adv.XXXXXX" 2>/dev/null) || pf=""
     # the temp file goes away on any exit, including the caller's outer alarm (SIGALRM), term or interrupt
-    trap '[ -z "${pf:-}" ] || rm -f "$pf"; exit 142' ALRM TERM INT
+    trap '[ -z "${pf:-}" ] || rm -f "$pf"; exit 142' ALRM TERM INT HUP
     pp=""; st=""
     if [ -n "$pf" ] && command -v perl >/dev/null 2>&1 && ( MEGAVIBE_ROUTER_PROVIDER=$p perl -e 'alarm 2; exec @ARGV' bash "$0" sprint >"$pf" 2>/dev/null </dev/null; exit $? ) 2>/dev/null; then
       IFS='|' read -r pp st hl u fc spare spend _ _ fhu <"$pf" || true

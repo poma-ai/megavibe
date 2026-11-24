@@ -160,7 +160,7 @@ check 'the same plus an equal repeat reading five minutes ago: still no sprint (
 check 'a rise that ended hours ago and is flat since is not a burst (the endpoint must be recent)' '[[ "$(f 8)" != *burst* ]]'
 # five-hour window figure rides on the line
 { row 1500 84 $R; row 360 89 $R; rowfh 5 90 $R 40; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
-check 'the line carries the five-hour used percent as its tenth field' '[ "$(f 10)" = 40 ]'
+check 'the line carries the five-hour projection (used percent plus climb; no climb here) as its tenth field' '[ "$(f 10)" = 40 ]'
 o=$(/bin/bash "$UR" sprint-advice)
 check 'the advice names the projected five-hour window when there is one' '[[ "$o" == *"five-hour window is projected at 40%"* ]]'
 check 'the advice limits each unit to about 30 minutes (the horizon the five-hour projection covers) and says to re-read before the next' '[[ "$o" == *"about 30 minutes or less"* ]] && [[ "$o" == *"before the next unit"* ]]'
@@ -287,6 +287,12 @@ rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"
 ( cd "$T"; env -u MEGAVIBE_NOW TMPDIR="$T/tmpx" PATH="$T/shim2:$PATH" MEGAVIBE_CODEX_HOME="$T/codex2" /bin/bash "$UR" sprint-advice >/dev/null 2>&1 & p=$!; sleep 0.8; kill -ALRM $p 2>/dev/null; wait $p 2>/dev/null ) 2>/dev/null
 sleep 2
 check 'an outer SIGALRM while a provider call runs leaves no usage-sprint-adv temp file behind' '[ "$(ls "$T/tmpx" 2>/dev/null | grep -c usage-sprint-adv)" = 0 ]'
+# a SIGHUP to sprint-advice while a provider call runs also leaves no temp file, and a required reader is never deferred by the per-unit check
+rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"; mkdir -p "$T/tmpy"
+( cd "$T"; env -u MEGAVIBE_NOW TMPDIR="$T/tmpy" PATH="$T/shim2:$PATH" MEGAVIBE_CODEX_HOME="$T/codex2" /bin/bash "$UR" sprint-advice >/dev/null 2>&1 & p=$!; sleep 0.8; kill -HUP $p 2>/dev/null; wait $p 2>/dev/null ) 2>/dev/null
+sleep 2
+check 'a SIGHUP while a provider call runs leaves no usage-sprint-adv temp file behind' '[ "$(ls "$T/tmpy" 2>/dev/null | grep -c usage-sprint-adv)" = 0 ]'
+check 'the rule says the per-unit check governs optional work and top-tier upgrades and never defers a required reader' 'grep -q "never defers a required reader" "$REPO/template/.claude/rules/delegation.md"'
 # 78 then 80 eighteen minutes later projects 84.954: the printed budget rounds UP (85) so a unit sized on it cannot overshoot, and it is hot
 printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":78,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 1090))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'five-hour 78 then 80 (1090 s apart): rounded up to 85 and 5h-hot (the unrounded 84.954 would have been a sprint printed as 84.9)' '[ "$(f 10)" = 85 ] && [ "$(f 9)" = 5h-hot ]'

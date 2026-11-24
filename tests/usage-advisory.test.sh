@@ -219,7 +219,8 @@ unset STUB_BAND_FAIL STUB_BALANCE
 # terminating the hook while the router runs leaves no temp file behind
 reset; claude_pace 90 98 91 '' ''; export STUB_SPRINT_SLEEP=3 STUB_SPRINT="$SC"
 TD=$(mktemp -d); ev SessionStart > "$TD/in.json"; ( cd "$P" && TMPDIR="$TD" exec bash "$HOOK" < "$TD/in.json" >/dev/null 2>&1 ) & HP=$!
-sleep 1; kill -TERM "$HP" 2>/dev/null; wait "$HP" 2>/dev/null; sleep 4
+sleep 1; kill -TERM "$HP" 2>/dev/null; wait "$HP"; HRC=$?; sleep 4
+check 'a cancelled hook exits 0 (the hook never fails the session)' '[ "$HRC" = 0 ]'
 check 'the hook terminated by SIGTERM while the router runs leaves no usage-sprint temp file' '[ -z "$(ls "$TD" 2>/dev/null | grep usage-sprint)" ]'
 unset STUB_SPRINT_SLEEP STUB_SPRINT
 # per-provider unknown: one provider's check failing does not hide the other one's change
