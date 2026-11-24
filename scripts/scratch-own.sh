@@ -28,11 +28,14 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import datetime
 
 DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 MARK = ".megavibe-review-copy"
 SID = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*")
+UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 TEMP_MARK = ".sid"
+MISSING = object()
 UID = os.getuid()
 REVIEW = ("claude-review-scratch.*", "codex-review-scratch.*")
 NOW = time.time()
@@ -255,7 +258,7 @@ def remove_file(parent, name, expected):
 
 
 def remove(parent, name, expected, path, mounts, cutoff=None, owner_only=False,
-           preserve_temp_root=False):
+           preserve_temp_root=False, protect_reviewers=False):
     with directory(name, parent) as fd:
         info = os.fstat(fd)
         if not same_entry(info, expected) or path in mounts:
@@ -267,11 +270,19 @@ def remove(parent, name, expected, path, mounts, cutoff=None, owner_only=False,
             raise ValueError("foreign owner")
         if cutoff is not None and ".keep" in children:
             raise ValueError("entry protected")
+        if protect_reviewers and any(fnmatch.fnmatchcase(name, pattern) for pattern in REVIEW):
+            try:
+                if reviewer_running(fd, path):
+                    return True, 0
+            except FAILURES:
+                return True, 0
         writable(fd, info)
+        retained = False
+        blocks = 0
         # Keep the ownership marker until the rest has gone, so a retry can
         # still identify a copy after a partial deletion.
         for child in sorted(children, key=lambda name: name in (MARK, TEMP_MARK)):
-            if preserve_temp_root and child == TEMP_MARK:
+            if child == TEMP_MARK and (preserve_temp_root or (protect_reviewers and retained)):
                 continue
             child_path = os.path.join(path, child)
             item = entry(fd, child)
@@ -279,15 +290,21 @@ def remove(parent, name, expected, path, mounts, cutoff=None, owner_only=False,
                     or (owner_only and item.st_uid != UID)):
                 raise ValueError("mount boundary")
             if stat.S_ISDIR(item.st_mode):
-                remove(fd, child, item, child_path, mounts, cutoff, owner_only)
+                kept, removed = remove(fd, child, item, child_path, mounts, cutoff, owner_only,
+                                       protect_reviewers=protect_reviewers)
+                retained |= kept
+                blocks += removed
                 continue
             if cutoff is not None and item.st_mtime >= cutoff:
                 raise ValueError("entry changed")
             remove_file(fd, child, item)
+            blocks += file_blocks(item)
         if not same_entry(entry(parent, name), info):
             raise ValueError("entry changed")
-        if not preserve_temp_root:
+        if not preserve_temp_root and not retained:
             os.rmdir(name, dir_fd=parent)
+            blocks += info.st_blocks
+        return retained, blocks
 
 
 def sweep_entry(fd, name, path, device, mounts):
@@ -548,10 +565,12 @@ def session_temps(roots, sid, cmd, mounts, report):
                     continue
                 allocated = old_tree(temp, short, info, target, mounts, cutoff)
                 if allocated is not None:
-                    remove(temp, short, info, target, mounts, cutoff, owner_only=True,
-                           preserve_temp_root=(cmd == "clean-unit"))
-                    count += 1
-                    blocks += allocated
+                    retained, removed = remove(
+                        temp, short, info, target, mounts, cutoff, owner_only=True,
+                        preserve_temp_root=(cmd == "clean-unit"), protect_reviewers=True)
+                    if removed or not retained:
+                        count += 1
+                    blocks += removed
         except FileNotFoundError:
             continue
         except FAILURES as exc:
@@ -559,64 +578,91 @@ def session_temps(roots, sid, cmd, mounts, report):
     return count, (blocks + 1) // 2, matched
 
 
+def parse_process_start(value):
+    if not isinstance(value, str):
+        raise ValueError("invalid process start")
+    text = " ".join(value.split())
+    if not re.fullmatch(
+            r"[A-Za-z]{3} [A-Za-z]{3} [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}", text):
+        raise ValueError("invalid process start")
+    started = datetime.strptime(text, "%a %b %d %H:%M:%S %Y")
+    if started.strftime("%a").lower() != text[:3].lower():
+        raise ValueError("invalid process start weekday")
+    return started
+
+
 def process_matches(pid, recorded):
+    accessible = True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
+        accessible = False
+    if recorded is MISSING:
         return True
-    # Preserve the session if we cannot verify a running process.
-    if not isinstance(recorded, str) or not recorded.strip():
+    started = parse_process_start(recorded)
+    if not accessible:
         return True
-    if sys.platform.startswith("linux") and recorded.isdecimal():
-        try:
-            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as stream:
-                return stream.read().rsplit(")", 1)[1].split()[19] == recorded
-        except (OSError, IndexError):
-            return True
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
                                 capture_output=True, text=True, timeout=1,
-                                env={**os.environ, "LC_ALL": "C"})
+                                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
+        return (result.returncode != 0 or bool(result.stderr)
+                or parse_process_start(result.stdout) == started)
     except FAILURES:
         return True
-    actual = result.stdout.split()
-    return result.returncode != 0 or not actual or actual == recorded.split()
 
 
 def live_sessions(current):
     live = {current}
     invalid = 0
     limit = 1024 * 1024
-    path = os.path.join(os.environ["HOME"], ".claude", "sessions")
-    try:
-        with directory(path) as fd:
-            for name in os.listdir(fd):
-                if not name.endswith(".json"):
+    home = os.environ["HOME"]
+    configs = [os.path.join(home, ".claude")]
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        configs.append(os.environ["CLAUDE_CONFIG_DIR"])
+    for name in os.listdir(home):
+        if not name.startswith(".claude"):
+            continue
+        config = os.path.join(home, name)
+        try:
+            if stat.S_ISDIR(os.stat(config).st_mode):
+                configs.append(config)
+        except FileNotFoundError:
+            continue
+    seen = set()
+    for config in dict.fromkeys(configs):
+        path = os.path.realpath(os.path.join(config, "sessions"))
+        try:
+            with directory(path) as fd:
+                info = os.fstat(fd)
+                identity = (info.st_dev, info.st_ino)
+                if identity in seen:
                     continue
-                try:
-                    data = read_at(fd, name, limit + 1)
-                    if len(data) > limit:
-                        raise ValueError("session record too large")
-                    record = json.loads(data)
-                except FileNotFoundError:
-                    continue
-                except (OSError, ValueError, RecursionError):
-                    invalid += 1
-                    continue
-                if not isinstance(record, dict):
-                    invalid += 1
-                    continue
-                sid, pid = record.get("sessionId"), record.get("pid")
-                if not (isinstance(sid, str) and SID.fullmatch(sid)
-                        and type(pid) is int and 0 < pid <= 2147483647):
-                    invalid += 1
-                    continue
-                if process_matches(pid, record.get("procStart")):
-                    live.add(sid)
-    except FileNotFoundError:
-        pass
+                seen.add(identity)
+                for name in os.listdir(fd):
+                    if not name.endswith(".json"):
+                        continue
+                    try:
+                        data = read_at(fd, name, limit + 1)
+                        if len(data) > limit:
+                            raise ValueError("session record too large")
+                        record = json.loads(data)
+                        if not isinstance(record, dict):
+                            raise ValueError("invalid session record")
+                        sid, pid = record.get("sessionId"), record.get("pid")
+                        if not (isinstance(sid, str) and SID.fullmatch(sid)
+                                and type(pid) is int and 0 < pid <= 2147483647):
+                            raise ValueError("invalid session record")
+                        if process_matches(pid, record.get("procStart", MISSING)):
+                            live.add(sid)
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, ValueError, RecursionError):
+                        invalid += 1
+        except FileNotFoundError:
+            continue
     return live, invalid
 
 
@@ -659,6 +705,7 @@ def sweep_pytest(cutoff, mounts, report):
 
 def sweep_session_orphans(script, live, cutoff, mounts, report):
     ended = set()
+    live_uuids = {sid.lower() for sid in live if UUID.fullmatch(sid)}
     blocks = 0
     for path in dict.fromkeys(map(canonical_temp, root_paths(script, "roots"))):
         try:
@@ -683,13 +730,16 @@ def sweep_session_orphans(script, live, cutoff, mounts, report):
                             if ".keep" in os.listdir(parent):
                                 continue
                             for name in os.listdir(parent):
-                                if not SID.fullmatch(name) or (project != "t" and name in live):
-                                    continue
                                 target = os.path.join(project_path, name)
                                 try:
                                     info = entry(parent, name)
-                                    if (not safe_dir(info, root_info.st_dev, target, mounts)
-                                            or info.st_mtime >= cutoff):
+                                    if not safe_dir(info, root_info.st_dev, target, mounts):
+                                        continue
+                                    if project != "t" and not UUID.fullmatch(name):
+                                        print(f"scratch-own: {label(target)}: {size(target)} kB",
+                                              file=sys.stderr)
+                                        continue
+                                    if info.st_mtime >= cutoff:
                                         continue
                                     sid = name
                                     if project == "t":
@@ -697,7 +747,7 @@ def sweep_session_orphans(script, live, cutoff, mounts, report):
                                             if not same_entry(info, os.fstat(fd)):
                                                 raise ValueError("entry changed")
                                             sid = marker_sid(fd, name)
-                                    if not sid or sid in live:
+                                    if not sid or sid in live or sid.lower() in live_uuids:
                                         continue
                                     allocated = old_tree(parent, name, info, target, mounts, cutoff)
                                     if allocated is not None:

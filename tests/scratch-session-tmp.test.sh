@@ -99,7 +99,21 @@ ln -s "$T/project" "$EXPECTED/project-link"
 "$OWN" clean-unit "$SID"
 [[ -f "$EXPECTED/data" && -f "$EXPECTED/nested/.keep" ]]
 mv "$EXPECTED/nested/.keep" "$T/keep"
+reviewer="$EXPECTED/nested/codex-review-scratch.active"
+mkdir -p "$reviewer"
+printf '%s\n' "$$" > "$reviewer/.pid"
+touch "$reviewer/work" "$EXPECTED/nested/disposable" "$EXPECTED/disposable"
 "$OWN" clean-unit "$SID"
+if [[ ! -f "$reviewer/work" || ! -f "$reviewer/.pid" ||
+      -e "$EXPECTED/nested/disposable" || -e "$EXPECTED/disposable" ||
+      -e "$EXPECTED/data" || -L "$EXPECTED/project-link" ]]; then
+  echo 'FAIL: clean-unit must preserve active reviewer scratch and clear other contents'
+  failed=1
+fi
+if [[ -d "$reviewer" ]]; then
+  rm -r "$reviewer"
+  rmdir "$EXPECTED/nested"
+fi
 if [[ ! -d "$EXPECTED" || "$(cat "$EXPECTED/.sid")" != "$SID" ||
       "$(ls -A "$EXPECTED")" != .sid ]]; then
   echo 'FAIL: clean-unit did not leave only the session marker in TMPDIR'
