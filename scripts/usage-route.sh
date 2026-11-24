@@ -246,14 +246,14 @@ emit_forecast() {
                  # Order is by position, not by time: two rows in the same second (two sessions writing) keep their order.
                  # The rise is rated over the time from the LOWER reading to NOW (floored at 30 minutes), so a steady climb
                  # is not read as a burst by pairing a tick with the heartbeat row just after the previous one (a 30-minute floor: whole-percent readings make a shorter span meaningless).
-                 (([range(0; $rows | length) | select($rows[.].p != $last.p)] | last) as $li
-                  | (if $li == null then 0 else $li + 1 end) as $ai
-                  | $rows[$ai] as $anc
-                  | if $anc.t < $now - 5400 then null
-                    else ([range(0; $ai) as $i | $rows[$i]
-                           | select(($anc.t - .t) <= 5400 or $i == $ai - 1)
-                           | select(($anc.p - .p) >= 2)
-                           | (($anc.p - .p + 1) / (([($now - .t), 1800] | max) / 3600))] | max) end)
+                 # EVERY recent endpoint counts, not only the newest level: each row of the last 90 minutes is a possible high, paired with
+                 # every earlier row within 90 minutes of it (and with the row just before it, whatever its age), so a one-point follow-up
+                 # after a surge (80, 93, then 94) cannot move the endpoint away from the evidence. The highest rate wins.
+                 ([range(0; $rows | length) as $hi | $rows[$hi] as $H | select($H.t >= $now - 5400)
+                   | range(0; $hi) as $lo | $rows[$lo] as $L
+                   | select(($H.t - $L.t) <= 5400 or $lo == $hi - 1)
+                   | select(($H.p - $L.p) >= 2)
+                   | (($H.p - $L.p + 1) / (([($now - $L.t), 1800] | max) / 3600))] | max)
                else null end) as $rb
             | (if $rb != null and $rb > $pc0.v then {v: $rb, b: ($pc0.b + "+burst")} else $pc0 end) as $pc
             | if $pc == null then "||||"

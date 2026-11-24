@@ -173,6 +173,12 @@ RX=$((NOW + 1800))
 printf '{"t":%s,"sd":{"p":90,"r":%s}}\n{"t":%s,"sd":{"p":94,"r":%s}}\n' "$((NOW - 300))" "$RX" "$((NOW - 300))" "$RX" > "$MEGAVIBE_USAGE_FILE"
 o=$(sp)
 check 'same-second 90 then 94 with 30 minutes left: a burst, no sprint' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
+# a one-point follow-up must not erase a detected burst: 80 at -100 minutes, 93 at -5, then a fresh 94 now, one hour left
+RB=$((NOW + 3600))
+{ row 100 80 $RB; row 5 93 $RB; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'weekly 80 at -100 min, 93 at -5 min, one hour left: no sprint' '[ "$(f 2)" = "-" ]'
+{ row 100 80 $RB; row 5 93 $RB; row 0 94 $RB; } > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
+check 'the same plus a fresh 94 now (a one-point follow-up): still no sprint (every recent endpoint pair counts, not only the newest level)' '[ "$(f 2)" = "-" ] && [[ "$(f 8)" == *burst* ]]'
 # the two-point margin is applied before rounding: 97.04 forecast leaves 1.96, not 2.0
 RM=$((NOW + 900))    # 15 minutes left
 { row 600 90 $RM; row 300 94 $RM; row 5 97 $RM; } > "$MEGAVIBE_USAGE_FILE"
