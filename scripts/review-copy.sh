@@ -68,8 +68,8 @@ case "$cmd" in
     # Every exit path (failure, INT, TERM) removes the half-made copy and the work directory; both
     # variables are set before the directories exist, so the trap never sees an unset name.
     cleanup() {
-      [ -z "$WORK" ] || { chmod -R u+rwX "$WORK" 2>/dev/null; rm -rf "$WORK"; }
-      [ -n "$OK" ] || [ -z "$DEST" ] || { chmod -R u+rwX "$DEST" 2>/dev/null; chflags -R nouchg "$DEST" 2>/dev/null; rm -rf "$DEST"; }
+      [ -z "$WORK" ] || { chmod -R u+rwX "$WORK" 2>/dev/null || true; rm -rf "$WORK" || true; }
+      [ -n "$OK" ] || [ -z "$DEST" ] || { chflags -R nouchg "$DEST" 2>/dev/null || true; chmod -R u+rwX "$DEST" 2>/dev/null || true; rm -rf "$DEST" || true; }
     }
     trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
     DEST=$(mktemp -d "$TMPBASE/mv-review-copy.XXXXXX") || die "cannot create a copy directory"
