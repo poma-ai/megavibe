@@ -114,6 +114,19 @@ for project_env in unset elsewhere missing; do
   check "registered executable runs with project environment $project_env" verdict 7 'argument payload'
 done
 
+# The registered path can belong to a different checkout with shared settings.
+for root in moved empty deleted; do
+  CLAUDE_PROJECT_DIR="$T/$root" wrapped "$T" "$T/intact/.claude/hooks/block-dangerous-bash.sh" 'echo hello'
+  check "session-root tripwire blocks after launch directory is $root" verdict 2 "$tripwire"
+done
+CLAUDE_PROJECT_DIR="$T/intact" wrapped "$T" "$missing" 'echo hello'
+check 'session hooks directory with a missing file uses the template' verdict 0 'running the template copy'
+CLAUDE_PROJECT_DIR="$T/deleted" MEGAVIBE_ALLOW_MISSING_LAUNCH=1 wrapped "$T" "$missing" 'echo hello'
+check 'hook environment bypasses the session-root tripwire' verdict 0 'running the template copy'
+RC=0
+OUT=$(printf 'payload\n' | CLAUDE_PROJECT_DIR="$T/intact" "$WRAPPER" "$T/deleted/.claude/hooks/probe.sh" argument 2>&1) || RC=$?
+check 'missing registration runs the session copy with stdin and arguments' verdict 7 'argument payload'
+
 settings_match() {
   local project="$1" runner="$2"
   jq -e --arg root "$project" --arg runner "$runner" \
@@ -156,6 +169,21 @@ mkdir -p "$T/repo/.agent"
 git -C "$T/repo" init -q
 git -C "$T/repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm Initial
 (cd "$T/repo" && bash "$REPO/megavibe" worktree review) > "$T/worktree.log" 2>&1
+# A second linked worktree rewrites the main checkout's shared registrations.
+HOME="$T/init-home" bash "$REPO/init.sh" "$T/repo" > "$T/init.log" 2>&1
+git -C "$T/repo" worktree add --detach -q "$T/repo-feature" HEAD
+ln -s "$T/repo/.claude" "$T/repo-feature/.claude"
+HOME="$T/init-home" bash "$REPO/init.sh" "$T/repo-feature" > "$T/init.log" 2>&1
+check 'linked worktree init writes its paths to shared settings' settings_match "$T/repo-feature" "$runner"
+registered=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(endswith("/block-dangerous-bash.sh\""))' "$T/repo/.claude/settings.json")
+mv "$T/repo-feature" "$T/repo-feature-away"
+RC=0
+OUT=$(payload "$T/repo" 'echo hello' | HOME="$T/init-home" CLAUDE_PROJECT_DIR="$T/repo" bash -c "$registered" 2>&1) || RC=$?
+check 'main checkout allows benign input after the registered worktree moves' verdict 0 'running the session copy'
+RC=0
+OUT=$(payload "$T/repo" 'sudo pkill -9 node' | HOME="$T/init-home" CLAUDE_PROJECT_DIR="$T/repo" bash -c "$registered" 2>&1) || RC=$?
+check 'main checkout still blocks guarded input after the registered worktree moves' verdict 2 'Blocked: pkill/killall'
+
 mkdir -p "$T/repo-review/sub" "$T/bin"
 export REAL_GIT=$(command -v git)
 cat > "$T/bin/git" <<'STUB'
@@ -214,93 +242,8 @@ check 'missing launch directory allows git worktree remove' verdict 0
 guard 'git worktree remove repo-review' 0 "$T/repo" "$T"
 check 'non-Git launch directory allows git worktree remove' verdict 0
 
-ln -s "$T/repo-review" "$T/launch-link"
-ln -s "$T" "$T/ancestor-link"
-touch "$T/repo-review/file"
-mkdir -p "$T/other/nested" "$T/other/repo" "$T/target"
-for command in \
-  "rm -r '$T/repo-review'" \
-  "rm -rf '$T/repo-review/..'" \
-  'rm -r launch-link/' \
-  'rm -r launch-link/.' \
-  'rm -r ancestor-link/repo-review' \
-  'rm -r repo-review' \
-  "cd 'other/nested' && rm -r ../../repo-review" \
-  'mv repo-review x' \
-  'mv -- other repo-review x' \
-  'mv -t other repo-review' \
-  'mv -ttarget repo-review' \
-  'mv --target-directory=other repo-review' \
-  'trash.sh repo-review' \
-  '~/.megavibe/scripts/trash.sh repo-review' \
-  'rmtrash repo-review' \
-  'MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 rm -r repo-review' \
-  'env MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 mv repo-review x' \
-  'export MEGAVIBE_ALLOW_REMOVE_LAUNCH=1; rmtrash repo-review'; do
-  guard "$command"
-  check "launch path blocks ${command//"$T"/<scratch>}" verdict 2 'Finish and exit this session'
-done
-for command in 'rm repo-review/file' 'rm -r other' 'rm missing/..' \
-  'rm launch-link' 'rm ancestor-link' 'mv launch-link x' \
-  'mv other x' 'mv other repo-review' 'mv -t repo-review other' \
-  'echo rm -r repo-review' 'command -v rm repo-review'; do
-  guard "$command"
-  check "launch path allows $command" verdict 0
-done
-guard 'rm ""' 0 "$T/repo-review"
-check 'empty operand does not match the launch directory' verdict 0
-if [[ "$T/REPO-REVIEW" -ef "$T/repo-review" ]]; then
-  guard 'rm -r REPO-REVIEW'
-  check 'launch path matches a case variant on a case-insensitive volume' verdict 2 'Finish and exit this session'
-fi
-guard 'rm -r repo-review' 1
-check 'launch path honors the hook environment override' verdict 0
-guard 'rm -r repo' 0 "$T" "$T/repo"
-check 'launch path protects the main checkout too' verdict 2 'Finish and exit this session'
-guard 'rm -r other' 0 "$T" "$T/other"
-check 'launch path protects a non-Git project too' verdict 2 'Finish and exit this session'
-guard 'rm -r repo-review' 0 "$T" "$T/launch-link"
-check 'launch path resolves a symlinked project directory' verdict 2 'Finish and exit this session'
-
-launch_case() {
-  local expected="$1" cwd="$2" launch="$3" command="$4"
-  guard "$command" 0 "$cwd" "$launch"
-  local message=
-  if [ "$expected" = 2 ]; then message='Finish and exit this session'; fi
-  command=${command//"$T"/<scratch>}
-  check "launch check ($expected) ${command//$'\n'/\\n}" verdict "$expected" "$message"
-}
-mkdir -p "$T/repo/"{build,node_modules,a} "$T/repo/other"
-touch "$T/repo/file"
-ln -s "$T/repo" "$T/repo/self-link"
-for command in 'rm -r build' 'rm file' 'rm -rf node_modules' 'mv a b' \
-  'rm -r ../other' 'rm self-link'; do
-  launch_case 0 "$T/repo" "$T/repo" "$command"
-done
-launch_case 2 "$T/other" "$T/repo" "cd '$T' && mv repo x"
-launch_case 2 "$T/other" "$T/repo" "cd '$T'; mv repo x"
-launch_case 2 "$T/other" "$T/repo" $'cd .. &&\nmv repo moved'
-for command in \
-  'env -C other rm -r repo' 'env --chdir=other rm -r repo' \
-  'sudo -D other rm -r repo' 'sudo --chdir=other rm -r repo' \
-  'env -C other true; rm -r repo' 'env --directory other true; rm -r repo' \
-  'true; cd other && rm -r repo' '{ cd other; }; rm -r repo' \
-  'if true; then cd other; fi; rm -r repo' '(cd other && rm -r repo); true' \
-  'cd other; cd ..; mv repo moved' 'cd other | true; mv repo moved' \
-  'cd other & mv repo moved' 'mv repo moved; pushd other' 'popd; mv repo moved' \
-  'cd "$DEST"; rm -r repo' 'cd missing; rm -r repo' 'cd missing || mv repo moved' \
-  $'cd other\nrm -r repo' "bash -c 'true'; rm -r repo" "eval 'true'; mv repo moved"; do
-  launch_case 0 "$T" "$T/repo" "$command"
-done
-launch_case 2 "$T" "$T/repo" "cd \"\$DEST\"; mv '$T/repo' moved"
-launch_case 2 "$T" "$T/repo" "env -C other rm -r '$T/repo'"
-launch_case 2 "$T" "$T/repo" "{ cd other; }; rm -r '$T/repo'"
-
-# Accepted gap: shell and eval bodies are outside the launch-directory rules.
-launch_case 0 "$T" "$T/repo" "bash --noprofile -c 'mv repo moved'"
-launch_case 0 "$T" "$T/repo" "sh -c 'mv repo moved'"
-launch_case 0 "$T" "$T/repo" "eval 'mv repo moved'"
-launch_case 0 "$T" "$T/repo-review" "bash -c 'git worktree remove repo-other'"
+guard "bash -c 'git worktree remove repo-other'"
+check 'linked launch allows git worktree remove inside shell text' verdict 0
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

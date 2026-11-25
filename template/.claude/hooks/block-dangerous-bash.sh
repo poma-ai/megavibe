@@ -208,7 +208,7 @@ esac
 _LAUNCH=''
 if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
   case "$_TRASH_CMD" in
-    *worktree*remove*|*rm*|*mv*|*trash.sh*)
+    *worktree*remove*)
       _LAUNCH=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P) || _LAUNCH='' ;;
   esac
 fi
@@ -339,7 +339,7 @@ def strip_redirs(t):
     return out
 
 
-def resolve(t, skip_lookups=False, directory_options=False):
+def resolve(t, skip_lookups=False):
     i, via = 0, False
     while i < len(t):
         w = t[i]; b = os.path.basename(w)
@@ -352,10 +352,7 @@ def resolve(t, skip_lookups=False, directory_options=False):
             while i < len(t) and (t[i].startswith("-") or ASSIGN.match(t[i]) or (b in ("uv", "poetry", "bundle", "pipx", "pnpm", "yarn", "npm") and t[i] in SUBCMD)):
                 if skip_lookups and b == "command" and re.match(r"^-[A-Za-z]*[vV]", t[i]):
                     return None, via
-                takes_value = t[i] in WRAP[b] or (
-                    directory_options and t[i] in ("-C", "--directory", "--chdir")
-                )
-                i += 2 if takes_value else 1
+                i += 2 if t[i] in WRAP[b] else 1
             i += posn
             continue
         return i, via
@@ -529,44 +526,6 @@ def analyse(s, st, depth=0):
     return False
 
 
-def launch_path(word, cwd):
-    word = rs(word)
-    if not word or word.startswith("~") or any(c in word for c in "$`*?[{}\x00"):
-        return None
-    if os.path.isabs(word):
-        return word
-    if os.path.isabs(cwd):
-        return os.path.join(cwd, word)
-    return None
-
-
-def launch_targets(verb, args):
-    """Collect delete operands or mv sources, excluding its destination."""
-    operands, options, target_dir = [], True, False
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        i += 1
-        if options and arg == "--":
-            options = False
-        elif options and arg.startswith("-") and arg != "-":
-            if verb == "mv":
-                if arg in ("-t", "--target-directory"):
-                    i += 1
-                    target_dir = True
-                elif arg.startswith("--target-directory="):
-                    target_dir = True
-                elif not arg.startswith("--") and "t" in arg:
-                    target_dir = True
-                    if not arg.partition("t")[2]:
-                        i += 1
-        else:
-            operands.append(arg)
-            if verb != "mv":
-                options = False  # BSD rm and the Trash wrapper stop at the first operand
-    return operands[:-1] if verb == "mv" and not target_dir else operands
-
-
 def worktree_remove(args):
     value_options = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
     i = 0
@@ -588,93 +547,18 @@ def linked_worktree(launch):
         return False
 
 
-def launch_ancestors(launch):
-    ancestors = set()
-    ancestor = launch
-    while True:
-        try:
-            st = os.stat(ancestor)
-            ancestors.add((st.st_dev, st.st_ino))
-        except OSError:
-            pass
-        parent = os.path.dirname(ancestor)
-        if parent == ancestor:
-            break
-        ancestor = parent
-
-    return ancestors
-
-
-def launch_reason(launch, cwd):
+def removes_worktree():
     newline = "\x01n"
     toks = tokens(CMD, newline)
-    start = next((i for i, t in enumerate(toks) if t != newline), len(toks))
-    leading = toks[start:start + 2]
-    if (len(leading) == 2 and leading[0] == "cd" and not leading[1].startswith("-")
-            and toks[start + 2:start + 3] in ([";"], ["&&"])):
-        dest = launch_path(leading[1], cwd)
-        logical = os.path.normpath(dest) if dest else ""
-        cdpath = os.environ.get("CDPATH") and not os.path.isabs(leading[1])
-        cwd = ""
-        if dest and not cdpath and os.path.isdir(dest) and os.access(logical, os.X_OK):
-            cwd = logical
-    else:
-        leading = None
-
-    # Establish one cwd for the whole scan. Opaque commands can invalidate it,
-    # but we never track their effects or look inside their bodies.
-    checks = []
-    for index, pipe in enumerate(pipelines(";" if t == newline else t for t in toks)):
-        for raw in pipe:
-            words = strip_redirs(raw)
-            i, _ = resolve(words, skip_lookups=True)
-            if (i is not None and len(pipe) == 1 and os.path.basename(rs(words[i])) == "git"
-                    and worktree_remove(words[i + 1:])):
-                checks.append(("git", ()))
-
-            if index == 0 and raw == leading:
-                continue
-            if raw in (["("], [")"]) or (
-                    words and words[0] in KW | {"case", "for", "select", "function"}):
-                cwd = ""
-            i, _ = resolve(words, skip_lookups=True, directory_options=True)
-            prefix = words if i is None else words[:i]
-            if any(w.startswith("-") or (
-                    os.path.basename(w) in WRAP and os.path.basename(w) not in ("env", "command", "builtin")
-            ) for w in prefix):
-                cwd = ""
-            if i is None:
-                continue
-            verb, args = os.path.basename(rs(words[i])), words[i + 1:]
-            if verb in ("cd", "pushd", "popd", "eval", "source", ".") or (
-                    verb in SHELLS and any(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", a) for a in args)):
-                cwd = ""
-            if verb in ("rm", "rmtrash", "trash.sh", "mv"):
-                checks.append((verb, launch_targets(verb, args)))
-
-    ancestors = None
-    linked = None
-    for verb, args in checks:
-        if verb == "git":
-            if linked is None:
-                linked = linked_worktree(launch)
-            if linked:
-                return "LAUNCH_GIT"
+    for pipe in pipelines(";" if t == newline else t for t in toks):
+        if len(pipe) != 1:
             continue
-        for arg in args:
-            path = launch_path(arg, cwd)
-            if path is None:
-                continue
-            try:
-                # A bare link is the entry being removed. A trailing slash or /. follows it.
-                st = os.stat(path) if path.endswith(("/", "/.")) else os.lstat(path)
-            except OSError:
-                continue
-            if ancestors is None:
-                ancestors = launch_ancestors(launch)
-            if (st.st_dev, st.st_ino) in ancestors:
-                return "LAUNCH_PATH"
-    return None
+        words = strip_redirs(pipe[0])
+        i, _ = resolve(words, skip_lookups=True)
+        if (i is not None and os.path.basename(rs(words[i])) == "git"
+                and worktree_remove(words[i + 1:])):
+            return True
+    return False
 
 
 def osa_text(s):
@@ -686,11 +570,11 @@ def osa_text(s):
 launch = os.environ.get("GUARD_LAUNCH")
 if launch:
     try:
-        reason = launch_reason(launch, os.environ.get("TR_CWD", ""))
+        remove = removes_worktree()
     except ValueError:
-        reason = None
-    if reason:
-        print(reason)
+        remove = False
+    if remove and linked_worktree(launch):
+        print("LAUNCH_GIT")
         sys.exit(0)
 if os.environ.get("CHECK_TRASH") != "1":
     sys.exit(0)
@@ -711,13 +595,8 @@ PY
       _TV=$(TR_CMD="$COMMAND" TR_CWD="$_TRASH_CWD" GUARD_LAUNCH="$_LAUNCH" \
         CHECK_TRASH="$_CHECK_TRASH" python3 -c "$_TRASH_PY" 2>/dev/null)
     fi
-    case "$_TV" in
-      LAUNCH_GIT)
-        echo "Blocked: git worktree remove from a session launched in a linked worktree." >&2 ;;
-      LAUNCH_PATH)
-        echo "Blocked: removing or moving the session launch directory or one of its ancestors." >&2 ;;
-    esac
-    if [[ "$_TV" == LAUNCH_* ]]; then
+    if [[ "$_TV" == LAUNCH_GIT ]]; then
+      echo "Blocked: git worktree remove from a session launched in a linked worktree." >&2
       echo "Finish and exit this session, then remove the worktree from another session, or set MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 in the harness environment." >&2
       exit 2
     fi

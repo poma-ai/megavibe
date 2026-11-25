@@ -14,12 +14,21 @@ if [[ -f "$hook" && -x "$hook" ]]; then
   exec -- "$hook" "$@"
 fi
 
-if [[ "$hook" == /* && "$hook" == */.claude/hooks/"$name" && ${MEGAVIBE_ALLOW_MISSING_LAUNCH:-} != 1 ]]; then
-  project_root=${hook%/.claude/hooks/"$name"}
-  if [[ ! -d "$project_root/.claude/hooks" ]]; then
-    printf '%s\n' 'launch directory or its .claude is gone: finish and exit this session; the guards cannot be trusted here; start a new session from a project directory' >&2
-    exit 2
+project_hooks=
+if [[ ${CLAUDE_PROJECT_DIR+x} ]]; then
+  project_hooks="$CLAUDE_PROJECT_DIR/.claude/hooks"
+  session_hook="$project_hooks/$name"
+  if [[ -f "$session_hook" && -x "$session_hook" ]]; then
+    printf 'guard %s: registered copy missing, running the session copy\n' "$name" >&2
+    exec -- "$session_hook" "$@"
   fi
+elif [[ "$hook" == /* && "$hook" == */.claude/hooks/"$name" ]]; then
+  project_hooks="${hook%/.claude/hooks/"$name"}/.claude/hooks"
+fi
+
+if [[ ${MEGAVIBE_ALLOW_MISSING_LAUNCH:-} != 1 && -n $project_hooks && ! -d "$project_hooks" ]]; then
+  printf '%s\n' 'launch directory or its .claude is gone: finish and exit this session; the guards cannot be trusted here; start a new session from a project directory' >&2
+  exit 2
 fi
 
 fallback="${MEGAVIBE_HOME:-$HOME/.megavibe}/template/.claude/hooks/$name"
