@@ -69,6 +69,13 @@ blocks "a local sh -c rm after a container command stays blocked" "docker exec w
 passes "docker exec ls before a pipe" "docker exec web ls | grep rm"
 asks "container delete after sudo" "sudo docker exec web rm /x" "/x"
 blocks "a container command inside a quoted substitution is not stripped" "echo \"\$(docker exec web ls)\"; sh -c \"rm -r /local\""
+asks "-- before the container" "docker exec -- web rm -rf /data" "container web" "/data"
+asks "podman connection option" "podman --connection dev exec web rm /data" "container web" "/data"
+asks "kubectl cache-dir option" "kubectl -n staging --cache-dir /tmp/kube exec mypod -- rm /data" "pod mypod" "/data"
+asks "kubectl certificate-authority option" "kubectl --certificate-authority /etc/kube/ca.crt -n staging exec mypod -- rm /data" "pod mypod" "/data"
+asks "absolute path to docker, shell payload" "/opt/homebrew/bin/docker exec web sh -c 'rm -rf /app/cache'" "container web" "/app/cache"
+blocks "container output piped to a local shell stays blocked" "docker exec web find /c -type f -printf 'rm -- %p\\n' | sh"
+passes "container output piped to grep" "docker exec web ls /data | grep old"
 # the kubectl production guard keeps precedence
 blocks "kubectl prod exec stays blocked" "kubectl -n prod exec mypod -- rm -rf /data"
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

@@ -2856,13 +2856,17 @@ def ftp_dels(tool, host, label, t):
 
 CONT_VAL = {
     "kubectl": {"-n", "--namespace", "-c", "--container", "--context", "--kubeconfig", "-s", "--server", "--cluster", "--user",
-                "--as", "--as-group", "-f", "--filename", "--pod-running-timeout", "--token", "--request-timeout"},
+                "--as", "--as-group", "--as-uid", "-f", "--filename", "--pod-running-timeout", "--token", "--request-timeout",
+                "--certificate-authority", "--client-certificate", "--client-key", "--cache-dir", "--tls-server-name",
+                "--username", "--password", "--profile", "--profile-output", "-v", "--v", "--vmodule", "--kuberc"},
     "docker": {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys", "--index", "-H", "--host",
                "--context", "--config", "-l", "--log-level", "-f", "--file", "-p", "--project-name", "--profile",
-               "--project-directory", "--ansi", "--parallel", "--progress"},
+               "--project-directory", "--ansi", "--parallel", "--progress", "--tlscacert", "--tlscert", "--tlskey"},
 }
 CONT_VAL["oc"] = CONT_VAL["kubectl"]
-CONT_VAL["podman"] = CONT_VAL["docker"]
+CONT_VAL["podman"] = CONT_VAL["docker"] | {"-c", "--connection", "--url", "--identity", "--root", "--runroot", "--storage-driver",
+                                           "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir", "--tmpdir",
+                                           "--conmon", "--runtime", "--network-cmd-path", "--imagestore", "--transient-store"}
 
 
 def container_target(b, args):
@@ -2871,7 +2875,7 @@ def container_target(b, args):
     container name, or one shell payload (script_dels reads that)."""
     kube = b in ("kubectl", "oc")
     if not (kube or b in ("docker", "podman", "docker-compose", "podman-compose")): return None
-    vals = CONT_VAL["kubectl" if kube else "docker"]
+    vals = CONT_VAL["kubectl" if kube else b.replace("-compose", "")]
     j = 0
     def skip_opts(stop_at_dd):
         nonlocal j
@@ -2880,13 +2884,18 @@ def container_target(b, args):
     skip_opts(True)
     while j < len(args) and args[j] in ("compose", "container"):
         j += 1; skip_opts(True)
-    if j >= len(args) or args[j] != "exec": return None
+    if j >= len(args) or args[j] != "exec":
+        # an option whose value width is unknown hid the verb: take the first `exec` word
+        if "exec" not in args or "--" in args[:args.index("exec")]: return None
+        j = args.index("exec")
     j += 1
     target = None
     while j < len(args):
         a = args[j]
         if a == "--":
-            j += 1; break
+            j += 1
+            if target is None: continue      # before the container name it only ends the options
+            break
         if a.startswith("-"):
             j += 1 if "=" in a else remote_opt_width(a, vals); continue
         if target is None:
@@ -3023,7 +3032,7 @@ def remote_findings(text, cwd, depth=0):
     return out
 
 
-CONT_CMD = re.compile(r"(?:^|(?<=[;&|(\n{]))(\s*)((?:docker|podman|docker-compose|podman-compose|kubectl|oc)(?![\w.-])"
+CONT_CMD = re.compile(r"(?:^|(?<=[;&|(\n{]))(\s*)((?:[^\s;&|'\"\\]*/)?(?:docker|podman|docker-compose|podman-compose|kubectl|oc)(?![\w.-])"
                       r"(?:'[^']*'|\"(?:\\.|[^\"\\])*\"|\\.|[^;&|\n'\"\\])*)")
 
 
@@ -3044,6 +3053,7 @@ def without_container_execs(text):
     def drop(m):
         body = m.group(2)
         if quoted_at(m.start(2)): return m.group(0)
+        if text[m.end():m.end() + 1] == "|" and text[m.end():m.end() + 2] != "||": return m.group(0)    # its output feeds another command
         if re.search(r"\$\(|`|<\(|>\(", body): return m.group(0)
         try: w = shlex.split(body)
         except ValueError: return m.group(0)
