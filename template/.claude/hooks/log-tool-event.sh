@@ -14,7 +14,7 @@ set -u
 # Megavibe — log every tool event to .agent/LOGS/tool-events.jsonl
 # Also: nudge Claude if .agent/ context files haven't been updated recently,
 # nag if post-compaction re-hydration hasn't happened yet,
-# and trigger proactive compaction when context exceeds token threshold.
+# and keep durable state current when context exceeds token thresholds.
 #
 # Triggered by: PostToolUse (all tools), PostToolUseFailure (Bash)
 # Input: hook stdin JSON (tool_name, tool_input, tool_response, etc.)
@@ -299,12 +299,12 @@ fi
 # Re-read counter after flock (the subshell variable doesn't propagate)
 COUNT=$(cat "$COUNTER_FILE" 2>/dev/null || echo "0")
 
-# --- Proactive compaction: tiered escalating nudges + user ratio nudge ---
+# --- Context pressure: tiered nudges + watcher ratio nudge ---
 # Runs on EVERY PostToolUse. Two distinct paths now:
 #   (a) Claude-facing tier nudges (50/75/90% of harness threshold) — only
 #       when the context-watcher is OFF; otherwise the watcher keeps
 #       .agent/ fresh and tier nudges become noise.
-#   (b) User-facing stderr nudge (the "ratio nudge") — fires once per
+#   (b) Model-facing nudge (the "ratio nudge") — fires once per
 #       session when the watcher IS on but context has grown faster than
 #       the watcher can keep up with (>400K tokens AND token-gain-per-hour
 #       to agent-write-per-hour ratio is poor). The statusline already
@@ -442,18 +442,26 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 0 ] && [ -z "$_TE_AGENT" 
 
     if [ "$CURRENT_TIER" -gt "$LAST_TIER" ] 2>/dev/null; then
       case "$CURRENT_TIER" in
-        1) COMPACT_NUDGE="🟡 Context ~${TOK_K}K (advisory). ${RUNWAY_DESC}. Start flushing decisions, tasks, and lessons to .agent/ continuously; every line saved is a recovery line later." ;;
-        2) COMPACT_NUDGE="🟠 Context ~${TOK_K}K — ${RUNWAY_DESC}. Flush ALL pending state to .agent/ NOW (agent-log.sh append, DECISIONS.md, TASKS.md) and suggest /compact to the user at the next clean break: only the user can run it. The threshold is deterministic — it WILL fire." ;;
-        3) COMPACT_NUDGE="🔴 Context ~${TOK_K}K — ${RUNWAY_DESC}. Flush state to .agent/ now and tell the user to run /compact (you cannot run it yourself). If the harness fires first it picks the moment (likely mid-tool-call); post-compact Claude only sees the summary." ;;
+        1) COMPACT_NUDGE="🟡 Context ~${TOK_K}K (advisory). ${RUNWAY_DESC}. Save a close-out per the Compaction lifecycle protocol, then continue working. Keep decisions, tasks and lessons current." ;;
+        2|3)
+          TIER_ICON="🟠"; [ "$CURRENT_TIER" -eq 3 ] && TIER_ICON="🔴"
+          if [ -f "${LOGDIR}/.closeout-done.${SID}" ]; then
+            COMPACT_NUDGE="${TIER_ICON} Context ~${TOK_K}K — ${RUNWAY_DESC}. Refresh the close-out now."
+          else
+            COMPACT_NUDGE="${TIER_ICON} Context ~${TOK_K}K — ${RUNWAY_DESC}. Save a close-out now: decisions with reasons in .agent/DECISIONS.md, tasks with owners and blockers in .agent/TASKS.md, a summary via .claude/hooks/agent-log.sh append, then touch .agent/LOGS/.closeout-done.${SID}."
+          fi
+          COMPACT_NUDGE="${COMPACT_NUDGE} Continue working; refresh the close-out after each completed step while context is high. Auto-compaction can happen at any moment."
+          ;;
       esac
+      COMPACT_NUDGE="${COMPACT_NUDGE} Do not pause, slow down, hand work back or request manual compaction. Mention compaction only if the user asks, or once if the session settings have auto-compaction disabled."
       echo "$CURRENT_TIER" > "$COMPACT_TIER_FILE" 2>/dev/null || true
 
       # Advisory text once per tier (2 and 3); never a compaction gate.
       if [ "$CURRENT_TIER" -ge 2 ]; then
         _RO=""; _RO=$(printf '%s' "$INPUT" | "$(dirname "$0")/compact-readiness.sh" --session "$SID_FULL" --hook-input - 2>&1) || true
         [ -n "$_RO" ] || _RO="compact-readiness: unable to check (no report)"
-        # 2000 chars: the nudge is emitted twice (systemMessage + additionalContext) and
-        # JSON-escaped, and the whole hook output must stay under the 10,000-character
+        # 2000 chars: the JSON-escaped report and the rest of the hook output
+        # must stay under the 10,000-character
         # delivery limit (measured 2026-10-19: a 6000-char cap reached 10-15k serialized).
         # The budget is on the JSON-escaped form: a report full of control characters escapes at 6 chars each
         # and reached 15k serialized under a raw-text cap (ship round 2, P3).
@@ -478,9 +486,8 @@ Advisory only. After reconciling the registers, record coverage with compact-rea
   fi
 fi
 
-# --- User-facing ratio nudge (only when watcher is alive) -----------------
-# Fires AT MOST ONCE per session via stderr (visible to user, not folded
-# into Claude's context). Triggers when:
+# --- Model-facing ratio nudge (only when watcher is alive) ----------------
+# Fires AT MOST ONCE per session as additionalContext. Triggers when:
 #   - total context > 400K tokens AND
 #   - tokens-grown-per-hour / agent-writes-per-hour > 100K   (the watcher
 #     is being outrun: lots of context coming in, not many durable writes)
@@ -488,7 +495,7 @@ fi
 # this nudge intentionally doesn't double up.
 USER_NUDGE_FIRED="${LOGDIR}/.user-nudge-fired.${SID}"
 TOKEN_MARK_FILE="${LOGDIR}/.token-mark.${SID}"  # format: <unix_ts>:<tokens>
-if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDGE_FIRED" ]; then
+if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDGE_FIRED" ] && [ -z "$_TE_AGENT" ]; then
   RTRANS=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")
   if [ -n "$RTRANS" ] && [ -f "$RTRANS" ]; then
     RTOK=$(tail -100 "$RTRANS" 2>/dev/null \
@@ -525,15 +532,8 @@ if [ "$IN_COOLDOWN" -eq 0 ] && [ "$WATCHER_ACTIVE" -eq 1 ] && [ ! -f "$USER_NUDG
       if [ "$RATIO" -gt 100000 ] 2>/dev/null; then
         TOK_K=$(( RTOK / 1000 ))
         GAIN_K=$(( TOK_GAIN_HR / 1000 ))
-        # stderr (user-visible), NOT systemMessage — this is for the human,
-        # not for Claude to act on. Fire-once via the sentinel file.
-        {
-          echo ""
-          echo "📊 Context at ${TOK_K}K — grew ${GAIN_K}K in the last hour with ${RECENT_WRITES} .agent/ writes."
-          echo "   The watcher is being outrun. If this thread of work is winding down,"
-          echo "   consider /compact (durable state is in .agent/ — recovery is cheap)."
-          echo ""
-        } >&2
+        # Keep the existing once-per-session sentinel; no user action is needed.
+        COMPACT_NUDGE="Context at ${TOK_K}K — grew ${GAIN_K}K in the last hour with ${RECENT_WRITES} .agent/ writes. The watcher is being outrun. Save or refresh the close-out per the Compaction lifecycle protocol now and after each completed step while context is high; continue working. Do not pause, slow down, hand work back or request manual compaction. Mention compaction only if the user asks, or once if the session settings have auto-compaction disabled."
         touch "$USER_NUDGE_FIRED" 2>/dev/null || true
       fi
     fi
@@ -644,6 +644,7 @@ ${REHYDRATE_MSG}"
 fi
 
 # Append compact nudge if triggered
+USER_NUDGE_MSG="$NUDGE_MSG"
 if [ -n "$COMPACT_NUDGE" ]; then
   if [ -n "$NUDGE_MSG" ]; then
     NUDGE_MSG="${NUDGE_MSG}
@@ -655,6 +656,8 @@ fi
 
 # Append the mid-session disk message (built above) if the level changed
 if [ -n "$DISK_MSG" ]; then
+  USER_NUDGE_MSG="${USER_NUDGE_MSG}${USER_NUDGE_MSG:+
+}${DISK_MSG}"
   if [ -n "$NUDGE_MSG" ]; then
     NUDGE_MSG="${NUDGE_MSG}
 ${DISK_MSG}"
@@ -684,17 +687,17 @@ fi
 # The nudges in NUDGE_MSG are addressed to Claude, so they go out as additionalContext,
 # the channel that reaches the model; systemMessage is shown to the user only
 # (hooks reference). Until 2026-10-11 these went out as systemMessage alone, so
-# none of them reached the model. The user keeps seeing the same line.
+# none of them reached the model. Context-pressure prompts stay model-only.
 # USER_ONLY_MSG is shown to the user and never sent to the model.
 USER_ONLY_MSG="${USER_ONLY_MSG:-}"
 if [ -n "$NUDGE_MSG" ]; then
   _EV=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null || echo PostToolUse)
-  _UMSG="$NUDGE_MSG"; [ -n "$USER_ONLY_MSG" ] && _UMSG="${NUDGE_MSG}
+  _UMSG="$USER_NUDGE_MSG"; [ -n "$USER_ONLY_MSG" ] && _UMSG="${USER_NUDGE_MSG}
 ${USER_ONLY_MSG}"
   # NUL separates shell strings; pass report bodies through stdin, not argv.
   printf '%s\0%s\0%s' "$_UMSG" "$NUDGE_MSG" "${_EV:-PostToolUse}" |
     jq -Rs 'split("\u0000") | {systemMessage: .[0], hookSpecificOutput:
-      {hookEventName: .[2], additionalContext: .[1]}}' 2>/dev/null || true
+      {hookEventName: .[2], additionalContext: .[1]}} | if .systemMessage == "" then del(.systemMessage) else . end' 2>/dev/null || true
 elif [ -n "$USER_ONLY_MSG" ]; then
   printf '%s' "$USER_ONLY_MSG" | jq -Rs '{systemMessage: .}' 2>/dev/null || true
 fi

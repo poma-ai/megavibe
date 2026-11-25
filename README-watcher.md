@@ -2,7 +2,7 @@
 
 A long-running daemon that keeps `.agent/` files fresh from the live Claude Code transcript — with **no in-session token tax**.
 
-The intent: replace the proactive tier-nudge architecture ("flush context NOW") with an out-of-band watcher that does the flush itself, on a trickle, while you work. Claude never has to be reminded; the files are already current when compaction or session end arrives.
+The watcher flushes narrative on a trickle while you work. The session still owns the close-out synthesis: decisions with reasons, tasks with owners and blockers, a summary event and `.agent/LOGS/.closeout-done.<sid12>`. At high context it refreshes this after each completed step and continues working; automatic compaction needs no user action.
 
 **Status: default ON.** Opt out per session with `MEGAVIBE_WATCHER=0`.
 
@@ -39,7 +39,7 @@ python3 ~/.megavibe/scripts/review-decisions.py --yes-all  # accept everything (
 
 Accepted decisions get appended to `.agent/DECISIONS.md` continuing the existing sequence number; rejected ones stay in the staging JSONL with `status: rejected` for audit.
 
-A staged row that nobody reviews stays pending forever and never reaches `DECISIONS.md` — nothing in the session reads this file. `.claude/hooks/compact-readiness.sh` reports the current session's pending-row count and queue path as advisory text (measured 2026-10-18: 31 pending in one session, 45 across four, the oldest six weeks old), so the count reaches the user in the pre-compact alert (stderr and the saved `.agent/LOGS/pre-compact-alert.*.md`; Claude Code discards a PreCompact hook's message to the model) and reaches the model in the tier-2/3 nudge only while the watcher is OFF (the watcher suppresses tier nudges). With the watcher on, run `.claude/hooks/compact-readiness.sh` by hand before compacting.
+A staged row that nobody reviews stays pending forever and never reaches `DECISIONS.md` — nothing in the session reads this file. `.claude/hooks/compact-readiness.sh` reports the current session's pending-row count and queue path as advisory text (measured 2026-10-18: 31 pending in one session, 45 across four, the oldest six weeks old), so the count reaches the user in the pre-compact alert (stderr and the saved `.agent/LOGS/pre-compact-alert.*.md`; Claude Code discards a PreCompact hook's message to the model) and reaches the model in the tier-2/3 nudge only while the watcher is OFF (the watcher suppresses tier nudges). With the watcher on, the session can run `.claude/hooks/compact-readiness.sh` while refreshing its close-out; this is advisory and never a reason to wait for the user.
 
 ## Enabling / disabling
 
@@ -53,13 +53,13 @@ MEGAVIBE_WATCHER=0 claude
 echo 'export MEGAVIBE_WATCHER=0' >> ~/.zshrc   # or ~/.bashrc
 ```
 
-When the watcher is alive (its `mvw-<sid12>` tmux session exists), the in-session tier nudges and the 8-call stale-context nudge in `log-tool-event.sh` both suppress automatically — the daemon is keeping `.agent/` fresh, so Claude doesn't need a "flush now" reminder. When the watcher is off, those nudges remain the safety net.
+When the watcher is alive (its `mvw-<sid12>` tmux session exists), the in-session tier nudges and the 8-call stale-context nudge in `log-tool-event.sh` both suppress automatically — the daemon is keeping `.agent/` fresh, so Claude doesn't need a "flush now" reminder. When the watcher is off, those nudges remain the safety net. The close-out prompt in `compaction-autopilot.sh` is independent of this gate and still fires with the watcher on.
 
-## The ratio nudge (user-facing)
+## The ratio nudge (model-facing)
 
 With the watcher running and the launcher's 500K cap removed, context can grow much larger before the harness auto-compacts. Most of the time that's fine — the watcher is flushing knowledge as you work. But occasionally context grows faster than the watcher can keep up with: a long exploration burst, a wall of tool output, etc.
 
-For that case `log-tool-event.sh` fires a **once-per-session** stderr nudge (visible to you, not folded into Claude's context) when:
+For that case `log-tool-event.sh` fires a **once-per-session** reminder to the model when:
 
 - `tokens > 400K`, **AND**
 - `tokens_grown_per_hour / agent_writes_per_hour > 100K` (the watcher is genuinely outrun)
@@ -67,12 +67,15 @@ For that case `log-tool-event.sh` fires a **once-per-session** stderr nudge (vis
 Sample output:
 
 ```
-📊 Context at 580K — grew 230K in the last hour with 1 .agent/ writes.
-   The watcher is being outrun. If this thread of work is winding down,
-   consider /compact (durable state is in .agent/ — recovery is cheap).
+Context at 580K — grew 230K in the last hour with 1 .agent/ writes.
+The watcher is being outrun. Save or refresh the close-out per the
+Compaction lifecycle protocol now and after each completed step while
+context is high; continue working.
 ```
 
-If you want to suppress it for a session, `touch .agent/LOGS/.user-nudge-fired.<sid>` (or just ignore it — it only fires once anyway).
+The reminder requires no user action. The session does not request manual compaction, announce a wait, pause, slow down or hand work back because of context level. It mentions compaction only when asked, or once if auto-compaction is disabled in the session settings. After compaction it runs `/rehydrate` (or reads the fresh working context reported by the hook) and continues without being asked.
+
+If you want to suppress the ratio reminder for a session, `touch .agent/LOGS/.user-nudge-fired.<sid>` (or just ignore it — it only fires once anyway).
 
 ## Inspecting / killing
 
@@ -128,4 +131,4 @@ This is acceptable noise; the cost of a false-positive rejection (silent data lo
 
 Tier nudges in `log-tool-event.sh` stay live until the watcher has empirical evidence (a few real-session runs) that it keeps files current without intervention. Once that bar is cleared, the tier-nudge code in `log-tool-event.sh` (~80 lines) can be removed.
 
-Until then: both run side-by-side. Tier nudges fire if context grows past 50/75/90% of the auto-compact window; the watcher writes files between turns. No interaction between them.
+Until then: both run side-by-side. Tier nudges fire at 50/75/90% of the effective auto-compact threshold only when the watcher is off; the watcher writes files between turns when on. The independent close-out hook covers both cases.

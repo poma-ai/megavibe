@@ -360,6 +360,7 @@ fi
 # No branch name or commit subjects here: they are text a cloned repo controls,
 # and this channel is read as instructions. They are in the orientation file.
 SHORT="${SHORT}
+Recover without asking the user, then continue working. Mention compaction only if the user asks, or once if the session settings have auto-compaction disabled.
 
 Session: ${SID_FULL}
 
@@ -408,7 +409,6 @@ fi
 
 echo "Emitting additionalContext (${#SHORT} chars; full orientation ${#CONTEXT} chars in file)" >&2
 
-# additionalContext is what reaches the model; systemMessage is shown to the user
-# only (the same split disk-check.sh and announce-update.sh use).
-jq -n --arg ctx "$SHORT" --arg msg "megavibe: context compacted; orientation saved to ${INSTRUCTIONS_FILE}" \
-  '{systemMessage: $msg, hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+# Recovery is automatic; only the model needs these instructions.
+jq -n --arg ctx "$SHORT" \
+  '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'

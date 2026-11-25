@@ -46,6 +46,7 @@ for index, (label, filename, old, new) in enumerate(mutations):
     shutil.copytree(repo / "template/.claude/hooks", root / "template/.claude/hooks")
     shutil.copytree(repo / "scripts", root / "scripts")
     shutil.copy2(repo / "README.md", root / "README.md")
+    shutil.copy2(repo / "CLAUDE.md", root / "CLAUDE.md")
     shutil.copy2(repo / "README-compaction-readiness.md", root / "README-compaction-readiness.md")
     shutil.copy2(repo / "template/CLAUDE.md", root / "template/CLAUDE.md")
     (root / "tests").mkdir()
@@ -88,7 +89,7 @@ event() {
 fresh() {
   rm -rf "$P"
   mkdir -p "$P/.agent/events" "$P/.agent/LOGS" "$P/.agent/sessions" "$P/.claude/hooks"
-  for h in compact-readiness on-pre-compact compaction-autopilot log-tool-event redact-secrets agent-log watch-background; do
+  for h in compact-readiness on-pre-compact on-compact compaction-autopilot log-tool-event redact-secrets agent-log watch-background; do
     # Redirect home references only in scratch copies; leave caller home alone.
     sed 's/${HOME}/${TEST_HOME}/g; s/$HOME/$TEST_HOME/g' \
       "$HOOKS/$h.sh" > "$P/.claude/hooks/$h.sh"
@@ -672,6 +673,140 @@ tool_report
 has '[report truncated;' 'large helper failure bounded'
 eq "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext | length < 7000')" true 'tier payload bounded'
 
+echo "== Context pressure saves state and continues"
+for tokens in 800000 960000; do
+  fresh
+  usage "$tokens"
+  # Another session's marker cannot abbreviate this session's first close-out.
+  touch "$P/.agent/LOGS/.closeout-done.${OTHER:0:12}"
+  tool_report
+  has 'Save a close-out now:' "tier $tokens first close-out"
+  has 'decisions with reasons' 'close-out records rationale'
+  has 'tasks with owners and blockers' 'close-out records ownership'
+  has "touch .agent/LOGS/.closeout-done.$SID12" 'close-out stamps this session'
+  has 'Continue working' 'high tier continues work'
+  has 'after each completed step' 'high tier requires ongoing refresh'
+  lacks '/compact' 'high tier never requests the manual command'
+  eq "$(printf '%s' "$OUT" | jq 'has("systemMessage")')" false 'pressure message is model-only'
+  FIRST_LEN=${#OUT}
+  touch "$P/.agent/LOGS/.closeout-done.$SID12"
+  rm -f "$P/.agent/LOGS/.compact-tier.$SID12"
+  tool_report
+  has 'Refresh the close-out now.' "tier $tokens uses refresh after marker"
+  has 'Continue working' 'refresh continues work'
+  has 'after each completed step' 'refresh repeats after completed steps'
+  lacks 'Save a close-out now:' 'refresh omits first-time instructions'
+  lacks 'touch .agent/LOGS/.closeout-done.' 'refresh omits marker tutorial'
+  eq "$(( ${#OUT} < FIRST_LEN ))" 1 'refresh form is shorter'
+done
+
+autopilot() {
+  OUT=$(cd "$P" && printf '{"hook_event_name":"%s","session_id":"%s","transcript_path":"%s","stop_hook_active":%s}' \
+    "$1" "$SID" "$TR" "${2:-false}" | /bin/bash .claude/hooks/compaction-autopilot.sh)
+  RC=$?
+}
+fresh
+usage 860000
+autopilot PostToolUse
+has 'Save a close-out now, then continue working' 'autopilot continues after close-out'
+has 'after each completed step' 'autopilot requires ongoing refresh'
+lacks 'Wrap up for compaction' 'autopilot has no wrap-up instruction'
+lacks '/compact' 'autopilot never requests manual command'
+autopilot PostToolUse
+eq "$OUT" '' 'soft reminder cadence unchanged'
+usage 960000
+autopilot Stop true
+eq "$OUT" '' 'active Stop hook never blocks again'
+autopilot Stop
+has '"decision": "block"' 'high Stop still requests missing close-out'
+has 'continue working' 'Stop close-out does not hand back for compaction'
+autopilot Stop
+eq "$OUT" '' 'Stop block remains once per cycle'
+touch "$P/.agent/LOGS/.closeout-done.$SID12"
+autopilot PostToolUse
+eq "$OUT" '' 'done marker suppresses autopilot reminders'
+rm -f "$P/.agent/LOGS/.closeout-blocked.$SID12"
+autopilot Stop
+eq "$OUT" '' 'done marker suppresses close-out Stop block'
+
+# Exercise the watcher's ratio path without starting a real daemon.
+fresh
+usage 800000
+mkdir -p "$T/bin"
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/tmux"
+chmod +x "$T/bin/tmux"
+echo "$(( $(date +%s) - 600 )):400000" > "$P/.agent/LOGS/.token-mark.$SID12"
+PATH="$T/bin:$PATH" tool_report
+has 'The watcher is being outrun' 'ratio reminder reaches the model'
+has 'continue working' 'watcher overrun continues work'
+has 'after each completed step' 'watcher overrun requires refresh'
+lacks '/compact' 'watcher overrun never requests manual command'
+eq "$(printf '%s' "$OUT" | jq 'has("systemMessage")')" false 'ratio reminder is model-only'
+PATH="$T/bin:$PATH" tool_report
+lacks 'The watcher is being outrun' 'ratio reminder still fires only once'
+
+# Recovery is automatic for both the rehydrate and fresh-context paths.
+for state in empty stale fresh; do
+  fresh
+  if [ "$state" != empty ]; then
+    for i in $(seq 1 20); do echo 'Retained context'; done > "$P/.agent/FULL_CONTEXT.md"
+  fi
+  if [ "$state" = fresh ]; then
+    mkdir -p "$P/.agent/sessions/$SID"
+    echo 'Current working context' > "$P/.agent/sessions/$SID/WORKING_CONTEXT.md"
+  fi
+  OUT=$(cd "$P" && printf '{"source":"compact","session_id":"%s"}' "$SID" | /bin/bash .claude/hooks/on-compact.sh)
+  eq "$?" 0 "post-compact $state succeeds"
+  has 'Recover without asking the user, then continue working' "post-compact $state continues autonomously"
+  eq "$(printf '%s' "$OUT" | jq 'has("systemMessage")')" false 'recovery does not announce compaction to user'
+  if [ "$state" = fresh ]; then
+    has 'Read it in full and continue' 'fresh working-context shortcut'
+    absent "$P/.agent/LOGS/.needs-rehydration.$SID12" 'fresh recovery needs no rehydrate'
+  else
+    has 'Run /rehydrate' 'recovery requests rehydrate itself'
+    exists "$P/.agent/LOGS/.needs-rehydration.$SID12" 'missing working context requires rehydrate'
+  fi
+done
+
+echo "== Shipped template must not request manual compaction"
+OUT=$(python3 - "$REPO/template" <<'PYSCAN'
+from pathlib import Path
+import re
+import sys
+
+# Grep-style text guard: scan all shipped template files, including dotdirs.
+# The decision table and factual command documentation do not match imperatives.
+request = re.compile(
+    r"\b(?:ask|tell|instruct|prompt|remind|require)\b[^.\n]{0,100}\buser\b[^.\n]{0,100}(?:/compact\b|\bcompact\b)"
+    r"|\b(?:suggest|recommend|request)\b[^.\n]{0,100}/compact\b"
+    r"|\b(?:wait|pause|stop)\b[^.\n]{0,60}\buntil\b[^.\n]{0,60}\bcompact(?:ion)?\b",
+    re.I)
+
+def forbidden(text):
+    # Explicit prohibitions are allowed, without exempting the rest of the line.
+    text = re.sub(r"\b(?:never|do not|don't)\s+ask the user to run `?/compact`?", "", text, flags=re.I)
+    return bool(request.search(text))
+
+for bad in ('suggest /compact to the user at the next clean break',
+            'tell the user to run /compact', 'Ask the user to compact now',
+            'Wait until compaction completes'):
+    assert forbidden(bad), bad
+for good in ('Never ask the user to run `/compact`.',
+             '| User wants to compact manually | `/compact` (optional) | A user MAY run it |',
+             '/compact is the built-in conversation summarizer.'):
+    assert not forbidden(good), good
+failures = []
+for path in sorted(Path(sys.argv[1]).rglob('*')):
+    if path.is_file():
+        for number, line in enumerate(path.read_text(errors='replace').splitlines(), 1):
+            if forbidden(line):
+                failures.append(f'{path.relative_to(Path(sys.argv[1]).parent)}:{number}')
+print('\n'.join(failures))
+sys.exit(bool(failures))
+PYSCAN
+)
+eq "$?" 0 'no shipped template instructions to request manual compaction or wait for it'
+
 echo "== Documented advisory protocol"
 for doc in "$REPO/README.md" "$REPO/README-compaction-readiness.md"; do
   OUT=$(cat "$doc")
@@ -693,6 +828,9 @@ has 'backtick-fenced examples are ignored' 'short rule: fenced examples'
 has 'MEGAVIBE_READY_ADVISORY_LIMIT' 'short rule: advisory limit'
 has 'README-compaction-readiness.md' 'short rule: pointer to full semantics'
 lacks '--staged-handled' 'short rule: acknowledgement instructions removed'
+
+eq "$(grep '^\*\*At context pressure, save and continue' "$REPO/CLAUDE.md")" \
+   "$(grep '^\*\*At context pressure, save and continue' "$REPO/template/CLAUDE.md")" 'repo and template compaction protocol agree'
 
 echo "compact-readiness tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
