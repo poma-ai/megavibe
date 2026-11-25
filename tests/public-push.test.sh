@@ -581,7 +581,6 @@ The docs are ready.
 '"
 # a body file created earlier in the same call: deny-and-retry, not a prompt about an unreadable file
 # the retry instruction for a variable directory does not point at -R as a way out
-denies "variable directory with -R: the instruction names the literal path" "$PUB" "cd \"\$PWD\" && gh pr create -R acme/pub --title Fix --body Clean" "literal path"
 lacks "the instruction does not offer -R as sufficient" "or pass -R"
 # a dry run publishes nothing, whatever ran before it
 passes "a dry run after a remote change is not checked" "$PUB" "git remote set-url origin https://github.com/acme/pub.git && git push --dry-run origin main"
@@ -667,6 +666,10 @@ asks "pr edit with -R on a public repository that is not on the list asks" "$PRI
 asks "pr create: gh cannot tell" "$PUB" "gh pr create -R acme/mystery --title t --body b" "could not determine"
 asks "pr edit: gh cannot tell" "$PUB" "gh pr edit 3 -R acme/mystery --title t" "could not determine"
 denies "pr create after a remote change in the same call is a retry" "$PUB" "git remote set-url origin https://github.com/acme/priv.git && gh pr create --title Fix --body Done" "separate call"
+passes "pr create to a private repository named with -R does not depend on an unresolvable directory" "$PUB" 'cd "$WHERE" && gh pr create -R acme/priv --title Fix --body Done'
+asks "pr create to an unlisted public repository named with -R from an unresolvable directory asks" "$PRIV" 'cd "$WHERE" && gh pr create -R other/surprise --title Fix --body Done' "not on your list"
+asks "the last -R wins, as in gh" "$PRIV" "gh pr create -R acme/priv -R other/surprise --title T --body B" "not on your list"
+passes "the last -R wins: a private repository last" "$PUB" "gh pr create -R other/surprise -R acme/priv --title T --body B"
 denies "pr create from an unresolvable directory is a retry" "$PUB" 'cd "$WHERE" && gh pr create --title Fix --body Done' "not statically known"
 passes "the same pr create with an explicit literal directory and -R passes" "$PUB" "cd $PUB && gh pr create -R acme/pub --title Fix --body Done"
 asks "pr create: inline GH_REPO selects a public repository that is not on the list" "$PRIV" "GH_REPO=other/surprise gh pr create --title T --body B" "not on your list"

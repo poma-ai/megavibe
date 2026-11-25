@@ -943,10 +943,10 @@ def handle_pr(act):
     argv = act["argv"]
     if act["pre"]["retarget"]:   # before any visibility lookup: the lookup would see the target as it is now, not as the call leaves it
         return retry("An earlier command in this call (git %s) changes where the pull request goes, so its target was not checked. Create the pull request in a separate call." % act["pre"]["retarget"][0])
-    repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[0]
-    if not act["known"]:
+    repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[-1]   # the last -R wins, as in gh
+    if not repo and not act["known"]:   # a named repository does not depend on the directory
         return retry("The working directory is not statically known (cd into a variable or substitution, pushd/popd), so the pull request's base repository cannot be resolved. Replace the variable directory with a literal path, or name the repository with -R owner/repo.")
-    if not os.path.isdir(act["cwd"]):
+    if not repo and not os.path.isdir(act["cwd"]):
         return retry("The directory this pull request is created from (%s) does not exist yet; if an earlier command in this call creates it, run that first and the pull request in a separate call." % trunc(act["cwd"], 60))
     host = (act.get("env", {}).get("GH_HOST") or os.environ.get("GH_HOST", "github.com")).lower()
     nwo = None
@@ -954,7 +954,7 @@ def handle_pr(act):
         parts = repo.split("/")
         if len(parts) == 3: host, nwo = parts[0].lower(), "/".join(parts[1:])
         else: nwo = repo
-    vis, got = gh_visibility(host, nwo, act["cwd"])
+    vis, got = gh_visibility(host, nwo, act["cwd"] if act["known"] else None)
     if vis is None:
         if nwo and is_trusted(host + "/" + nwo): return None   # only where the lookup cannot answer; never over a PUBLIC answer
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
