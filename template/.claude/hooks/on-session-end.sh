@@ -25,6 +25,23 @@ set -u
 command -v jq &>/dev/null || exit 0
 
 INPUT=$(cat)
+# Capture before the harness and existing cleanup retire session-owned work.
+# Ordinary exits never create a handover.
+RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
+RMARK=${MEGAVIBE_RESTART_MARKER:-${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session}
+if [ -f "$RH" ] && { [ -f "$RMARK" ] || [ -f "${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session" ]; }; then
+  FULL_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
+  if [[ "$FULL_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+    # Move a legacy request to this launcher before writing the ID; leaving
+    # the global marker behind would restart other sessions on their next exit.
+    if [ ! -f "$RMARK" ] && [ "$RMARK" != "${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session" ]; then
+      mv "${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session" "$RMARK" 2>/dev/null || exit 0
+    fi
+    bash "$RH" capture "$FULL_SID" >/dev/null 2>&1 || true
+    printf '%s\n' "$FULL_SID" > "$RMARK" || true
+  fi
+fi
+
 SID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)
 [ -n "$SID" ] || exit 0
 

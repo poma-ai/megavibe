@@ -30,7 +30,7 @@ EOF
 chmod +x "$T/bin/ps"
 registry() { printf '{"pid":50001,"sessionId":"%s"}\n' "$1" > "$T/cfg/sessions/50001.json"; }
 # Both claude launch sites must record, or sessions started on that path are unmarked.
-[ "$(grep -c '^  record_launch "\$CLAUDE_PID"$' "$REPO/megavibe")" = 2 ] || fail "expected record_launch after both claude launches"
+[ "$(grep -c '^ *record_launch "\$CLAUDE_PID"$' "$REPO/megavibe")" = 2 ] || fail "expected record_launch after both claude launches"
 
 run() { # run <pid> [env assignments...]: source the function in a clean shell
   local pid="$1"; shift
@@ -41,6 +41,14 @@ probe() { # probe <snippet> [env assignments...]: run a snippet after capture_la
   (cd "$T" && env -i PATH="$T/bin:$PATH" "$@" bash -c 'set -eu; source "$1"; capture_launch_parent; eval "$2"' _ "$T/fn.sh" "$snippet")
 }
 field() { jq -r "$1" "$T/home/launches/$2.json"; }
+
+# Scoped restart metadata is retained for exact pane matching; no terminal
+# mutation is performed while recording a launch.
+run 4099 TMUX=/example/test.sock,123,0 TMUX_PANE=%7
+[ "$(field .pane 4099)" = %7 ] || fail "restart pane"
+[ "$(field .socket 4099)" = /example/test.sock ] || fail "restart socket"
+[ "$(field .restartProtocol 4099)" = 1 ] || fail "restart protocol"
+[[ "$(field .wrapperPid 4099)" =~ ^[0-9]+$ ]] || fail "restart wrapper pid"
 
 # Explicit parent wins over the inherited session id.
 run 4001 MEGAVIBE_PARENT_SESSION=aaaa-1111 CLAUDE_CODE_SESSION_ID=bbbb-2222

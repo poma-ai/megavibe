@@ -43,6 +43,7 @@ Subcommands:
   auth [HOURS]          Check how long the Claude login lasts
   tick ...              Run one unattended watch tick
   sessions ...          Show live Claude sessions and their parent tree
+  restart-all [--dry-run] [--others]  Restart idle sessions in tmux
   doctor                Diagnose split Claude memory stores
   trash-greenlight      Install managed Trash permission rules (asks for sudo)
   remote                Removed; print Telegram remote cleanup instructions
@@ -1189,12 +1190,13 @@ fi
 # megavibe tick [--name N] [org/repo ...]: one unattended watch tick (scripts/tick.sh);
 # megavibe auth [HOURS]: how long the Claude login lasts (scripts/claude-auth-check.sh);
 # megavibe sessions [--orphans]: live Claude sessions as a tree (scripts/sessions.sh).
-if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ] || [ "${1:-}" = "sessions" ]; then
+if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ] || [ "${1:-}" = "sessions" ] || [ "${1:-}" = "restart-all" ]; then
   _sub="$1"; shift
   case "$_sub" in
     tick) _s="$MEGAVIBE_HOME/scripts/tick.sh" ;;
     auth) _s="$MEGAVIBE_HOME/scripts/claude-auth-check.sh" ;;
     sessions) _s="$MEGAVIBE_HOME/scripts/sessions.sh" ;;
+    restart-all) _s="$MEGAVIBE_HOME/scripts/restart-all.sh" ;;
   esac
   [ -f "$_s" ] || { echo "megavibe $_sub: $_s not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
   exec bash "$_s" "$@"
@@ -1948,7 +1950,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/restart.sh" "$REPO_DIR/scripts/restart-all.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
@@ -2745,8 +2747,8 @@ record_launch() {
       [[ "$p" =~ ^[0-9]+$ ]] || continue
       kill -0 "$p" 2>/dev/null || rm -f "$f"
     done
-    jq -n --argjson pid "$pid" --arg parent "$parent" --argjson ppid "${parent_pid:-null}" --arg pcwd "$parent_cwd" --argjson at "$(date +%s)" \
-      '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' \
+    jq -n --argjson pid "$pid" --arg parent "$parent" --argjson ppid "${parent_pid:-null}" --arg pcwd "$parent_cwd" --argjson at "$(date +%s)" --argjson wrapper "$$" --arg pane "${TMUX_PANE:-}" --arg tmux "${TMUX:-}" \
+      '{wrapperPid: $wrapper, restartProtocol: 1, pane: $pane, socket: ($tmux | split(",")[0]), pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' \
       > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null \
       || rm -f "$dir/$pid.json.tmp"
   ) 2>/dev/null || true
@@ -2780,6 +2782,71 @@ launch_claude() {
     fi
   fi
   exec claude "$@"
+}
+
+# A wrapper owns its marker; another session cannot consume its request.
+export MEGAVIBE_RESTART_MARKER="$MEGAVIBE_HOME/.restart-session.$$"
+rm -f "$MEGAVIBE_RESTART_MARKER"   # a stale request on a reused wrapper PID is not ours
+restart_after_exit() {
+  local marker="$MEGAVIBE_RESTART_MARKER" restart_sid=""
+  [ -f "$marker" ] || marker="$MEGAVIBE_HOME/.restart-session"
+  if [ -f "$marker" ]; then
+    restart_sid=$(cat "$marker" 2>/dev/null) || restart_sid=""
+    if ! [[ "$restart_sid" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+      restart_sid=$(jq -r '.sessionId // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$CLAUDE_PID.json" 2>/dev/null) || restart_sid=""
+    fi
+    RESTART_ARGS=(--continue)
+    if [[ "$restart_sid" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+      RESTART_ARGS=(--resume "$restart_sid")
+      [ ! -f "$MEGAVIBE_HOME/scripts/restart.sh" ] || bash "$MEGAVIBE_HOME/scripts/restart.sh" capture "$restart_sid" "$CLAUDE_PID" || true
+    else
+      echo 'megavibe restart: session id unavailable; falling back to --continue.' >&2
+    fi
+    rm -f "$marker"
+    echo ""
+    echo -e "  ${BOLD}Updating megavibe...${RESET}"
+    do_update 2>&1 || echo -e "  ${YELLOW}Update failed — restarting with current version.${RESET}"
+    echo ""
+    echo -e "  ${BOLD}Syncing hooks and rules...${RESET}"
+    bash "$INIT_SCRIPT" . 2>&1
+    echo ""
+    echo -e "  ${GREEN}Resuming conversation...${RESET}"
+    echo ""
+    # Clear the update-applied signal (this session is now current)
+    rm -f "$MEGAVIBE_HOME/.update-applied"
+
+    # exec the UPDATED launcher rather than looping back to `claude`.
+    #
+    # Looping only restarted claude. Everything this script does BEFORE the loop
+    # — the MEGAWORK_* credential loader, GEMINI_API_KEY, PATH, the auto-compact
+    # window, the MCP checks — was fixed at the original launch and survived
+    # every /megavibe-restart. A wrapper started two days ago kept handing the
+    # new claude a two-day-old environment, so `github` and `reports` went on
+    # failing in a session restarted long after the loader landed. The nudge to
+    # restart was pointing at something that could not deliver what it promised.
+    #
+    # exec replaces this process, so the new one re-reads the script from disk
+    # and re-runs all of it. The marker is already removed above, so this cannot
+    # loop. If exec fails for any reason, fall through to the old behaviour
+    # rather than dropping the session.
+    if [ -x "$MEGAVIBE_HOME/megavibe" ]; then
+      restore_launch_parent
+      if [ "$NORMALIZE" = "0" ]; then exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize "${RESTART_ARGS[@]}"; fi
+      exec bash "$MEGAVIBE_HOME/megavibe" "${RESTART_ARGS[@]}"
+    fi
+
+    # Re-capture launch version after update (only reached if exec did not)
+    if [ -n "$REPO_DIR" ] && is_git_source "$REPO_DIR"; then
+      LAUNCH_VER=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
+    elif [ -f "$VERSION_FILE" ]; then
+      LAUNCH_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
+    fi
+    export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
+    CLAUDE_EXTRA_ARGS=("${RESTART_ARGS[@]}")
+    ROUTER_ARGS=()
+    return 0
+  fi
+  return 1
 }
 
 # ─── Resume path: minimal, never mutates directory ───────────────────
@@ -2816,11 +2883,15 @@ if $IS_RESUME; then
   # Skip init.sh (LESSONS.md: never overwrite hooks mid-session)
   # Go straight to claude
   trap release_lock EXIT HUP INT TERM
-  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
-  CLAUDE_PID=$!
-  update_lock_pid "$CLAUDE_PID"
-  record_launch "$CLAUDE_PID"
-  wait $CLAUDE_PID 2>/dev/null || true
+  CLAUDE_EXTRA_ARGS=("$@")
+  while true; do
+    CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "${CLAUDE_EXTRA_ARGS[@]}" &
+    CLAUDE_PID=$!
+    update_lock_pid "$CLAUDE_PID"
+    record_launch "$CLAUDE_PID"
+    wait $CLAUDE_PID 2>/dev/null || true
+    restart_after_exit || break
+  done
   exit 0
 fi
 
@@ -3103,8 +3174,7 @@ fi
 # --remote-control: every session is accessible from phone via Claude app
 #
 # Restart loop: if a /megavibe-restart skill writes the restart marker,
-# we update megavibe, sync hooks, and relaunch with --continue.
-RESTART_MARKER="$MEGAVIBE_HOME/.restart-session"
+# we update megavibe, sync hooks, and resume the exact conversation.
 CLAUDE_EXTRA_ARGS=("$@")
 compute_router_args "$@"
 [ -n "$ROUTER_NOTE" ] && [ "$ROUTER_NOTE" != "normal: no change" ] && echo -e "  ${DIM}router: ${ROUTER_NOTE}  (MEGAVIBE_ROUTER=0 to disable; --model/--effort to choose yourself)${RESET}"
@@ -3117,52 +3187,7 @@ while true; do
   record_launch "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
 
-  # Check for restart-after-update marker
-  if [ -f "$RESTART_MARKER" ]; then
-    rm -f "$RESTART_MARKER"
-    echo ""
-    echo -e "  ${BOLD}Updating megavibe...${RESET}"
-    do_update 2>&1 || echo -e "  ${YELLOW}Update failed — restarting with current version.${RESET}"
-    echo ""
-    echo -e "  ${BOLD}Syncing hooks and rules...${RESET}"
-    bash "$INIT_SCRIPT" . 2>&1
-    echo ""
-    echo -e "  ${GREEN}Resuming conversation...${RESET}"
-    echo ""
-    # Clear the update-applied signal (this session is now current)
-    rm -f "$MEGAVIBE_HOME/.update-applied"
-
-    # exec the UPDATED launcher rather than looping back to `claude`.
-    #
-    # Looping only restarted claude. Everything this script does BEFORE the loop
-    # — the MEGAWORK_* credential loader, GEMINI_API_KEY, PATH, the auto-compact
-    # window, the MCP checks — was fixed at the original launch and survived
-    # every /megavibe-restart. A wrapper started two days ago kept handing the
-    # new claude a two-day-old environment, so `github` and `reports` went on
-    # failing in a session restarted long after the loader landed. The nudge to
-    # restart was pointing at something that could not deliver what it promised.
-    #
-    # exec replaces this process, so the new one re-reads the script from disk
-    # and re-runs all of it. The marker is already removed above, so this cannot
-    # loop. If exec fails for any reason, fall through to the old behaviour
-    # rather than dropping the session.
-    if [ -x "$MEGAVIBE_HOME/megavibe" ]; then
-      restore_launch_parent
-      if [ "$NORMALIZE" = "0" ]; then exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize --continue; fi
-      exec bash "$MEGAVIBE_HOME/megavibe" --continue
-    fi
-
-    # Re-capture launch version after update (only reached if exec did not)
-    if [ -n "$REPO_DIR" ] && is_git_source "$REPO_DIR"; then
-      LAUNCH_VER=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "")
-    elif [ -f "$VERSION_FILE" ]; then
-      LAUNCH_VER=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
-    fi
-    export MEGAVIBE_LAUNCH_VERSION="${LAUNCH_VER:-unknown}"
-    CLAUDE_EXTRA_ARGS=(--continue)
-    ROUTER_ARGS=()
-    continue
-  fi
+  restart_after_exit && continue
 
   # Normal exit — break out of the loop
   break

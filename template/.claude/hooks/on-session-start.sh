@@ -24,6 +24,20 @@ command -v jq &>/dev/null || exit 0
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 
+# Restart pick-up precedes the fresh-project gate and also runs on resume.
+case "$SOURCE" in
+  startup|resume)
+    RESTART_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
+    RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
+    if [ -f "$RH" ] && [[ "$RESTART_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]] &&
+       [ -f ".agent/sessions/$RESTART_SID/restart-handover.txt" ] &&
+       [ ! -e ".agent/sessions/$RESTART_SID/restart-handover.shown" ]; then
+      bash "$RH" show "$RESTART_SID" || true
+      exit 0
+    fi
+    ;;
+esac
+
 # Only act on fresh startup (not compact — that's handled by on-compact.sh)
 [ "$SOURCE" = "startup" ] || exit 0
 

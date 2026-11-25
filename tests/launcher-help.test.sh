@@ -87,7 +87,7 @@ check() {
 help_ok() {
   [ "$RC" = 0 ] && [ "${OUT%%$'\n'*}" = 'Usage: megavibe [subcommand | options | claude-args...]' ] &&
     [ "$(printf '%s\n' "$OUT" | wc -l)" -lt 60 ] &&
-    [[ "$OUT" == *'claude --help'* ]] && unchanged
+    [[ "$OUT" == *'claude --help'* ]] && [[ "$OUT" == *'restart-all [--dry-run] [--others]'* ]] && unchanged
 }
 version_ok() {
   [ "$RC" = 0 ] && [ "$OUT" = "$1" ] && unchanged
@@ -169,7 +169,7 @@ launch
 check 'install guard recognizes symlink paths' refused
 
 # These dispatch before the guard and remain usable from the install directory.
-for subcommand in node auth tick sessions; do
+for subcommand in node auth tick sessions restart-all; do
   setup_case install
   mkdir -p "$INSTALL/scripts"
   case "$subcommand" in
