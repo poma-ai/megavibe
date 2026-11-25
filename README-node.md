@@ -49,6 +49,26 @@ megavibe node session add NAME --window TARGET --task FILE [--dir DIR] [--sid ID
 
 Give each session its own folder (a worktree): the wrapper asks an interactive question when another session holds the folder's lock, and a detached window cannot answer it. A session started with a chosen id gets no model from the usage router; pass `--model`.
 
+### Restart records and secret sync
+
+Each watchdog run atomically writes its epoch to `~/.megavibe/node/last-alive`, even with `node.off` set. A gap longer than three five-minute intervals, or a macOS boot newer than that stamp, produces one `node.log` line: `back after N min (last alive HH:MM, boot HH:MM, clean shutdown: yes|no|unknown)`. The gap measures time between watchdog runs, including sleep, shutdown, and the pre-boot disk-unlock screen; it is not an exact power-off duration. Boot time comes from macOS `sysctl`; shutdown evidence comes from `last -1 shutdown` (`yes` if newer than the stamp, `no` if older, `unknown` if unavailable or unparseable). Other platforms report unknown boot/shutdown information. With no previous stamp there is no inferred outage.
+
+On that first run after a gap, the node also writes `~/.megavibe/node/restart-note.txt` before starting sessions. **The assistant reads this file after a restart.** It contains the same gap line, the existing session check's vanished-session names and resume commands (or its uncertainty report), and whether secret sync has succeeded since this start. Each restart replaces the previous note; later syncs update its success status, and the node never deletes it. The fresh and resumed PA prompts remind it to read the note when present.
+
+Secret sync remains PA-only and logs failures at most once an hour, without recording the tool's output. During the first three minutes of the node's recorded start (first run or detected gap), a failed sync gets up to two extra attempts, twenty seconds apart; later runs try once. A successful sync after failures logs `secret sync ok after N failed attempts` once, counting attempts across runs.
+
+### Optional peer watch
+
+Set `NODE_PEERS` in `node.conf`, without quotes, to enable checks on every active run:
+
+```ini
+NODE_PEERS=studio=studio.example,192.0.2.10 spare=spare.example
+```
+
+Each entry is `name=host[,fallback-address]`. Hosts and fallbacks must be host names or IPv4 addresses using only ASCII letters, digits, dots and hyphens, starting with a letter or digit. A colon (including `host:port` and IPv6 literals) or any other character rejects the entire entry: it is not checked or notified, and one log line names the entry, at most once an hour. Other valid peers are still checked. The node tries TCP port 22 on the host, then the fallback only if the host cannot connect. Connect/DNS and reading the first server line each have a two-second deadline. It sends no authentication or commands. An open port is `up`; a first banner or pre-authentication line containing `This system is locked` is `locked`; failed connections are `unreachable`. A silent open port counts as `up` when the read deadline expires. This does not prove the peer's node is running or its disk unlocked.
+
+The initial observation and each change of state produce one log line and, on macOS where `osascript` exists, one local notification. State is stored in `.peer-<name>` in the node directory. With `NODE_PEERS` unset or empty there are no peer checks, notifications, or peer-state changes. `node.off` also suspends peer checks. No automatic takeover occurs.
+
 ## Install
 
 ```
@@ -109,6 +129,6 @@ Returning to the writer: when the writer boots, its node restarts its PA (`pa.on
 - The secret scan runs once, before the first commit; the node's later automatic commits are not scanned, so keep secrets out of the PA's folder (the allow-list `.gitignore` is the main guard).
 - Two Macs that both hold `memory.push` at the same time diverge; nothing merges automatically.
 
-Tests: `tests/node.test.sh` (stubbed tmux, scutil, launchctl and login check; real git on scratch repos) and `tests/node-sessions.test.sh` (the session register against a real tmux on a private `-L` server, never the live one).
+Tests: `tests/node.test.sh` (stubbed tmux, scutil, launchctl and login check; real git on scratch repos), `tests/node-sessions.test.sh` (the session register against a real tmux on a private `-L` server, never the live one), and `tests/node-restart.test.sh` (restart records, sync recovery and peer transitions with a scratch HOME and stub commands/socket module; no real tmux, launchd or network).
 
 **Codex usage probe.** While `pa.on` is set, each run also calls `usage-probe.sh run --every 30` (one tiny Codex call at most every 30 minutes, skipped when a Codex reading under 15 minutes old exists) so the usage forecast has fresh Codex readings (README "Recent-pace forecast"). Without `pa.on` the node makes no such call.

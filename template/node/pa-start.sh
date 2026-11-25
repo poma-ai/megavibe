@@ -80,7 +80,7 @@ SID=""
 if [ -n "$SID" ]; then
   MIN="${MEGAVIBE_NODE_TEST_RESUME_SECS:-30}"; [[ $MIN =~ ^[0-9]+$ ]] || MIN=30
   T0=$SECONDS
-  megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" --resume "$SID" "Your session ended (a crash, a tmux restart or an exit) and was restarted: this is your previous conversation, resumed under the same session name. Your notes may have moved on without you: re-read megavibe-deliverables/STATUS.md. Check that your scheduled ticks and watches are back and set them up again if not, run 'megavibe node session check' to find repo sessions that vanished meanwhile, then tell the user in one line that you are back and what was interrupted."
+  megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" --resume "$SID" "Your session ended (a crash, a tmux restart or an exit) and was restarted: this is your previous conversation, resumed under the same session name. Read ../node/restart-note.txt if present for the last restart and secret-sync status. Your notes may have moved on without you: re-read megavibe-deliverables/STATUS.md. Check that your scheduled ticks and watches are back and set them up again if not, run 'megavibe node session check' to find repo sessions that vanished meanwhile, then tell the user in one line that you are back and what was interrupted."
   [ $((SECONDS - T0)) -ge "$MIN" ] && exit 0
   # Appended, one id per line: a second failure must not erase the first id.
   printf '%s\n' "$SID" >> "$SF.failed" 2>/dev/null; : > "$SF" 2>/dev/null
@@ -90,7 +90,7 @@ NEW=""; AFTER=""
 if [ -d "$N" ]; then
   # Where the node restarts the PA, a fresh start can follow a crash too (the old conversation could not
   # be resumed): the PA must look for what vanished with it, as the resume prompt asks.
-  AFTER=" If the megavibe node is installed here, also run 'megavibe node session check' (repo sessions that vanished) and set up your recurring ticks and watches again."
+  AFTER=" If the megavibe node is installed here, read ../node/restart-note.txt if present and run 'megavibe node session check' (repo sessions that vanished) and set up your recurring ticks and watches again."
   NEW=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z')
   if [[ $NEW =~ $UUID_RE ]] && printf '%s\n' "$NEW" > "$SF.tmp" 2>/dev/null && mv -f "$SF.tmp" "$SF" 2>/dev/null; then :
   else NEW=""; nlog "pa-start: could not record a session id (uuidgen, or $SF not writable); this PA will not be resumed after a restart"; fi

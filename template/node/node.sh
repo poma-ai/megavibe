@@ -29,7 +29,6 @@ MH="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 N="$MH/node"
 log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$N/node.log"; }
 [ -d "$N" ] || exit 1
-[ -e "$N/node.off" ] && exit 0
 # conf KEY DEFAULT REGEX: the last KEY=value line of node.conf; a value that does not match REGEX
 # (whole value) is logged and replaced by DEFAULT, so a typo cannot reach a command line.
 conf() {
@@ -54,16 +53,141 @@ CMAIL=$(conf COMMIT_EMAIL 'megavibe-node@localhost' '[A-Za-z0-9._+-]+@[A-Za-z0-9
 # helper is ever added that might.
 # A helper that cannot be started exits 127 here, not 0.
 bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@"; }
-NAME=$(bounded 10 scutil --get LocalHostName 2>/dev/null) || NAME=""
-case "$NAME" in ""|-*|*[!A-Za-z0-9-]*) log "unusable host name '$NAME'"; exit 1 ;; esac
-[ "${#NAME}" -le 63 ] || { log "host name too long"; exit 1; }
-command -v tmux >/dev/null 2>&1 && command -v megavibe >/dev/null 2>&1 || { log "tmux or megavibe not found"; exit 1; }
-
 # One run at a time: an flock on fd 9, held until this script exits (no lock file to clean up).
 exec 9>>"$N/.lock" || exit 1
 perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' || exit 0
 # Nothing this script starts may inherit fd 9: a tmux server holding it would keep the lock for good.
 tmux() { bounded 15 tmux "$@" 9>&-; }
+log_once() { [ -n "$(find "$N/.once-$1" -mmin -60 2>/dev/null)" ] || { log "$2"; touch "$N/.once-$1"; }; }
+# These records are advisory: an unavailable clock/history or a failed write never stops supervision.
+put() { printf '%s\n' "$2" > "$N/$1.tmp" && mv -f "$N/$1.tmp" "$N/$1"; }
+epoch() { local v; v=$(cat "$N/$1" 2>/dev/null); [[ $v =~ ^[1-9][0-9]{0,10}$ ]] && printf '%s' "$v"; }
+hhmm() { perl -MPOSIX=strftime -e 'print strftime("%H:%M", localtime($ARGV[0]))' "$1" 2>/dev/null; }
+NOW=$(date +%s); LAST=$(epoch last-alive); BOOT=""; RESTART=""
+OS=$(uname -s)
+if [ "$OS" = Darwin ]; then
+  BOOT=$(bounded 2 sysctl -n kern.boottime 2>/dev/null 9>&- | sed -nE 's/.*[ {]sec[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p')
+  [[ $BOOT =~ ^[1-9][0-9]{0,10}$ ]] || BOOT=""
+fi
+if [[ $NOW =~ ^[1-9][0-9]{0,10}$ ]]; then
+  if [ -n "$LAST" ] && { [ $((NOW - LAST)) -gt 900 ] || [ "${BOOT:-0}" -gt "$LAST" ]; }; then
+    CLEAN=unknown
+    if [ "$OS" = Darwin ] && HISTORY=$(LC_ALL=C bounded 2 last -y -1 shutdown 2>/dev/null 9>&-); then
+      # Request the year; missing/unparseable history cannot establish a shutdown date.
+      SHUTDOWN=$(printf '%s\n' "$HISTORY" | perl -MTime::Local=timelocal -e '
+        my $now = shift; my %mon; @mon{qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)} = (0..11);
+        while (<STDIN>) {
+          next unless /^shutdown\s/;
+          last unless /^shutdown\s+.*?\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w{3})\s+(\d{1,2})\s+(\d\d):(\d\d)(?::(\d\d))?\s+(\d{4})(?=\s|$)/;
+          my ($m,$d,$h,$min,$sec,$year) = ($1,$2,$3,$4,$5 || 0,$6);
+          last unless exists $mon{$m};
+          my $t = eval { timelocal($sec,$min,$h,$d,$mon{$m},$year) };
+          last unless defined $t && $t <= $now;
+          my @date = localtime($t);
+          last unless $date[0] == $sec && $date[1] == $min && $date[2] == $h
+            && $date[3] == $d && $date[4] == $mon{$m} && $date[5] + 1900 == $year;
+          print $t; last;
+        }' "$NOW" 2>/dev/null)
+      if [[ $SHUTDOWN =~ ^[1-9][0-9]{0,10}$ ]]; then
+        # last reports minutes: events in the same minute cannot be ordered.
+        # Its newest shutdown being earlier rules out any shutdown at/after LAST.
+        if [ $((SHUTDOWN / 60)) -gt $((LAST / 60)) ]; then CLEAN=yes
+        elif [ $((SHUTDOWN / 60)) -lt $((LAST / 60)) ]; then CLEAN=no; fi
+      fi
+    fi
+    RESTART="back after $(( (NOW - LAST) / 60 )) min (last alive $(hhmm "$LAST"), boot $(if [ -n "$BOOT" ]; then hhmm "$BOOT"; else printf unknown; fi), clean shutdown: $CLEAN)"
+    log "$RESTART"
+  fi
+  put last-alive "$NOW"
+  if [ -n "$RESTART" ] || [ -z "$(epoch .started-at)" ]; then
+    put .started-at "$NOW"; put .secret-ok no
+  fi
+fi 2>/dev/null
+
+# Preserve the existing check's names, resume commands, and UNKNOWN/UNSEEN distinctions.
+if [ -n "$RESTART" ]; then
+  CHECK=$(bounded 45 bash "$MH/scripts/megavibe-node.sh" session check 2>/dev/null 9>&-)
+  [ -n "$CHECK" ] || CHECK="Session check unavailable; run: megavibe node session check"
+  put restart-note.txt "$RESTART
+$CHECK
+Secret sync succeeded since start: no (not yet checked)" 2>/dev/null
+fi
+secret_note() {
+  [ -f "$N/restart-note.txt" ] || return 0
+  { sed '/^Secret sync succeeded since start:/d' "$N/restart-note.txt"; printf 'Secret sync succeeded since start: %s\n' "$1"; } > "$N/restart-note.txt.tmp" && mv -f "$N/restart-note.txt.tmp" "$N/restart-note.txt"
+}
+if [ -e "$N/node.off" ]; then
+  secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no) (node off)" 2>/dev/null
+  exit 0
+fi
+# PA only. Count every failed attempt across runs, but retain the hourly failure-log limit.
+# Retry only during the first three minutes of this node's recorded start, never every tick.
+if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
+  FAILURES=$(epoch .secret-failures); FAILURES=${FAILURES:-0}; ATTEMPT=0
+  START=$(epoch .started-at); START=${START:-0}
+  while :; do
+    ATTEMPT=$((ATTEMPT + 1))
+    if bounded 60 "$HOME/.local/bin/secret" sync >/dev/null 2>&1 9>&- </dev/null; then
+      [ "$FAILURES" = 0 ] || log "secret sync ok after $FAILURES failed attempts"
+      put .secret-failures 0; put .secret-ok yes
+      break
+    fi
+    FAILURES=$((FAILURES + 1)); put .secret-failures "$FAILURES"
+    log_once secret-sync "secret sync failed or timed out (run: secret sync)"
+    RETRY_NOW=$(date +%s)
+    [[ $RETRY_NOW =~ ^[1-9][0-9]{0,10}$ ]] && [ "$RETRY_NOW" -ge "$START" ] || break
+    [ "$ATTEMPT" -lt 3 ] && [ $((RETRY_NOW - START + 20)) -lt 180 ] || break
+    sleep 20
+  done
+  secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no)"
+else
+  secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no) (sync disabled or tool unavailable)"
+fi 2>/dev/null
+
+# No authentication or client data: connect to port 22, then read only the first server line.
+# Perl is already required by the node; its core socket module also bounds DNS with the alarm.
+peer_state() {
+  perl -MIO::Socket::INET -e '
+    $SIG{ALRM} = sub { die "timeout\n" };
+    my $s = eval { alarm 2; IO::Socket::INET->new(PeerAddr=>$ARGV[0], PeerPort=>22, Proto=>"tcp", Timeout=>2) };
+    alarm 0; exit 1 unless $s;
+    my $line = "";
+    eval { alarm 2; while (length($line) < 4096 && sysread($s, my $c, 1)) { $line .= $c; last if $c eq "\n"; } };
+    alarm 0; print index($line, "This system is locked") >= 0 ? "locked" : "up";
+  ' "$1" 2>/dev/null 9>&- </dev/null
+}
+PEERS=$(conf NODE_PEERS "" '[^[:cntrl:]]*')
+IFS=' ' read -r -a PEER_ENTRIES <<< "$PEERS"
+SEEN_PEERS='|'
+for PEER in "${PEER_ENTRIES[@]}"; do
+  # Safe filenames and arguments; a bad entry cannot prevent checking the other peers.
+  [[ $PEER =~ ^([A-Za-z0-9][A-Za-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9.-]*)(,([A-Za-z0-9][A-Za-z0-9.-]*))?$ ]] || {
+    PEER_KEY=$(printf '%s' "$PEER" | cksum)
+    log_once "peer-invalid-${PEER_KEY%% *}" "node.conf: unusable NODE_PEERS entry: $PEER"
+    continue
+  }
+  PN=${BASH_REMATCH[1]}; HOST=${BASH_REMATCH[2]}; FALLBACK=${BASH_REMATCH[4]}
+  PN_KEY=$(printf '%s' "$PN" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  if [[ $SEEN_PEERS == *"|$PN_KEY|"* ]]; then
+    log_once "peer-duplicate-$PN_KEY" "node.conf: duplicate NODE_PEERS name $PN; using the first entry"
+    continue
+  fi
+  SEEN_PEERS="$SEEN_PEERS$PN_KEY|"
+  STATE=$(peer_state "$HOST") || STATE=""
+  if [ -z "$STATE" ] && [ -n "$FALLBACK" ]; then STATE=$(peer_state "$FALLBACK") || STATE=""; fi
+  STATE=${STATE:-unreachable}
+  [ "$(cat "$N/.peer-$PN" 2>/dev/null)" != "$STATE" ] || continue
+  put ".peer-$PN" "$STATE" || continue
+  log "peer $PN: $STATE"
+  if [ "$OS" = Darwin ] && command -v osascript >/dev/null 2>&1; then
+    bounded 3 osascript -e "display notification \"$PN: $STATE\" with title \"Megavibe node\"" >/dev/null 2>&1 9>&- </dev/null || true
+  fi
+done
+
+NAME=$(bounded 10 scutil --get LocalHostName 2>/dev/null 9>&-) || NAME=""
+case "$NAME" in ""|-*|*[!A-Za-z0-9-]*) log "unusable host name '$NAME'"; exit 1 ;; esac
+[ "${#NAME}" -le 63 ] || { log "host name too long"; exit 1; }
+command -v tmux >/dev/null 2>&1 && command -v megavibe >/dev/null 2>&1 || { log "tmux or megavibe not found"; exit 1; }
 
 tmux has-session -t "=$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$HOME" -n shell || { log "cannot create tmux session $TS"; exit 1; }
 # One successful listing decides what exists. If tmux cannot list, nothing is started: a failed
@@ -78,7 +202,6 @@ may_start() {
   [ -n "$(find "$N/.capped-$1" -mmin -60 2>/dev/null)" ] || { log "$1: 3 starts in the last hour, not starting again"; touch "$N/.capped-$1"; }
   return 1
 }
-log_once() { [ -n "$(find "$N/.once-$1" -mmin -60 2>/dev/null)" ] || { log "$2"; touch "$N/.once-$1"; }; }
 started() {
   date +%s >> "$N/.starts-$1"
   tail -n 20 "$N/.starts-$1" > "$N/.starts-$1.tmp" && mv -f "$N/.starts-$1.tmp" "$N/.starts-$1"
@@ -143,16 +266,6 @@ if [ -e "$N/pa.on" ] && [ -x "$MH/scripts/usage-probe.sh" ]; then
     [ -z "$PROBE_CODEX_HOME" ] || export CODEX_HOME="$PROBE_CODEX_HOME"
     bounded 300 "$MH/scripts/usage-probe.sh" run --every 30 >/dev/null 2>&1 9>&- </dev/null
   ) || true
-fi
-
-# PA secrets: where the PA runs and the personal secrets tool is installed (~/.local/bin/secret), carry secret
-# changes from the other Mac (iCloud store) into this Mac's Keychain on every run, so no separate job is needed.
-# PA only, like the probe above: a Mac without pa.on, and plain megavibe use, never run it. Its output is
-# discarded (it could carry secret names, and a log would grow without bound); a failure is logged by exit
-# status only, once an hour.
-if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
-  bounded 60 "$HOME/.local/bin/secret" sync >/dev/null 2>&1 9>&- </dev/null \
-    || log_once secret-sync "secret sync failed or timed out (run: secret sync)"
 fi
 
 # PA memory: a git repo in the personal folder whose origin is a bare repo on the writing Mac.
