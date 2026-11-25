@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # megavibe — single entry point for AI-assisted development
-# Usage: megavibe [claude-args...]
+# Usage: megavibe [--parallel-branch NAME] [--stash | --no-stash] [claude-args...]
+# Parallel options only apply when another session is active in the checkout.
+# With a branch name supplied, the unattended default is not to stash.
 #
 # Steps:
 # 1. Checks setup (installs if missing)
@@ -1646,6 +1648,34 @@ case "${1:-}" in
     exit 1 ;;
 esac
 
+# Keep the original arguments for the self-update re-exec.
+LAUNCH_ARGV=("$@")
+CLAUDE_ARGV=()
+PARALLEL_BRANCH_SET="${MEGAVIBE_PARALLEL_BRANCH+x}"
+PARALLEL_BRANCH="${MEGAVIBE_PARALLEL_BRANCH-}"
+PARALLEL_STASH_SET="${MEGAVIBE_PARALLEL_STASH+x}"
+PARALLEL_STASH="${MEGAVIBE_PARALLEL_STASH-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --parallel-branch)
+      if [ "$#" -lt 2 ] || [[ "$2" == -* ]]; then
+        echo "megavibe: --parallel-branch requires a name" >&2
+        exit 1
+      fi
+      PARALLEL_BRANCH_SET=x
+      PARALLEL_BRANCH="$2"
+      shift ;;
+    --parallel-branch=*)
+      PARALLEL_BRANCH_SET=x
+      PARALLEL_BRANCH="${1#*=}" ;;
+    --stash) PARALLEL_STASH_SET=x; PARALLEL_STASH=1 ;;
+    --no-stash) PARALLEL_STASH_SET=x; PARALLEL_STASH=0 ;;
+    *) CLAUDE_ARGV+=("$1") ;;
+  esac
+  shift
+done
+set -- ${CLAUDE_ARGV[@]+"${CLAUDE_ARGV[@]}"}
+
 # ─── Unknown subcommand guard ────────────────────────────────────────
 #
 # Everything below forwards "$@" straight to `claude`, where a bare word lands
@@ -1654,7 +1684,7 @@ esac
 # doing nothing. Flags and multi-word prompts still pass through untouched —
 # only a lone bare word is rejected, since that shape is almost always a
 # subcommand the user expected to exist.
-if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
+if [ "${#LAUNCH_ARGV[@]}" -eq 1 ] && [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
   echo "Unknown subcommand: ${1}"
   echo ""
   echo "Usage: megavibe [subcommand | claude-args...]"
@@ -1668,8 +1698,13 @@ if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" 
   echo "                        login lifetime, usage (scheduled in a session by /watch)"
   echo "  auth                  How long the Claude login lasts (the refresh token)"
   echo "  update                Update megavibe (--check to peek only)"
+  echo "  --parallel-branch NAME (or --parallel-branch=NAME) sets the branch for a parallel session"
+  echo "  --stash | --no-stash  Choose whether to stash tracked changes before creating the worktree"
+  echo "  Environment defaults: MEGAVIBE_PARALLEL_BRANCH and MEGAVIBE_PARALLEL_STASH (1/yes/true or 0/no/false)"
+  echo "  These options do nothing unless another session is active in the checkout."
+  echo "  With a branch name supplied, the unattended default is not to stash."
   echo ""
-  echo "  Flags and multi-word prompts are passed to claude unchanged."
+  echo "  Other Claude flags and multi-word prompts are passed to claude unchanged."
   exit 1
 fi
 
@@ -1776,7 +1811,7 @@ if [ -n "$REPO_DIR" ]; then
     # Re-exec from the updated copy so the rest of this script uses new logic,
     # handing the repo path over so the remaining syncs still happen this run.
     printf '%s\n' "$REPO_DIR" > "$MEGAVIBE_HOME/.reexec-repo.$$" 2>/dev/null || true
-    exec "$MEGAVIBE_HOME/megavibe" "$@"
+    exec "$MEGAVIBE_HOME/megavibe" ${LAUNCH_ARGV[@]+"${LAUNCH_ARGV[@]}"}
   fi
   # Sync init.sh
   if ! diff -q "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" &>/dev/null 2>&1; then
@@ -2601,24 +2636,45 @@ if [ -d "$LOCK_DIR" ]; then
       echo "  This is a git repo. You can start a parallel session on a new branch."
       echo ""
 
+      if [ -n "$PARALLEL_BRANCH_SET" ]; then
+        BRANCH_NAME=$(printf '%s\n' "$PARALLEL_BRANCH" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
+        if [ -z "$BRANCH_NAME" ] || ! git check-ref-format --branch "$BRANCH_NAME" >/dev/null 2>&1; then
+          echo "megavibe: invalid parallel branch name" >&2
+          exit 1
+        fi
+      fi
+
+      STASH_ANSWER=n
+      if [ -n "$PARALLEL_STASH_SET" ]; then
+        case "$(printf '%s' "$PARALLEL_STASH" | tr 'A-Z' 'a-z')" in
+          1|yes|true) STASH_ANSWER=Y ;;
+          0|no|false) STASH_ANSWER=n ;;
+          *) echo "megavibe: MEGAVIBE_PARALLEL_STASH must be 1/yes/true or 0/no/false" >&2; exit 1 ;;
+        esac
+      fi
+
       # Check for uncommitted changes (tracked files only — untracked don't block worktrees)
       if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
         echo -e "  ${YELLOW}Uncommitted changes detected.${RESET}"
-        read -p "  Stash them first? [Y/n] " STASH_ANSWER
+        if [ -z "$PARALLEL_BRANCH_SET" ] && [ -z "$PARALLEL_STASH_SET" ]; then
+          read -p "  Stash them first? [Y/n] " STASH_ANSWER
+        fi
         if [[ "${STASH_ANSWER:-Y}" =~ ^[Yy]?$ ]]; then
           git stash push -m "megavibe: auto-stash before worktree"
           echo -e "  ${GREEN}Stashed.${RESET} Restore later with: git stash pop"
         fi
       fi
 
-      read -p "  Branch name (or Ctrl+C to cancel): " BRANCH_NAME
-      if [ -z "$BRANCH_NAME" ]; then
-        echo "  No branch name given. Exiting."
-        exit 1
-      fi
+      if [ -z "$PARALLEL_BRANCH_SET" ]; then
+        read -p "  Branch name (or Ctrl+C to cancel): " BRANCH_NAME
+        if [ -z "$BRANCH_NAME" ]; then
+          echo "  No branch name given. Exiting."
+          exit 1
+        fi
 
-      # Sanitize branch name. Dash at end so it's literal, not a range.
-      BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
+        # Sanitize branch name. Dash at end so it's literal, not a range.
+        BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
+      fi
       PROJECT_NAME=$(basename "$PWD")
       WORKTREE_DIR="$MEGAVIBE_HOME/worktrees/${PROJECT_NAME}-${BRANCH_NAME}"
 
