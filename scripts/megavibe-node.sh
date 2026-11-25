@@ -157,6 +157,7 @@ cmd_install() {
 # PA_MODEL=
 # TMUX_SESSION=main
 # NODE_PREFIX=NODE-
+# NODE_PEERS=              optional name=host[,fallback-address] entries, separated by spaces (SSH port 22)
 # COMMIT_NAME=megavibe node
 # COMMIT_EMAIL=megavibe-node@localhost
 # PROBE_MODEL=              model of the Codex usage probe (PA Macs only; default gpt-6-luna)
