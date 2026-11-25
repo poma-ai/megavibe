@@ -454,20 +454,34 @@ case "${1:-list}" in
     #   codex works or is unknown -> "codex subagent"   (Gemini is not used for this)
     #   codex answered "unusable"  -> "gemini subagent" when a key is set and the
     #                                 daily Gemini cap is not 0, else "subagent"
+    #   A codex that is only logged out or not allowed (MEGAVIBE_BACKENDS) gives "subagent", not
+    #   "gemini subagent", unless the user's own pin names gemini.
     # Gemini here is the metered alternative for machines WITHOUT codex
     # (gemini-review.sh enforces the caps); the Claude subagent is always last.
     _cx=0; _codex_ok || _cx=$?
-    # A cap that is set but zero or unreadable means general Gemini use is off (the
-    # script reads it the same way), so do not advertise a backend that will refuse.
+    # MEGAVIBE_BACKENDS (backends.sh, independent of the reviewer set): a codex that is not
+    # allowed for non-review work, or answers "not logged in", is skipped here. That is NOT
+    # "a machine without codex": Gemini replaces it only when codex itself is unusable (probe
+    # answer 1) or the user's own pin names gemini. Only an answer of 1 counts; unknown stays.
+    _bk="$(dirname "${BASH_SOURCE[0]}")/backends.sh"
+    _cu=0
+    if [ -f "$_bk" ]; then bash "$_bk" usable codex >/dev/null 2>&1 </dev/null || _cu=$?; elif [ "$_cx" = 1 ]; then _cu=1; fi
+    _gem_allowed=1; _gem_pinned=0
+    if [ -f "$_bk" ]; then
+      _ge=0; bash "$_bk" enabled gemini >/dev/null 2>&1 </dev/null || _ge=$?; [ "$_ge" != 1 ] || _gem_allowed=0
+      _gp=0; bash "$_bk" pinned gemini >/dev/null 2>&1 </dev/null || _gp=$?; [ "$_gp" != 0 ] || _gem_pinned=1
+    fi
+    # A cap that is set but zero or unreadable means general Gemini use is off (the script reads it the
+    # same way), so do not advertise a backend that will refuse.
     _capoff() { [ -n "${1// /}" ] && awk -v v="$1" 'BEGIN{exit !(v+0 <= 0)}'; }
     _key="${GEMINI_API_KEY:-}"; _key="${_key// /}"
     # perl is required too: gemini-review.sh takes its ledger lock with it.
-    if [ "$_cx" = 1 ] && [ -n "$_key" ] && command -v perl >/dev/null 2>&1 && ! _capoff "${MEGAVIBE_GEMINI_DAILY_USD:-}" && ! _capoff "${MEGAVIBE_GEMINI_DAILY_CALLS:-}"; then
-      printf '%s\n' "gemini subagent"
-    elif [ "$_cx" = 1 ]; then
-      printf '%s\n' "subagent"
-    else
+    if [ "$_cu" != 1 ]; then
       printf '%s\n' "codex subagent"
+    elif [ "$_gem_allowed" = 1 ] && { [ "$_cx" = 1 ] || [ "$_gem_pinned" = 1 ]; } && [ -n "$_key" ] && command -v perl >/dev/null 2>&1 && ! _capoff "${MEGAVIBE_GEMINI_DAILY_USD:-}" && ! _capoff "${MEGAVIBE_GEMINI_DAILY_CALLS:-}"; then
+      printf '%s\n' "gemini subagent"
+    else
+      printf '%s\n' "subagent"
     fi
     ;;
   fallback)

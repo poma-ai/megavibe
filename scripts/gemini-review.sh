@@ -324,8 +324,25 @@ if [ -z "$AS_REVIEWER" ]; then
   # Alternative for machines WITHOUT codex. Only an answer of "unusable" (1) opens it;
   # usable (0), unknown (2, a wedged probe) and no helper at all all refuse — spending
   # is the wrong direction to fail open in. The override is exactly MEGAVIBE_GEMINI_DIGEST=1.
+  # The allow-list comes first and the override does not skip it: MEGAVIBE_GEMINI_DIGEST=1
+  # lifts only the "codex is usable" refusal below, never a user's MEGAVIBE_BACKENDS.
+  _bk_rc=0; [ ! -f "$_RVDIR/backends.sh" ] || bash "$_RVDIR/backends.sh" enabled gemini >/dev/null 2>&1 || _bk_rc=$?
+  if [ "$_bk_rc" -eq 1 ]; then
+    echo "skip: gemini is not in MEGAVIBE_BACKENDS (megavibe backends)" >&2
+    exit 4
+  fi
   if [ "${MEGAVIBE_GEMINI_DIGEST:-}" != 1 ]; then
-    _cx=2; [ ! -f "$_RVDIR/reviewers.sh" ] || { _cx=0; bash "$_RVDIR/reviewers.sh" codex-ok >/dev/null 2>&1 || _cx=$?; }
+    # Gemini is the alternative for a machine WITHOUT a working codex: the probe answers 1. A codex that is
+    # merely logged out or switched off is not that machine, so it opens this path only when the user's own
+    # MEGAVIBE_BACKENDS pin names gemini.
+    _ox=2; [ ! -f "$_RVDIR/reviewers.sh" ] || { _ox=0; bash "$_RVDIR/reviewers.sh" codex-ok >/dev/null 2>&1 || _ox=$?; }
+    _cx=$_ox
+    if [ -f "$_RVDIR/backends.sh" ]; then
+      _ux=0; bash "$_RVDIR/backends.sh" usable codex >/dev/null 2>&1 </dev/null || _ux=$?
+      if [ "$_ux" -ne 1 ]; then _cx=0
+      elif [ "$_ox" -eq 1 ] || bash "$_RVDIR/backends.sh" pinned gemini >/dev/null 2>&1 </dev/null; then _cx=1
+      else _cx=0; fi
+    fi
     if [ "$_cx" -ne 1 ]; then
       echo "skip: codex is usable (or its state is unknown) here — gemini is the alternative only on machines without it (MEGAVIBE_GEMINI_DIGEST=1 overrides)" >&2
       exit 4

@@ -82,8 +82,36 @@ WATCHER_BIN_Q=$(printf '%q' "$WATCHER_BIN")
 SID_Q=$(printf '%q' "$SID")
 PWD_Q=$(printf '%q' "$(pwd)")
 WTRANS_Q=$(printf '%q' "$WTRANS")
+# tmux hands the pane the SERVER's environment, not this hook's, so the allow-list state has to be
+# passed explicitly in both directions: an exported MEGAVIBE_BACKENDS must reach the watcher, and an
+# UNSET one must not be inherited from whichever session started the tmux server (a pin removed with
+# `megavibe backends set auto` would otherwise stay in force). The project dir is passed for the same
+# reason, so the watcher reads this project's settings.local.json and no other.
+if [ -n "${MEGAVIBE_BACKENDS+x}" ]; then
+  BK_ENV="env MEGAVIBE_BACKENDS=$(printf '%q' "$MEGAVIBE_BACKENDS") CLAUDE_PROJECT_DIR=$PWD_Q "
+else
+  BK_ENV="env -u MEGAVIBE_BACKENDS CLAUDE_PROJECT_DIR=$PWD_Q "
+fi
+# A watcher that may use neither codex nor gemini can only skip every cycle, and its tmux session
+# would still mute the in-session flush nudges. Do not start one then.
+RV_SH="$HOME/.megavibe/scripts/reviewers.sh"
+if [ -f "$RV_SH" ]; then
+  # digest-chain applies MEGAVIBE_BACKENDS and the Codex login check, so it also says "subagent" for a
+  # logged-out Codex, where a watcher would only skip every cycle while its tmux session muted the
+  # in-session nudges. revive-watcher.sh asks again on later tool calls, so the watcher starts once
+  # Codex is logged in again. An empty or failed answer starts it (the watcher is fail-closed itself).
+  if [ -n "${MEGAVIBE_BACKENDS+x}" ]; then
+    BK_CHAIN=$(MEGAVIBE_BACKENDS="$MEGAVIBE_BACKENDS" CLAUDE_PROJECT_DIR="$(pwd)" bash "$RV_SH" digest-chain 2>/dev/null </dev/null | tr '\n' ' ') || BK_CHAIN=""
+  else
+    BK_CHAIN=$(env -u MEGAVIBE_BACKENDS CLAUDE_PROJECT_DIR="$(pwd)" bash "$RV_SH" digest-chain 2>/dev/null </dev/null | tr '\n' ' ') || BK_CHAIN=""
+  fi
+  case " $BK_CHAIN " in
+    *" codex "*|*" gemini "*) ;;
+    *[!\ ]*) echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) not started: no allowed backend is usable (MEGAVIBE_BACKENDS, Codex login)" >> "$SPAWN_LOG" 2>/dev/null; exit 0 ;;
+  esac
+fi
 if tmux new -d -s "$TMUX_SESSION" \
-     "python3 $WATCHER_BIN_Q --session-id $SID_Q --project-dir $PWD_Q --transcript $WTRANS_Q" \
+     "${BK_ENV}python3 $WATCHER_BIN_Q --session-id $SID_Q --project-dir $PWD_Q --transcript $WTRANS_Q" \
      2>>"$SPAWN_LOG"; then
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) spawn ok" >> "$SPAWN_LOG" 2>/dev/null
 else

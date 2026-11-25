@@ -319,6 +319,7 @@ check 'codex, empty warm cache then a first reading: seen after 15 s, not hidden
 cat > "$T/bin/codex" <<'STUB'
 #!/bin/bash
 [ "${1:-}" = exec ] && [ "${2:-}" = "--help" ] && exit 0
+[ "${1:-}" = login ] && { echo "Logged in using ChatGPT"; exit 0; }
 printf '%s\n' "$*" >> "$STUB_LOG"
 exit 0
 STUB

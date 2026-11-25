@@ -154,7 +154,7 @@ Keep CLAUDE.md a **rule index, not an encyclopedia.** When a section grows past 
 
 ## Backend availability check
 
-On every fresh session start, decide backend availability. **Codex is available iff `codex exec --help` succeeds** — probe the CLI, not an MCP tool; there is no Codex MCP server since codex-cli 0.154.0. Assert the subcommand rather than assuming it. Reviews go through `~/.megavibe/scripts/codex-review.sh --as-reviewer`; re-hydration, memos and second opinions through the same script without the flag.
+On every fresh session start, decide backend availability. **Codex is available iff `codex exec --help` succeeds** (for non-review work also `codex login status`, and `MEGAVIBE_BACKENDS` must allow it; run `~/.megavibe/scripts/backends.sh usable codex` before a raw Codex call the model makes itself) — probe the CLI, not an MCP tool; there is no Codex MCP server since codex-cli 0.154.0. Assert the subcommand rather than assuming it. Reviews go through `~/.megavibe/scripts/codex-review.sh --as-reviewer`; re-hydration, memos and second opinions through the same script without the flag.
 
 **Gemini is available iff `$GEMINI_API_KEY` is set** (a key from a billed project — the free tier is 20 req/day and trains on prompts). It is Codex's fallback as a reviewer, and the alternative for non-review work only where Codex is absent — there `gemini-review.sh` meters every call (caps in `delegation.md`; `--budget` shows today's spend), so a missing key costs nothing while Codex is up. The `mcp__gemini-cli__ping` result only gates the `ask-gemini` MCP tool, for short interactive questions; a failed ping does not make Gemini unavailable.
 
@@ -162,7 +162,7 @@ On every fresh session start, decide backend availability. **Codex is available 
 
 For REVIEWS only, intersect availability with the `MEGAVIBE_REVIEWERS` allow-list (`megavibe reviewers`, or `~/.megavibe/scripts/reviewers.sh list`): available and asked-for are different questions, and the session-start table answers both. Every other use of these backends ignores the setting.
 
-For non-review work, choose the first backend among those available by allocation in `.claude/rules/delegation.md`; `digest-chain` supplies availability, Gemini restrictions and failure fallbacks. Never retry a failed MCP call more than once — switch to the next fallback immediately.
+For non-review work, `MEGAVIBE_BACKENDS` (`megavibe backends`, independent of the reviewer set) says which of Claude, Codex and Gemini may be used at all, and a logged-out Codex counts as unavailable; choose the first backend among those available by allocation in `.claude/rules/delegation.md`; `digest-chain` supplies availability, Gemini restrictions and failure fallbacks. Never retry a failed MCP call more than once — switch to the next fallback immediately.
 
 ## Output discipline
 

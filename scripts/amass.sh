@@ -319,6 +319,12 @@ avail_claude() {
 }
 avail_codex() {
   command -v "$CODEX_BIN" >/dev/null 2>&1 || { AV_ERR='needs codex'; return 1; }
+  # MEGAVIBE_BACKENDS (backends.sh): only an answer of 1 refuses. The login is checked below.
+  local _bk _bkrc=0; _bk="$(dirname "${BASH_SOURCE[0]}")/backends.sh"
+  if [ -f "$_bk" ]; then
+    bash "$_bk" enabled codex >/dev/null 2>&1 </dev/null || _bkrc=$?
+    [ "$_bkrc" != 1 ] || { AV_ERR='codex is not in MEGAVIBE_BACKENDS (megavibe backends)'; return 1; }
+  fi
   if [ -z "$CX_WORK" ]; then
     local resolved
     CX_WORK=$(mktemp -d "${TMPDIR:-/tmp}/amass-codex.XXXXXX") || { CX_WORK=''; AV_ERR='cannot create Codex scratch directory'; return 1; }
