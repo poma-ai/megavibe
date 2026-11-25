@@ -1623,12 +1623,15 @@ _rd_trash_ready() { command -v rmtrash &>/dev/null; }      # the same condition 
 # did: where it fires on a command that also deletes remotely (a shell or interpreter word
 # outside the quotes, an unquoted remote find -delete) the call stays blocked, with a note on
 # the form that reaches the prompt. HACK: a net, not a wall. Not covered: a script that already lives on the
-# remote host, kubectl/docker exec payloads, scp/mv/redirects that overwrite, truncation,
+# remote host, scp/mv/redirects that overwrite, truncation,
 # database statements, rclone and other clients, a command line assembled at runtime.
+# Container deletes (kubectl/oc/docker/podman exec, one argv or one sh -c payload) use the same
+# analysis and prompt; see container_target. Nested shells, variables and wrappers are not read.
 # ---------------------------------------------------------------------------
-_RD_LOCAL=0; _RD_REMOTE=0
+_RD_LOCAL=0; _RD_REMOTE=0; _RD_CONT=0
 [ "${MEGAVIBE_ALLOW_REAL_DELETE:-0}" != "1" ] && _rd_trash_ready && _rd_gate && _RD_LOCAL=1
 [[ $_TE == *ssh* || $_TE == *sftp* || $_TE == *lftp* || $_TE == *rsync* ]] && _RD_REMOTE=1      # _TE: quotes and backslashes out, lower case
+[[ $_TE == *exec* && ( $_TE == *kubectl* || $_TE == *oc* || $_TE == *docker* || $_TE == *podman* ) ]] && _RD_CONT=1
 _rd_remote_ask() {    # $1: the lines "host<TAB>what<TAB>paths"; prints the ask decision and ends the hook
   local why="Remote delete: no Trash on the other side, nothing here can be restored."$'\n' host what paths
   while IFS=$'\t' read -r host what paths; do
@@ -1652,7 +1655,7 @@ if ! command -v python3 &>/dev/null && [ "$_RD_REMOTE" = 1 ] \
    && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
   _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (python3 is missing, so the command was not parsed)"$'\t'"$(_rd_cmd_text)"
 fi
-if command -v python3 &>/dev/null && [ "$_RD_LOCAL$_RD_REMOTE" != 00 ]; then
+if command -v python3 &>/dev/null && [ "$_RD_LOCAL$_RD_REMOTE$_RD_CONT" != 000 ]; then
   read -r -d '' _RD_PY <<'PY' || true
 import os, re, shlex, signal, sys
 
@@ -1661,7 +1664,7 @@ import os, re, shlex, signal, sys
 # shell or interpreter consumes them (a commit message written through `cat <<EOF` is
 # prose); quoted text counts only when a shell, eval, trap, env -S, parallel or awk runs it.
 # A pathological input that makes the patterns slow is blocked, never let through.
-LOCAL, REMOTE = os.environ.get("RD_LOCAL", "1") == "1", os.environ.get("RD_REMOTE") == "1"
+LOCAL, REMOTE = os.environ.get("RD_LOCAL", "1") == "1", os.environ.get("RD_REMOTE") == "1"      # REMOTE: ssh-like or a container exec
 signal.signal(signal.SIGALRM, lambda *a: (print("L\ta command too complex to check (guard timed out)" if LOCAL else
     "R\t?\ta command too complex to check: the guard timed out, so nothing was parsed and this prompt is INCOMPLETE\tthe command, as written: "
     + globals().get("ORIG", "").replace("\t", " ").replace("\n", "\\n")[:3000]), sys.exit(0)))
@@ -2851,6 +2854,51 @@ def ftp_dels(tool, host, label, t):
     return out, host
 
 
+CONT_VAL = {
+    "kubectl": {"-n", "--namespace", "-c", "--container", "--context", "--kubeconfig", "-s", "--server", "--cluster", "--user",
+                "--as", "--as-group", "-f", "--filename", "--pod-running-timeout", "--token", "--request-timeout"},
+    "docker": {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys", "--index", "-H", "--host",
+               "--context", "--config", "-l", "--log-level", "-f", "--file", "-p", "--project-name", "--profile",
+               "--project-directory", "--ansi", "--parallel", "--progress"},
+}
+CONT_VAL["oc"] = CONT_VAL["kubectl"]
+CONT_VAL["podman"] = CONT_VAL["docker"]
+
+
+def container_target(b, args):
+    """`kubectl|oc exec`, `docker|podman [compose|container] exec`, `docker-compose exec`:
+    (label, command words run in the container) or None. Two shapes only: argv after the
+    container name, or one shell payload (script_dels reads that)."""
+    kube = b in ("kubectl", "oc")
+    if not (kube or b in ("docker", "podman", "docker-compose", "podman-compose")): return None
+    vals = CONT_VAL["kubectl" if kube else "docker"]
+    j = 0
+    def skip_opts(stop_at_dd):
+        nonlocal j
+        while j < len(args) and args[j].startswith("-") and args[j] != "--":
+            j += 1 if "=" in args[j] else remote_opt_width(args[j], vals)
+    skip_opts(True)
+    while j < len(args) and args[j] in ("compose", "container"):
+        j += 1; skip_opts(True)
+    if j >= len(args) or args[j] != "exec": return None
+    j += 1
+    target = None
+    while j < len(args):
+        a = args[j]
+        if a == "--":
+            j += 1; break
+        if a.startswith("-"):
+            j += 1 if "=" in a else remote_opt_width(a, vals); continue
+        if target is None:
+            target = a; j += 1
+            if not kube: break      # docker: everything after the container name is the command
+            continue
+        break                       # kubectl without `--`: the command starts at the second word
+    cmd = args[j:]
+    if target is None or not cmd: return None
+    return ("pod " if kube else "container ") + target, cmd
+
+
 def remote_findings(text, cwd, depth=0):
     """Deletes this LOCAL shell text runs on a remote host: [(host, what, paths)]."""
     out = []
@@ -2940,6 +2988,11 @@ def remote_findings(text, cwd, depth=0):
                 d, host = ftp_dels(b, host, label, t)
                 out += d
                 if d: out.append((d[-1][0], "the whole " + b + " command text, as written", ["\n".join(context)]))
+        elif container_target(b, args):
+            label, cmd = container_target(b, args)
+            got = script_dels(join(cmd))
+            out += [(label, what, p) for what, p in got]
+            if got: out.append((label, "the whole container command, as written", [join(cmd)]))
         elif b == "rsync":
             dest, src, pos = rsync_dels(args)
             if len(pos) < 2: continue
@@ -2970,6 +3023,23 @@ def remote_findings(text, cwd, depth=0):
     return out
 
 
+CONT_CMD = re.compile(r"(?:^|(?<=[;&|(\n{]))(\s*)((?:docker|podman|docker-compose|podman-compose|kubectl|oc)(?![\w.-])"
+                      r"(?:'[^']*'|\"(?:\\.|[^\"\\])*\"|\\.|[^;&|\n'\"\\])*)")
+
+
+def without_container_execs(text):
+    """The local real-delete check reads the whole text and cannot tell a delete inside a
+    container from its own; a container exec at command position (no substitution inside) is
+    judged by remote_findings instead, so it is left out of that check."""
+    def drop(m):
+        body = m.group(2)
+        if re.search(r"\$\(|`|<\(|>\(", body): return m.group(0)
+        try: w = shlex.split(body)
+        except ValueError: return m.group(0)
+        return m.group(1) if w and container_target(os.path.basename(w[0]), w[1:]) else m.group(0)
+    return CONT_CMD.sub(drop, text)
+
+
 def clean(s, cap):
     s = str(s).strip().replace("\r", "").replace("\t", "\\t").replace("\n", "\\n")      # one line, spaces as written
     return s if len(s) <= cap else s[:cap] + " [CUT: " + str(len(s) - cap) + " more characters not shown, so this list is INCOMPLETE; read the command itself]"
@@ -2993,14 +3063,14 @@ if len(rows) > 40:
 for row in rows:
     print(row)
 if LOCAL:
-    r = reasons(ORIG)
+    r = reasons(without_container_execs(ORIG) if REMOTE else ORIG)
     if r:
         print("L\t" + clean(r, 400))
 PY
   _RD_RC=0
-  _RD_OUT=$(printf '%s' "$COMMAND" | RD_LOCAL=$_RD_LOCAL RD_REMOTE=$_RD_REMOTE RD_CWD="$_TRASH_CWD" python3 -c "$_RD_PY" 2>/dev/null) || _RD_RC=$?
+  _RD_OUT=$(printf '%s' "$COMMAND" | RD_LOCAL=$_RD_LOCAL RD_REMOTE=$(( _RD_REMOTE || _RD_CONT )) RD_CWD="$_TRASH_CWD" python3 -c "$_RD_PY" 2>/dev/null) || _RD_RC=$?
   # python3 is there but the check itself died: the same crude ask as without python3
-  if [ "$_RD_RC" != 0 ] && [ "$_RD_REMOTE" = 1 ] \
+  if [ "$_RD_RC" != 0 ] && [ "$_RD_REMOTE$_RD_CONT" != 00 ] \
      && printf '%s' "$COMMAND" | grep -Eq '(^|[^[:alnum:]_.-])(rm|rmdir|unlink|shred)([^[:alnum:]_.-]|$)|-delete|--del|--remove-source'; then
     _rd_remote_ask "?"$'\t'"ssh, sftp, lftp or rsync next to a deleting word (the check failed to run, so the command was not parsed)"$'\t'"$(_rd_cmd_text)"
   fi
