@@ -121,7 +121,8 @@ if [ "$EVENT" = "Stop" ] && [ -f "$REHYDRATE_FLAG" ] && [ ! -f "$R_BLOCKED" ] &&
   exit 0
 fi
 
-# Already closed out this fill cycle: no close-out work left. (After the
+# Already closed out this fill cycle: ongoing refreshes follow the protocol;
+# no further close-out reminders or Stop blocks are needed. (After the
 # rehydrate block on purpose: a stale .closeout-done from before a manual
 # /compact, which on-compact.sh may not see, must not swallow the rehydrate
 # escalation.)
@@ -149,15 +150,18 @@ fi
 # Could not measure → do nothing at all. Never force on a guess.
 [ "$PCT" -gt 0 ] || exit 0
 
-CLOSEOUT_TASK='Wrap up for compaction NOW, before doing anything else:
+CLOSEOUT_TASK='Save a close-out now, then continue working:
 1. Append the decisions of this session to .agent/DECISIONS.md — each with the
    reasoning, so nobody re-derives it. Not a list of what changed.
-2. Update .agent/TASKS.md with what is still open and WHO each item is blocked
-   on.
+2. Update .agent/TASKS.md with open tasks, owners and blockers.
 3. Write one close-out summary via .claude/hooks/agent-log.sh append: what
-   shipped, what was corrected, what the next session must not re-derive.
+   shipped, what was corrected, what must not be re-derived.
 4. Then run: touch .agent/LOGS/.closeout-done.'"${SID}"'
-The context watcher keeps the narrative fresh but cannot do this synthesis.'
+While context is high, refresh this close-out after each completed step;
+auto-compaction can happen at any moment. Continue working without pausing,
+slowing down or handing work back because of context level. Never request
+manual compaction or announce waiting for it. Mention compaction only if the
+user asks, or once if the session settings have auto-compaction disabled.'
 
 # --- HARD: Stop hook, refuse to end the turn ------------------------------
 if [ "$EVENT" = "Stop" ] && [ "$PCT" -ge "$HARD_PCT" ]; then

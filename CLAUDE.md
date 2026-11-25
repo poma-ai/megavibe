@@ -232,6 +232,10 @@ These are NOT currently implemented but are worth considering as megavibe evolve
 - **PreToolUse input modification** (v2.0.10+): Hooks can now modify tool inputs, not just block. Could enable transparent sandboxing or convention enforcement.
 - **Custom subagents** (`.claude/agents/`): A review subagent with `model: haiku` could cheaply validate hook scripts before committing.
 
+## Compaction lifecycle
+
+**At context pressure, save and continue.** Write or refresh the close-out: decisions with reasons in `.agent/DECISIONS.md`, tasks with owners and blockers in `.agent/TASKS.md`, and a summary event via `.claude/hooks/agent-log.sh append`; then `touch .agent/LOGS/.closeout-done.<sid12>` (the first 12 characters of this session ID). Continue working immediately. While context is high, refresh that close-out after each completed step, even when the marker already exists: automatic compaction can happen at any moment. This applies with the watcher on or off; its narrative writes do not replace this synthesis. Never ask the user to run `/compact`, announce waiting for compaction, or pause, slow down or hand work back because of context level. Mention compaction to the user only when asked, or once if auto-compaction is disabled in the session settings; keep working in that case too. After any compaction, run `/rehydrate` without being asked, read the resulting working context and carry on; when the hook reports a fresh working context, read it in full and continue instead.
+
 ## Known gotchas
 
 - `init.sh` settings merge uses `jq -s` with reduce — fragile if template `settings.json` structure changes. Always test the merge path.

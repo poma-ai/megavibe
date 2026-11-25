@@ -373,7 +373,7 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 
 ⚠️ If ${COUNT} is high, context accumulated in this conversation may NOT be in the .agent/ files yet. The post-compaction recovery will only have what's on disk.
 
-After compaction, the only required action is: run /rehydrate (it regenerates WORKING_CONTEXT.md with the first backend chosen by allocation in .claude/rules/delegation.md; reviewers.sh digest-chain supplies availability and failure fallbacks). The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
+After compaction, run /rehydrate without asking the user, read WORKING_CONTEXT.md and continue working (if the post-compact hook reports a fresh working context, read it in full and continue instead). Recovery uses the first backend chosen by allocation in .claude/rules/delegation.md; reviewers.sh digest-chain supplies availability and failure fallbacks. The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
 
 # Advisory report only; a finding or failed check never blocks compaction.
 READY_RC=0; READY_OUT=""
