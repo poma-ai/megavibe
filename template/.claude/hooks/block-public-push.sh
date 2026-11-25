@@ -21,7 +21,7 @@ set -u
 #   git push                      the target is resolved (remote name, URL, pushurl,
 #                                 insteadOf, branch/pushDefault remote) and its
 #                                 visibility looked up with `gh repo view`
-#   gh pr create / gh pr edit     a visibility check of the repository the pull request
+#   gh pr create                  a visibility check of the repository the pull request
 #                                 publishes to (-R/--repo, GH_REPO, else the one gh itself
 #                                 resolves from the checkout). Nothing else: the title, body,
 #                                 body file, template and commits are NOT read.
@@ -97,7 +97,7 @@ set -u
 # prompt-injected instruction can only edit the command text, not the hook's
 # environment. The prompt itself is the per-push human decision.
 #
-# Known gaps (not enforced here): the text of a pull request (title, body, body file, template, comments) is NOT
+# Known gaps (not enforced here): `gh pr edit` is not checked at all (it names its repository in a number or URL argument that this guard does not resolve); the text of a pull request (title, body, body file, template, comments) is NOT
 # scanned, and neither are the commits `gh pr create` may push itself: the pull request part only asks when its
 # destination is public and not on your known-public list; a `cd` that only runs conditionally
 # (`test -d x && cd y; git push`) is followed as if it ran; with tracking refs that hide the whole push, a selector
@@ -413,12 +413,12 @@ def scan_argv(argv, depth=0):
             if skip: skip = False; continue
             if x in ("-R", "--repo"): skip = True; continue
             if not x.startswith("-"): words.append(x)
-        if len(words) >= 2 and words[0] == "pr" and words[1] in ("create", "edit"):
+        if len(words) >= 2 and words[0] == "pr" and words[1] == "create":
             ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL), "pre": {"mutators": list(PRE["mutators"]), "retarget": list(PRE["retarget"])}})
         elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
             ACTIONS.append({"kind": "repo-" + words[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
 
-GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|\bgh\s+(?:pr\s+(?:create|edit)|repo\s+(?:create|edit))\b")
+GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|\bgh\s+(?:pr\s+create|repo\s+(?:create|edit))\b")
 toks = split_tokens(TEXT)
 if toks is None:
     # the text cannot be tokenised (an unclosed quote, say): do not let that hide a push
@@ -938,7 +938,7 @@ def local_history_scan(act, title, revs=("HEAD",)):
     return []
 
 def handle_pr(act):
-    """gh pr create / edit: a visibility check of the repository the pull request publishes to, nothing else. The title,
+    """gh pr create: a visibility check of the repository the pull request publishes to, nothing else. The title,
     body, body file and commits are NOT read (see the header)."""
     argv = act["argv"]
     if act["pre"]["retarget"]:   # before any visibility lookup: the lookup would see the target as it is now, not as the call leaves it
