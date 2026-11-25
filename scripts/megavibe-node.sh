@@ -158,6 +158,9 @@ cmd_install() {
 # TMUX_SESSION=main
 # NODE_PREFIX=NODE-
 # NODE_PEERS=              optional name=host[,fallback-address] entries, separated by spaces (SSH port 22)
+# Hosts/fallbacks: host names or IPv4 only; ASCII letters, digits, dot and hyphen, starting with a letter/digit.
+# A colon (host:port or IPv6) or any other character skips the entry without checks/notifications;
+# one log line names it at most once an hour. Other valid peers are still checked.
 # COMMIT_NAME=megavibe node
 # COMMIT_EMAIL=megavibe-node@localhost
 # PROBE_MODEL=              model of the Codex usage probe (PA Macs only; default gpt-6-luna)

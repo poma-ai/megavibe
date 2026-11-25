@@ -242,7 +242,7 @@ check 'recovery to up logged once, only first banner line examined' '[ "$(cat "$
 echo Linux > "$T/os"; echo locked > "$T/studio.example"; before=$(wc -l < "$HOME/notifications"); node
 check 'non-macOS state changes log without notification' '[ "$(cat "$N/.peer-studio")" = locked ] && [ "$(wc -l < "$HOME/notifications")" = "$before" ]'
 echo 'NODE_PEERS=../bad=studio.example valid=spare.example' > "$N/node.conf"; node
-check 'invalid peer config never becomes a path' '[ ! -e "$MEGAVIBE_HOME/bad" ] && grep -q "unusable value" "$N/node.log"'
+check 'invalid peer config never becomes a path' '[ ! -e "$MEGAVIBE_HOME/bad" ] && grep -q "unusable NODE_PEERS entry: ../bad=studio.example" "$N/node.log"'
 echo 'NODE_PEERS=badentry valid=spare.example' > "$N/node.conf"; node
 check 'malformed entry does not skip remaining valid peer' '[ "$(cat "$N/.peer-valid")" = unreachable ]'
 check 'no ssh, megavibe launch, or launchctl invoked' '[ ! -e "$HOME/forbidden.calls" ]'
@@ -253,6 +253,23 @@ echo Darwin > "$T/os"; echo 'NODE_PEERS=missing=spare.example' > "$N/node.conf"
 before=$(wc -l < "$HOME/notifications"); node
 check 'missing osascript silently skips notifications, still saves state' '[ "$RC" = 0 ] && [ "$(cat "$N/.peer-missing")" = unreachable ] && [ "$(wc -l < "$HOME/notifications")" = "$before" ] && [ ! -s "$HOME/stderr" ]'
 unset -f command
+# Invalid addresses reject the entire entry, even when its primary host would connect.
+for address in 192.0.2.10:443 2001:db8::22 bad/address; do
+  for field in host fallback; do
+    fresh "invalid-address-$field-${address//\//-}"
+    entry="bad=$address,192.0.2.10"
+    [ "$field" != fallback ] || entry="bad=studio.example,$address"
+    printf 'NODE_PEERS=%s valid=other.example\n' "$entry" > "$N/node.conf"
+    echo up > "$T/studio.example"; echo up > "$T/192.0.2.10"; echo up > "$T/other.example"
+    node; node
+    check "invalid $field $address is not checked; valid peer still checked" '[ "$RC" = 0 ] && [ "$(count "^other.example 22 tcp 2 alarm=2$" "$HOME/connects")" = 2 ] && [ "$(count "^" "$HOME/connects")" = 2 ]'
+    check "invalid $field $address has no state or notification" '[ ! -e "$N/.peer-bad" ] && [ "$(cat "$N/.peer-valid")" = up ] && [ "$(count "display notification" "$HOME/notifications")" = 1 ] && ! grep -q "bad:" "$HOME/notifications"'
+    check "invalid $field $address logs its entry once across runs" '[ "$(grep -Fc "node.conf: unusable NODE_PEERS entry: $entry" "$N/node.log")" = 1 ]'
+    find "$N" -name '.once-peer*' -exec /usr/bin/touch -t 202001010000 {} +
+    node
+    check "invalid $field $address logs again after hourly limit expires" '[ "$(grep -Fc "node.conf: unusable NODE_PEERS entry: $entry" "$N/node.log")" = 2 ] && [ "$(count "display notification" "$HOME/notifications")" = 1 ]'
+  done
+done
 # Duplicate names keep the first address/state, including case-only duplicates.
 for scenario in exact mixed; do
   duplicate=studio; [ "$scenario" != mixed ] || duplicate=STUDIO

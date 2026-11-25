@@ -156,11 +156,16 @@ peer_state() {
     alarm 0; print index($line, "This system is locked") >= 0 ? "locked" : "up";
   ' "$1" 2>/dev/null 9>&- </dev/null
 }
-PEERS=$(conf NODE_PEERS "" '[A-Za-z0-9=.,: _-]*')
+PEERS=$(conf NODE_PEERS "" '[^[:cntrl:]]*')
+IFS=' ' read -r -a PEER_ENTRIES <<< "$PEERS"
 SEEN_PEERS='|'
-for PEER in $PEERS; do
+for PEER in "${PEER_ENTRIES[@]}"; do
   # Safe filenames and arguments; a bad entry cannot prevent checking the other peers.
-  [[ $PEER =~ ^([A-Za-z0-9][A-Za-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9.:-]*)(,([A-Za-z0-9][A-Za-z0-9.:-]*))?$ ]] || { log_once peers "node.conf: unusable NODE_PEERS entry"; continue; }
+  [[ $PEER =~ ^([A-Za-z0-9][A-Za-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9.-]*)(,([A-Za-z0-9][A-Za-z0-9.-]*))?$ ]] || {
+    PEER_KEY=$(printf '%s' "$PEER" | cksum)
+    log_once "peer-invalid-${PEER_KEY%% *}" "node.conf: unusable NODE_PEERS entry: $PEER"
+    continue
+  }
   PN=${BASH_REMATCH[1]}; HOST=${BASH_REMATCH[2]}; FALLBACK=${BASH_REMATCH[4]}
   PN_KEY=$(printf '%s' "$PN" | LC_ALL=C tr '[:upper:]' '[:lower:]')
   if [[ $SEEN_PEERS == *"|$PN_KEY|"* ]]; then
