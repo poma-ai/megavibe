@@ -115,7 +115,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -n \"${MEGAVIBE_RESTART_PICKUP:-}\" ] || exit 0; exec .claude/hooks/on-session-start.sh"
+            "command": ".claude/hooks/restart-pickup.sh"
           }
         ]
       },

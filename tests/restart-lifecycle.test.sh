@@ -45,7 +45,7 @@ arm() {
   GEN=$(field .generation)
 }
 complete() { helper complete "$1" 100 "$GEN"; }
-start() { printf '{"source":"resume","session_id":"%s"}\n' "$1" | bash "$REPO/template/.claude/hooks/on-session-start.sh"; }
+start() { printf '{"source":"resume","session_id":"%s"}\n' "$1" | bash "$REPO/template/.claude/hooks/restart-pickup.sh"; }
 end() { printf '{"session_id":"%s"}\n' "$1" | bash "$REPO/template/.claude/hooks/on-session-end.sh"; }
 pickup() {
   export MEGAVIBE_RESTART_PICKUP=$GEN
@@ -220,6 +220,7 @@ echo invoked >> "$FIXTURE/start-invocations"
 exec bash "$START_HOOK"
 HOOK
 chmod +x .claude/hooks/on-session-start.sh
+cp "$REPO/template/.claude/hooks/restart-pickup.sh" .claude/hooks/
 for source in startup resume; do
   for version in main current; do
     if [ "$version" = main ]; then
@@ -229,7 +230,7 @@ for source in startup resume; do
       export START_HOOK="$REPO/template/.claude/hooks/on-session-start.sh"
       settings="$REPO/template/.claude/settings.json"
     fi
-    commands=$("$REAL_JQ" -r --arg source "$source" '.hooks.SessionStart[] | .matcher as $m | select($source | test("^(" + $m + ")$")) | .hooks[].command | select(contains("on-session-start.sh"))' "$settings")
+    commands=$("$REAL_JQ" -r --arg source "$source" '.hooks.SessionStart[] | .matcher as $m | select($source | test("^(" + $m + ")$")) | .hooks[].command | select(contains("on-session-start.sh") or contains("restart-pickup.sh"))' "$settings")
     : > "$T/ordinary-jq"; : > "$T/start-invocations"
     while IFS= read -r command; do
       [ -n "$command" ] || continue

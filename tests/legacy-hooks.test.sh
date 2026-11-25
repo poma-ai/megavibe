@@ -46,7 +46,7 @@ out=$(cd "$T/h" && HOME="$T/h" NORMALIZED_FROM="$T/h/sub" bash "$rblk" 2>&1)
 check "a launch normalized up to ~ gets the --no-normalize hint" 'printf "%s" "$out" | grep -q -- "megavibe --no-normalize"'
 out=$(cd "$T/h" && HOME="$T/h" bash "$rblk" 2>&1)
 check "no hint when the launch was not moved to ~" '! printf "%s" "$out" | grep -q -- "--no-normalize"'
-check "the restart re-exec keeps --no-normalize" 'grep -q "exec bash \"\$MEGAVIBE_HOME/megavibe\" --no-normalize --continue" "$REPO/megavibe"'
+check "the restart re-exec keeps --no-normalize" 'grep -Fq '\''exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize "${RESTART_ARGS[@]}"'\'' "$REPO/megavibe"'
 out=$(cd "$T/proj" && HOME="$T/h" bash "$rblk" 2>&1); rc=$?
 check "launcher starts in a project" '[ $rc = 0 ] && printf "%s" "$out" | grep -q PASSED'
 check "refusal comes before the lock and init" '[ "$(grep -n "^# Never in the home directory" "$REPO/megavibe" | cut -d: -f1)" -lt "$(grep -n "^bash \"\$INIT_SCRIPT\" \.$" "$REPO/megavibe" | cut -d: -f1)" ] && [ "$(grep -n "^# Never in the home directory" "$REPO/megavibe" | cut -d: -f1)" -lt "$(grep -n "^acquire_lock || true" "$REPO/megavibe" | cut -d: -f1)" ]'
