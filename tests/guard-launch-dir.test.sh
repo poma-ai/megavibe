@@ -55,7 +55,7 @@ mv "$T/moved" "$T/moved-away"
 mv "$T/empty" "$T/empty-away"
 mkdir "$T/empty"
 rmdir "$T/deleted"
-for name in block-dangerous-bash rm-to-trash enforce-pr-format block-stray-working-context block-permission-hooks; do
+for name in block-dangerous-bash block-public-push rm-to-trash enforce-pr-format block-stray-working-context block-permission-hooks; do
   tool=Bash
   case "$name" in
     block-stray-working-context) tool=Write ;;
@@ -137,7 +137,7 @@ settings_match() {
       .hooks[] | [$event, .command]];
     commands == ($template[0] | commands | map(
       .[1] as $path |
-      .[1] = ((if .[0] == "PreToolUse" and ($path | test("/(block-dangerous-bash|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$"))
+      .[1] = ((if .[0] == "PreToolUse" and ($path | test("/(block-dangerous-bash|block-public-push|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$"))
                then $runner else "" end) + "\"" + $root + "/" + $path + "\"")
     ))' "$project/.claude/settings.json" >/dev/null
 }
