@@ -27,7 +27,12 @@
 #   TICK_AUTH_HOURS=12            warn when the refresh token expires inside this
 #   TICK_GH_USER=login            your GitHub login (default: `gh api user`, cached)
 #   TICK_LINEAR=1                 also read Linear comments
-#   TICK_LINEAR_KEY_FILE=path     file holding the Linear API key ($LINEAR_API_KEY wins)
+#   TICK_LINEAR_KEY_CMD=command   command that prints the Linear API key
+#   TICK_LINEAR_KEY_CMD_TIMEOUT=10  positive integer timeout in seconds (default 10)
+#   TICK_LINEAR_KEY_FILE=path     key file used only when no key or command is set
+#   LINEAR_API_KEY, when nonempty, takes precedence over both settings.
+#   TICK_LINEAR_KEY_CMD is trusted only from tick.conf. It is unset before sourcing
+#   the file so an inherited environment cannot supply the command.
 #   TICK_LINEAR_PEOPLE="Name1 Name2"   Linear display names marked "!"
 #   TICK_DEFAULT_WINDOW=2400      seconds looked back on a first run (default 40 min)
 #
@@ -44,13 +49,15 @@
 # state file that cannot be written are reported the same way, never as "quiet". Exit 0
 # after a tick; 2 only for a bad option, a bad --since or an unreadable clock (nothing was
 # checked). A mark in the future (clock moved) falls back to a 60-second window.
-# Test seams: MEGAVIBE_HOME, MEGAVIBE_NOW, MEGAVIBE_TICK_CONF, MEGAVIBE_GH (the gh
-# command), MEGAVIBE_CURL, MEGAVIBE_LINEAR_URL, plus usage-route.sh's and claude-auth-check.sh's own.
+# Test seams: MEGAVIBE_HOME, MEGAVIBE_NOW, MEGAVIBE_TICK_CONF (including key command fixtures),
+# MEGAVIBE_GH (the gh command), MEGAVIBE_CURL (receives the key on stdin), MEGAVIBE_LINEAR_URL,
+# plus usage-route.sh's and claude-auth-check.sh's own.
 set -uo pipefail
 
 MV="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 CONF="${MEGAVIBE_TICK_CONF:-$MV/personal/tick.conf}"
+unset TICK_LINEAR_KEY_CMD
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && [ ! -L "$CONF" ] && . "$CONF"
 NAME="default"; SINCE_ARG=""; MARK=1; RESET=0; REPOS=()
@@ -189,7 +196,14 @@ GH="${MEGAVIBE_GH:-gh}"
 # incomplete check is recorded in a notes file and folded into the report by the main shell.
 NOTES=$(mktemp "${TMPDIR:-/tmp}/tick-notes.XXXXXX" 2>/dev/null) || NOTES=""
 PAGES=""; [ -n "$NOTES" ] && { PAGES=$(mktemp "${TMPDIR:-/tmp}/tick-pages.XXXXXX" 2>/dev/null) || PAGES=""; }
-trap '[ -n "$NOTES" ] && rm -f "$NOTES"; [ -n "$PAGES" ] && rm -f "$PAGES"' EXIT
+KCMD_DIR=""; KCMD_PID=""
+kcmd_cleanup() {   # the key command's process group and its private key file, also on an interrupt
+  if [ -n "$KCMD_PID" ]; then kill -KILL -- "-$KCMD_PID" 2>/dev/null; kill -KILL "$KCMD_PID" 2>/dev/null; wait "$KCMD_PID" 2>/dev/null; fi
+  [ -n "$KCMD_DIR" ] && rm -rf "$KCMD_DIR"
+  KCMD_DIR=""; KCMD_PID=""
+}
+trap '[ -n "$NOTES" ] && rm -f "$NOTES"; [ -n "$PAGES" ] && rm -f "$PAGES"; kcmd_cleanup' EXIT
+trap 'exit 130' INT TERM HUP
 note() { printf '  %s\n' "$1" >> "$NOTES" 2>/dev/null || INCOMPLETE=1; }
 flush_notes() {   # -> appends the recorded notes to $lines and marks the tick incomplete
   if [ -s "$NOTES" ]; then INCOMPLETE=1; lines="${lines}$(cat "$NOTES")"$'\n'; : > "$NOTES"; fi
@@ -344,15 +358,49 @@ else
 fi
 
 # --- linear -----------------------------------------------------------------
+linear_key_from_command() {   # sets KEY_RAW
+  local timeout="${TICK_LINEAR_KEY_CMD_TIMEOUT:-10}" polls=0
+  KEY_RAW=""
+  case "$timeout" in *[!0-9]*) timeout=10 ;; esac
+  [ "$timeout" -gt 0 ] 2>/dev/null || timeout=10
+  # Remove leading zeroes before shell arithmetic (which would read them as octal).
+  timeout="${timeout#"${timeout%%[!0]*}"}"
+  KCMD_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || { KCMD_DIR=""; return 1; }
+  set -m   # the command gets its own process group, so a timeout can stop its children too
+  (
+    umask 077   # at most 4 KB is kept; a command that prints without end gets SIGPIPE (pipefail: failure)
+    bash -c "$TICK_LINEAR_KEY_CMD" </dev/null | head -c 4096 >"$KCMD_DIR/key"
+  ) 2>/dev/null &
+  KCMD_PID=$!
+  set +m
+  while kill -0 "$KCMD_PID" 2>/dev/null; do
+    if [ "$((polls / 10))" -ge "$timeout" ]; then kcmd_cleanup; return 1; fi
+    sleep 0.1
+    polls=$((polls + 1))
+  done
+  if ! wait "$KCMD_PID"; then kcmd_cleanup; return 1; fi
+  KEY_RAW=$(head -c 200 "$KCMD_DIR/key" 2>/dev/null); kcmd_cleanup
+}
+
 CURL="${MEGAVIBE_CURL:-curl}"
 if [ -z "$NOTES" ] || [ -z "$PAGES" ]; then
   :   # said above: no scratch file, nothing checked
 elif [ "${TICK_LINEAR:-0}" = 1 ]; then
   key="${LINEAR_API_KEY:-}"
-  [ -z "$key" ] && [ -n "${TICK_LINEAR_KEY_FILE:-}" ] && [ -f "$TICK_LINEAR_KEY_FILE" ] && key=$(head -c 200 "$TICK_LINEAR_KEY_FILE" 2>/dev/null)
-  key=$(printf '%s' "$key" | tr -d '[:space:]')
+  key_source=default
   if [ -z "$key" ]; then
-    INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but no key (LINEAR_API_KEY or TICK_LINEAR_KEY_FILE); not checked, window kept"
+    if [ "${TICK_LINEAR_KEY_CMD+x}" = x ]; then
+      key_source=command
+      linear_key_from_command 2>/dev/null && key="$KEY_RAW" || key=""   # no command substitution: the interrupt trap must see the child
+    elif [ -n "${TICK_LINEAR_KEY_FILE:-}" ] && [ -f "$TICK_LINEAR_KEY_FILE" ]; then
+      key=$(head -c 200 "$TICK_LINEAR_KEY_FILE" 2>/dev/null)
+    fi
+  fi
+  key=$(printf '%s' "$key" | tr -d '[:space:]')
+  if [ -z "$key" ] && [ "$key_source" = command ]; then
+    INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: incomplete: linear key command failed; not checked, window kept"
+  elif [ -z "$key" ]; then
+    INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but no key (LINEAR_API_KEY, TICK_LINEAR_KEY_CMD or TICK_LINEAR_KEY_FILE); not checked, window kept"
   elif ! command -v "$CURL" >/dev/null 2>&1; then
     INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but curl is not installed; not checked, window kept"
   else

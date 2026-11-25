@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # megavibe — single entry point for AI-assisted development
-# Usage: megavibe [claude-args...]
+# Usage: megavibe [--parallel-branch NAME] [--stash | --no-stash] [claude-args...]
+# Parallel options only apply when another session is active in the checkout.
+# With a branch name supplied, the unattended default is not to stash.
 #
 # Steps:
 # 1. Checks setup (installs if missing)
@@ -15,6 +17,7 @@ set -euo pipefail
 #   /rehydrate — full context recovery via Codex, or capped Gemini without Codex, then Claude
 
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
+LAUNCH_PROJECT="$PWD"
 
 # MEGAVIBE_PARENT_SESSION (which session launched this one) is read once and removed from the
 # environment: claude and every tool under it inherit the wrapper's environment and would hand it
@@ -907,7 +910,29 @@ if [ "${1:-}" = "worktree" ]; then
     remove)
       NAME="${2:-}"; [ -n "$NAME" ] || { echo "usage: megavibe worktree remove <name>"; exit 2; }
       WT="$(dirname "$MAIN")/${REPO}-${NAME}"
+      # From a linked checkout, --show-toplevel returns that checkout. Recognize
+      # its own name relative to the primary checkout before reporting it missing.
+      if [ ! -d "$WT" ] && IFS= read -r -d '' _primary < <(git worktree list --porcelain -z); then
+        _primary=${_primary#worktree }
+        _candidate="${_primary%/*}/${_primary##*/}-${NAME}"
+        if [[ "$_candidate" -ef "$MAIN" ]]; then WT="$_candidate"; fi
+      fi
       [ -d "$WT" ] || { echo "No worktree at $WT"; exit 1; }
+      for _location in 'current directory' 'launch directory'; do
+        if [ "$_location" = 'current directory' ]; then
+          _dir=$(pwd -P)
+        else
+          [ -n "${CLAUDE_PROJECT_DIR:-}" ] || continue
+          _dir=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P) || continue
+        fi
+        while [ -n "$_dir" ]; do
+          if [[ "$_dir" -ef "$WT" ]]; then
+            printf 'Refusing to remove %s because it contains the %s.\n' "$WT" "$_location" >&2
+            exit 1
+          fi
+          _dir=${_dir%/*}
+        done
+      done
       # The symlinks point at the main checkout's real .agent/.claude. Removing
       # the worktree must not follow them — git does not, but say so plainly
       # because "rm -rf a directory containing a symlink to my project memory"
@@ -1660,6 +1685,34 @@ case "${1:-}" in
     exit 1 ;;
 esac
 
+# Keep the original arguments for the self-update re-exec.
+LAUNCH_ARGV=("$@")
+CLAUDE_ARGV=()
+PARALLEL_BRANCH_SET="${MEGAVIBE_PARALLEL_BRANCH+x}"
+PARALLEL_BRANCH="${MEGAVIBE_PARALLEL_BRANCH-}"
+PARALLEL_STASH_SET="${MEGAVIBE_PARALLEL_STASH+x}"
+PARALLEL_STASH="${MEGAVIBE_PARALLEL_STASH-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --parallel-branch)
+      if [ "$#" -lt 2 ] || [[ "$2" == -* ]]; then
+        echo "megavibe: --parallel-branch requires a name" >&2
+        exit 1
+      fi
+      PARALLEL_BRANCH_SET=x
+      PARALLEL_BRANCH="$2"
+      shift ;;
+    --parallel-branch=*)
+      PARALLEL_BRANCH_SET=x
+      PARALLEL_BRANCH="${1#*=}" ;;
+    --stash) PARALLEL_STASH_SET=x; PARALLEL_STASH=1 ;;
+    --no-stash) PARALLEL_STASH_SET=x; PARALLEL_STASH=0 ;;
+    *) CLAUDE_ARGV+=("$1") ;;
+  esac
+  shift
+done
+set -- ${CLAUDE_ARGV[@]+"${CLAUDE_ARGV[@]}"}
+
 # ─── Unknown subcommand guard ────────────────────────────────────────
 #
 # Everything below forwards "$@" straight to `claude`, where a bare word lands
@@ -1668,7 +1721,7 @@ esac
 # doing nothing. Flags and multi-word prompts still pass through untouched —
 # only a lone bare word is rejected, since that shape is almost always a
 # subcommand the user expected to exist.
-if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
+if [ "${#LAUNCH_ARGV[@]}" -eq 1 ] && [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
   echo "Unknown subcommand: ${1}"
   echo ""
   echo "Usage: megavibe [subcommand | claude-args...]"
@@ -1682,8 +1735,13 @@ if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" 
   echo "                        login lifetime, usage (scheduled in a session by /watch)"
   echo "  auth                  How long the Claude login lasts (the refresh token)"
   echo "  update                Update megavibe (--check to peek only)"
+  echo "  --parallel-branch NAME (or --parallel-branch=NAME) sets the branch for a parallel session"
+  echo "  --stash | --no-stash  Choose whether to stash tracked changes before creating the worktree"
+  echo "  Environment defaults: MEGAVIBE_PARALLEL_BRANCH and MEGAVIBE_PARALLEL_STASH (1/yes/true or 0/no/false)"
+  echo "  These options do nothing unless another session is active in the checkout."
+  echo "  With a branch name supplied, the unattended default is not to stash."
   echo ""
-  echo "  Flags and multi-word prompts are passed to claude unchanged."
+  echo "  Other Claude flags and multi-word prompts are passed to claude unchanged."
   exit 1
 fi
 
@@ -1791,7 +1849,7 @@ if [ -n "$REPO_DIR" ]; then
     # handing the repo path over so the remaining syncs still happen this run.
     printf '%s\n' "$REPO_DIR" > "$MEGAVIBE_HOME/.reexec-repo.$$" 2>/dev/null || true
     restore_launch_parent
-    exec "$MEGAVIBE_HOME/megavibe" "$@"
+    exec "$MEGAVIBE_HOME/megavibe" ${LAUNCH_ARGV[@]+"${LAUNCH_ARGV[@]}"}
   fi
   # Sync init.sh
   if ! diff -q "$REPO_DIR/init.sh" "$MEGAVIBE_HOME/init.sh" &>/dev/null 2>&1; then
@@ -1813,7 +1871,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
@@ -1937,13 +1995,21 @@ if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.cla
   # point at the old location is due too.
   if [ "$_ps_due" = 0 ] && command -v jq >/dev/null 2>&1; then
     _ps_root=$(cd "$MEGAVIBE_HOME/personal" && pwd -P) || _ps_due=1
-    jq -e -n --arg root "${_ps_root:-}/" \
+    _ps_runner=''
+    if [[ -f "$HOME/.megavibe/scripts/guard-run.sh" && -x "$HOME/.megavibe/scripts/guard-run.sh" ]]; then
+      _ps_runner='"$HOME/.megavibe/scripts/guard-run.sh" '
+    fi
+    jq -e -n --arg root "${_ps_root:-}/" --arg runner "$_ps_runner" \
           --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
           --slurpfile p "$MEGAVIBE_HOME/personal/.claude/settings.json" '
-        def regs(x; f): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
-                         | .hooks[]? | (.command // "" | f) as $c | "\($e)\t\($m)\t\($c)"] | unique;
-        def expand: if startswith(".claude/hooks/") then "\"" + $root + . + "\"" else . end;
-        (regs($t[0]; expand) - regs($p[0]; .)) | length == 0' >/dev/null 2>&1 || _ps_due=1
+        def expand($e): if startswith(".claude/hooks/") then
+          (if $e == "PreToolUse" and test("^\\.claude/hooks/(block-dangerous-bash|block-public-push|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$")
+           then $runner else "" end) + "\"" + $root + . + "\""
+          else . end;
+        def regs(x; $template): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
+                         | .hooks[]? | (.command // "" | if $template then expand($e) else . end) as $c
+                         | "\($e)\t\($m)\t\($c)"] | unique;
+        (regs($t[0]; true) - regs($p[0]; false)) | length == 0' >/dev/null 2>&1 || _ps_due=1
   fi
   if [ -n "$_ps_sum" ] && [ "$_ps_due" = 1 ]; then
     echo "  Syncing the personal assistant's hooks..." >&2
@@ -2624,6 +2690,19 @@ release_lock() {
 # folder name falls back to its generic name.
 rc_name_prefix() { printf '%s' "${CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX:-${PWD##*/}}"; }
 
+# Export the automatic choice only in Claude's process. A launcher restart
+# rechecks availability and an explicit environment value always wins.
+launch_claude() {
+  local base resolver="$MEGAVIBE_HOME/scripts/scratch-root.sh"
+  if [[ ! ${CLAUDE_CODE_TMPDIR+x} && ${MEGAVIBE_SCRATCH_FOLLOWS_PROJECT:-1} != 0 && -f "$resolver" ]]; then
+    if base=$(MEGAVIBE_HOME="$MEGAVIBE_HOME" bash "$resolver" select-volume "$LAUNCH_PROJECT") &&
+       [[ -n "$base" ]]; then
+      export CLAUDE_CODE_TMPDIR="$base"
+    fi
+  fi
+  exec claude "$@"
+}
+
 # ─── Resume path: minimal, never mutates directory ───────────────────
 
 if $IS_RESUME; then
@@ -2658,7 +2737,7 @@ if $IS_RESUME; then
   # Skip init.sh (LESSONS.md: never overwrite hooks mid-session)
   # Go straight to claude
   trap release_lock EXIT HUP INT TERM
-  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
   CLAUDE_PID=$!
   update_lock_pid "$CLAUDE_PID"
   record_launch "$CLAUDE_PID"
@@ -2682,24 +2761,45 @@ if [ -d "$LOCK_DIR" ]; then
       echo "  This is a git repo. You can start a parallel session on a new branch."
       echo ""
 
+      if [ -n "$PARALLEL_BRANCH_SET" ]; then
+        BRANCH_NAME=$(printf '%s\n' "$PARALLEL_BRANCH" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
+        if [ -z "$BRANCH_NAME" ] || ! git check-ref-format --branch "$BRANCH_NAME" >/dev/null 2>&1; then
+          echo "megavibe: invalid parallel branch name" >&2
+          exit 1
+        fi
+      fi
+
+      STASH_ANSWER=n
+      if [ -n "$PARALLEL_STASH_SET" ]; then
+        case "$(printf '%s' "$PARALLEL_STASH" | tr 'A-Z' 'a-z')" in
+          1|yes|true) STASH_ANSWER=Y ;;
+          0|no|false) STASH_ANSWER=n ;;
+          *) echo "megavibe: MEGAVIBE_PARALLEL_STASH must be 1/yes/true or 0/no/false" >&2; exit 1 ;;
+        esac
+      fi
+
       # Check for uncommitted changes (tracked files only — untracked don't block worktrees)
       if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
         echo -e "  ${YELLOW}Uncommitted changes detected.${RESET}"
-        read -p "  Stash them first? [Y/n] " STASH_ANSWER
+        if [ -z "$PARALLEL_BRANCH_SET" ] && [ -z "$PARALLEL_STASH_SET" ]; then
+          read -p "  Stash them first? [Y/n] " STASH_ANSWER
+        fi
         if [[ "${STASH_ANSWER:-Y}" =~ ^[Yy]?$ ]]; then
           git stash push -m "megavibe: auto-stash before worktree"
           echo -e "  ${GREEN}Stashed.${RESET} Restore later with: git stash pop"
         fi
       fi
 
-      read -p "  Branch name (or Ctrl+C to cancel): " BRANCH_NAME
-      if [ -z "$BRANCH_NAME" ]; then
-        echo "  No branch name given. Exiting."
-        exit 1
-      fi
+      if [ -z "$PARALLEL_BRANCH_SET" ]; then
+        read -p "  Branch name (or Ctrl+C to cancel): " BRANCH_NAME
+        if [ -z "$BRANCH_NAME" ]; then
+          echo "  No branch name given. Exiting."
+          exit 1
+        fi
 
-      # Sanitize branch name. Dash at end so it's literal, not a range.
-      BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
+        # Sanitize branch name. Dash at end so it's literal, not a range.
+        BRANCH_NAME=$(echo "$BRANCH_NAME" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_./-')
+      fi
       PROJECT_NAME=$(basename "$PWD")
       WORKTREE_DIR="$MEGAVIBE_HOME/worktrees/${PROJECT_NAME}-${BRANCH_NAME}"
 
@@ -2931,7 +3031,7 @@ compute_router_args "$@"
 [ -n "$ROUTER_NOTE" ] && [ "$ROUTER_NOTE" != "normal: no change" ] && echo -e "  ${DIM}router: ${ROUTER_NOTE}  (MEGAVIBE_ROUTER=0 to disable; --model/--effort to choose yourself)${RESET}"
 
 while true; do
-  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
+  CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} ${ROUTER_ARGS[@]+"${ROUTER_ARGS[@]}"} ${CLAUDE_EXTRA_ARGS[@]+"${CLAUDE_EXTRA_ARGS[@]}"} &
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
