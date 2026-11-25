@@ -32,11 +32,13 @@ cat > "$T/bin/tmux" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$FIXTURE/tmux-calls"
 if [ "$1" = list-panes ]; then exit 0; fi
+[ "$1" != -N ] || shift
 [ "$1" = -S ] && [ "$2" = /example/tmux.sock ] || exit 8
 shift 2
 case "$1" in
   display-message)
     pane=$4
+    if [ "$5" = '#{session_name}:#{window_index}.#{pane_index} (#{pane_id})' ]; then echo "build:1.2 ($pane)"; exit 0; fi
     case "$pane" in
       %400) echo '%999 999 0 0 12' ;;
       *) echo "$pane 10 ${COPY_MODE:-0} 0 12" ;;
@@ -62,7 +64,7 @@ PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "PASS $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; fi; }
 now=$(date +%s)
 for pid in 100 200 300 400 500 600 700 800 900; do
-  state=idle; pane="%$pid"; socket=/example/tmux.sock; protocol=1
+  state=idle; pane="%$pid"; socket=/example/tmux.sock; protocol=2
   case "$pid" in 200) state=busy ;; 300) pane=; socket= ;; 500) state=unknown ;; 900) protocol=0 ;; esac
   jq -n --argjson pid "$pid" --argjson now "$now" --arg cwd "$T/project with spaces" --arg state "$state" \
     '{pid:$pid,sessionId:("sid-"+($pid|tostring)),name:"fixture",cwd:$cwd,status:$state,startedAt:($now*1000),procStart:(if $pid == 800 then null else "Wed Nov 25 10:00:00 2026" end)}' > "$CLAUDE_CONFIG_DIR/sessions/$pid.json"
@@ -72,6 +74,8 @@ done
 run() { bash "$REPO/scripts/restart-all.sh" "$@"; }
 out=$(run --dry-run)
 check 'dry run reports every session and no restart promises' '[ "$(printf "%s\n" "$out" | wc -l | tr -d " ")" = 10 ] && [[ "$out" == *"0 would restart, 9 skipped"* ]]'
+check 'report includes name full project pane location and exact command' '[[ "$out" == *"name=fixture"* && "$out" == *"project="* && "$out" == *"build:1.2"* && "$out" == *"megavibe --resume sid-100"* ]]'
+check 'tmux is read-only and never starts a server' '! rg -v -- "^-N -S .* display-message -p -t " "$T/tmux-calls"'
 check 'caller is considered last' '[[ "$(printf "%s\n" "$out" | tail -2 | head -1)" == "sid-100 (pid 100): skipped:"* ]]'
 check 'dry run never creates requests or handovers' '[ ! -e "$T/sent" ] && [ ! -d "$T/project with spaces/.agent/sessions" ] && ! compgen -G "$MEGAVIBE_HOME/.restart-session*" >/dev/null'
 out=$(run --others)
@@ -90,7 +94,7 @@ check 'inherited id cannot select the caller' '[[ "$out" == *"sid-100 (pid 100):
 command() { [ "$*" != '-v tmux' ] || return 1; builtin command "$@"; }
 export -f command
 rc=0; out=$(run --dry-run 2>&1) || rc=$?
-check 'without tmux reports why and exits nonzero' '[ "$rc" != 0 ] && [[ "$out" == *"tmux is unavailable"* ]]'
+check 'without tmux still lists names projects and exact manual commands' '[ "$rc" = 0 ] && [[ "$out" == *"name=fixture"* && "$out" == *"project="* && "$out" == *"megavibe --resume sid-100"* ]]'
 unset -f command
 rc=0; run --bad >/dev/null 2>&1 || rc=$?
 check 'unknown option rejected' '[ "$rc" = 2 ]'

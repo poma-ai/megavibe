@@ -31,15 +31,10 @@ RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
 RMARK=${MEGAVIBE_RESTART_MARKER:-}
 if [ -f "$RH" ] && [ -n "$RMARK" ] && [ -f "$RMARK" ]; then
   FULL_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
-  # Only this launcher's exact request can capture this exiting session.
-  if [[ "$FULL_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]] && [ "$(cat "$RMARK")" = "$FULL_SID" ]; then
-    bash "$RH" capture "$FULL_SID" >/dev/null 2>&1 || true
-  else
-    # /clear (or missing identity) invalidates the earlier conversation request.
-    REQUEST_SID=$(cat "$RMARK" 2>/dev/null) || REQUEST_SID=''
-    bash "$RH" cancel "$REQUEST_SID" >/dev/null 2>&1 || true
-    rm -f "$RMARK"
-  fi
+  # The helper resolves the nearest Claude ancestor before either capturing
+  # or cancelling (/clear). Inherited markers alone confer no ownership.
+  END_REASON=$(printf '%s' "$INPUT" | jq -r '.reason // ""')
+  bash "$RH" capture "$FULL_SID" "" "" "$END_REASON" >/dev/null || true
 fi
 
 SID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)

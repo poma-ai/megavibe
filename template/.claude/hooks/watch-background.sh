@@ -82,7 +82,13 @@ STATE=".agent/LOGS/.bg-tasks.${SID}.jsonl"
 # Retain only task identifiers, times and local output paths, never commands,
 # descriptions or environment. Process observation happens only at capture.
 RESTART_STATE=".agent/LOGS/.restart-tasks.$SID.json"
-if [ "$EVENT" = Stop ] && printf '%s' "$INPUT" | jq -e '
+RESTART_ACTIVE=0
+# With no request this costs only shell tests: no extra JSON or process work.
+if [ -n "${MEGAVIBE_RESTART_MARKER:-}" ] && [ -f "$MEGAVIBE_RESTART_MARKER" ] &&
+   [ -f "${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh" ]; then
+  bash "${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh" active "$SID" >/dev/null 2>&1 && RESTART_ACTIVE=1
+fi
+if [ "$RESTART_ACTIVE" = 1 ] && [ "$EVENT" = Stop ] && printf '%s' "$INPUT" | jq -e '
   (.agent_id // "") == "" and ((.transcript_path // "" | contains("/subagents/agent-")) | not)
   ' >/dev/null 2>&1; then
   if printf '%s' "$INPUT" | jq -e '.background_tasks | type == "array"' >/dev/null 2>&1; then
@@ -215,6 +221,7 @@ print(job, scratch)
     '{id:$id, path:$p, kind:$k, started:$t, nudged:0}' >> "$STATE" 2>/dev/null || true
 
   # Keep new tasks visible even when the previous Stop registry was empty.
+  if [ "$RESTART_ACTIVE" = 1 ]; then
   OLD=$(cat "$RESTART_STATE" 2>/dev/null || echo '[]')
   (umask 077; jq -n --argjson old "$OLD" --arg id "$ID" --arg p "$OUT" --argjson t "$NOW" '
     def safe:
@@ -224,6 +231,7 @@ print(job, scratch)
          (test("(?i)key|token|secret|password|auth|bearer|://") | not) then .[:256] else "[omitted]" end)};
     ($old | map(select(.id != $id) | safe)) + [({id:$id, started:$t, path:$p} | safe)]
     ' > "$RESTART_STATE.tmp.$$" 2>/dev/null && mv "$RESTART_STATE.tmp.$$" "$RESTART_STATE")
+  fi
 
   # The loop is built by jq so the path is shell-quoted whatever it contains.
   # No path resolved → no loop: a loop on a placeholder reports 0 bytes

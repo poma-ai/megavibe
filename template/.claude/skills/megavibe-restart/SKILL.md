@@ -40,8 +40,9 @@ armed after a failure: restart that conversation manually once instead.
 To cancel an armed request, run the helper with `cancel <session id>`.
 
 At SessionEnd the helper refreshes machine evidence while preserving your
-notes. Only the launcher confirming exit activates the reminder. The first
-startup/resume shows it once (or a bounded summary pointing to the retained
+notes. A matching successful capture and confirmed process exit permit the
+replacement launch. Only that replacement’s SessionStart activates the reminder;
+a failed launch stays `not-restarted`. The matching startup/resume shows it once (or a bounded summary pointing to the retained
 file). Check each job's PID/start time and actual survival, re-arm its heartbeat
 or restart it only if needed, and say which you dropped.
 

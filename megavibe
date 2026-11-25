@@ -2748,7 +2748,7 @@ record_launch() {
       kill -0 "$p" 2>/dev/null || rm -f "$f"
     done
     jq -n --argjson pid "$pid" --arg parent "$parent" --argjson ppid "${parent_pid:-null}" --arg pcwd "$parent_cwd" --argjson at "$(date +%s)" --argjson wrapper "$$" --arg pane "${TMUX_PANE:-}" --arg tmux "${TMUX:-}" \
-      '{wrapperPid: $wrapper, restartProtocol: 1, pane: $pane, socket: ($tmux | split(",")[0]), pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' \
+      '{wrapperPid: $wrapper, restartProtocol: 2, pane: $pane, socket: ($tmux | split(",")[0]), pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' \
       > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null \
       || rm -f "$dir/$pid.json.tmp"
   ) 2>/dev/null || true
@@ -2781,26 +2781,40 @@ launch_claude() {
       export CLAUDE_CODE_TMPDIR="$base"
     fi
   fi
+  if [ -n "${MEGAVIBE_RESTART_PICKUP:-}" ]; then
+    local pickup_sid
+    pickup_sid=$(jq -er .sessionId "$MEGAVIBE_RESTART_MARKER") || return 1
+    bash "$MEGAVIBE_HOME/scripts/restart.sh" replace "$pickup_sid" || return 1
+  fi
   exec claude "$@"
 }
 
-# A wrapper owns its marker; another session cannot consume its request.
-export MEGAVIBE_RESTART_MARKER="$MEGAVIBE_HOME/.restart-session.$$"
-rm -f "$MEGAVIBE_RESTART_MARKER"   # a stale request on a reused wrapper PID is not ours
+# An exec of this same wrapper carries its pending request; a new/manual
+# launcher (including a child with inherited variables) always gets a new identity.
+if [ "${MEGAVIBE_RESTART_WRAPPER_PID:-}" != "$$" ] || [ -z "${MEGAVIBE_RESTART_PICKUP:-}" ]; then
+  export MEGAVIBE_RESTART_WRAPPER_PID=$$
+  export MEGAVIBE_RESTART_OWNER="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  export MEGAVIBE_RESTART_MARKER="$MEGAVIBE_HOME/.restart-session.$MEGAVIBE_RESTART_OWNER"
+  unset MEGAVIBE_RESTART_PICKUP
+fi
 restart_after_exit() {
-  local marker="$MEGAVIBE_RESTART_MARKER" restart_sid=""
+  local marker="$MEGAVIBE_RESTART_MARKER" restart_sid="" generation=""
   if [ -f "$marker" ]; then
-    restart_sid=$(cat "$marker" 2>/dev/null) || restart_sid=""
+    restart_sid=$(jq -er .sessionId "$marker" 2>/dev/null) || restart_sid=""
+    generation=$(jq -er .generation "$marker" 2>/dev/null) || generation=""
+    case "$(jq -r .state "$marker" 2>/dev/null)" in shown|restarted) return 1 ;; esac
     if ! [[ "$restart_sid" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
-      echo 'megavibe restart: skipped: session id unavailable; restart this conversation manually.' >&2
-      rm -f "$marker"
+      echo 'megavibe restart: skipped: session id unavailable; start by hand: megavibe --resume and select the conversation (capture retained).' >&2
       return 1
     fi
+    # wait has returned; only a successful matching SessionEnd permits pickup.
+    if [ ! -f "$MEGAVIBE_HOME/scripts/restart.sh" ]; then
+      printf 'megavibe restart: skipped: confirmation helper unavailable; start by hand: megavibe --resume %s (capture retained).\n' "$restart_sid" >&2
+      return 1
+    fi
+    bash "$MEGAVIBE_HOME/scripts/restart.sh" complete "$restart_sid" "$CLAUDE_PID" "$generation" || return 1
+    export MEGAVIBE_RESTART_PICKUP="$generation"
     RESTART_ARGS=(--resume "$restart_sid")
-    # SessionEnd captured fresh while the session still existed. Completion
-    # only activates that capture after wait has confirmed the process exited.
-    [ ! -f "$MEGAVIBE_HOME/scripts/restart.sh" ] || bash "$MEGAVIBE_HOME/scripts/restart.sh" complete "$restart_sid" "$CLAUDE_PID" || true
-    rm -f "$marker"
     echo ""
     echo -e "  ${BOLD}Updating megavibe...${RESET}"
     do_update 2>&1 || echo -e "  ${YELLOW}Update failed — restarting with current version.${RESET}"
@@ -2824,9 +2838,8 @@ restart_after_exit() {
     # restart was pointing at something that could not deliver what it promised.
     #
     # exec replaces this process, so the new one re-reads the script from disk
-    # and re-runs all of it. The marker is already removed above, so this cannot
-    # loop. If exec fails for any reason, fall through to the old behaviour
-    # rather than dropping the session.
+    # and re-runs all of it. The pending request cannot authorize a second
+    # restart. If the installed launcher is absent, use the loop below.
     if [ -x "$MEGAVIBE_HOME/megavibe" ]; then
       restore_launch_parent
       if [ "$NORMALIZE" = "0" ]; then exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize "${RESTART_ARGS[@]}"; fi

@@ -47,7 +47,7 @@ field() { jq -r "$1" "$T/home/launches/$2.json"; }
 run 4099 TMUX=/example/test.sock,123,0 TMUX_PANE=%7
 [ "$(field .pane 4099)" = %7 ] || fail "restart pane"
 [ "$(field .socket 4099)" = /example/test.sock ] || fail "restart socket"
-[ "$(field .restartProtocol 4099)" = 1 ] || fail "restart protocol"
+[ "$(field .restartProtocol 4099)" = 2 ] || fail "restart protocol"
 [[ "$(field .wrapperPid 4099)" =~ ^[0-9]+$ ]] || fail "restart wrapper pid"
 
 # Explicit parent wins over the inherited session id.

@@ -29,12 +29,9 @@ case "$SOURCE" in
   startup|resume)
     RESTART_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
     RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
-    if [ -f "$RH" ] && [[ "$RESTART_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]] &&
-       [ -f ".agent/sessions/$RESTART_SID/restart-handover.txt" ] &&
-       [ ! -e ".agent/sessions/$RESTART_SID/restart-handover.shown" ] &&
-       [ "$(cat ".agent/sessions/$RESTART_SID/restart-handover.status" 2>/dev/null)" = restarted ]; then
-      bash "$RH" show "$RESTART_SID" || true
-      exit 0
+    if [ -n "${MEGAVIBE_RESTART_PICKUP:-}" ] && [ -f "$RH" ] &&
+       [[ "$RESTART_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+      if bash "$RH" show "$RESTART_SID"; then exit 0; fi
     fi
     ;;
 esac

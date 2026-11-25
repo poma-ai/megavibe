@@ -537,7 +537,9 @@ Or if you have a local clone: `bash megavibe/setup.sh`
 
 **Restart open sessions.** An update takes effect in each session after it restarts.
 `megavibe restart-all [--dry-run] [--others]` reports live recorded sessions,
-with a skip reason per session and final counts. **Automatic pane input has
+with its name, full project directory, readable tmux pane location, exact manual
+restart command, skip reason and final counts. tmux is optional; location queries
+never start a server. **Automatic pane input has
 been removed.** tmux cannot atomically verify Claude's process identity,
 foreground group and entire empty editor while submitting `/exit`. A snapshot
 or an opt-in armed marker cannot exclude a later user edit or foreground change.
@@ -560,7 +562,8 @@ authorization headers and URL userinfo. Environment values are never recorded.
 Restart files are owner-only. Do not put credentials in authored notes.
 
 Process observation runs only during an explicit capture, never on ordinary
-Stop hooks. The background hook retains only task metadata. At SessionEnd,
+Stop hooks. Restart-specific task metadata is retained only while this session
+has an explicit restart request. At SessionEnd,
 the helper refreshes machine evidence while preserving authored notes about
 purposes, scheduled prompts, heartbeats and work that cannot be attributed
 from process ancestry. A child is labelled “expected to end with the session”;
@@ -569,13 +572,18 @@ Neither label proves survival. Missing processes are dropped from the fresh
 capture; unknown or unavailable evidence is reported as such.
 
 A capture starts as `not-restarted`; cancellation retains the handover but
-retires its process snapshot. Only a matching exit capture followed by the
-launcher's confirmed process exit activates a reminder. A request without
-that exit capture never becomes a reminder. New requests discard old process
+cannot activate a reminder. One request record binds its generation, wrapper
+identity, owning Claude PID and session ID. Only that Claude process can capture
+or cancel it; `/clear` in that process cancels with a notice. A matching successful
+exit capture and confirmed process exit allow the launcher to attempt replacement.
+The capture stays `not-restarted` until the matching replacement SessionStart
+confirms pickup. A failed launch cannot deliver a reminder on a later manual resume. New requests discard old process
 attribution, and refreshed handovers archive earlier files. On startup/resume,
 the hook delivers the handover once, or a bounded summary with the observation
 count and full file path when it is too large. It marks the generation shown
-only after writing the full message or summary successfully. The reminder
+only after writing the full message or summary successfully. Delivery uses a
+generation-scoped kernel lock and records its owner PID; an interrupted delivery
+can be retried without a stale claim suppressing it. The reminder
 asks the model to verify each PID/start time and actual survival before
 re-arming or restarting anything, and to say what it dropped.
 
