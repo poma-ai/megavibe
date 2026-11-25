@@ -74,6 +74,7 @@ cat > "$T/bin/curl" <<EOF
 #!/bin/bash
 # fake curl: config on stdin (never printed), -w suffix honoured; CURL_SHIM picks the answer
 cfg=\$(cat); printf '%s' "\$cfg" > "$T/curl-cfg.last"
+printf '%s\n' "\$@" > "$T/curl-argv.last"
 case "\${CURL_SHIM:-ok}" in
   ok) printf '{"data":{"viewer":{"id":"u1","name":"Me"},"comments":{"nodes":[{"createdAt":"2026-11-01T14:20:00.123Z","url":"https://linear.test/c1","user":{"id":"u2","name":"Alice A"},"issue":{"identifier":"PRJ-1"},"body":"please check"},{"createdAt":"2026-11-01T14:21:00.000Z","url":"https://linear.test/c2","user":{"id":"u3","name":"Me"},"issue":{"identifier":"PRJ-2"},"body":"same display name, other person"},{"createdAt":"2026-11-01T14:22:00.000Z","url":"https://linear.test/c3","user":{"id":"u1","name":"Me"},"issue":{"identifier":"PRJ-3"},"body":"my own"}]}}}'; printf '\n200' ;;
   errors) printf '{"data":{"comments":{"nodes":[]}},"errors":[{"message":"EXAMPLE-reflected-key-would-be-here"}]}'; printf '\n200' ;;
@@ -89,6 +90,7 @@ printf 'TICK_REPOS="org/a"\nTICK_PEOPLE="alice"\n' > "$T/mv/personal/tick.conf"
 
 tick() {   # tick [args...]: a tick with the fake gh and pinned clock; TICK_NOW, TICK_CREDS, TICK_LINEAR, TICK_BOTS, GH_SHIM_FAIL pass through
   env -i PATH="$PATH" HOME="$T" TMPDIR="${TICK_TMPDIR:-$T}" MEGAVIBE_HOME="$T/mv" MEGAVIBE_NOW="${TICK_NOW:-$NOW}" MEGAVIBE_GH="$T/bin/gh" MEGAVIBE_CURL="$T/bin/curl" LINEAR_API_KEY="${TICK_LKEY:-}" \
+    TICK_LINEAR_KEY_CMD="${TICK_LINEAR_KEY_CMD:-}" \
     MEGAVIBE_CLAUDE_CREDENTIALS="${TICK_CREDS:-$T/creds-ok.json}" MEGAVIBE_USAGE_FILE="$T/none.jsonl" MEGAVIBE_CODEX_HOME="$T/nocodex" \
     MEGAVIBE_TICK_CONF="${TICK_CONF:-$T/mv/personal/tick.conf}" TICK_LINEAR="${TICK_LINEAR:-}" TICK_BOTS="${TICK_BOTS:-}" GH_SHIM_FAIL="${GH_SHIM_FAIL:-0}" GH_SHIM_PAGES="${GH_SHIM_PAGES:-0}" GH_SHIM_RRNUM="${GH_SHIM_RRNUM:-0}" GH_SHIM_MANY="${GH_SHIM_MANY:-0}" CURL_SHIM="${CURL_SHIM:-ok}" \
     bash "$REPO/scripts/tick.sh" "$@" 2>&1
@@ -167,6 +169,48 @@ for mode in errors http500 exit28; do
   o=$(CURL_SHIM=$mode TICK_LINEAR=1 TICK_LKEY=EXAMPLE-key tick --since $((NOW - 2400)))
   check "linear $mode: INCOMPLETE, fixed diagnostic, no reflected text, no mark" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! linear: query failed (curl exit"* ]] && [[ "$o" != *"reflected"* ]] && [ ! -s "$T/mv/tick/default.last" ]'
 done
+cat > "$T/bin/linear-key" <<'EOF'
+#!/bin/bash
+case "$1" in
+  ok)
+    if read -r input; then exit 1; fi
+    printf ' EXAMPLE-command-key\n%*sEXAMPLE-past-limit\n' 200 ''
+    ;;
+  fail) echo EXAMPLE-command-stdout; echo EXAMPLE-command-stderr >&2; exit 1 ;;
+  empty) : ;;
+  timeout) echo "$$" > "$HOME/key-command.pid"; exec sleep 30 ;;
+esac
+EOF
+chmod +x "$T/bin/linear-key"
+printf ' EXAMPLE-file-key\n' > "$T/linear-key"
+cp "$T/mv/personal/tick.conf" "$T/key-file.conf"
+printf 'TICK_LINEAR_KEY_FILE="%s"\n' "$T/linear-key" >> "$T/key-file.conf"
+key_conf() {
+  cp "$T/key-file.conf" "$T/key-command.conf"
+  printf 'TICK_LINEAR_KEY_CMD="exec \\"%s\\" %s"\n' "$T/bin/linear-key" "$1" >> "$T/key-command.conf"
+}
+key_conf ok
+o=$(TICK_CONF="$T/key-command.conf" TICK_LINEAR=1 GH_SHIM_MANY=1 tick --name key-success --no-mark --since $((NOW - 2400)) <<< 'unexpected stdin')
+check "key command wins over the file, trims stdout to 200 bytes, and supplies curl via stdin" '[[ "$o" == *"PRJ-1"* ]] && [ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-command-key\"" ] && ! grep -Fq "EXAMPLE-command-key" "$T/curl-argv.last"'
+check "key command output stays out of both reports" '[[ "$o" != *"EXAMPLE-command-key"* ]] && [ -s "$T/mv/tick/key-success.report" ] && ! grep -Fq "EXAMPLE-command-key" "$T/mv/tick/key-success.report"'
+o=$(TICK_CONF="$T/key-file.conf" TICK_LINEAR=1 tick --no-mark)
+check "without a key command, curl receives the file key" '[[ "$o" == *"PRJ-1"* ]] && [ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-file-key\"" ]'
+for mode in fail empty timeout; do
+  key_conf "$mode"
+  printf 'TICK_LINEAR_KEY_CMD_TIMEOUT=1\n' >> "$T/key-command.conf"
+  rm -f "$T/curl-cfg.last"
+  start=$SECONDS
+  o=$(TICK_CONF="$T/key-command.conf" TICK_LINEAR=1 tick --name "key-$mode")
+  check "key command $mode reports one failure, keeps the window, and skips curl" '[[ "$o" == "tick key-$mode: NEEDS ACTION (9), INCOMPLETE"* ]] && [[ "$o" == *"! linear: incomplete: linear key command failed; not checked, window kept"* ]] && [[ "$o" != *"EXAMPLE-command-"* && "$o" != *"$T/bin/linear-key"* ]] && [ ! -e "$T/curl-cfg.last" ] && [ ! -e "$T/mv/tick/key-$mode.last" ] && [ "$(cat "$T/mv/tick/key-$mode.pending")" = "$((NOW - 2400))" ]'
+  if [ "$mode" = timeout ]; then
+    check "key command times out promptly and leaves no sleeping child" '[ "$((SECONDS - start))" -lt 10 ] && [ -s "$T/key-command.pid" ] && ! kill -0 "$(cat "$T/key-command.pid")" 2>/dev/null'
+  fi
+done
+o=$(TICK_CONF="$T/key-file.conf" TICK_LINEAR=1 TICK_LINEAR_KEY_CMD="touch '$T/env-command-ran'" tick --no-mark)
+check "an inherited key command is ignored" '[ ! -e "$T/env-command-ran" ] && [ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-file-key\"" ]'
+printf 'TICK_LINEAR_KEY_CMD="touch \\"%s\\"; exit 1"\n' "$T/conf-command-ran" >> "$T/key-command.conf"
+o=$(TICK_CONF="$T/key-command.conf" TICK_LINEAR=1 TICK_LKEY=EXAMPLE-env-key tick --no-mark)
+check "LINEAR_API_KEY wins without running the configured command" '[ ! -e "$T/conf-command-ran" ] && [ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-env-key\"" ]'
 o=$(TICK_BOTS=1 tick --no-mark --since $((NOW - 2400)))
 check "TICK_BOTS=1 lists bot activity" '[[ "$o" == *"linkbot[bot]"* ]]'
 o=$(tick --no-mark --since $((NOW - 2400)) org/a nodash)

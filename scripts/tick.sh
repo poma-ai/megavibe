@@ -26,7 +26,12 @@
 #   TICK_AUTH_HOURS=12            warn when the refresh token expires inside this
 #   TICK_GH_USER=login            your GitHub login (default: `gh api user`, cached)
 #   TICK_LINEAR=1                 also read Linear comments
-#   TICK_LINEAR_KEY_FILE=path     file holding the Linear API key ($LINEAR_API_KEY wins)
+#   TICK_LINEAR_KEY_CMD=command   command that prints the Linear API key
+#   TICK_LINEAR_KEY_CMD_TIMEOUT=10  positive integer timeout in seconds (default 10)
+#   TICK_LINEAR_KEY_FILE=path     key file used only when no key or command is set
+#   LINEAR_API_KEY, when nonempty, takes precedence over both settings.
+#   TICK_LINEAR_KEY_CMD is trusted only from tick.conf. It is unset before sourcing
+#   the file so an inherited environment cannot supply the command.
 #   TICK_LINEAR_PEOPLE="Name1 Name2"   Linear display names marked "!"
 #   TICK_DEFAULT_WINDOW=2400      seconds looked back on a first run (default 40 min)
 #
@@ -43,13 +48,15 @@
 # state file that cannot be written are reported the same way, never as "quiet". Exit 0
 # after a tick; 2 only for a bad option, a bad --since or an unreadable clock (nothing was
 # checked). A mark in the future (clock moved) falls back to a 60-second window.
-# Test seams: MEGAVIBE_HOME, MEGAVIBE_NOW, MEGAVIBE_TICK_CONF, MEGAVIBE_GH (the gh
-# command), MEGAVIBE_CURL, MEGAVIBE_LINEAR_URL, plus usage-route.sh's and claude-auth-check.sh's own.
+# Test seams: MEGAVIBE_HOME, MEGAVIBE_NOW, MEGAVIBE_TICK_CONF (including key command fixtures),
+# MEGAVIBE_GH (the gh command), MEGAVIBE_CURL (receives the key on stdin), MEGAVIBE_LINEAR_URL,
+# plus usage-route.sh's and claude-auth-check.sh's own.
 set -uo pipefail
 
 MV="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 CONF="${MEGAVIBE_TICK_CONF:-$MV/personal/tick.conf}"
+unset TICK_LINEAR_KEY_CMD
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && [ ! -L "$CONF" ] && . "$CONF"
 NAME="default"; SINCE_ARG=""; MARK=1; RESET=0; REPOS=()
@@ -336,15 +343,54 @@ else
 fi
 
 # --- linear -----------------------------------------------------------------
+linear_key_from_command() {
+  local timeout="${TICK_LINEAR_KEY_CMD_TIMEOUT:-10}" dir pid polls=0 status
+  case "$timeout" in *[!0-9]*) timeout=10 ;; esac
+  [ "$timeout" -gt 0 ] 2>/dev/null || timeout=10
+  # Remove leading zeroes before shell arithmetic (which would read them as octal).
+  timeout="${timeout#"${timeout%%[!0]*}"}"
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || return 1
+  (
+    umask 077
+    exec bash -c "$TICK_LINEAR_KEY_CMD" </dev/null >"$dir/key"
+  ) 2>/dev/null &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$((polls / 10))" -ge "$timeout" ]; then
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      rm -rf "$dir"
+      return 1
+    fi
+    sleep 0.1
+    polls=$((polls + 1))
+  done
+  wait "$pid" || { rm -rf "$dir"; return 1; }
+  head -c 200 "$dir/key"
+  status=$?
+  rm -rf "$dir"
+  return "$status"
+}
+
 CURL="${MEGAVIBE_CURL:-curl}"
 if [ -z "$NOTES" ] || [ -z "$PAGES" ]; then
   :   # said above: no scratch file, nothing checked
 elif [ "${TICK_LINEAR:-0}" = 1 ]; then
   key="${LINEAR_API_KEY:-}"
-  [ -z "$key" ] && [ -n "${TICK_LINEAR_KEY_FILE:-}" ] && [ -f "$TICK_LINEAR_KEY_FILE" ] && key=$(head -c 200 "$TICK_LINEAR_KEY_FILE" 2>/dev/null)
-  key=$(printf '%s' "$key" | tr -d '[:space:]')
+  key_source=default
   if [ -z "$key" ]; then
-    INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but no key (LINEAR_API_KEY or TICK_LINEAR_KEY_FILE); not checked, window kept"
+    if [ "${TICK_LINEAR_KEY_CMD+x}" = x ]; then
+      key_source=command
+      key=$(linear_key_from_command 2>/dev/null) || key=""
+    elif [ -n "${TICK_LINEAR_KEY_FILE:-}" ] && [ -f "$TICK_LINEAR_KEY_FILE" ]; then
+      key=$(head -c 200 "$TICK_LINEAR_KEY_FILE" 2>/dev/null)
+    fi
+  fi
+  key=$(printf '%s' "$key" | tr -d '[:space:]')
+  if [ -z "$key" ] && [ "$key_source" = command ]; then
+    INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: incomplete: linear key command failed; not checked, window kept"
+  elif [ -z "$key" ]; then
+    INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but no key (LINEAR_API_KEY, TICK_LINEAR_KEY_CMD or TICK_LINEAR_KEY_FILE); not checked, window kept"
   elif ! command -v "$CURL" >/dev/null 2>&1; then
     INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but curl is not installed; not checked, window kept"
   else
