@@ -18,7 +18,7 @@
 # INDEPENDENT of MEGAVIBE_REVIEWERS (reviewers.sh), which gates the reviewer role
 # only. Switching codex off here does not remove it as a reviewer, and the other
 # way round. A logged-out codex is not "allowed or not": `usable` also asks
-# `"$CODEX_BIN" login status` (bounded, cached) so a daemon does not send a request
+# `"$CODEX_BIN" login status` (bounded, never cached) so a daemon does not send a request
 # every five minutes that is answered with 401.
 #
 # Where it is read: the exported variable, then <project>/.claude/settings.local.json,
@@ -57,9 +57,10 @@ _raw_value() {
     RAW_VALUE="$MEGAVIBE_BACKENDS"; RAW_SRC="environment (MEGAVIBE_BACKENDS)"
     return 0
   fi
-  local f v root="${CLAUDE_PROJECT_DIR:-}"
-  [ -n "$root" ] || root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  for f in ".claude/settings.local.json" "${root:+$root/.claude/settings.local.json}" "$HOME/.claude/settings.json"; do
+  local f v root="${CLAUDE_PROJECT_DIR:-}" local_f
+  # When a project is named, only ITS settings.local.json counts: the working directory may be another project.
+  if [ -n "$root" ]; then local_f="$root/.claude/settings.local.json"; else local_f=".claude/settings.local.json"; fi
+  for f in "$local_f" "$HOME/.claude/settings.json"; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     if ! command -v jq >/dev/null 2>&1; then
       echo "backends.sh: jq is not installed — cannot read MEGAVIBE_BACKENDS from $f; allowing claude only" >&2
@@ -75,13 +76,16 @@ _raw_value() {
   return 0
 }
 
+# One tokenizer for every reader of the pin: commas, semicolons and any whitespace separate names.
+_words() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr ',;[:space:]' '\n\n\n\n\n\n\n' | sed '/^$/d'; }
+
 resolve() {
   local n id out="claude" unknown=0
   _raw_value
   # A settings file that exists but cannot be read is ambiguous, and this setting decides where
   # subscriptions and keys are spent, so ambiguity allows claude only (with the warning above).
   [ "$RAW_BAD" = 0 ] || { printf '%s\n' claude; return 0; }
-  n=$(printf '%s' "$RAW_VALUE" | tr 'A-Z' 'a-z' | tr ',;' '  ')
+  n=$(_words "$RAW_VALUE" | tr '\n' ' ')
   case "$(printf '%s' "$n" | tr -d '[:space:]')" in
     ''|auto|default|all) printf '%s\n' $KNOWN; return 0 ;;
   esac
@@ -126,11 +130,18 @@ _bounded() {
 _codex_auth() {
   case "${MEGAVIBE_CODEX_AUTH:-}" in 0|1|2) return "$MEGAVIBE_CODEX_AUTH" ;; esac
   command -v "$CODEX_BIN" >/dev/null 2>&1 || return 1
+  # `codex login status` reports "Not logged in" (exit 1) for a Codex that works through CODEX_API_KEY,
+  # CODEX_ACCESS_TOKEN, OPENAI_API_KEY or a custom model_provider, so for those the answer is "unknown",
+  # which callers treat as usable. MEGAVIBE_CODEX_KEYED=1 carries "a key was set" across the tmux boundary
+  # without copying the secret.
+  local keyed=0 cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  if [ "${MEGAVIBE_CODEX_KEYED:-}" = 1 ] || [ -n "${CODEX_API_KEY:-}" ] || [ -n "${CODEX_ACCESS_TOKEN:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then keyed=1; fi
+  if [ "$keyed" = 0 ] && [ -f "$cfg" ] && grep -Eq '^[[:space:]]*model_provider[[:space:]]*=' "$cfg" 2>/dev/null; then keyed=1; fi
   # Not cached on purpose: a cached "logged in" outlived a logout (and a test run with a stub
   # codex wrote one into the real home), while the probe itself takes about 0.1 s.
   local rc=0
   _bounded 10 "$CODEX_BIN" login status || rc=$?
-  case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac
+  case "$rc" in 0) return 0 ;; 1) [ "$keyed" = 1 ] && return 2 || return 1 ;; *) return 2 ;; esac
 }
 
 case "${1:-list}" in
@@ -149,9 +160,9 @@ case "${1:-list}" in
     case " $KNOWN " in *" $id "*) ;; *) echo "backends.sh: not a known backend: $2 (known: $KNOWN)" >&2; exit 2 ;; esac
     resolve >/dev/null 2>&1 || true
     [ "$RAW_BAD" = 0 ] || exit 1
-    case "$(printf '%s' "$RAW_VALUE" | tr 'A-Z' 'a-z' | tr ',;' '  ' | tr -d '[:space:]')" in ''|auto|default|all) exit 1 ;; esac
+    case "$(_words "$RAW_VALUE" | tr -d '\n')" in ''|auto|default|all) exit 1 ;; esac
     _enabled "$id" || exit 1
-    printf '%s' "$RAW_VALUE" | tr 'A-Z' 'a-z' | tr ',;' '  ' | tr -s ' ' '\n' | grep -qxF -- "$id" || exit 1
+    _words "$RAW_VALUE" | grep -qxF -- "$id" || exit 1
     ;;
   usable)
     [ $# -ge 2 ] || { echo "usage: backends.sh usable <backend>" >&2; exit 2; }

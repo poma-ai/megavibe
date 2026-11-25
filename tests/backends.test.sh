@@ -120,4 +120,47 @@ os.environ.pop("MEGAVIBE_BACKENDS", None)
 assert m._backend_order("auto") == [], "an installed helper that cannot answer must mean no backend, not all of them"
 EOP
 python3 -I "$T/order.py" "$T/scr/context-watcher.py" "$REPO/scripts/reviewers.sh"
+
+# review F5: one tokenizer, so a tab or newline in a pin cannot drop a name from `pinned`
+eq "$(rcof env MEGAVIBE_BACKENDS=$'claude\tgemini' "$B" pinned gemini)" 0 "tab-separated pin names gemini"
+eq "$(rcof env MEGAVIBE_BACKENDS=$'claude\ngemini' "$B" pinned gemini)" 0 "newline-separated pin names gemini"
+eq "$(rcof env MEGAVIBE_BACKENDS='claude,;gemini' "$B" pinned gemini)" 0 "comma and semicolon separators"
+
+# review F4: a named project wins over the working directory's settings file
+mkdir -p "$T/other/.claude" "$T/proj/.claude"
+echo '{"env":{"MEGAVIBE_BACKENDS":"claude"}}' > "$T/other/.claude/settings.local.json"
+eq "$(cd "$T/other" && "$B" list | tr '\n' ' ')" "claude codex gemini " "cwd settings.local.json ignored while CLAUDE_PROJECT_DIR names another project"
+eq "$(cd "$T/other" && env -u CLAUDE_PROJECT_DIR "$B" list | tr '\n' ' ')" "claude " "cwd settings.local.json used when no project is named"
+
+# review F2: a Codex working through an API key or a custom provider reads as unknown, never as logged out
+rm -f "$CODEX_TEST_LOGGED_IN"
+eq "$(rcof "$B" codex-auth)" 1 "logged out and no key"
+eq "$(rcof env CODEX_API_KEY=k "$B" codex-auth)" 2 "CODEX_API_KEY: unknown"
+eq "$(rcof env OPENAI_API_KEY=k "$B" usable codex)" 2 "OPENAI_API_KEY: usable codex is unknown, not 1"
+eq "$(rcof env MEGAVIBE_CODEX_KEYED=1 "$B" codex-auth)" 2 "keyed flag carried across the tmux boundary"
+printf 'model_provider = "azure"\n' > "$T/home/.codex/config.toml"
+eq "$(rcof "$B" codex-auth)" 2 "custom model_provider: unknown"
+rm -f "$T/home/.codex/config.toml"
+
+# review F3: MEGAVIBE_GEMINI_DIGEST=1 keeps an allowed Gemini after Codex in the watcher
+touch "$CODEX_TEST_LOGGED_IN"
+cat > "$T/order2.py" <<'EOP'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("m", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.environ["GEMINI_API_KEY"] = "k"; os.environ["MEGAVIBE_GEMINI_DIGEST"] = "1"; os.environ.pop("MEGAVIBE_BACKENDS", None)
+assert m._backend_order("auto") == ["codex", "gemini"], m._backend_order("auto")
+os.environ["MEGAVIBE_BACKENDS"] = "claude codex"
+assert m._backend_order("auto") == ["codex"], "the allow-list still wins"
+EOP
+cp "$REPO/scripts/context-watcher.py" "$REPO/scripts/reviewers.sh" "$REPO/scripts/backends.sh" "$T/scr/"
+python3 -I "$T/order2.py" "$T/scr/context-watcher.py"
+
+# review F1: a pin with a usable Codex must not trip the session-start hook's ERR trap (it lost all context injection)
+mkdir -p "$T/ss/home/.megavibe/scripts" "$T/ss/proj/.agent"
+cp "$REPO/scripts/reviewers.sh" "$B" "$T/ss/home/.megavibe/scripts/"
+for i in 1 2 3 4 5 6 7 8; do echo "lesson line $i"; done > "$T/ss/proj/.agent/LESSONS.md"
+touch "$CODEX_TEST_LOGGED_IN"
+ss_out=$( cd "$T/ss/proj" && echo '{"session_id":"abcdef123456","source":"startup"}' | HOME="$T/ss/home" MEGAVIBE_BACKENDS="claude codex" CLAUDE_PROJECT_DIR="$T/ss/proj" bash "$REPO/template/.claude/hooks/on-session-start.sh" 2>/dev/null )
+case "$ss_out" in *"lesson line 3"*) ;; *) echo "FAIL: session-start lost its context injection with a pin set" >&2; exit 1 ;; esac
+case "$ss_out" in *"Backends (non-review)"*) ;; *) echo "FAIL: Backends row missing for a pinned list" >&2; exit 1 ;; esac
 echo "backends tests passed"

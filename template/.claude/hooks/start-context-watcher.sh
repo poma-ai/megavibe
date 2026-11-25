@@ -87,11 +87,19 @@ WTRANS_Q=$(printf '%q' "$WTRANS")
 # UNSET one must not be inherited from whichever session started the tmux server (a pin removed with
 # `megavibe backends set auto` would otherwise stay in force). The project dir is passed for the same
 # reason, so the watcher reads this project's settings.local.json and no other.
+# MEGAVIBE_CODEX_AUTH (the user's override) goes the same way, and MEGAVIBE_CODEX_KEYED=1 says that a Codex API key
+# is set here without putting the secret on a command line: `codex login status` reads "not logged in" for it.
 if [ -n "${MEGAVIBE_BACKENDS+x}" ]; then
   BK_ENV="env MEGAVIBE_BACKENDS=$(printf '%q' "$MEGAVIBE_BACKENDS") CLAUDE_PROJECT_DIR=$PWD_Q "
 else
   BK_ENV="env -u MEGAVIBE_BACKENDS CLAUDE_PROJECT_DIR=$PWD_Q "
 fi
+if [ -n "${MEGAVIBE_CODEX_AUTH+x}" ]; then
+  BK_ENV="${BK_ENV}MEGAVIBE_CODEX_AUTH=$(printf '%q' "$MEGAVIBE_CODEX_AUTH") "
+else
+  BK_ENV="env -u MEGAVIBE_CODEX_AUTH ${BK_ENV#env }"
+fi
+if [ -n "${CODEX_API_KEY:-}${CODEX_ACCESS_TOKEN:-}${OPENAI_API_KEY:-}" ]; then BK_ENV="${BK_ENV}MEGAVIBE_CODEX_KEYED=1 "; fi
 # A watcher that may use neither codex nor gemini can only skip every cycle, and its tmux session
 # would still mute the in-session flush nudges. Do not start one then.
 RV_SH="$HOME/.megavibe/scripts/reviewers.sh"

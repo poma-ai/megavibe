@@ -33,7 +33,17 @@ grep -q "not started" "$T/proj/.agent/LOGS/watcher-spawn.aaaaaaaaaaaa.log" || { 
 
 touch "$CODEX_TEST_LOGGED_IN"
 run_hook; eq "$(spawned)" yes "logged-in Codex: watcher starts"
-grep -q "env -u MEGAVIBE_BACKENDS CLAUDE_PROJECT_DIR=" "$TMUX_TEST_LOG" || { echo "FAIL: unset pin not passed explicitly" >&2; cat "$TMUX_TEST_LOG" >&2; exit 1; }
+grep -q -- "-u MEGAVIBE_BACKENDS CLAUDE_PROJECT_DIR=" "$TMUX_TEST_LOG" || { echo "FAIL: unset pin not passed explicitly" >&2; cat "$TMUX_TEST_LOG" >&2; exit 1; }
+grep -q -- "-u MEGAVIBE_CODEX_AUTH" "$TMUX_TEST_LOG" || { echo "FAIL: unset codex-auth override not passed explicitly" >&2; exit 1; }
+if grep -q "MEGAVIBE_CODEX_KEYED" "$TMUX_TEST_LOG"; then echo "FAIL: keyed flag without a key" >&2; exit 1; fi
+MEGAVIBE_CODEX_AUTH=2 run_hook
+grep -q "MEGAVIBE_CODEX_AUTH=2" "$TMUX_TEST_LOG" || { echo "FAIL: MEGAVIBE_CODEX_AUTH override not forwarded to the watcher" >&2; cat "$TMUX_TEST_LOG" >&2; exit 1; }
+CODEX_API_KEY=secret-value run_hook
+grep -q "MEGAVIBE_CODEX_KEYED=1" "$TMUX_TEST_LOG" || { echo "FAIL: keyed flag not forwarded" >&2; exit 1; }
+if grep -q "secret-value" "$TMUX_TEST_LOG"; then echo "FAIL: the key itself reached the tmux command line" >&2; exit 1; fi
+rm -f "$CODEX_TEST_LOGGED_IN"
+CODEX_API_KEY=k run_hook; eq "$(spawned)" yes "logged-out login but a Codex API key: watcher starts"
+touch "$CODEX_TEST_LOGGED_IN"
 
 export MEGAVIBE_BACKENDS="claude"
 run_hook; eq "$(spawned)" no "pin claude: no watcher"

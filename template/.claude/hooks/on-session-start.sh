@@ -263,8 +263,10 @@ if [ -f "$BK_SH" ]; then
   BK_WHY=$(bash "$BK_SH" usable codex 2>/dev/null </dev/null) && BK_CU=0 || BK_CU=$?
   command -v codex >/dev/null 2>&1 || BK_CU=0
   if [ -n "$BK_LIST" ] && { [ "$BK_LIST" != "claude codex gemini" ] || [ "${BK_CU:-0}" = 1 ]; }; then
+    BK_SKIP=""
+    if [ "${BK_CU:-0}" = 1 ]; then BK_SKIP="; codex skipped: ${BK_WHY}"; fi
     BACKENDS_ROW="
-| Backends (non-review) | allowed: ${BK_LIST}$([ "${BK_CU:-0}" = 1 ] && printf '; codex skipped: %s' "$BK_WHY") |"
+| Backends (non-review) | allowed: ${BK_LIST}${BK_SKIP} |"
   fi
 fi
 
