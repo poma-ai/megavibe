@@ -2646,7 +2646,7 @@ if [ -d "$LOCK_DIR" ]; then
 
       STASH_ANSWER=n
       if [ -n "$PARALLEL_STASH_SET" ]; then
-        case "$PARALLEL_STASH" in
+        case "$(printf '%s' "$PARALLEL_STASH" | tr 'A-Z' 'a-z')" in
           1|yes|true) STASH_ANSWER=Y ;;
           0|no|false) STASH_ANSWER=n ;;
           *) echo "megavibe: MEGAVIBE_PARALLEL_STASH must be 1/yes/true or 0/no/false" >&2; exit 1 ;;
