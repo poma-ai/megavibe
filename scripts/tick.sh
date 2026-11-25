@@ -188,7 +188,14 @@ GH="${MEGAVIBE_GH:-gh}"
 # incomplete check is recorded in a notes file and folded into the report by the main shell.
 NOTES=$(mktemp "${TMPDIR:-/tmp}/tick-notes.XXXXXX" 2>/dev/null) || NOTES=""
 PAGES=""; [ -n "$NOTES" ] && { PAGES=$(mktemp "${TMPDIR:-/tmp}/tick-pages.XXXXXX" 2>/dev/null) || PAGES=""; }
-trap '[ -n "$NOTES" ] && rm -f "$NOTES"; [ -n "$PAGES" ] && rm -f "$PAGES"' EXIT
+KCMD_DIR=""; KCMD_PID=""
+kcmd_cleanup() {   # the key command's process group and its private key file, also on an interrupt
+  if [ -n "$KCMD_PID" ]; then kill -KILL -- "-$KCMD_PID" 2>/dev/null; kill -KILL "$KCMD_PID" 2>/dev/null; wait "$KCMD_PID" 2>/dev/null; fi
+  [ -n "$KCMD_DIR" ] && rm -rf "$KCMD_DIR"
+  KCMD_DIR=""; KCMD_PID=""
+}
+trap '[ -n "$NOTES" ] && rm -f "$NOTES"; [ -n "$PAGES" ] && rm -f "$PAGES"; kcmd_cleanup' EXIT
+trap 'exit 130' INT TERM HUP
 note() { printf '  %s\n' "$1" >> "$NOTES" 2>/dev/null || INCOMPLETE=1; }
 flush_notes() {   # -> appends the recorded notes to $lines and marks the tick incomplete
   if [ -s "$NOTES" ]; then INCOMPLETE=1; lines="${lines}$(cat "$NOTES")"$'\n'; : > "$NOTES"; fi
@@ -343,35 +350,28 @@ else
 fi
 
 # --- linear -----------------------------------------------------------------
-linear_key_from_command() {
-  local timeout="${TICK_LINEAR_KEY_CMD_TIMEOUT:-10}" dir pid polls=0 status
+linear_key_from_command() {   # sets KEY_RAW
+  local timeout="${TICK_LINEAR_KEY_CMD_TIMEOUT:-10}" polls=0
+  KEY_RAW=""
   case "$timeout" in *[!0-9]*) timeout=10 ;; esac
   [ "$timeout" -gt 0 ] 2>/dev/null || timeout=10
   # Remove leading zeroes before shell arithmetic (which would read them as octal).
   timeout="${timeout#"${timeout%%[!0]*}"}"
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || return 1
+  KCMD_DIR=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || { KCMD_DIR=""; return 1; }
   set -m   # the command gets its own process group, so a timeout can stop its children too
   (
     umask 077   # at most 4 KB is kept; a command that prints without end gets SIGPIPE (pipefail: failure)
-    bash -c "$TICK_LINEAR_KEY_CMD" </dev/null | head -c 4096 >"$dir/key"
+    bash -c "$TICK_LINEAR_KEY_CMD" </dev/null | head -c 4096 >"$KCMD_DIR/key"
   ) 2>/dev/null &
-  pid=$!
+  KCMD_PID=$!
   set +m
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$((polls / 10))" -ge "$timeout" ]; then
-      kill -KILL -- "-$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null
-      wait "$pid" 2>/dev/null
-      rm -rf "$dir"
-      return 1
-    fi
+  while kill -0 "$KCMD_PID" 2>/dev/null; do
+    if [ "$((polls / 10))" -ge "$timeout" ]; then kcmd_cleanup; return 1; fi
     sleep 0.1
     polls=$((polls + 1))
   done
-  wait "$pid" || { rm -rf "$dir"; return 1; }
-  head -c 200 "$dir/key"
-  status=$?
-  rm -rf "$dir"
-  return "$status"
+  if ! wait "$KCMD_PID"; then kcmd_cleanup; return 1; fi
+  KEY_RAW=$(head -c 200 "$KCMD_DIR/key" 2>/dev/null); kcmd_cleanup
 }
 
 CURL="${MEGAVIBE_CURL:-curl}"
@@ -383,7 +383,7 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
   if [ -z "$key" ]; then
     if [ "${TICK_LINEAR_KEY_CMD+x}" = x ]; then
       key_source=command
-      key=$(linear_key_from_command 2>/dev/null) || key=""
+      linear_key_from_command 2>/dev/null && key="$KEY_RAW" || key=""   # no command substitution: the interrupt trap must see the child
     elif [ -n "${TICK_LINEAR_KEY_FILE:-}" ] && [ -f "$TICK_LINEAR_KEY_FILE" ]; then
       key=$(head -c 200 "$TICK_LINEAR_KEY_FILE" 2>/dev/null)
     fi

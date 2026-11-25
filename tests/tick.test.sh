@@ -207,6 +207,16 @@ for mode in fail empty flood timeout; do
     check "key command times out promptly and leaves no sleeping child" '[ "$((SECONDS - start))" -lt 10 ] && [ -s "$T/key-command.pid" ] && ! kill -0 "$(cat "$T/key-command.pid")" 2>/dev/null'
   fi
 done
+# an interrupted tick stops the key command and removes its private directory
+key_conf timeout; mkdir -p "$T/ktmp"; rm -f "$T/key-command.pid"
+( TICK_TMPDIR="$T/ktmp" TICK_CONF="$T/key-command.conf" TICK_LINEAR=1 tick --name key-int >/dev/null ) &
+bg=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -s "$T/key-command.pid" ] && break; sleep 0.25; done
+tp=$(pgrep -P "$bg" -f 'tick.sh' | head -1); [ -n "$tp" ] || tp=$(pgrep -f 'tick.sh --name key-int' | head -1)
+[ -n "$tp" ] && kill -TERM "$tp" 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 "$(cat "$T/key-command.pid")" 2>/dev/null || break; sleep 0.25; done
+wait "$bg" 2>/dev/null
+check "an interrupted tick stops the key command and leaves no key directory" '[ -n "$tp" ] && ! kill -0 "$(cat "$T/key-command.pid")" 2>/dev/null && [ -z "$(ls -A "$T/ktmp" 2>/dev/null | grep tick-key)" ]'
 o=$(TICK_CONF="$T/key-file.conf" TICK_LINEAR=1 TICK_LINEAR_KEY_CMD="touch '$T/env-command-ran'" tick --no-mark)
 check "an inherited key command is ignored" '[ ! -e "$T/env-command-ran" ] && [ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-file-key\"" ]'
 printf 'TICK_LINEAR_KEY_CMD="touch \\"%s\\"; exit 1"\n' "$T/conf-command-ran" >> "$T/key-command.conf"
