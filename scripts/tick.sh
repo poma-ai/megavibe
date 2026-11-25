@@ -352,8 +352,8 @@ linear_key_from_command() {
   dir=$(mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || return 1
   set -m   # the command gets its own process group, so a timeout can stop its children too
   (
-    umask 077; ulimit -f 8   # a command that prints without end cannot fill the disk
-    exec bash -c "$TICK_LINEAR_KEY_CMD" </dev/null >"$dir/key"
+    umask 077   # at most 4 KB is kept; a command that prints without end gets SIGPIPE (pipefail: failure)
+    bash -c "$TICK_LINEAR_KEY_CMD" </dev/null | head -c 4096 >"$dir/key"
   ) 2>/dev/null &
   pid=$!
   set +m
