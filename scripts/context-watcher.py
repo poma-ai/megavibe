@@ -335,16 +335,9 @@ def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
     error out, the caller logs the cycle as skipped — never crashes the
     daemon. The user keeps working unaffected.
     """
-    order = []
-    if preferred == "gemini":
-        order = ["gemini", "codex"]
-    elif preferred == "codex":
-        order = ["codex", "gemini"]
-    else:  # auto: codex first. A flush every 5 minutes per session on the
-        # Gemini API bills every token; codex draws on a plan already paid for,
-        # and on a small model at low effort answers this prompt in seconds
-        # (measured 2026-09-18). Gemini stays as the fallback.
-        order = ["codex", "gemini"]
+    order = _backend_order(preferred)
+    if not order:
+        raise NoBackend("no allowed backend is usable right now (MEGAVIBE_BACKENDS, login, auth backoff)")
 
     global LAST_BACKEND, args_backend_forced_gemini
     args_backend_forced_gemini = (preferred == "gemini")
@@ -361,9 +354,112 @@ def call_backend(prompt: str, preferred: str, timeout: int, log) -> str:
             return text
         except Exception as e:
             log(f"backend={backend} failed: {type(e).__name__}: {str(e)[:200]}")
+            if isinstance(e, CodexAuthError):
+                _AUTH_BACKOFF[backend] = time.time() + AUTH_BACKOFF_S
             last_err = e
             continue
     raise RuntimeError(f"all backends failed; last={last_err}")
+
+
+class NoBackend(RuntimeError):
+    """Every backend is switched off, logged out or backing off: skip the cycle, spend nothing."""
+
+
+AUTH_BACKOFF_S = 1800
+_AUTH_BACKOFF = {}  # backend -> epoch before which it is not tried again
+
+
+class CodexAuthError(RuntimeError):
+    """codex answered with an authentication failure (401, logged out)."""
+
+
+def _codex_auth_error(stderr: str, prompt: str = "") -> bool:
+    """True when codex's OWN error lines report an auth failure.
+
+    codex exec echoes the whole prompt to stderr, and a prompt built from a
+    transcript contains "401" or "unauthorized" often enough to matter. Lines
+    that occur verbatim in the prompt are therefore dropped first, and of what
+    remains only lines that start with ERROR (or name "unexpected status 401")
+    are examined. A false positive costs a 30-minute backoff and the
+    model-fallback retry; a false negative costs one more request.
+    """
+    echoed = {ln.strip() for ln in (prompt or "").splitlines() if ln.strip()}
+    for line in (stderr or "").splitlines():
+        if line.strip() in echoed:
+            continue
+        low = line.strip().lower()
+        if not (low.startswith("error") or "unexpected status 401" in low):
+            continue
+        if any(t in low for t in ("401", "unauthorized", "not logged in", "invalid api key")):
+            return True
+    return False
+
+
+def _allowed_only(base: list) -> list:
+    """Filter `base` through the allow-list. A helper that is installed but cannot answer
+    means NO backend this cycle (never the unfiltered list): the next cycle asks again."""
+    bk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backends.sh")
+    if not os.path.isfile(bk):
+        return base
+    try:
+        r = subprocess.run(["bash", bk, "list"], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            allowed = r.stdout.split()
+            return [b for b in base if b in allowed]
+    except Exception:
+        pass
+    return []
+
+
+def _backend_enabled(name: str) -> bool:
+    """MEGAVIBE_BACKENDS allows `name`. Only an answer of "not allowed" (exit 1) says no."""
+    bk = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backends.sh")
+    if not os.path.isfile(bk):
+        return True
+    try:
+        return subprocess.run(["bash", bk, "enabled", name], capture_output=True, timeout=10).returncode != 1
+    except Exception:
+        return True
+
+
+def _backend_order(preferred: str) -> list:
+    """Backends to try, in order, for this cycle.
+
+    The order for non-review work comes from `reviewers.sh digest-chain`, which
+    applies MEGAVIBE_BACKENDS (backends.sh) and the Codex login check, so the
+    watcher never sends a request to a backend the user switched off or that
+    answers 401. A backend that answered with an auth failure is skipped for
+    AUTH_BACKOFF_S: `codex login status` can still say logged in on an expired
+    token. An empty list means this cycle is skipped, never a crash.
+    --backend gemini|codex forces that backend first, but the allow-list still applies.
+    """
+    base = ["codex", "gemini"]
+    rv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reviewers.sh")
+    if os.path.isfile(rv):
+        answered = False
+        try:
+            r = subprocess.run(["bash", rv, "digest-chain"], capture_output=True, text=True, timeout=20)
+            if r.returncode == 0 and r.stdout.strip():
+                base = [w for w in r.stdout.split() if w in ("codex", "gemini")]
+                answered = True
+        except Exception:
+            pass
+        if not answered:
+            # digest-chain did not answer: keep the allow-list in force anyway
+            # (a failed helper must never widen what may be spent).
+            base = _allowed_only(base)
+    if os.environ.get("MEGAVIBE_GEMINI_DIGEST") == "1" and "codex" in base and "gemini" not in base \
+            and _backend_enabled("gemini"):
+        # The user opted Gemini in as Codex's fallback (gemini-review.sh still applies its caps).
+        base = base + ["gemini"]
+    if preferred in ("codex", "gemini") and preferred not in base and _backend_enabled(preferred):
+        # An explicit --backend choice is honoured even where digest-chain would not offer
+        # it (gemini while codex is usable), as long as MEGAVIBE_BACKENDS allows it.
+        base = [preferred] + base
+    if preferred in base:
+        base = [preferred] + [b for b in base if b != preferred]
+    now = time.time()
+    return [b for b in base if _AUTH_BACKOFF.get(b, 0) <= now]
 
 
 def _call_gemini(prompt: str, timeout: int) -> str:
@@ -441,7 +537,7 @@ def _call_codex(prompt: str, timeout: int) -> str:
         cmd += ["-c", f"model_reasoning_effort={effort}"]
     r = subprocess.run(cmd + ["-"],
                        input=prompt, capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0 and (model or effort):
+    if r.returncode != 0 and (model or effort) and not _codex_auth_error(r.stderr, prompt):
         # Retry with whatever ~/.codex/config.toml names. The pinned model is an
         # optimisation, not a requirement, and a plan that does not expose it
         # would otherwise fail EVERY five-minute flush for the life of every
@@ -453,7 +549,8 @@ def _call_codex(prompt: str, timeout: int) -> str:
         r = subprocess.run(cmd + ["-"],
                            input=prompt, capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
-        raise RuntimeError(f"codex exit={r.returncode}: {r.stderr[:400]}")
+        exc = CodexAuthError if _codex_auth_error(r.stderr, prompt) else RuntimeError
+        raise exc(f"codex exit={r.returncode}: {r.stderr[:400]}")
     return r.stdout
 
 
@@ -702,7 +799,11 @@ def run_cycle(args, log) -> dict:
     prompt, slice_text, user_text = build_prompt(turns, args.agent_dir)
     stats["prompt_chars"] = len(prompt)
 
-    raw = call_backend(prompt, args.backend, args.timeout, log)
+    try:
+        raw = call_backend(prompt, args.backend, args.timeout, log)
+    except NoBackend as e:
+        stats["skipped"] = str(e)
+        return stats
     stats["raw_chars"] = len(raw)
 
     try:

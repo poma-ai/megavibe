@@ -7,6 +7,7 @@ mkdir -p "$T/home/.codex" "$T/bin"
 cat > "$T/bin/codex" <<'EOF'
 #!/bin/bash
 if [ "${1:-}" = exec ] && [[ " $* " == *' --help '* ]]; then echo --ignore-rules; exit 0; fi
+if [ "${1:-}" = login ]; then echo "Logged in using ChatGPT"; exit 0; fi
 printf '%s\n' "$@" > "$CODEX_TEST_ARGV"
 cat > "$CODEX_TEST_PROMPT"
 for ((i=1; i<=$#; i++)); do

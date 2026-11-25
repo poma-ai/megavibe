@@ -139,6 +139,18 @@ if [ -n "$AS_REVIEWER" ] && [ -f "$_RVDIR/reviewers.sh" ]; then
   fi
 fi
 
+# General (non-review) use answers to MEGAVIBE_BACKENDS and to the login: a codex
+# that is not allowed, or not logged in, is skipped (exit 4, the chain falls
+# through) instead of sending a request that comes back 401. Reviews are
+# governed by MEGAVIBE_REVIEWERS above and are not affected.
+if [ -z "$AS_REVIEWER" ] && [ -f "$_RVDIR/backends.sh" ]; then
+  _bk_rc=0; _bk_why=$(bash "$_RVDIR/backends.sh" usable codex 2>/dev/null </dev/null) || _bk_rc=$?
+  if [ "$_bk_rc" -eq 1 ]; then
+    echo "skip: ${_bk_why:-codex is not usable for general work here}" >&2
+    exit 4
+  fi
+fi
+
 command -v codex &>/dev/null || { echo "error: codex is not on PATH" >&2; exit 1; }
 [ -n "$PROMPT" ] || [ -n "$PROMPT_FILE" ] || { echo "error: --prompt or --prompt-file is required" >&2; exit 2; }
 [ -n "$PROMPT_FILE" ] && PROMPT=$(cat -- "$PROMPT_FILE")

@@ -46,6 +46,11 @@ cmd_run() {
   if [ -n "$every" ] && [ -f "$U/probe.stamp" ] && [ -z "$(find "$U/probe.stamp" -mmin +$((every - 1)) 2>/dev/null)" ]; then
     say "skip: last probe is under $every min old"; return 0
   fi
+  local _bk _bkrc=0; _bk="$(dirname "${BASH_SOURCE[0]}")/backends.sh"
+  if [ -f "$_bk" ]; then
+    bash "$_bk" usable codex >/dev/null 2>&1 || _bkrc=$?
+    if [ "$_bkrc" = 1 ]; then say "skip: codex is not allowed (MEGAVIBE_BACKENDS) or not logged in"; return 0; fi
+  fi
   { command -v "$CODEX" >/dev/null 2>&1 && bounded 20 "$CODEX" exec --help >/dev/null 2>&1; } || { say "skip: codex exec not available"; return 0; }
   LOCK="$U/probe.lock"; local lock="$LOCK"
   # a lock older than 10 min is a dead run's; never two probes at once

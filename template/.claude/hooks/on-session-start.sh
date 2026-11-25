@@ -254,6 +254,22 @@ Reviewers: only ${ACTIVE_REVIEWERS} are switched on. Do not ask any other one to
   fi
 fi
 
+# Non-review backends (MEGAVIBE_BACKENDS, backends.sh): shown only when the user pinned a list or
+# Codex is not usable for non-review work, so a logged-out Codex is visible at session start.
+BACKENDS_ROW=""
+BK_SH="$HOME/.megavibe/scripts/backends.sh"
+if [ -f "$BK_SH" ]; then
+  BK_LIST=$(bash "$BK_SH" list 2>/dev/null </dev/null | tr '\n' ' ' | sed 's/ *$//' || true)
+  BK_WHY=$(bash "$BK_SH" usable codex 2>/dev/null </dev/null) && BK_CU=0 || BK_CU=$?
+  command -v codex >/dev/null 2>&1 || BK_CU=0
+  if [ -n "$BK_LIST" ] && { [ "$BK_LIST" != "claude codex gemini" ] || [ "${BK_CU:-0}" = 1 ]; }; then
+    BK_SKIP=""
+    if [ "${BK_CU:-0}" = 1 ]; then BK_SKIP="; codex skipped: ${BK_WHY}"; fi
+    BACKENDS_ROW="
+| Backends (non-review) | allowed: ${BK_LIST}${BK_SKIP} |"
+  fi
+fi
+
 # The default reviewer set changed on 2026-09-18 from all three to reviewer +
 # codex. `megavibe reviewers set all` USED to clear the setting, so a user who
 # had explicitly asked for all three is indistinguishable from one who never
@@ -337,7 +353,7 @@ SUBAGENT_STATUS="
 | Codex | ${CODEX_STATUS} |
 | Gemini | ${GEMINI_STATUS} |
 | Playwright | ${PLAYWRIGHT_STATUS} |
-| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${AMASS_ROW}${SESS_ROW}${REVIEWER_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
+| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${AMASS_ROW}${SESS_ROW}${REVIEWER_ROW}${BACKENDS_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
 
 # The model reads hookSpecificOutput.additionalContext; systemMessage is shown
 # to the user only, so this block used to reach nobody it was written for. And

@@ -22,7 +22,7 @@ A real session once hung for 19 minutes because rehydrate piped a 234 KB `FULL_C
    - If the on-compact hook already told you, use that path.
    - Otherwise your session ID is in the hook stdin JSON (`session_id`); WORKING_CONTEXT lives at `.agent/sessions/{session_id}/WORKING_CONTEXT.md`.
 
-2. **Check backend availability and failure fallbacks**: `bash ~/.megavibe/scripts/reviewers.sh digest-chain` prints them — `codex subagent` when `codex exec` works (or the probe cannot tell), `gemini subagent` on a machine without Codex that has `$GEMINI_API_KEY` (and a non-zero Gemini cap), else `subagent`. Start with the allocated backend; retain the printed order for failure fallbacks. If `digest-chain` itself errors (an installed script older than this skill), run `codex exec --help >/dev/null 2>&1` and treat success as `codex subagent`.
+2. **Check backend availability and failure fallbacks**: `bash ~/.megavibe/scripts/reviewers.sh digest-chain` prints them — `codex subagent` when `codex exec` works, Codex is allowed by `MEGAVIBE_BACKENDS` and logged in (or the probes cannot tell), `gemini subagent` on a machine without Codex that has `$GEMINI_API_KEY` (and a non-zero Gemini cap), else `subagent`. Start with the allocated backend; retain the printed order for failure fallbacks. If `digest-chain` itself errors (an installed script older than this skill), run `codex exec --help >/dev/null 2>&1` and treat success as `codex subagent`.
 
 3. **Assemble a BOUNDED input** via Bash. The caps are in BYTES: line caps do not bound a file whose lines are long, and a whole `TASKS.md` was 4,459 lines in one project, so real inputs reached 451 KB (Gemini's general path refuses above 300 KB):
 

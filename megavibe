@@ -1460,6 +1460,81 @@ if [ "${1:-}" = "reviewers" ]; then
   exit 0
 fi
 
+# megavibe backends: which external backends non-review work may use
+# (MEGAVIBE_BACKENDS, scripts/backends.sh). Independent of `megavibe reviewers`.
+if [ "${1:-}" = "backends" ]; then
+  shift
+  BK="$MEGAVIBE_HOME/scripts/backends.sh"
+  [ -f "$BK" ] || { echo "backends.sh is not installed yet. Run 'megavibe' once in any project (a launch syncs it), or 'bash setup.sh'."; exit 1; }
+  KNOWN_BK="claude codex gemini"
+  case "${1:-list}" in
+    list|"")
+      ACTIVE=$(bash "$BK" list 2>/dev/null | tr '\n' ' ' | sed 's/ *$//' || true)
+      [ -n "$ACTIVE" ] || ACTIVE="$KNOWN_BK"
+      SRC=$(bash "$BK" source 2>/dev/null || echo "default")
+      echo -e "${BOLD}Backends${RESET}  (non-review work: context watcher, digests, amass, usage probe)"
+      echo ""
+      printf "  %-8s %-4s %s\n" "BACKEND" "ON" "USABLE NOW"
+      for b in $KNOWN_BK; do
+        case " $ACTIVE " in *" $b "*) on="yes" ;; *) on="no " ;; esac
+        _r=0; _why=$(bash "$BK" usable "$b" 2>/dev/null) || _r=$?
+        case $_r in 0) us="yes" ;; 1) us="no — ${_why:-unavailable}" ;; *) us="unknown (could not tell)" ;; esac
+        [ "$b" != claude ] || us="always (cannot be switched off)"
+        printf "  %-8s %-4s %s\n" "$b" "$on" "$us"
+      done
+      echo ""
+      echo -e "  Set by: ${BOLD}${SRC}${RESET}"
+      echo ""
+      echo "  Independent of 'megavibe reviewers', which gates the reviewer role only."
+      echo ""
+      echo "  Change it:  megavibe backends set claude            (background work stays on the Claude plan)"
+      echo "              megavibe backends set claude gemini     (never codex)"
+      echo "              megavibe backends set --project claude  (this project only)"
+      echo "              megavibe backends set auto              (back to the default)"
+      ;;
+    set)
+      shift
+      SCOPE_FILE="$HOME/.claude/settings.json"; SCOPE_NAME="this user, all projects"
+      if [ "${1:-}" = "--project" ]; then
+        shift
+        SCOPE_ROOT="${CLAUDE_PROJECT_DIR:-}"
+        [ -n "$SCOPE_ROOT" ] || SCOPE_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+        [ -n "$SCOPE_ROOT" ] || SCOPE_ROOT="$PWD"
+        SCOPE_FILE="$SCOPE_ROOT/.claude/settings.local.json"
+        SCOPE_NAME="this project, uncommitted"
+      fi
+      [ $# -gt 0 ] || { echo "usage: megavibe backends set [--project] <backend...|auto>"; exit 2; }
+      command -v jq >/dev/null 2>&1 || { echo "jq is required to edit settings.json."; exit 1; }
+      case "$1" in
+        auto|default|all)
+          rv_write "$SCOPE_FILE" "" MEGAVIBE_BACKENDS
+          echo -e "  ${GREEN}✓${RESET} MEGAVIBE_BACKENDS removed from $SCOPE_FILE"
+          echo "    Every backend is allowed again here; run 'megavibe backends' to see the result."
+          ;;
+        *)
+          PICKED=""
+          read -ra _bk_words <<<"$(printf '%s ' "$@" | tr 'A-Z,;' 'a-z  ')"
+          for want in ${_bk_words[@]+"${_bk_words[@]}"}; do
+            case " $KNOWN_BK " in
+              *" $want "*) case " $PICKED " in *" $want "*) ;; *) PICKED="${PICKED:+$PICKED }$want" ;; esac ;;
+              *) echo "Unknown backend: $want   (known: $KNOWN_BK)"; exit 2 ;;
+            esac
+          done
+          [ -n "$PICKED" ] || { echo "No backend named. Use a list such as 'claude gemini', or 'auto' to clear the setting."; exit 2; }
+          rv_write "$SCOPE_FILE" "$PICKED" MEGAVIBE_BACKENDS
+          echo -e "  ${GREEN}✓${RESET} MEGAVIBE_BACKENDS=\"$PICKED\" in $SCOPE_FILE  (${SCOPE_NAME})"
+          echo "    Open sessions and running watchers keep the old setting until they restart."
+          ;;
+      esac
+      ;;
+    *)
+      echo "usage: megavibe backends [list | set [--project] <backend...|auto>]"
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
+
 # megavibe memory: show or change the MEGAVIBE_MEMORY_* settings that switch on
 # shared-memory routing. User-level only, on purpose: memory-config.sh reads
 # nothing else, so a project-level write would be displayed and then ignored.
@@ -1942,7 +2017,7 @@ if [ -n "$REPO_DIR" ]; then
   # before claude starts — a broken update turning into a broken launch.
   if [ -d "$REPO_DIR/scripts" ] && mkdir -p "$MEGAVIBE_HOME/scripts" 2>/dev/null; then
     for _s in "$REPO_DIR/scripts/"*.py "$REPO_DIR/scripts/gemini-review.sh" \
-              "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh" \
+              "$REPO_DIR/scripts/codex-review.sh" "$REPO_DIR/scripts/reviewers.sh" "$REPO_DIR/scripts/backends.sh" \
               "$REPO_DIR/scripts/disk-watch.sh" "$REPO_DIR/scripts/usage-route.sh" \
               "$REPO_DIR/scripts/second-opinion.sh" "$REPO_DIR/scripts/deliverables-index.sh" \
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
