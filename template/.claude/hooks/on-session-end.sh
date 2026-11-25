@@ -28,17 +28,17 @@ INPUT=$(cat)
 # Capture before the harness and existing cleanup retire session-owned work.
 # Ordinary exits never create a handover.
 RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
-RMARK=${MEGAVIBE_RESTART_MARKER:-${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session}
-if [ -f "$RH" ] && { [ -f "$RMARK" ] || [ -f "${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session" ]; }; then
+RMARK=${MEGAVIBE_RESTART_MARKER:-}
+if [ -f "$RH" ] && [ -n "$RMARK" ] && [ -f "$RMARK" ]; then
   FULL_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
-  if [[ "$FULL_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
-    # Move a legacy request to this launcher before writing the ID; leaving
-    # the global marker behind would restart other sessions on their next exit.
-    if [ ! -f "$RMARK" ] && [ "$RMARK" != "${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session" ]; then
-      mv "${MEGAVIBE_HOME:-$HOME/.megavibe}/.restart-session" "$RMARK" 2>/dev/null || exit 0
-    fi
+  # Only this launcher's exact request can capture this exiting session.
+  if [[ "$FULL_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]] && [ "$(cat "$RMARK")" = "$FULL_SID" ]; then
     bash "$RH" capture "$FULL_SID" >/dev/null 2>&1 || true
-    printf '%s\n' "$FULL_SID" > "$RMARK" || true
+  else
+    # /clear (or missing identity) invalidates the earlier conversation request.
+    REQUEST_SID=$(cat "$RMARK" 2>/dev/null) || REQUEST_SID=''
+    bash "$RH" cancel "$REQUEST_SID" >/dev/null 2>&1 || true
+    rm -f "$RMARK"
   fi
 fi
 

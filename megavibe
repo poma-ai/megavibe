@@ -43,7 +43,7 @@ Subcommands:
   auth [HOURS]          Check how long the Claude login lasts
   tick ...              Run one unattended watch tick
   sessions ...          Show live Claude sessions and their parent tree
-  restart-all [--dry-run] [--others]  Restart idle sessions in tmux
+  restart-all [--dry-run] [--others]  Report sessions needing manual restart
   doctor                Diagnose split Claude memory stores
   trash-greenlight      Install managed Trash permission rules (asks for sudo)
   remote                Removed; print Telegram remote cleanup instructions
@@ -2789,19 +2789,17 @@ export MEGAVIBE_RESTART_MARKER="$MEGAVIBE_HOME/.restart-session.$$"
 rm -f "$MEGAVIBE_RESTART_MARKER"   # a stale request on a reused wrapper PID is not ours
 restart_after_exit() {
   local marker="$MEGAVIBE_RESTART_MARKER" restart_sid=""
-  [ -f "$marker" ] || marker="$MEGAVIBE_HOME/.restart-session"
   if [ -f "$marker" ]; then
     restart_sid=$(cat "$marker" 2>/dev/null) || restart_sid=""
     if ! [[ "$restart_sid" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
-      restart_sid=$(jq -r '.sessionId // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$CLAUDE_PID.json" 2>/dev/null) || restart_sid=""
+      echo 'megavibe restart: skipped: session id unavailable; restart this conversation manually.' >&2
+      rm -f "$marker"
+      return 1
     fi
-    RESTART_ARGS=(--continue)
-    if [[ "$restart_sid" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
-      RESTART_ARGS=(--resume "$restart_sid")
-      [ ! -f "$MEGAVIBE_HOME/scripts/restart.sh" ] || bash "$MEGAVIBE_HOME/scripts/restart.sh" capture "$restart_sid" "$CLAUDE_PID" || true
-    else
-      echo 'megavibe restart: session id unavailable; falling back to --continue.' >&2
-    fi
+    RESTART_ARGS=(--resume "$restart_sid")
+    # SessionEnd captured fresh while the session still existed. Completion
+    # only activates that capture after wait has confirmed the process exited.
+    [ ! -f "$MEGAVIBE_HOME/scripts/restart.sh" ] || bash "$MEGAVIBE_HOME/scripts/restart.sh" complete "$restart_sid" "$CLAUDE_PID" || true
     rm -f "$marker"
     echo ""
     echo -e "  ${BOLD}Updating megavibe...${RESET}"

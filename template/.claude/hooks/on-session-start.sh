@@ -31,7 +31,8 @@ case "$SOURCE" in
     RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
     if [ -f "$RH" ] && [[ "$RESTART_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]] &&
        [ -f ".agent/sessions/$RESTART_SID/restart-handover.txt" ] &&
-       [ ! -e ".agent/sessions/$RESTART_SID/restart-handover.shown" ]; then
+       [ ! -e ".agent/sessions/$RESTART_SID/restart-handover.shown" ] &&
+       [ "$(cat ".agent/sessions/$RESTART_SID/restart-handover.status" 2>/dev/null)" = restarted ]; then
       bash "$RH" show "$RESTART_SID" || true
       exit 0
     fi

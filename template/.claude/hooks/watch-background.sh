@@ -79,8 +79,8 @@ EVENT="${EVENT:-}"; TOOL="${TOOL:-}"; STOP_ACTIVE="${STOP_ACTIVE:-false}"
 [ -n "${SID:-}" ] || exit 0
 mkdir -p ".agent/LOGS" 2>/dev/null || true
 STATE=".agent/LOGS/.bg-tasks.${SID}.jsonl"
-# Preserve the harness evidence for a future restart, including tasks this hook
-# did not launch (Monitor and tasks started before installation). No model memory.
+# Retain only task identifiers, times and local output paths, never commands,
+# descriptions or environment. Process observation happens only at capture.
 RESTART_STATE=".agent/LOGS/.restart-tasks.$SID.json"
 if [ "$EVENT" = Stop ] && printf '%s' "$INPUT" | jq -e '
   (.agent_id // "") == "" and ((.transcript_path // "" | contains("/subagents/agent-")) | not)
@@ -88,13 +88,15 @@ if [ "$EVENT" = Stop ] && printf '%s' "$INPUT" | jq -e '
   if printf '%s' "$INPUT" | jq -e '.background_tasks | type == "array"' >/dev/null 2>&1; then
     OLD=$(cat "$RESTART_STATE" 2>/dev/null || echo '[]')
     TIMES=$(jq -s '.' "$STATE" 2>/dev/null) || TIMES='[]'
-    printf '%s' "$INPUT" | jq --argjson old "$OLD" --argjson times "$TIMES" '
+    (umask 077; printf '%s' "$INPUT" | jq --argjson old "$OLD" --argjson times "$TIMES" '
       [.background_tasks[] | select(.status == "running") | . as $r |
-       (($old + $times | map(select(.id == $r.id)) | .[-1]) // {}) + $r]
-      ' > "$RESTART_STATE.tmp.$$" 2>/dev/null && mv "$RESTART_STATE.tmp.$$" "$RESTART_STATE"
+       (($old + $times | map(select(.id == $r.id)) | .[-1]) // {}) + $r |
+       {id: (.id | tostring | gsub("[^A-Za-z0-9_-]"; "?") | .[:128]),
+        started: ((.started // .startTime) | if type == "number" then . else null end),
+        path: ((.path // .outputFile // "") | if startswith("/") and
+          (test("(?i)key|token|secret|password|auth|bearer|://") | not) then .[:256] else "[omitted]" end)}]
+      ' > "$RESTART_STATE.tmp.$$" 2>/dev/null && mv "$RESTART_STATE.tmp.$$" "$RESTART_STATE")
   fi
-  RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
-  [ ! -f "$RH" ] || bash "$RH" observe "$SID" >/dev/null 2>&1 || true
 fi
 NOW=$(date +%s 2>/dev/null | tr -cd '0-9'); NOW="${NOW:-0}"
 [ "$NOW" -gt 0 ] || exit 0
@@ -212,10 +214,16 @@ print(job, scratch)
   jq -nc --arg id "$ID" --arg p "$OUT" --arg k "$KIND" --argjson t "$NOW" \
     '{id:$id, path:$p, kind:$k, started:$t, nudged:0}' >> "$STATE" 2>/dev/null || true
 
+  # Keep new tasks visible even when the previous Stop registry was empty.
   OLD=$(cat "$RESTART_STATE" 2>/dev/null || echo '[]')
-  jq -n --argjson old "$OLD" --arg id "$ID" --arg p "$OUT" --arg c "${CMDTXT:-$DESC}" --argjson t "$NOW" '
-    ($old | map(select(.id != $id))) + [{id:$id, path:$p, command:$c, started:$t}]
-    ' > "$RESTART_STATE.tmp.$$" 2>/dev/null && mv "$RESTART_STATE.tmp.$$" "$RESTART_STATE"
+  (umask 077; jq -n --argjson old "$OLD" --arg id "$ID" --arg p "$OUT" --argjson t "$NOW" '
+    def safe:
+      {id: (.id | tostring | gsub("[^A-Za-z0-9_-]"; "?") | .[:128]),
+       started: (.started | if type == "number" then . else null end),
+       path: ((.path // "") | if startswith("/") and
+         (test("(?i)key|token|secret|password|auth|bearer|://") | not) then .[:256] else "[omitted]" end)};
+    ($old | map(select(.id != $id) | safe)) + [({id:$id, started:$t, path:$p} | safe)]
+    ' > "$RESTART_STATE.tmp.$$" 2>/dev/null && mv "$RESTART_STATE.tmp.$$" "$RESTART_STATE")
 
   # The loop is built by jq so the path is shell-quoted whatever it contains.
   # No path resolved → no loop: a loop on a placeholder reports 0 bytes

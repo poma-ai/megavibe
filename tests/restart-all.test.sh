@@ -45,6 +45,9 @@ case "$1" in
     [ "$5" = -S ] && [ "$6" = 12 ] && [ "$7" = -E ] && [ "$8" = 12 ] || exit 9
     case "$4" in %600) echo '❯ draft text' ;; *) echo '❯ ' ;; esac
     if [ "${RACE:-0}" = 1 ] && [ "$4" = %100 ]; then
+      n=$(cat "$FIXTURE/captures" 2>/dev/null || echo 0)
+      n=$((n+1)); echo "$n" > "$FIXTURE/captures"
+      [ "$n" = 2 ] || exit 0
       jq '.status = "busy"' "$CLAUDE_CONFIG_DIR/sessions/100.json" > "$FIXTURE/changed"
       mv "$FIXTURE/changed" "$CLAUDE_CONFIG_DIR/sessions/100.json"
     fi ;;
@@ -68,37 +71,21 @@ for pid in 100 200 300 400 500 600 700 800 900; do
 done
 run() { bash "$REPO/scripts/restart-all.sh" "$@"; }
 out=$(run --dry-run)
-check 'dry run finds live recorded sessions with one result each and final count' '[ "$(printf "%s\n" "$out" | wc -l | tr -d " ")" = 10 ] && [[ "$out" == *"1 would restart, 8 skipped"* ]]'
-check 'caller is considered last' '[ "$(printf "%s\n" "$out" | tail -2 | head -1)" = "sid-100 (pid 100): would restart" ]'
-check 'dry run writes neither handovers nor restart markers and sends no input' '[ ! -e "$T/sent" ] && [ ! -d "$T/project with spaces/.agent/sessions" ] && ! compgen -G "$MEGAVIBE_HOME/.restart-session*" >/dev/null'
-check 'busy and unknown sessions skipped' '[[ "$out" == *"sid-200 (pid 200): skipped: busy"* ]] && [[ "$out" == *"sid-500 (pid 500): skipped: busy"* ]]'
-check 'non-tmux and unmatched panes skipped' '[[ "$out" == *"sid-300 (pid 300): skipped: not in tmux"* ]] && [[ "$out" == *"sid-400 (pid 400): skipped: pane cannot be matched"* ]]'
-check 'draft input and foreground child skipped' '[[ "$out" == *"sid-600 (pid 600): skipped: idle prompt cannot be established"* ]] && [[ "$out" == *"sid-700 (pid 700): skipped: foreground process group"* ]]'
-check 'unknown identity and legacy launchers skipped' '[[ "$out" == *"sid-800 (pid 800): skipped: live process identity"* ]] && [[ "$out" == *"sid-900 (pid 900): skipped: launcher predates"* ]]'
-out=$(run --others --dry-run)
-check 'others explicitly excludes actual ancestor session' '[[ "$out" == *"sid-100 (pid 100): skipped: caller excluded"* ]] && [[ "$out" == *"0 would restart, 9 skipped"* ]]'
-out=$(COPY_MODE=1 run --dry-run)
-check 'copy mode is never sent input' '[[ "$out" == *"0 would restart, 9 skipped"* ]]'
-out=$(FAIL_PS=1 run --dry-run)
-check 'ps unavailable is busy/unknown, never idle' '[[ "$out" == *"0 would restart, 9 skipped"* ]]'
+check 'dry run reports every session and no restart promises' '[ "$(printf "%s\n" "$out" | wc -l | tr -d " ")" = 10 ] && [[ "$out" == *"0 would restart, 9 skipped"* ]]'
+check 'caller is considered last' '[[ "$(printf "%s\n" "$out" | tail -2 | head -1)" == "sid-100 (pid 100): skipped:"* ]]'
+check 'dry run never creates requests or handovers' '[ ! -e "$T/sent" ] && [ ! -d "$T/project with spaces/.agent/sessions" ] && ! compgen -G "$MEGAVIBE_HOME/.restart-session*" >/dev/null'
+out=$(run --others)
+check 'others excludes actual ancestor' '[[ "$out" == *"sid-100 (pid 100): skipped: caller excluded"* ]]'
 out=$(run)
-check 'real run captures before submitting exit to exact pane' '[ "$(cat "$MEGAVIBE_HOME/.restart-session.101")" = sid-100 ] && [ -f "$T/project with spaces/.agent/sessions/sid-100/restart-handover.txt" ] && [ "$(cat "$T/sent")" = "$(printf "%s\n" "send-keys -t %100 -l /exit" "send-keys -t %100 Enter")" ] && [[ "$out" == *"1 restarted, 8 skipped"* ]]'
-check 'no interrupt, kill, stop or tmux creation commands' '! grep -Eq "C-c|C-d|kill|stop|new-session|new-window" "$T/tmux-calls"'
-out=$(FAIL_SEND=1 run)
-check 'failed send is listed and disarms marker' '[[ "$out" == *"sid-100 (pid 100): skipped: could not submit"* ]] && [ ! -e "$MEGAVIBE_HOME/.restart-session.101" ]'
+check 'idle pane gets no automatic input or restarted claim' '[ ! -e "$T/sent" ] && [[ "$out" == *"0 restarted, 9 skipped"* ]]'
+rm -f "$T/sent"
+out=$(RACE=1 run)
+check 'busy transition during capture gets no input' '[ ! -e "$T/sent" ] && [[ "$out" == *"0 restarted, 9 skipped"* ]]'
+check 'batch cancellation cannot leave a capture or marker' '[ ! -d "$T/project with spaces/.agent/sessions" ] && ! compgen -G "$MEGAVIBE_HOME/.restart-session*" >/dev/null'
 out=$(DEAD_PID=100 run --dry-run)
 check 'dead registry entries are not candidates' '[[ "$out" != *"sid-100"* ]]'
 out=$(CLAUDE_CODE_SESSION_ID=sid-200 run --others --dry-run)
-check 'stale inherited id cannot select the caller' '[[ "$out" == *"sid-100 (pid 100): skipped: caller excluded"* ]]'
-out=$(BAD_WRAPPER=1 run --dry-run)
-check 'wrapper must also be in the pane ancestry' '[[ "$out" == *"sid-100 (pid 100): skipped: pane cannot be matched"* ]]'
-out=$(RACE=1 run)
-check 'session becoming busy during capture is skipped and disarmed' '[[ "$out" == *"sid-100 (pid 100): skipped: busy"* ]] && [ ! -e "$MEGAVIBE_HOME/.restart-session.101" ]'
-jq '.status = "idle"' "$CLAUDE_CONFIG_DIR/sessions/100.json" > "$T/changed"; mv "$T/changed" "$CLAUDE_CONFIG_DIR/sessions/100.json"
-jq '.status = "idle"' "$CLAUDE_CONFIG_DIR/sessions/200.json" > "$T/changed"; mv "$T/changed" "$CLAUDE_CONFIG_DIR/sessions/200.json"
-: > "$T/sent"
-out=$(run)
-check 'multiple eligible sessions get distinct markers, caller input last' '[ "$(cat "$MEGAVIBE_HOME/.restart-session.101")" = sid-100 ] && [ "$(cat "$MEGAVIBE_HOME/.restart-session.201")" = sid-200 ] && [ "$(head -1 "$T/sent")" = "send-keys -t %200 -l /exit" ] && [ "$(tail -1 "$T/sent")" = "send-keys -t %100 Enter" ] && [[ "$out" == *"2 restarted, 7 skipped"* ]]'
+check 'inherited id cannot select the caller' '[[ "$out" == *"sid-100 (pid 100): skipped: caller excluded"* ]]'
 # command discovery failure, without exposing any real tmux binary on PATH.
 command() { [ "$*" != '-v tmux' ] || return 1; builtin command "$@"; }
 export -f command
