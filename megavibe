@@ -1965,7 +1965,7 @@ if [ -d "$MEGAVIBE_HOME/personal/.agent" ] && [ -f "$MEGAVIBE_HOME/personal/.cla
           --slurpfile t "$MEGAVIBE_HOME/template/.claude/settings.json" \
           --slurpfile p "$MEGAVIBE_HOME/personal/.claude/settings.json" '
         def expand($e): if startswith(".claude/hooks/") then
-          (if $e == "PreToolUse" and test("^\\.claude/hooks/(block-dangerous-bash|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$")
+          (if $e == "PreToolUse" and test("^\\.claude/hooks/(block-dangerous-bash|block-public-push|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$")
            then $runner else "" end) + "\"" + $root + . + "\""
           else . end;
         def regs(x; $template): [x.hooks // {} | to_entries[] | .key as $e | .value[]? | (.matcher // "" | tostring) as $m
