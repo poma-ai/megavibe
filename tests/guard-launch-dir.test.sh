@@ -5,7 +5,7 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/megavibe-guard-launch.XXXXXX")
 trap '/bin/rm -rf "$T"' EXIT
 T=$(cd "$T" && pwd -P)
 export HOME="$T/home" MEGAVIBE_INIT_SKIP_HEAL=1
-unset MEGAVIBE_HOME MEGAVIBE_ALLOW_KILL MEGAVIBE_ALLOW_REMOVE_LAUNCH CLAUDE_PROJECT_DIR TMUX
+unset MEGAVIBE_HOME MEGAVIBE_ALLOW_KILL MEGAVIBE_ALLOW_REMOVE_LAUNCH MEGAVIBE_ALLOW_MISSING_LAUNCH CLAUDE_PROJECT_DIR TMUX
 WRAPPER="$HOME/.megavibe/scripts/guard-run.sh"
 HOOKS="$REPO/template/.claude/hooks"
 mkdir -p "$HOME/.megavibe/"{scripts,template/.claude} "$T/recreated/.agent" "$T/project/.claude/hooks"
@@ -36,20 +36,53 @@ verdict() {
   }
 }
 wrapped() {
-  local cwd="$1" hook="$2" command="$3"
+  local cwd="$1" hook="$2" command="$3" tool="${4:-Bash}"
   RC=0
-  OUT=$(cd "$cwd" && payload "$cwd" "$command" | "$WRAPPER" "$hook" 2>&1) || RC=$?
+  OUT=$(cd "$cwd" && {
+    if [ "$tool" = Bash ]; then
+      payload "$cwd" "$command"
+    else
+      jq -n --arg cwd "$cwd" --arg tool "$tool" --arg path "$cwd/example.txt" \
+        '{cwd:$cwd, hook_event_name:"PreToolUse", tool_name:$tool,
+          tool_input:{file_path:$path, content:"test", old_string:"old", new_string:"new"}}'
+    fi
+  } | "$WRAPPER" "$hook" 2>&1) || RC=$?
 }
 
-wrapped "$T/recreated" /nonexistent/proj/.claude/hooks/block-dangerous-bash.sh 'sudo pkill -9 node'
-check 'fallback blocks from recreated launch directory' verdict 2 'Blocked:'
+tripwire='launch directory or its .claude is gone: finish and exit this session; the guards cannot be trusted here; start a new session from a project directory'
+mkdir -p "$T/moved/.claude/hooks" "$T/empty/.claude/hooks" "$T/deleted" "$T/intact/.claude/hooks"
+mv "$T/moved" "$T/moved-away"
+mv "$T/empty" "$T/empty-away"
+mkdir "$T/empty"
+rmdir "$T/deleted"
+for name in block-dangerous-bash rm-to-trash enforce-pr-format block-stray-working-context block-permission-hooks; do
+  tool=Bash
+  case "$name" in
+    block-stray-working-context) tool=Write ;;
+    block-permission-hooks) tool=Edit ;;
+  esac
+  for root in moved empty recreated deleted project; do
+    wrapped "$T" "$T/$root/.claude/hooks/$name.sh" 'echo hello' "$tool"
+    check "tripwire blocks $name ($root)" verdict 2 "$tripwire"
+  done
+done
+missing="$T/deleted/.claude/hooks/block-dangerous-bash.sh"
+wrapped "$T" "$missing" 'MEGAVIBE_ALLOW_MISSING_LAUNCH=1 echo hello'
+check 'command text cannot bypass the tripwire' verdict 2 "$tripwire"
+RC=0
+OUT=$(payload "$T" 'echo hello' | jq '.MEGAVIBE_ALLOW_MISSING_LAUNCH = "1"' | "$WRAPPER" "$missing" 2>&1) || RC=$?
+check 'payload field cannot bypass the tripwire' verdict 2 "$tripwire"
+MEGAVIBE_ALLOW_MISSING_LAUNCH=1 wrapped "$T" "$missing" 'sudo pkill -9 node'
+check 'hook environment allows template fallback with a guarded payload' verdict 2 'Blocked:'
 check 'fallback names the template copy' verdict 2 'guard block-dangerous-bash.sh: project copy missing, running the template copy'
-wrapped "$T/project" "$T/project/.claude/hooks/block-dangerous-bash.sh" 'sudo pkill -9 node'
-check 'fallback blocks when the hooks directory is gone' verdict 2 'Blocked:'
-wrapped "$T/recreated" /nonexistent/proj/.claude/hooks/block-dangerous-bash.sh 'echo hello'
-check 'fallback allows benign input' verdict 0
-wrapped "$T/recreated" /nonexistent/proj/.claude/hooks/missing.sh 'echo hello'
-check 'missing project and template guards fail closed' verdict 2 'missing.sh'
+MEGAVIBE_ALLOW_MISSING_LAUNCH=1 wrapped "$T" "$missing" 'echo hello'
+check 'hook environment allows template fallback with a benign payload' verdict 0 'running the template copy'
+wrapped "$T" "$T/intact/.claude/hooks/block-dangerous-bash.sh" 'echo hello'
+check 'single missing hook falls back and allows benign input' verdict 0 'running the template copy'
+wrapped "$T" "$T/intact/.claude/hooks/block-dangerous-bash.sh" 'sudo pkill -9 node'
+check 'single missing hook falls back and blocks guarded input' verdict 2 'Blocked:'
+wrapped "$T" "$T/intact/.claude/hooks/missing.sh" 'echo hello'
+check 'missing project and template guards fail closed' verdict 2 'no executable project or template copy found'
 wrapped "$T/recreated" ../x 'echo hello'
 check 'invalid basename fails closed' verdict 2 'invalid'
 wrapped "$T/recreated" /nonexistent/proj/.claude/hooks/invalid..sh 'echo hello'
@@ -62,6 +95,24 @@ chmod +x "$T/probe.sh"
 RC=0
 OUT=$(printf 'payload\n' | "$WRAPPER" "$T/probe.sh" argument 2>&1) || RC=$?
 check 'project executable receives stdin and arguments and returns its own status' verdict 7 'argument payload'
+
+cp "$T/probe.sh" "$T/intact/.claude/hooks/probe.sh"
+mkdir "$T/deleted-cwd"
+run_probe() (
+  case "$1" in
+    elsewhere) export CLAUDE_PROJECT_DIR="$T/recreated" ;;
+    missing)
+      export CLAUDE_PROJECT_DIR="$T/deleted"
+      cd "$T/deleted-cwd" && rmdir "$T/deleted-cwd"
+      ;;
+  esac
+  exec "$WRAPPER" "$T/intact/.claude/hooks/probe.sh" argument
+)
+for project_env in unset elsewhere missing; do
+  RC=0
+  OUT=$(printf 'payload\n' | run_probe "$project_env" 2>&1) || RC=$?
+  check "registered executable runs with project environment $project_env" verdict 7 'argument payload'
+done
 
 settings_match() {
   local project="$1" runner="$2"
@@ -87,6 +138,15 @@ for project in "$T/fresh project" "$T/existing"; do
   check "second init is byte-identical (${project##*/})" cmp -s "$T/settings.before" "$project/.claude/settings.json"
 done
 check 'init installs an executable wrapper' test -x "$T/init-home/.megavibe/scripts/guard-run.sh"
+project="$T/fresh project"
+registered=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(endswith("/block-dangerous-bash.sh\""))' "$project/.claude/settings.json")
+RC=0
+OUT=$(payload "$project" 'sudo pkill -9 node' | HOME="$T/init-home" bash -c "$registered" 2>&1) || RC=$?
+check 'init-registered wrapper invokes the project guard' verdict 2 'Blocked:'
+mv "$project/.claude" "$T/init-claude-away"
+RC=0
+OUT=$(payload "$project" 'echo hello' | HOME="$T/init-home" bash -c "$registered" 2>&1) || RC=$?
+check 'init-registered wrapper trips after .claude is moved' verdict 2 "$tripwire"
 HOME="$T/plain-home" bash "$REPO/init.sh" "$T/plain" > "$T/init.log" 2> "$T/init.err"
 check 'init uses plain absolute paths when installation is impossible' settings_match "$T/plain" ''
 check 'init warns on stderr when the wrapper cannot be installed' grep -Fxq \
@@ -208,41 +268,39 @@ launch_case() {
   local message=
   if [ "$expected" = 2 ]; then message='Finish and exit this session'; fi
   command=${command//"$T"/<scratch>}
-  check "launch traversal ($expected) ${command//$'\n'/\\n}" verdict "$expected" "$message"
+  check "launch check ($expected) ${command//$'\n'/\\n}" verdict "$expected" "$message"
 }
-launch_case 2 "$T/repo" "$T/repo" 'true; cd .. && mv repo moved'
-launch_case 2 "$T/other" "$T/repo-review" "cd -- '$T' && mv repo-review moved"
-launch_case 2 "$T/other" "$T/repo" $'true\ncd -- ..\nmv repo moved'
-launch_case 2 "$T/other" "$T/repo" 'false || cd ..; mv repo moved'
-launch_case 2 "$T/other" "$T/repo" $'cd .. &&\nmv repo moved'
-launch_case 0 "$T" "$T/repo" 'true; cd other && rm -r repo'
-launch_case 0 "$T" "$T/repo" 'cd "$DEST"; rm -r repo'
-launch_case 2 "$T" "$T/repo" "cd \"\$DEST\"; mv '$T/repo' moved"
-launch_case 2 "$T/other" "$T/repo" "cd \"\$DEST\"; cd '$T'; mv repo moved"
-launch_case 0 "$T" "$T/repo" 'cd -; rm -r repo'
-launch_case 0 "$T" "$T/repo" 'cd; rm -r repo'
-launch_case 0 "$T" "$T/repo" 'cd missing && rm -r repo'
-launch_case 2 "$T" "$T/repo" 'cd missing || mv repo moved'
-launch_case 2 "$T/other" "$T/repo" "(cd '$T' && mv repo x)"
-launch_case 0 "$T" "$T/repo" "(cd '$T/other' && rm -r repo); true"
-launch_case 2 "$T" "$T/repo" '(cd other); mv repo moved'
-launch_case 2 "$T" "$T/repo" 'cd other | true; mv repo moved'
-launch_case 0 "$T/other" "$T/repo" 'true | cd ..; rm -r repo'
-launch_case 2 "$T/other" "$T/repo" 'true | (cd .. && mv repo moved)'
-launch_case 0 "$T/other" "$T/repo" '(cd ..) | rm -r repo'
-for shell in bash sh zsh dash; do
-  launch_case 2 "$T" "$T/repo" "$shell -c 'mv repo moved'"
+mkdir -p "$T/repo/"{build,node_modules,a} "$T/repo/other"
+touch "$T/repo/file"
+ln -s "$T/repo" "$T/repo/self-link"
+for command in 'rm -r build' 'rm file' 'rm -rf node_modules' 'mv a b' \
+  'rm -r ../other' 'rm self-link'; do
+  launch_case 0 "$T/repo" "$T/repo" "$command"
 done
-launch_case 2 "$T/other" "$T/repo" "bash -c 'mv \"$T/repo\" \"$T/moved\"'"
-launch_case 2 "$T/repo-review/sub" "$T/repo-review" "bash -c \"bash -c 'mv .. moved'\""
-launch_case 2 "$T" "$T/repo" "eval 'mv repo moved'"
-launch_case 2 "$T/other" "$T/repo" "eval 'cd ..'; mv repo moved"
-launch_case 0 "$T" "$T/repo" 'bash -c "mv repo moved$SUFFIX"'
-launch_case 0 "$T" "$T/repo" "bash -n -c 'mv repo moved'"
-launch_case 0 "$T" "$T/repo" "bash -c 'cd other'; rm -r other/repo"
-launch_case 2 "$T" "$T/repo-review" "bash -c 'git -C \"$T/repo\" worktree remove \"$T/repo-other\"'"
-launch_case 2 "$T" "$T/repo-review" "eval 'git worktree remove repo-other'"
-launch_case 0 "$T" "$T/repo-review" "bash -c 'git worktree prune'"
+launch_case 2 "$T/other" "$T/repo" "cd '$T' && mv repo x"
+launch_case 2 "$T/other" "$T/repo" "cd '$T'; mv repo x"
+launch_case 2 "$T/other" "$T/repo" $'cd .. &&\nmv repo moved'
+for command in \
+  'env -C other rm -r repo' 'env --chdir=other rm -r repo' \
+  'sudo -D other rm -r repo' 'sudo --chdir=other rm -r repo' \
+  'env -C other true; rm -r repo' 'env --directory other true; rm -r repo' \
+  'true; cd other && rm -r repo' '{ cd other; }; rm -r repo' \
+  'if true; then cd other; fi; rm -r repo' '(cd other && rm -r repo); true' \
+  'cd other; cd ..; mv repo moved' 'cd other | true; mv repo moved' \
+  'cd other & mv repo moved' 'mv repo moved; pushd other' 'popd; mv repo moved' \
+  'cd "$DEST"; rm -r repo' 'cd missing; rm -r repo' 'cd missing || mv repo moved' \
+  $'cd other\nrm -r repo' "bash -c 'true'; rm -r repo" "eval 'true'; mv repo moved"; do
+  launch_case 0 "$T" "$T/repo" "$command"
+done
+launch_case 2 "$T" "$T/repo" "cd \"\$DEST\"; mv '$T/repo' moved"
+launch_case 2 "$T" "$T/repo" "env -C other rm -r '$T/repo'"
+launch_case 2 "$T" "$T/repo" "{ cd other; }; rm -r '$T/repo'"
+
+# Accepted gap: shell and eval bodies are outside the launch-directory rules.
+launch_case 0 "$T" "$T/repo" "bash --noprofile -c 'mv repo moved'"
+launch_case 0 "$T" "$T/repo" "sh -c 'mv repo moved'"
+launch_case 0 "$T" "$T/repo" "eval 'mv repo moved'"
+launch_case 0 "$T" "$T/repo-review" "bash -c 'git worktree remove repo-other'"
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
