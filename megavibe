@@ -1684,7 +1684,7 @@ set -- ${CLAUDE_ARGV[@]+"${CLAUDE_ARGV[@]}"}
 # doing nothing. Flags and multi-word prompts still pass through untouched —
 # only a lone bare word is rejected, since that shape is almost always a
 # subcommand the user expected to exist.
-if [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
+if [ "${#LAUNCH_ARGV[@]}" -eq 1 ] && [ $# -eq 1 ] && [ -n "${1:-}" ] && [ "${1#-}" = "$1" ] && [ "${1#* }" = "$1" ]; then
   echo "Unknown subcommand: ${1}"
   echo ""
   echo "Usage: megavibe [subcommand | claude-args...]"

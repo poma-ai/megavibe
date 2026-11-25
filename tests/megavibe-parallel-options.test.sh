@@ -139,6 +139,13 @@ for name in '!!!' '' '../invalid'; do
 done
 pass
 
+setup_case prompt-word
+launch --parallel-branch review continue
+if grep -Fq 'Unknown subcommand' "$T/out" "$T/err"; then exit 1; fi
+branch_created review
+grep -Fxq continue "$CLAUDE_ARGS"
+pass
+
 setup_case empty-env
 if MEGAVIBE_PARALLEL_BRANCH='' launch --stash; then exit 1; fi
 grep -Fq 'invalid parallel branch name' "$T/err"
