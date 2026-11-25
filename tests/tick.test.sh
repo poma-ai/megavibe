@@ -178,6 +178,7 @@ case "$1" in
     ;;
   fail) echo EXAMPLE-command-stdout; echo EXAMPLE-command-stderr >&2; exit 1 ;;
   empty) : ;;
+  flood) exec yes EXAMPLE-flood ;;
   timeout) echo "$$" > "$HOME/key-command.pid"; exec sleep 30 ;;
 esac
 EOF
@@ -195,7 +196,7 @@ check "key command wins over the file, trims stdout to 200 bytes, and supplies c
 check "key command output stays out of both reports" '[[ "$o" != *"EXAMPLE-command-key"* ]] && [ -s "$T/mv/tick/key-success.report" ] && ! grep -Fq "EXAMPLE-command-key" "$T/mv/tick/key-success.report"'
 o=$(TICK_CONF="$T/key-file.conf" TICK_LINEAR=1 tick --no-mark)
 check "without a key command, curl receives the file key" '[[ "$o" == *"PRJ-1"* ]] && [ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-file-key\"" ]'
-for mode in fail empty timeout; do
+for mode in fail empty flood timeout; do
   key_conf "$mode"
   printf 'TICK_LINEAR_KEY_CMD_TIMEOUT=1\n' >> "$T/key-command.conf"
   rm -f "$T/curl-cfg.last"

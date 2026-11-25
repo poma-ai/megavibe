@@ -351,7 +351,7 @@ linear_key_from_command() {
   timeout="${timeout#"${timeout%%[!0]*}"}"
   dir=$(mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || return 1
   (
-    umask 077
+    umask 077; ulimit -f 8   # a command that prints without end cannot fill the disk
     exec bash -c "$TICK_LINEAR_KEY_CMD" </dev/null >"$dir/key"
   ) 2>/dev/null &
   pid=$!
