@@ -196,21 +196,15 @@ n=$(grep -c . "$STUB_LOG"); if [ "$n" = 2 ]; then ok; else bad "unknown result m
 
 # 10. gh pr create / repo create / repo edit.
 PR=$T/pr; mkrepo "$PR" https://github.com/acme/pub.git
-asks "pr create: title with a path on a public base" "$PR" "gh pr create --title 'fix ${USERS_DIR}/jsmith/x' --body '## Summary
-ok'" "pull request text"
 passes "pr create: clean text" "$PR" "gh pr create --title 'Fix thing' --body '## Summary
 ok'"
 passes "pr create to a private repo" "$PR" "gh pr create -R acme/priv --title '/Users/jsmith/x' --body y"   # EXAMPLE: fixture
-asks "pr create -R public repo" "$PR" "gh pr create -R acme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"   # EXAMPLE: fixture
-asks "pr create: attached short option -Racme/pub" "$PR" "gh pr create -Racme/pub --title 'ghp_abcdefghijklmnopqrstuvwxyz0123456789' --body y" "[GitHub token]"   # EXAMPLE: fixture
 mkdir -p "$T/otherdir" && ( cd "$T/otherdir" && git init -q && git remote add origin https://github.com/cur/rent.git )
 printf PUBLIC > "$T/vis/acme_pub"
 printf PRIVATE > "$T/vis/cur_rent"
 passes "pr create resolves the base repo from the command's cd, not the hook's cwd" /tmp "cd $T/otherdir && gh pr create --title /Users/jsmith/x --body y"   # EXAMPLE: fixture
 printf PUBLIC > "$T/vis/cur_rent"
 asks "pr create: gh cannot tell" "$PR" "gh pr create -R acme/mystery --title t --body b" "could not determine"
-asks "pr create: a heredoc body is scanned" "$PR" $'gh pr create --title t --body-file - <<\'EOF\'\n## Summary\nsee /Users/jsmith/proj\nEOF' "pull request text" "[home path]"   # EXAMPLE: fixture
-asks "pr create: $(cat <<EOF) body idiom is scanned" "$PR" $'gh pr create --title t --body "$(cat <<\'EOF\'\n## Summary\nkey AKIAABCDEFGHIJKLMNOP\nEOF\n)"' "[AWS key]"   # EXAMPLE: fixture
 asks "repo create --public" "$PR" "gh repo create newthing --public" "creates a PUBLIC"
 passes "repo create --private" "$PR" "gh repo create newthing --private"
 asks "repo edit --visibility public" "$PR" "gh repo edit acme/priv --visibility public" "PUBLIC"
@@ -262,7 +256,6 @@ asks "tracking refs of a private FETCH url do not excuse a different public push
 R2=$T/r2; mkrepo "$R2" https://github.com/acme/pub.git
 ( cd "$R2" && git checkout -q -b secret && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > s.txt && git add s.txt && git commit -qm sec && git checkout -q main && git config remote.origin.push secret:secret )   # EXAMPLE: fixture
 asks "remote.<name>.push is what git pushes, not HEAD" "$R2" "git push origin" "[GitHub token]"
-asks "global -R before the group and verb" "$PR" "gh -R acme/pub pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"   # EXAMPLE: fixture
 R4=$T/r4; mkrepo "$R4" https://github.com/acme/pub.git
 ( cd "$R4" && echo "AKIAABCDEFGHIJKLMNOP" > ghp_abcdefghijklmnopqrstuvwxyz0123456789.txt && git add . && git commit -qm f )   # EXAMPLE: fixture
 run "$R4" "git push"; lacks "a secret in a file NAME is not echoed in full" "ghp_abcdefghijklmnopqrstuvwxyz0123456789"; lacks "AWS value" "ABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
@@ -286,16 +279,12 @@ asks "a child shell's cd does not leak either" "$M" "bash -c 'cd $T/otherdir'; g
 ( cd "$M" && git checkout -q main )
 
 # 10e. Round-2 reader findings.
-asks "angle brackets inside a quoted PR body are not a redirection" "$PR" "gh pr create --title t --body 'Contact <alice@internal-corp.biz> today'" "[email]"   # EXAMPLE: fixture
 passes "a real redirection is still stripped from push args" "$PUB" "git push origin main > /dev/null"
 RW=$T/rw; mkrepo "$RW" https://github.com/acme/priv.git
 ( cd "$RW" && git config "url.https://github.com/acme/pub.git.pushInsteadOf" https://github.com/acme/priv.git && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > t.txt && git add t.txt && git commit -qm t )   # EXAMPLE: fixture
 asks "pushInsteadOf rewrites an explicit URL" "$RW" "git push https://github.com/acme/priv.git main" "[GitHub token]"
-asks "inline GH_REPO selects the public repo" "$T/otherdir" "GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"   # EXAMPLE: fixture
-asks "env GH_REPO= wrapper form" "$T/otherdir" "env GH_REPO=acme/pub gh pr create --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]"   # EXAMPLE: fixture
 
 # 10f. Round-2 (second reader) findings.
-asks "--body='two words' keeps its content" "$PR" "gh pr create --title=t --body='key AKIAABCDEFGHIJKLMNOP'" "[AWS key]"   # EXAMPLE: fixture
 MV=$T/mv; mkrepo "$MV" https://github.com/acme/pub.git
 ( cd "$MV" && git checkout -q -b other && echo "ghp_abcdefghijklmnopqrstuvwxyz0123456789" > o.txt && git add o.txt && git commit -qm o && git checkout -q main )   # EXAMPLE: fixture
 denies "variable refspec on a public remote" "$MV" 'BRANCH=other; git push origin "$BRANCH"' "unexpanded variable"
@@ -328,44 +317,28 @@ passes "clean PR with a home path earlier in the command" "$PR" "cd $HP && gh pr
 # 10g. gh pr create can push the current branch itself: unpushed commits are scanned; --template is read.
 PU=$T/pu; mkrepo "$PU" https://github.com/acme/pub.git
 commit "$PU" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
-asks "pr create: an unpushed commit with a secret asks" "$PU" "gh pr create -R acme/pub --title Fix --body Done" "may push local commits" "[AWS key]"
-asks "pr create: the same without -R (base from the remote)" "$PU" "gh pr create --title Fix --body Done" "may push local commits" "[AWS key]"
 passes "pr create to a private base does not scan commits" "$PU" "gh pr create -R acme/priv --title Fix --body Done"
 ( cd "$PU" && git update-ref refs/remotes/origin/feature HEAD )
 passes "pr create: the branch is already on a remote" "$PU" "gh pr create -R acme/pub --title Fix --body Done"
 PC=$T/pc; mkrepo "$PC" https://github.com/acme/pub.git; commit "$PC" a.txt "plain change"
 passes "pr create: an unpushed clean commit passes" "$PC" "gh pr create -R acme/pub --title Fix --body Done"
 printf 'AKIAABCDEFGHIJKLMNOP\n' > "$T/tpl.md"   # EXAMPLE: fixture
-asks "pr create --template file is scanned" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl.md" "[AWS key]"
-asks "pr create -T file is scanned" "$PC" "gh pr create -R acme/pub --title Fix -T $T/tpl.md" "[AWS key]"
-asks "pr create --template that cannot be read asks" "$PC" "gh pr create -R acme/pub --title Fix --template /nonexistent/t.md" "could not be read"
 PD=$T/pd; mkrepo "$PD" https://github.com/acme/pub.git; commit "$PD" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
-asks "pr create: text hit and unpushed commit hit are both reported" "$PD" "gh pr create -R acme/pub --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body Done" "pull request text" "may push local commits"   # EXAMPLE: fixture
-denies "pr create after a commit in the same call asks to be run separately" "$PC" "git add a.txt && git commit -qm x && gh pr create -R acme/pub --title Fix --body Done" "separate call"
 passes "pr create after a commit in the same call to a private base passes" "$PC" "git add a.txt && git commit -qm x && gh pr create -R acme/priv --title Fix --body Done"
-denies "pr create after git commit (staged secret) in the same call" "$PC" "git commit -m Config && gh pr create -R acme/pub --title Config --body Done" "separate call"
 denies "pr create after a remote change in the same call" "$PC" "git remote set-url origin https://github.com/acme/pub.git && gh pr create -R acme/pub --title Fix --body Done" "separate call"
 PV=$T/pv; mkrepo "$PV" git@github.com:acme/priv.git; commit "$PV" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 denies "pr create after a remote retarget from a private origin asks" "$PV" "git remote set-url origin https://github.com/acme/pub.git && gh pr create --title Fix --body Done" "separate call"
-denies "pr create --recover asks" "$PC" "gh pr create -R acme/pub --recover /tmp/saved.json" "--recover"
 PRL=$T/prl; mkrepo "$PRL" https://github.com/acme/pub.git; mkdir -p "$PRL/sub"; commit "$PRL" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 ( cd "$PRL" && git config diff.relative true )
 asks "push from a subdirectory with diff.relative=true still sees the whole commit" "$PRL" "cd sub && git push" "[AWS key]"
-asks "pr create from a subdirectory with diff.relative=true still sees the whole commit" "$PRL" "cd sub && gh pr create --title Fix --body Done" "[AWS key]"
 RR=$T/rr; mkdir -p "$RR" && ( cd "$RR" && git init -q && git remote add origin https://github.com/acme/pub.git && printf 'AKIAABCDEFGHIJKLMNOP\n' > key.txt && git add key.txt && git commit -qm root )   # EXAMPLE: fixture
 asks "a root commit with a secret is seen with default git config" "$RR" "git push origin main" "[AWS key]"
 ( cd "$RR" && git config log.showRoot false && git config diff.renames copies && git config diff.ignoreSubmodules all && git config core.quotepath false )
 asks "log.showRoot=false does not hide a root commit from a push scan" "$RR" "git push origin main" "[AWS key]"
-asks "log.showRoot=false does not hide a root commit from a pr create scan" "$RR" "gh pr create -R acme/pub --title Fix --body Done" "[AWS key]"
 printf 'clean\n' > "$PC/template.md"; printf 'AKIAABCDEFGHIJKLMNOP\n' > "$PC/secret.md"   # EXAMPLE: fixture
-denies "a copy over the body file earlier in the call asks to be run separately" "$PC" "cp secret.md template.md && gh pr create -R acme/pub --title Fix --body-file template.md" "separate call"
-denies "a copy over the template earlier in the call asks to be run separately" "$PC" "cp secret.md template.md && gh pr create -R acme/pub --title Fix --template template.md" "separate call"
-denies "a template written earlier in the call: create the PR separately" "$PC" "printf 'AKIAABCDEFGHIJKLMNOP' > template.md && gh pr create -R acme/pub --title Config --template template.md" "separate call"   # EXAMPLE: fixture
 mkdir -p "$T$USERS_DIR/jsmith"; printf 'clean template\n' > "$T$USERS_DIR/jsmith/tpl-ok.md"
 passes "the local path of a clean template is not published text" "$PC" "gh pr create -R acme/pub --title Clean --template $T$USERS_DIR/jsmith/tpl-ok.md"
 head -c 1100000 /dev/zero | tr '\0' 'a' > "$T/big.md"
-asks "pr create --body-file over 1 MiB asks instead of scanning part" "$PC" "gh pr create -R acme/pub --title Fix --body-file $T/big.md" "could not be read"
-asks "pr create --template over 1 MiB asks" "$PC" "gh pr create -R acme/pub --title Fix --template $T/big.md" "could not be read"
 printf 'clean template\n' > "$T/tpl-ok.md"
 passes "pr create --template with clean text passes" "$PC" "gh pr create -R acme/pub --title Fix --template $T/tpl-ok.md"
 
@@ -373,10 +346,6 @@ passes "pr create --template with clean text passes" "$PC" "gh pr create -R acme
 SR=$T/sr; mkdir -p "$SR" && ( cd "$SR" && git init -q && git remote add upstream https://github.com/acme/pub.git && echo a > a.txt && git add a.txt && git commit -qm i && echo "AKIAABCDEFGHIJKLMNOP" > k.txt && git add k.txt && git commit -qm k )   # EXAMPLE: fixture
 asks "the sole remote is used when it is not called origin" "$SR" "git -c push.default=current push" "[AWS key]"
 printf 'AKIAABCDEFGHIJKLMNOP\n' > "$HOME/pr.md"   # EXAMPLE: fixture
-asks "--body-file ~/pr.md" "$PR" "gh pr create -R acme/pub --title Fix --body-file ~/pr.md" "[AWS key]"
-asks "--body-file \$HOME/pr.md" "$PR" 'gh pr create -R acme/pub --title Fix --body-file "$HOME/pr.md"' "[AWS key]"
-asks "--body-file - with no readable stdin source asks" "$PR" "cat x.md | gh pr create -R acme/pub --title Fix --body-file -" "could not be read"
-asks "--body-file that does not exist asks" "$PR" "gh pr create -R acme/pub --title Fix --body-file /nonexistent/x.md" "could not be read"
 rm -f "$HOME/pr.md"
 printf 'Customer-X\n' > "$HOME/.megavibe/personal/public-push.deny"
 DQ=$T/dq; mkrepo "$DQ" https://github.com/acme/pub.git; ( cd "$DQ" && echo ok > "Customer-X-ä.txt" && git add . && git commit -qm f )
@@ -389,7 +358,6 @@ rm -f "$HOME/.megavibe/personal/public-push.deny"
 denies "variable git -C directory asks" "$M" 'D=/nope; git -C "$D" push origin main' "not statically known"
 TG=$T/tg; mkrepo "$TG" https://github.com/acme/pub.git; ( cd "$TG" && git checkout -q -b tmp && echo "AKIAABCDEFGHIJKLMNOP" > t.txt && git add t.txt && git commit -qm t && git tag v9 && git checkout -q main && git branch -qD tmp )   # EXAMPLE: fixture
 asks "refs/tags/* reaches a tag-only commit" "$TG" "git push origin 'refs/tags/*:refs/tags/*'" "[AWS key]"
-denies "variable PR body asks" "$PR" 'BODY=x; gh pr create -R acme/pub --title Clean --body "$BODY"' "unexpanded variable"
 mkdir -p "$T/Users/jsmith"; printf 'Clean summary\n' > "$T/Users/jsmith/body.md"   # EXAMPLE: fixture
 passes "a body-file path is not published text" "$PR" "gh pr create -R acme/pub --title Fix --body-file $T/Users/jsmith/body.md"   # EXAMPLE: fixture
 CL=$T/cl; mkrepo "$CL" https://github.com/acme/pub.git; commit "$CL" README.md "git clone git@github.com:acme/pub.git"   # EXAMPLE: fixture
@@ -421,9 +389,6 @@ TS=$T/ts; mkrepo "$TS" https://github.com/acme/pub.git
 ( cd "$TS" && git checkout -q -b abandoned && echo x > x.txt && git add x.txt && git commit -qm x && git tag -a lost -m "key AKIAABCDEFGHIJKLMNOP" && git checkout -q main )   # EXAMPLE: fixture
 passes "--follow-tags ignores a tag on an unpushed side branch" "$TS" "git push --follow-tags origin main"
 
-asks "export GH_REPO then the PR command" "$T/otherdir" "export GH_REPO=acme/pub; gh pr create --title AKIAABCDEFGHIJKLMNOP --body y" "[AWS key]"   # EXAMPLE: fixture
-asks "bare GH_REPO assignment then the PR command" "$T/otherdir" "GH_REPO=acme/pub; gh pr create --title AKIAABCDEFGHIJKLMNOP --body y" "[AWS key]"   # EXAMPLE: fixture
-asks "GH_REPO inherited by bash -c" "$T/otherdir" "GH_REPO=acme/pub bash -c 'gh pr create --title AKIAABCDEFGHIJKLMNOP --body y'" "[AWS key]"   # EXAMPLE: fixture
 passes "GH_REPO of a private repo stays private" "$T/otherdir" "export GH_REPO=acme/priv; gh pr create --title AKIAABCDEFGHIJKLMNOP --body y"   # EXAMPLE: fixture
 
 ( cd "$TS" && git tag -d lost >/dev/null && git checkout -q abandoned && git tag -a lost2 -m "key AKIAQRSTUVWXYZABCDEF" && git checkout -q main )   # EXAMPLE: fixture
@@ -431,8 +396,6 @@ asks "--all --follow-tags reaches a tag on a side branch" "$TS" "git push --all 
 ( cd "$TS" && git tag -a ghp_abcdefghijklmnopqrstuvwxyz0123456789 -m "k AKIAABCDEFGHIJKLMNOP" main )   # EXAMPLE: fixture
 run "$TS" "git push --tags origin"; lacks "a token-shaped tag name is redacted before it is cut" "ghp_abcdefghijklmnopqrstuvwxyz"   # EXAMPLE: fixture
 
-asks "a subshell's export GH_REPO does not leak out" "$PR" "(export GH_REPO=acme/priv; gh repo view); gh pr create --title AKIAABCDEFGHIJKLMNOP --body y" "[AWS key]"   # EXAMPLE: fixture
-asks "unset GH_REPO clears the selection" "$PR" "export GH_REPO=acme/priv; unset GH_REPO; gh pr create --title AKIAABCDEFGHIJKLMNOP --body y" "[AWS key]"   # EXAMPLE: fixture
 
 ( cd "$M" && git checkout -q -b feature2 && echo "AKIAABCDEFGHIJKLMNOP" > f2.txt && git add f2.txt && git commit -qm f2 && git checkout -q main )   # EXAMPLE: fixture
 asks "--branches is an alias for --all" "$M" "git push --branches origin" "[AWS key]"
@@ -452,7 +415,6 @@ asks "push.default=matching with an explicit URL" "$M" "git push https://github.
 SP2="$T/my project"; mkrepo "$SP2" https://github.com/acme/pub.git; commit "$SP2" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 asks "git -C with an escaped space" /tmp "git -C $T/my\\ project push origin main" "[AWS key]"
 asks "cd with an escaped space" /tmp "cd $T/my\\ project && git push origin main" "[AWS key]"
-asks "--body='...' is not excused by a word in --title" "$PR" "gh pr create -R acme/pub --title 'Add example' --body='key AKIAABCDEFGHIJKLMNOP'" "[AWS key]"   # EXAMPLE: fixture
 # ssh aliases come from ~/.ssh/config as text; `ssh -G` would run a Match exec command
 mkdir -p "$HOME/.ssh" "$T/marker"; printf 'Host work-alias\n  HostName github.com\n  Match exec "touch %s/marker/ran"\n' "$T" > "$HOME/.ssh/config"
 SA=$T/sa; mkrepo "$SA" git@work-alias:acme/pub.git; commit "$SA" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
@@ -461,16 +423,11 @@ if [ ! -e "$T/marker/ran" ]; then ok; else bad "ssh -G must not run Match exec";
 rm -rf "$HOME/.ssh"
 
 passes "a clean PR chained with an unrelated command" "$PR" "gh pr create -R acme/pub --title Clean --body Done && echo /Users/jsmith/project"   # EXAMPLE: fixture
-asks "quoted ; inside a PR body is still scanned" "$PR" "gh pr create -R acme/pub --title Clean --body 'a; AKIAABCDEFGHIJKLMNOP' && echo hi" "[AWS key]"   # EXAMPLE: fixture
 
-asks "a multi-line quoted PR body keeps its '## ' heading line" "$PR" "gh pr create --title Fix --body '## Summary
-## ${AKIA_PFX}ABCDEFGHIJKLMNOP
-Changes ready'" "[AWS key]"
 commit "$QR" k2.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 asks "a comment inside bash -c does not hide the push (leak present)" "$QR" "bash -c 'git push # publish'" "[AWS key]"
 asks "bash -lc with a comment" "$QR" "bash -lc 'git push origin main # go'" "[AWS key]"
 
-asks "two chained PR commands, the second with --body='...'" "$PR" "gh pr create -R acme/priv --title Clean --body Done; gh pr create -R acme/pub --title Clean --body='key AKIAABCDEFGHIJKLMNOP'" "[AWS key]"   # EXAMPLE: fixture
 GD=$T/gd; mkrepo "$GD" https://github.com/acme/pub.git; commit "$GD" k.txt "AKIAABCDEFGHIJKLMNOP"   # EXAMPLE: fixture
 asks "inline GIT_DIR selects the repository" "$T/otherdir" "GIT_DIR=$GD/.git git push origin main" "[AWS key]"
 
@@ -518,7 +475,6 @@ mkdir -p "$CP/config" "$CP/sub"; printf 'AKIAABCDEFGHIJKLMNOP\n' > "$CP/config/k
 rm -rf "$CP/config"; printf 'AKIAABCDEFGHIJKLMNOP\n' > "$CP/sub/new.txt"   # EXAMPLE: fixture
 rm -rf "$CP/sub"
 printf 'clean\n' > "$T/body2.md"
-denies "a body file written earlier in the same command" "$PR" "printf 'AKIAABCDEFGHIJKLMNOP' > $T/body2.md && gh pr create -R acme/pub --title Config --body-file $T/body2.md" "separate call"   # EXAMPLE: fixture
 
 # 10z. Predecessors are not simulated: a state-changing git command before the push, public target -> ask.
 for pre in "git add a.txt" "git commit -m x" "git commit -am x" "git add . && git commit -m x" "git switch -c nb" "git checkout feature" "git branch nb2" \
@@ -543,11 +499,6 @@ passes "no recursion, private parent: silent" "$SM" "git push origin main"
 # 10i. Final-round fixes: pushd/popd, stdin-like body files, FIFO body files.
 denies "pushd then popd leaves the directory unknown, so the push asks" "$SR" "pushd $PRIV >/dev/null; popd >/dev/null; git -c push.default=current push"
 denies "pushd alone leaves the directory unknown" "$SR" "pushd $PRIV >/dev/null && git -c push.default=current push"
-asks "--body-file /dev/stdin asks" "$PR" "cat x.md | gh pr create -R acme/pub --title Fix --body-file /dev/stdin" "could not be read"
-asks "--body-file /dev/fd/0 asks" "$PR" "cat x.md | gh pr create -R acme/pub --title Fix --body-file /dev/fd/0" "could not be read"
-mkfifo "$T/body.fifo"
-S0=$SECONDS; run "$PR" "gh pr create -R acme/pub --title Fix --body-file $T/body.fifo"
-if [ "$RC" = 0 ] && [ -n "$WHY" ] && [ $((SECONDS-S0)) -lt 5 ]; then ok; else bad "a FIFO --body-file must ask without hanging (rc=$RC)"; fi
 
 mkdir -p "$HOME/.megavibe/personal"; mkfifo "$HOME/.megavibe/personal/public-push.trusted"
 S0=$SECONDS; run "$PUB" "git push origin main"; if [ $((SECONDS-S0)) -lt 8 ]; then ok; else bad "a FIFO trusted-file must not hang the hook"; fi
@@ -573,7 +524,6 @@ printf 'github.com/*\n' > "$KNOWN"
 printf 'github.com/acme/*\n' > "$HOME/.megavibe/personal/public-push.trusted"
 commit "$PUB" t.txt "key ${AKIA_PFX}ABCDEFGHIJKLMNOP"
 asks "a trusted glob does not switch the scan off for a PUBLIC repository" "$PUB" "git push origin main" "[AWS key]"
-asks "a trusted glob does not silence a PUBLIC pull request base" "$PUB" "gh pr create -R acme/pub --title T --body ${AKIA_PFX}ABCDEFGHIJKLMNOP" "[AWS key]"
 ( cd "$PUB" && git reset -q --hard HEAD~1 )
 /bin/rm -f "$HOME/.megavibe/personal/public-push.trusted"
 # deny-and-retry: not a permission prompt, and no override hint
@@ -604,9 +554,6 @@ if [ $((SECONDS-S0)) -lt 20 ]; then ok; else bad "the boundary lookups share one
 # a "<<" inside quotes is not a heredoc: the push on the next line is still seen
 denies "a quoted << does not swallow the following push" "$PUB" "python3 -c \"print(1 << n)\"
 git commit --allow-empty -m x && git push origin main" "separate call"
-asks "a real heredoc body is still PR text" "$PUB" "gh pr create -R acme/pub --title T --body-file - <<'EOF'
-key ${AKIA_PFX}ABCDEFGHIJKLMNOP
-EOF" "[AWS key]"
 # a gh that hangs with a child holding the pipe is cut off at the limit
 mkdir -p "$T/hanggh"; printf '#!/bin/bash\n( sleep 60 ) &\nsleep 60\n' > "$T/hanggh/gh"; chmod +x "$T/hanggh/gh"
 /bin/rm -rf "$HOME/.megavibe/cache"; OLDPATH=$PATH; PATH="$T/hanggh:$PATH"; S0=$SECONDS
@@ -633,7 +580,6 @@ Document shell heredocs with <<EOF.
 The docs are ready.
 '"
 # a body file created earlier in the same call: deny-and-retry, not a prompt about an unreadable file
-denies "a new body file written in the same call is a retry, not a prompt" "$PUB" "printf clean > $T/newbody.md && gh pr create -R acme/pub --title Fix --body-file $T/newbody.md" "separate call"
 # the retry instruction for a variable directory does not point at -R as a way out
 denies "variable directory with -R: the instruction names the literal path" "$PUB" "cd \"\$PWD\" && gh pr create -R acme/pub --title Fix --body Clean" "literal path"
 lacks "the instruction does not offer -R as sufficient" "or pass -R"
@@ -644,12 +590,7 @@ denies "a real push after a remote change is still denied" "$PUB" "git remote se
 # a literal $WORD in single quotes (or escaped) is text: no dead-end deny
 passes "a single-quoted literal \$WORD in a PR title is text" "$PUB" "gh pr create -R acme/pub --title 'Fix \$CLAUDE_PROJECT_DIR handling' --body Clean"
 passes "an escaped \$WORD in a PR title is text" "$PUB" "gh pr create -R acme/pub --title \"Fix \\\$CLAUDE_PROJECT_DIR handling\" --body Clean"
-denies "a real variable in a PR title is still denied, with a usable instruction" "$PUB" "gh pr create -R acme/pub --title \"Fix \$TITLE\" --body Clean" "single quotes"
 
-asks "a real heredoc body stays PR text when a later << never terminates" "$PUB" "gh pr create -R acme/pub --title T --body-file - <<'EOF'
-key ${AKIA_PFX}ABCDEFGHIJKLMNOP
-EOF
-# see <<NOTE above" "[AWS key]"
 
 # findings of the second ship round
 commit "$PUB" t3.txt "key ${AKIA_PFX}ABCDEFGHIJKLMNOP"
@@ -681,11 +622,8 @@ asks "a push inside backticks still asks" "$PUB" "echo \`git push origin main\`"
 passes "a clean push inside \$( ) is parsed as a push and scanned" "$PUB" "echo \$(git push origin main)"
 
 # findings of the third ship round
-denies "a comment that mentions gh pr create does not disable the body-file retry" "$PUB" "# Prepare the body for gh pr create.
-cp $T/draft.md $T/body9.md && gh pr create -R acme/pub --title Fix --body-file $T/body9.md" "separate call"
 printf 'clean\n' > "$T/body10.md"
 passes "a body file named once is read and scanned" "$PUB" "gh pr create -R acme/pub --title Fix --body-file $T/body10.md"
-denies "a variable in the body-file path is a retry with a literal path" "$PUB" "gh pr create -R acme/pub --title Fix --body-file \"\$TMPDIR/b.md\"" "literal path"
 passes "an escaped \$( in a commit message is text" "$PUB" "git commit --allow-empty -m \"Document \\\$(git push)\""
 denies "the variable-directory instruction says to drop the cd" "$PUB" "cd \"\$PWD\" && git push" "without that cd"
 
@@ -705,8 +643,46 @@ passes "a body file named body is not counted inside --body-file" "$PUB" "gh pr 
 passes "a body file named ./body" "$PUB" "gh pr create -R acme/pub --title Fix --body-file ./body"
 passes "a body file named pr is not counted inside gh pr create" "$PUB" "gh pr create -R acme/pub --title Fix --body-file pr"
 /bin/rm -f "$PUB/body" "$PUB/pr"
-denies "a body file written earlier under its full name is still a retry" "$PUB" "cp $T/draft.md $T/body11.md && gh pr create -R acme/pub --title Fix --body-file $T/body11.md" "names the file once"
 denies "the deny says that nothing in the call ran" "$PUB" "git commit --allow-empty -m x && git push origin main" "NOTHING in this call ran"
+
+# 10z. Pull requests (create and edit) are a visibility check of the destination only: no text, file or commit is read.
+printf 'github.com/acme/pub\n' > "$KNOWN"
+passes "pr create to a known-public repository passes" "$PUB" "gh pr create -R acme/pub --title Fix --body Done"
+passes "pr create: text is not scanned (a token-shaped title to a known-public repository)" "$PUB" "gh pr create -R acme/pub --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y"   # EXAMPLE: fixture
+passes "pr create: an unreadable body file is not read" "$PUB" "gh pr create -R acme/pub --title Fix --body-file /nonexistent/x.md"
+passes "pr create: a variable in the body is not parsed" "$PUB" 'BODY=x; gh pr create -R acme/pub --title Fix --body "$BODY"'
+passes "pr create after a commit in the same call to a known-public repository passes" "$PUB" "git commit --allow-empty -qm x && gh pr create -R acme/pub --title Fix --body Done"
+passes "pr create to a private repository passes" "$PUB" "gh pr create -R acme/priv --title Fix --body Done"
+passes "pr create to an internal repository passes" "$PUB" "gh pr create -R acme/int --title Fix --body Done"
+passes "pr create without -R in a checkout whose remote is private passes" "$PRIV" "gh pr create --title Fix --body Done"
+passes "pr create without -R in a checkout whose remote is known-public passes" "$PUB" "gh pr create --title Fix --body Done"
+passes "pr edit on a known-public repository passes" "$PUB" "gh pr edit 3 -R acme/pub --body Done"
+passes "pr edit on a private repository passes" "$PRIV" "gh pr edit 3 --title Fix"
+passes "pr view is untouched" "$PUB" "gh pr view 3 -R other/surprise"
+passes "pr comment is untouched" "$PUB" "gh pr comment 3 -R other/surprise --body hi"
+asks "pr create to a public repository that is not on the list asks" "$NP" "gh pr create -R other/surprise --title T --body B" "not on your list" "github.com/other/surprise"
+asks "pr create without -R: the checkout's remote is public and not on the list" "$NP" "gh pr create --title T --body B" "not on your list" "github.com/other/surprise"
+asks "pr edit on a public repository that is not on the list asks" "$NP" "gh pr edit 3 --title T" "not on your list"
+asks "pr edit with -R on a public repository that is not on the list asks" "$PRIV" "gh pr edit 3 -R other/surprise --title T" "not on your list"
+asks "pr create: gh cannot tell" "$PUB" "gh pr create -R acme/mystery --title t --body b" "could not determine"
+asks "pr edit: gh cannot tell" "$PUB" "gh pr edit 3 -R acme/mystery --title t" "could not determine"
+denies "pr create after a remote change in the same call is a retry" "$PUB" "git remote set-url origin https://github.com/acme/priv.git && gh pr create --title Fix --body Done" "separate call"
+denies "pr create from an unresolvable directory is a retry" "$PUB" 'cd "$WHERE" && gh pr create --title Fix --body Done' "not statically known"
+passes "the same pr create with an explicit literal directory and -R passes" "$PUB" "cd $PUB && gh pr create -R acme/pub --title Fix --body Done"
+printf 'github.com/*\n' > "$KNOWN"
+
+# 10y. An unresolvable --git-dir / --work-tree / -C is never a silent pass.
+GDX="$T/gitdirx"; mkrepo "$GDX" https://github.com/acme/pub.git; commit "$GDX" a.txt "plain change"
+denies "--git-dir with a variable" "$T" 'git --git-dir "$GDX/.git" push origin main' "not statically known"
+denies "--git-dir=\$VAR" "$T" 'git --git-dir=$GDX/.git push origin main' "not statically known"
+denies "--work-tree with a variable" "$T" 'git --work-tree "$GDX" push origin main' "not statically known"
+denies "--work-tree=\$VAR" "$T" 'git --work-tree=$GDX push origin main' "not statically known"
+denies "--git-dir with a command substitution" "$T" 'git --git-dir "$(pwd)/.git" push origin main' "not statically known"
+denies "-C with a variable" "$T" 'git -C "$GDX" push origin main' "not statically known"
+passes "--git-dir given literally to a known-public repository passes" "$T" "git --git-dir=$GDX/.git --work-tree=$GDX push origin main"
+passes "--git-dir given literally to a private repository passes" "$T" "git --git-dir=$PRIV/.git --work-tree=$PRIV push origin main"
+passes "-C given literally to a private repository passes" "$T" "git -C $PRIV push origin main"
+passes "a variable in a non-push git command is untouched" "$T" 'git --git-dir "$GDX/.git" status'
 
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi

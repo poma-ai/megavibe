@@ -21,10 +21,10 @@ set -u
 #   git push                      the target is resolved (remote name, URL, pushurl,
 #                                 insteadOf, branch/pushDefault remote) and its
 #                                 visibility looked up with `gh repo view`
-#   gh pr create                  same lookup for the base repository; the title, body,
-#                                 body file and --template file are scanned, and so are
-#                                 the commits no remote holds yet (gh pushes the current
-#                                 branch itself when nothing has)
+#   gh pr create / gh pr edit     a visibility check of the repository the pull request
+#                                 publishes to (-R/--repo, GH_REPO, else the one gh itself
+#                                 resolves from the checkout). Nothing else: the title, body,
+#                                 body file, template and commits are NOT read.
 #   gh repo create --public       asks (publishes a new repo); scans local history
 #                                 when --push/--source is given
 #   gh repo edit --visibility public   asks: it turns the WHOLE history public;
@@ -40,8 +40,7 @@ set -u
 # passes). `git remote add|set-url|rename|remove` and `git config` (writes) before a push are denied the same way
 # whatever the visibility, since they change where it goes; so is `git switch`/`checkout` before a push that names
 # no remote in a repository with several remotes (the branch decides the remote). Also denied, with the fix named:
-# a variable in the remote, a refspec (public target) or the directory, a PR title/body with a variable, a PR body
-# or template file named earlier in the call, `gh pr create --recover`.
+# a variable in the remote, a refspec (public target) or the directory (`-C`, `--git-dir`, `--work-tree`, a `cd`).
 #
 # Postures (each reason names what was found, one line per hit, values truncated):
 #   PRIVATE / INTERNAL target     silent pass, no scan, no cost
@@ -98,22 +97,18 @@ set -u
 # prompt-injected instruction can only edit the command text, not the hook's
 # environment. The prompt itself is the per-push human decision.
 #
-# Known gaps (not enforced here): a `cd` that only runs conditionally (`test -d x && cd y; git push`) is followed
-# as if it ran; `gh pr create` split over a line continuation between its words is not matched against earlier
-# writes of its body file; every heredoc in a call counts as pull request text (a prompt about text that went to a
-# local file); with tracking refs that hide the whole push, a selector (--all, --branches) is not expanded into tips; configuration that changes what git itself does or shows
-# (GIT_CONFIG_COUNT/KEY/VALUE in the command, replace refs, i18n.logOutputEncoding, a
-# `-diff` attribute: none occurs without a deliberate setup); a placeholder word
-# (example, xxx, ...) anywhere on a line exempts the whole line from the secret patterns;
-# denylist literals match as substrings; a push through a git alias, a script or
-# $(...)/backtick substitution; `git push` inside a command run by another tool;
-# gh pr create scans only the commits of HEAD that no remote holds (not another --head
-# branch; a commit that only a PRIVATE remote holds counts as published and is not scanned),
-# asks about a body or template file over 1 MiB (it is not read), and cannot read a body that comes from $(...); binary content; the conflict-resolution lines of a merge
-# commit (git log -p shows no diff for merges); another gh operation that publishes
-# (gh gist create --public, gh release create); a denylist
-# written in a file the hook cannot read is silently empty (the reason says so only
-# for an invalid regex).
+# Known gaps (not enforced here): the text of a pull request (title, body, body file, template, comments) is NOT
+# scanned, and neither are the commits `gh pr create` may push itself: the pull request part only asks when its
+# destination is public and not on your known-public list; a `cd` that only runs conditionally
+# (`test -d x && cd y; git push`) is followed as if it ran; with tracking refs that hide the whole push, a selector
+# (--all, --branches) is not expanded into tips; configuration that changes what git itself does or shows
+# (GIT_CONFIG_COUNT/KEY/VALUE in the command, replace refs, i18n.logOutputEncoding, a `-diff` attribute: none occurs
+# without a deliberate setup); a placeholder word (example, xxx, ...) anywhere on a line exempts the whole line from
+# the secret patterns; denylist literals match as substrings; a push through a git alias, a script or
+# $(...)/backtick substitution; `git push` inside a command run by another tool; binary content; the
+# conflict-resolution lines of a merge commit (git log -p shows no diff for merges); another gh operation that
+# publishes (gh gist create --public, gh release create); a denylist written in a file the hook cannot read is
+# silently empty (the reason says so only for an invalid regex).
 
 command -v jq &>/dev/null || exit 0
 command -v python3 &>/dev/null || exit 0
@@ -387,8 +382,10 @@ def scan_argv(argv, depth=0):
                 if "$" in argv[k + 1] or "`" in argv[k + 1]: dir_known = False
                 cwd = os.path.normpath(os.path.join(cwd, expand(argv[k + 1]))); k += 2; continue
             if o in ("-c", "--git-dir", "--work-tree", "--namespace", "--exec-path") and k + 1 < len(argv):
+                if o in ("--git-dir", "--work-tree") and ("$" in argv[k + 1] or "`" in argv[k + 1]): dir_known = False   # cannot be resolved statically
                 gitopts += [o, argv[k + 1]]; k += 2; continue
             if o.startswith("--git-dir=") or o.startswith("--work-tree="):
+                if "$" in o or "`" in o: dir_known = False
                 gitopts.append(o)
             k += 1
         _verb = argv[k] if k < len(argv) else ""
@@ -416,12 +413,12 @@ def scan_argv(argv, depth=0):
             if skip: skip = False; continue
             if x in ("-R", "--repo"): skip = True; continue
             if not x.startswith("-"): words.append(x)
-        if len(words) >= 2 and words[0] == "pr" and words[1] == "create":
+        if len(words) >= 2 and words[0] == "pr" and words[1] in ("create", "edit"):
             ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL), "pre": {"mutators": list(PRE["mutators"]), "retarget": list(PRE["retarget"])}})
         elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
             ACTIONS.append({"kind": "repo-" + words[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
 
-GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|\bgh\s+(?:pr\s+create|repo\s+(?:create|edit))\b")
+GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|\bgh\s+(?:pr\s+(?:create|edit)|repo\s+(?:create|edit))\b")
 toks = split_tokens(TEXT)
 if toks is None:
     # the text cannot be tokenised (an unclosed quote, say): do not let that hide a push
@@ -941,12 +938,14 @@ def local_history_scan(act, title, revs=("HEAD",)):
     return []
 
 def handle_pr(act):
+    """gh pr create / edit: a visibility check of the repository the pull request publishes to, nothing else. The title,
+    body, body file and commits are NOT read (see the header)."""
     argv = act["argv"]
     if act["pre"]["retarget"]:   # before any visibility lookup: the lookup would see the target as it is now, not as the call leaves it
-        return retry("An earlier command in this call (git %s) changes where the pull request's push goes, so its target was not checked. Create the pull request in a separate call." % act["pre"]["retarget"][0])
+        return retry("An earlier command in this call (git %s) changes where the pull request goes, so its target was not checked. Create the pull request in a separate call." % act["pre"]["retarget"][0])
     repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[0]
     if not act["known"]:
-        return retry("The working directory is not statically known (cd into a variable or substitution, pushd/popd), so the base repository and the commits the pull request may push cannot be resolved. Replace the variable directory with a literal path (-R alone is not enough: the directory still decides which commits and body files are read).")
+        return retry("The working directory is not statically known (cd into a variable or substitution, pushd/popd), so the pull request's base repository cannot be resolved. Replace the variable directory with a literal path, or name the repository with -R owner/repo.")
     if not os.path.isdir(act["cwd"]):
         return retry("The directory this pull request is created from (%s) does not exist yet; if an earlier command in this call creates it, run that first and the pull request in a separate call." % trunc(act["cwd"], 60))
     host = (act.get("env", {}).get("GH_HOST") or os.environ.get("GH_HOST", "github.com")).lower()
@@ -960,68 +959,9 @@ def handle_pr(act):
         if nwo and is_trusted(host + "/" + nwo): return None   # only where the lookup cannot answer; never over a PUBLIC answer
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
     if vis != "PUBLIC": return None
-    act["public"] = host + "/" + (got or nwo or "?")
-    _m = re.search(r"\bpr\s+create\b", TEXT)
-    def _cut(t):   # stop at the first unquoted ; & | : later commands are not PR text
-        res = []
-        for k, part in enumerate(_QUOTED.split(t)):
-            if k % 2: res.append(part); continue
-            m = re.search(r"[;&|]", part)
-            if m: res.append(part[:m.start()]); break
-            res.append(part)
-        return "".join(res)
-    _whole = re.sub(r"\s+(?=--?[A-Za-z])", "\n", re.sub(r"(?:--body-file|-F|--template|-T)[ =]+\S+", " ", _cut(TEXT[_m.start():]))) if _m else ""   # one chunk per flag, so a word in --title cannot excuse --body
-    texts = [_whole.replace(" ; ", "\n")] + flag_value(argv, ["--title", "-t", "--body", "-b"]) + HEREDOCS   # the whole command text too: --body='two words' is split by the tokenizer   # a heredoc body is how most PR bodies arrive
-    unread = []
-    _early = False
-    if flag_value(argv, ["--recover"]):   # restores a saved title and body the hook cannot see
-        return retry("%s is PUBLIC and the pull request is created with --recover, which restores saved title and body text that was not scanned. Create it without --recover." % (got or "the base repository"))
-    _bf = [x for x in flag_value(argv, ["--body-file", "-F", "--template", "-T"]) if x != "-"]   # a template written earlier in the call is read too
-    _tb = flag_value(argv, ["--title", "-t", "--body", "-b"])   # a mention inside the PR's own title or body text is not a second use of the file
-    def _uses(text, x):   # the file's name as a whole word: `body` is not found in --body-file, `pr` not in `gh pr`... only as a path's last part or a bare name followed by an end
-        return len(re.findall(r"(?<![\w.\-])" + re.escape(os.path.basename(x)) + r"(?![\w.\-])", text))
-    _n = len(re.findall(r"\bpr\s+create\b", CMD))   # a file named `pr` or `create` is not "used" by the command words themselves
-    if _m and _bf and any(_uses(CMD, x) - sum(_uses(v, x) for v in _tb) - _n * _uses("gh pr create", x) > 1 for x in _bf):   # named a second time in this call: it may be written there
-        _early = True   # the body file is named earlier in this call, so it may be written there (cp, sed, tee, a script): what it will hold is unknown
-    if _early:
-        return retry("%s is PUBLIC and a pull request body or template file is named a second time in this call (written, changed or removed there?), so what it holds when the pull request is created is not known. Do that in a separate call and create the pull request alone, in a call that names the file once: its text is scanned then." % (got or "the base repository"))
-    def _literal(t):   # the value is already unquoted: a `$WORD` written in single quotes or as \$ is text, not a variable
-        raw = CMD.replace("\\\n", "").replace("\n", " ; ")   # the same folding the parsed text went through
-        return ("'" + t + "'") in raw or t.replace("\\$", "$").replace("$", "\\$") in raw
-    _unres = [t for t in flag_value(argv, ["--title", "-t", "--body", "-b"]) if re.search(r"\$\{?[A-Za-z_]", t) and not _literal(t)]
-    if _unres:
-        return retry("%s is PUBLIC and the pull request title/body contains an unexpanded variable, so its text cannot be scanned. Write the expanded text out (for a body: a quoted heredoc or --body-file); a `$` that is meant literally goes in single quotes." % (got or "the base repository"))
-    for f in flag_value(argv, ["--body-file", "-F", "--template", "-T"]):   # a template file becomes the start of the body
-        if f == "-" or f in ("/dev/stdin", "/dev/tty") or re.match(r"^/(?:dev|proc/self)/fd/\d+$", f):
-            if not HEREDOCS: unread.append("standard input")
-            continue
-        p = os.path.join(act["cwd"], expand(f.replace("$HOME", HOME).replace("${HOME}", HOME)))
-        if "$" in p:
-            return retry("%s is PUBLIC and the pull request body file path %s contains a variable, so the file cannot be read and scanned. Name the file by a literal path." % (got or "the base repository", trunc(f, 30)))
-        try:
-            _st = os.stat(p)
-            if not stat.S_ISREG(_st.st_mode) or _st.st_size > (1 << 20): unread.append(trunc(f, 30)); continue   # a FIFO or device could block the hook; a file over 1 MiB would be scanned only in part
-            texts.append(open(p, encoding="utf-8", errors="replace").read(1 << 20))
-        except OSError: unread.append(trunc(f, 30))
-    if unread:
-        return ["%s is PUBLIC and the pull request body source (%s) could not be read, so the body was not scanned." % (got or "the base repository", ", ".join(unread))]
-    if act["pre"]["mutators"]:   # same rule as a push: a state-changing git command earlier in the call changes what would be pushed
-        return retry("%s is PUBLIC and this call runs `git %s` before the pull request, which changes the commits it may push; this guard does not simulate that. Create the pull request in a separate call so it can be checked." % (got or "the base repository", act["pre"]["mutators"][0]))
-    sc = Scanner([])
-    for t in texts:
-        for ln in t.split("\n"): sc.line("pull request text", ln, True)
-    out = []
-    if not known_public(act["public"]): out.append(not_expected(act["public"]))
-    if sc.total:
-        out += report_hits("%s is PUBLIC and the pull request text contains:" % (got or "the base repository"), sc.hits, sc.total, False, sc)
-    # gh pr create pushes the current branch itself when no remote holds it yet, and the push is not a `git push` this hook sees:
-    # scan what no remote ref holds (the same range a push of HEAD would send), so an unpushed secret is asked about here.
-    try:
-        _h, _t, _tr, _sc = scan_range(act, ["HEAD"], None, notall=True)
-    except Exception:   # keep the body hits found above, and ask: an unscanned push must not pass
-        return out + ["%s is PUBLIC and the commits this pull request may push could not be scanned (git failed or timed out)." % (got or "the base repository")]
-    if _t or _tr: out += report_hits("%s is PUBLIC and this pull request may push local commits that no remote holds yet; they contain:" % (got or "the base repository"), _h, _t, _tr, _sc)
-    return out or None
+    slug = host + "/" + (got or nwo or "?")
+    if known_public(slug): return None
+    return [not_expected(slug)]
 
 def handle_repo(act):
     argv = act["argv"]; kind = act["kind"]
