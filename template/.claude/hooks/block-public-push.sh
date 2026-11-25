@@ -11,7 +11,7 @@
 # target is known to be PUBLIC, a failure of this guard asks.
 set -u
 #
-# Why: on 2026-11-21 a session pushed a branch with internal cost formulas to a
+# Why: on 2026-11-21 a session pushed a branch with internal material to a
 # repository that turned out to be public; it was reachable for about 50 minutes.
 # "Check the repository's visibility before every push" lived only in memory and was
 # skipped. This is the check, in code.
