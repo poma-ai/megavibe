@@ -86,7 +86,7 @@ fresh() {
   echo 1806148800 > "$T/now" # 2027-03-27 12:00 UTC
   echo Darwin > "$T/os"
   echo '{ sec = 1806145200, usec = 0 } Sat Mar 27 11:00:00 2027' > "$T/boot"
-  echo 'shutdown  ~  Sat Mar 27 11:30' > "$T/shutdown"
+  echo 'shutdown  ~  Sat Mar 27 11:30 2027' > "$T/shutdown"
   echo normal > "$T/tmux-mode"
   rm -f "$T/write-fail"
 }
@@ -120,7 +120,7 @@ check 'over three intervals reports one gap' '[ "$(count "back after 15 min" "$N
 fresh restart
 record alpha running; record beta running; record finished done; gap; node
 check 'gap line includes duration, last alive, boot, clean shutdown' 'grep -q "back after 120 min (last alive 10:00, boot 11:00, clean shutdown: yes)" "$N/node.log"'
-check 'boot/shutdown read with requested commands' 'grep -qx -- "-n kern.boottime" "$HOME/sysctl.calls" && grep -qx -- "-1 shutdown" "$HOME/last.calls"'
+check 'boot/shutdown read with requested commands' 'grep -qx -- "-n kern.boottime" "$HOME/sysctl.calls" && grep -qx -- "-y -1 shutdown" "$HOME/last.calls"'
 check 'note reuses session check, with vanished name and resume command only for missing active session' 'grep -q "VANISHED (1 of 2)" "$N/restart-note.txt" && grep -q "megavibe node session resume alpha" "$N/restart-note.txt" && ! grep -Eq "beta|finished" "$N/restart-note.txt"'
 check 'note records disabled sync' 'grep -q "Secret sync succeeded since start: no (sync disabled" "$N/restart-note.txt"'
 cp "$N/restart-note.txt" "$T/note"; node
@@ -147,9 +147,9 @@ check 'without node directory no files or peer activity created' '[ ! -e "$N" ] 
 fresh boot
 echo 1806148740 > "$N/last-alive"; echo '{ sec=1806148770, usec=0 }' > "$T/boot"
 echo 'shutdown  ~  Sat Mar 27 11:59:10 2027' > "$T/shutdown"; node
-check 'new boot detects short gap too' 'grep -q "back after 1 min (last alive 11:59, boot 11:59, clean shutdown: yes)" "$N/node.log"'
+check 'new boot detects short gap too' 'grep -q "back after 1 min (last alive 11:59, boot 11:59, clean shutdown: unknown)" "$N/node.log"'
 node; check 'boot detection fires once' '[ "$(count "back after" "$N/node.log")" = 1 ]'
-gap; echo 'shutdown  ~  Sat Mar 27 09:30' > "$T/shutdown"; node
+gap; echo 'shutdown  ~  Sat Mar 27 09:30 2027' > "$T/shutdown"; node
 check 'older shutdown reports no' 'tail -1 "$N/node.log" | grep -q "clean shutdown: no"'
 gap; echo garbage > "$T/shutdown"; echo garbage > "$T/boot"; node
 check 'unparseable metadata is unknown and nonfatal' '[ "$RC" = 0 ] && tail -1 "$N/node.log" | grep -q "boot unknown, clean shutdown: unknown"'
@@ -162,7 +162,38 @@ fresh year
 echo 1798761900 > "$T/now" # 2027-01-01 00:05 UTC
 echo 1798754400 > "$N/last-alive" # 2026-12-31 22:00 UTC
 echo 'shutdown  ~  Thu Dec 31 23:00' > "$T/shutdown"; echo unknown > "$T/boot"; node
-check 'yearless shutdown near New Year uses previous year' 'grep -q "clean shutdown: yes" "$N/node.log"'
+check 'yearless shutdown near New Year stays unknown' 'grep -q "clean shutdown: unknown" "$N/node.log"'
+echo 1798754400 > "$N/last-alive"
+echo 'shutdown  ~  Thu Dec 31 23:00 2026' > "$T/shutdown"; node
+check 'explicit previous year across New Year reports yes' 'tail -1 "$N/node.log" | grep -q "clean shutdown: yes"'
+
+# Minute precision cannot order two events within the same minute, even if seconds appear.
+for scenario in equal late_stamp later_minute earlier_minute yearless_new yearless_old old_year invalid_date invalid_time invalid_seconds bad_year future; do
+  fresh "shutdown-$scenario"
+  gap
+  case "$scenario" in
+    equal) stamp='Sat Mar 27 10:00 2027'; verdict=unknown ;;
+    late_stamp) echo 1806141659 > "$N/last-alive"; stamp='Sat Mar 27 10:00 2027'; verdict=unknown ;;
+    later_minute) echo 1806141659 > "$N/last-alive"; stamp='Sat Mar 27 10:01 2027'; verdict=yes ;;
+    earlier_minute) stamp='Sat Mar 27 09:59 2027'; verdict=no ;;
+    yearless_new) stamp='Sat Mar 27 11:30'; verdict=unknown ;;
+    yearless_old) stamp='Sat Mar 27 09:30'; verdict=unknown ;;
+    old_year) stamp='Fri Mar 27 11:30 2026'; verdict=no ;;
+    invalid_date) stamp='Wed Feb 30 11:30 2027'; verdict=unknown ;;
+    invalid_time) stamp='Sat Mar 27 25:30 2027'; verdict=unknown ;;
+    invalid_seconds) stamp='Sat Mar 27 11:30:99 2027'; verdict=unknown ;;
+    bad_year) stamp='Sat Mar 27 11:30 2027oops'; verdict=unknown ;;
+    future) stamp='Sun Mar 28 11:30 2027'; verdict=unknown ;;
+  esac
+  printf 'shutdown  ~  %s\n' "$stamp" > "$T/shutdown"; node
+  check "shutdown $scenario reports $verdict" '[ "$RC" = 0 ] && grep -q "clean shutdown: $verdict)" "$N/node.log"'
+done
+fresh history_failure; gap
+cp "$B/last" "$B/last.saved"
+printf '#!/bin/bash\ncat "$FIXTURE/shutdown"\nexit 1\n' > "$B/last"; node
+check 'failed history command cannot yield a clean verdict from partial output' 'grep -q "clean shutdown: unknown" "$N/node.log"'
+mv "$B/last.saved" "$B/last"
+
 fresh linux; echo Linux > "$T/os"; gap; node
 check 'non-macOS reports unknown without querying boot/shutdown' '[ "$RC" = 0 ] && grep -q "boot unknown, clean shutdown: unknown" "$N/node.log" && [ ! -e "$HOME/sysctl.calls" ] && [ ! -e "$HOME/last.calls" ]'
 fresh malformed; echo bad > "$N/last-alive"; node
@@ -222,6 +253,21 @@ echo Darwin > "$T/os"; echo 'NODE_PEERS=missing=spare.example' > "$N/node.conf"
 before=$(wc -l < "$HOME/notifications"); node
 check 'missing osascript silently skips notifications, still saves state' '[ "$RC" = 0 ] && [ "$(cat "$N/.peer-missing")" = unreachable ] && [ "$(wc -l < "$HOME/notifications")" = "$before" ] && [ ! -s "$HOME/stderr" ]'
 unset -f command
+# Duplicate names keep the first address/state, including case-only duplicates.
+for scenario in exact mixed; do
+  duplicate=studio; [ "$scenario" != mixed ] || duplicate=STUDIO
+  fresh "duplicate-$scenario"
+  echo "NODE_PEERS=studio=first.example $duplicate=later.example,192.0.2.11 $duplicate=third.example spare=other.example" > "$N/node.conf"
+  echo up > "$T/first.example"; echo locked > "$T/later.example"
+  echo refuse > "$T/third.example"; echo up > "$T/other.example"
+  node; node
+  check "duplicate $duplicate uses only the first entry and still checks other peers" '[ "$(cat "$N/.peer-studio")" = up ] && [ "$(cat "$N/.peer-spare")" = up ] && [ "$(count "first.example " "$HOME/connects")" = 2 ] && [ "$(count "other.example " "$HOME/connects")" = 2 ] && ! grep -Eq "later.example|third.example|192.0.2.11" "$HOME/connects"'
+  check "duplicate $duplicate creates one state file per name and no repeated notifications" '[ "$(find "$N" -name ".peer-*" | wc -l | tr -d " ")" = 2 ] && [ "$(count "display notification" "$HOME/notifications")" = 2 ]'
+  check "duplicate $duplicate logs its name once across entries and runs" '[ "$(count "node.conf: duplicate NODE_PEERS name $duplicate; using the first entry" "$N/node.log")" = 1 ]'
+  /usr/bin/touch -t 202001010000 "$N/.once-peer-duplicate-studio"; node
+  check "duplicate $duplicate logs again after hourly limit expires" '[ "$(count "node.conf: duplicate NODE_PEERS name $duplicate; using the first entry" "$N/node.log")" = 2 ] && [ "$(count "display notification" "$HOME/notifications")" = 2 ]'
+done
+
 fresh timeout
 echo 'NODE_PEERS=studio=studio.example,192.0.2.10' > "$N/node.conf"
 echo timeout > "$T/studio.example"; echo up > "$T/192.0.2.10"; start=$SECONDS; node

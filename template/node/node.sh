@@ -72,21 +72,27 @@ fi
 if [[ $NOW =~ ^[1-9][0-9]{0,10}$ ]]; then
   if [ -n "$LAST" ] && { [ $((NOW - LAST)) -gt 900 ] || [ "${BOOT:-0}" -gt "$LAST" ]; }; then
     CLEAN=unknown
-    if [ "$OS" = Darwin ]; then
-      # last's usual display has no year. Infer the most recent occurrence, including New Year.
-      SHUTDOWN=$(LC_ALL=C bounded 2 last -1 shutdown 2>/dev/null 9>&- | perl -MTime::Local=timelocal -e '
+    if [ "$OS" = Darwin ] && HISTORY=$(LC_ALL=C bounded 2 last -y -1 shutdown 2>/dev/null 9>&-); then
+      # Request the year; missing/unparseable history cannot establish a shutdown date.
+      SHUTDOWN=$(printf '%s\n' "$HISTORY" | perl -MTime::Local=timelocal -e '
         my $now = shift; my %mon; @mon{qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)} = (0..11);
         while (<STDIN>) {
-          next unless /^shutdown\s+.*?\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w{3})\s+(\d{1,2})\s+(\d\d):(\d\d)(?::(\d\d))?(?:\s+(\d{4})\b)?/;
+          next unless /^shutdown\s/;
+          last unless /^shutdown\s+.*?\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\w{3})\s+(\d{1,2})\s+(\d\d):(\d\d)(?::(\d\d))?\s+(\d{4})(?=\s|$)/;
           my ($m,$d,$h,$min,$sec,$year) = ($1,$2,$3,$4,$5 || 0,$6);
           last unless exists $mon{$m};
-          my $y = $year || (localtime($now))[5] + 1900;
-          my $t = eval { timelocal($sec,$min,$h,$d,$mon{$m},$y) };
-          if (defined $t && !$year && $t > $now) { $t = eval { timelocal($sec,$min,$h,$d,$mon{$m},$y-1) }; }
-          print $t if defined $t && $t <= $now; last;
+          my $t = eval { timelocal($sec,$min,$h,$d,$mon{$m},$year) };
+          last unless defined $t && $t <= $now;
+          my @date = localtime($t);
+          last unless $date[0] == $sec && $date[1] == $min && $date[2] == $h
+            && $date[3] == $d && $date[4] == $mon{$m} && $date[5] + 1900 == $year;
+          print $t; last;
         }' "$NOW" 2>/dev/null)
       if [[ $SHUTDOWN =~ ^[1-9][0-9]{0,10}$ ]]; then
-        CLEAN=no; [ "$SHUTDOWN" -le "$LAST" ] || CLEAN=yes
+        # last reports minutes: events in the same minute cannot be ordered.
+        # Its newest shutdown being earlier rules out any shutdown at/after LAST.
+        if [ $((SHUTDOWN / 60)) -gt $((LAST / 60)) ]; then CLEAN=yes
+        elif [ $((SHUTDOWN / 60)) -lt $((LAST / 60)) ]; then CLEAN=no; fi
       fi
     fi
     RESTART="back after $(( (NOW - LAST) / 60 )) min (last alive $(hhmm "$LAST"), boot $(if [ -n "$BOOT" ]; then hhmm "$BOOT"; else printf unknown; fi), clean shutdown: $CLEAN)"
@@ -151,10 +157,17 @@ peer_state() {
   ' "$1" 2>/dev/null 9>&- </dev/null
 }
 PEERS=$(conf NODE_PEERS "" '[A-Za-z0-9=.,: _-]*')
+SEEN_PEERS='|'
 for PEER in $PEERS; do
   # Safe filenames and arguments; a bad entry cannot prevent checking the other peers.
   [[ $PEER =~ ^([A-Za-z0-9][A-Za-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9.:-]*)(,([A-Za-z0-9][A-Za-z0-9.:-]*))?$ ]] || { log_once peers "node.conf: unusable NODE_PEERS entry"; continue; }
   PN=${BASH_REMATCH[1]}; HOST=${BASH_REMATCH[2]}; FALLBACK=${BASH_REMATCH[4]}
+  PN_KEY=$(printf '%s' "$PN" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  if [[ $SEEN_PEERS == *"|$PN_KEY|"* ]]; then
+    log_once "peer-duplicate-$PN_KEY" "node.conf: duplicate NODE_PEERS name $PN; using the first entry"
+    continue
+  fi
+  SEEN_PEERS="$SEEN_PEERS$PN_KEY|"
   STATE=$(peer_state "$HOST") || STATE=""
   if [ -z "$STATE" ] && [ -n "$FALLBACK" ]; then STATE=$(peer_state "$FALLBACK") || STATE=""; fi
   STATE=${STATE:-unreachable}
