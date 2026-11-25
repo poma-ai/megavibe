@@ -3063,7 +3063,11 @@ if len(rows) > 40:
 for row in rows:
     print(row)
 if LOCAL:
-    r = reasons(without_container_execs(ORIG) if REMOTE else ORIG)
+    # Only when nothing deleting is left outside the container commands: a local delete next to
+    # one keeps the whole-text check (the container's shell word may be what made it readable).
+    stripped = without_container_execs(ORIG) if REMOTE else ORIG
+    if stripped != ORIG and (re.search(RM_WORD, stripped) or re.search(r"-delete\b|\bunlink\b|\brmdir\b|\bshred\b", stripped)): stripped = ORIG
+    r = reasons(stripped)
     if r:
         print("L\t" + clean(r, 400))
 PY

@@ -64,6 +64,10 @@ passes "kubectl exec sh -c grep" "kubectl -n staging exec mypod -- sh -c 'grep -
 passes "kubectl get pods" "kubectl -n staging get pods"
 passes "compose exec ls" "docker compose exec app ls"
 passes "text mentioning exec and rm" "git commit -m 'docker exec web rm: note'"
+blocks "a local quoted rm next to a container command stays blocked" "docker exec web sh -c 'ls'; echo \"\$(rm -rf /local)\""
+blocks "a local sh -c rm after a container command stays blocked" "docker exec web ls; sh -c \"rm -r /local\""
+passes "docker exec ls before a pipe" "docker exec web ls | grep rm"
+asks "container delete after sudo" "sudo docker exec web rm /x" "/x"
 # the kubectl production guard keeps precedence
 blocks "kubectl prod exec stays blocked" "kubectl -n prod exec mypod -- rm -rf /data"
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]
