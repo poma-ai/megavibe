@@ -79,6 +79,25 @@ That's it. Claude now remembers everything you work on together. Run `megavibe` 
 
 Every session automatically has **Remote Control** enabled — you can connect from your phone via the Claude app at any time (see [Remote Control](#remote-control) below).
 
+Launcher commands:
+
+```bash
+megavibe --help       # launcher commands and options (also -h or help)
+megavibe --version    # installed commit, or unknown (also -V or version)
+```
+
+Help and version work only as the first argument and exit without setup, updates,
+project changes or starting Claude. The version comes from `$MEGAVIBE_HOME/version`
+(default `~/.megavibe/version`), shortened to eight characters, with a date if the
+record includes one. Other arguments pass through to Claude Code, except for the
+launcher's own commands/options and a lone unknown subcommand; see `claude --help`
+for Claude's options. For example, `megavibe --model sonnet --help` forwards
+`--help` to Claude after the launcher's normal project setup.
+
+The launcher refuses to bootstrap the install directory itself (`$MEGAVIBE_HOME`,
+default `~/.megavibe`). Commands that do not bootstrap, including help, version,
+update and node, still work there.
+
 ---
 
 ## What Does It Actually Do?

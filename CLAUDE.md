@@ -6,7 +6,7 @@ This is the **meta-project**: the multi-agent orchestration framework itself. Th
 
 Megavibe is a bootstrapper + protocol for AI-assisted development. It is NOT a software application — it's config, shell scripts, and markdown that get deployed _onto_ other projects. The core thesis: externalize all context to files, regenerate working context from the full log via AI subcontractors (Gemini or Codex, with automatic fallback), never rely on lossy compaction.
 
-**There is no build step, no test suite, no package.json.** Verification is manual: run the scripts, inspect the output, confirm idempotency.
+**There is no build step or package.json.** Shell regression tests live in `tests/`; run the tests relevant to a change, inspect the output, and confirm idempotency where applicable.
 
 ## File map
 
