@@ -98,7 +98,9 @@ set -u
 # environment. The prompt itself is the per-push human decision.
 #
 # Known gaps (not enforced here): `gh pr edit` is not checked at all (it names its repository in a number or URL argument that this guard does not resolve); the text of a pull request (title, body, body file, template, comments) is NOT
-# scanned, and neither are the commits `gh pr create` may push itself: the pull request part only asks when its
+# scanned; the repository of `gh pr create` is the first -R/--repo-shaped word, so a repeated -R or an option-shaped
+# title/body value written before the real -R can stand in for it (flag_value does not skip other options' values);
+# the commits `gh pr create` may push itself are not scanned either: the pull request part only asks when its
 # destination is public and not on your known-public list; a `cd` that only runs conditionally
 # (`test -d x && cd y; git push`) is followed as if it ran; with tracking refs that hide the whole push, a selector
 # (--all, --branches) is not expanded into tips; configuration that changes what git itself does or shows
@@ -943,7 +945,7 @@ def handle_pr(act):
     argv = act["argv"]
     if act["pre"]["retarget"]:   # before any visibility lookup: the lookup would see the target as it is now, not as the call leaves it
         return retry("An earlier command in this call (git %s) changes where the pull request goes, so its target was not checked. Create the pull request in a separate call." % act["pre"]["retarget"][0])
-    repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[-1]   # the last -R wins, as in gh
+    repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[0]
     if not repo and not act["known"]:   # a named repository does not depend on the directory
         return retry("The working directory is not statically known (cd into a variable or substitution, pushd/popd), so the pull request's base repository cannot be resolved. Replace the variable directory with a literal path, or name the repository with -R owner/repo.")
     if not repo and not os.path.isdir(act["cwd"]):

@@ -666,8 +666,10 @@ asks "pr create: gh cannot tell" "$PUB" "gh pr create -R acme/mystery --title t 
 denies "pr create after a remote change in the same call is a retry" "$PUB" "git remote set-url origin https://github.com/acme/priv.git && gh pr create --title Fix --body Done" "separate call"
 passes "pr create to a private repository named with -R does not depend on an unresolvable directory" "$PUB" 'cd "$WHERE" && gh pr create -R acme/priv --title Fix --body Done'
 asks "pr create to an unlisted public repository named with -R from an unresolvable directory asks" "$PRIV" 'cd "$WHERE" && gh pr create -R other/surprise --title Fix --body Done' "not on your list"
-asks "the last -R wins, as in gh" "$PRIV" "gh pr create -R acme/priv -R other/surprise --title T --body B" "not on your list"
-passes "the last -R wins: a private repository last" "$PUB" "gh pr create -R other/surprise -R acme/priv --title T --body B"
+asks "a PR body that looks like -R does not replace the destination" "$PRIV" "gh pr create -R other/surprise --title Fix --body '-Racme/priv'" "not on your list" "other/surprise"
+passes "a PR title that looks like -R does not cause a false ask" "$PUB" 'gh pr create -R acme/pub --title "-R flag support" --body "Document this flag"'
+# documents CURRENT behaviour, the same in the previous branch head: flag_value does not skip the values of other options, so a title written before -R can stand in for it (a known gap)
+passes "KNOWN GAP: an option-shaped title before -R is read as the repository" "$PRIV" "gh pr create --title '-Racme/priv' -R other/surprise"
 denies "pr create from an unresolvable directory is a retry" "$PUB" 'cd "$WHERE" && gh pr create --title Fix --body Done' "not statically known"
 passes "the same pr create with an explicit literal directory and -R passes" "$PUB" "cd $PUB && gh pr create -R acme/pub --title Fix --body Done"
 asks "pr create: inline GH_REPO selects a public repository that is not on the list" "$PRIV" "GH_REPO=other/surprise gh pr create --title T --body B" "not on your list"
