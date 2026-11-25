@@ -102,11 +102,20 @@
         ]
       },
       {
-        "matcher": "startup|resume",
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
             "command": ".claude/hooks/on-session-start.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${MEGAVIBE_RESTART_PICKUP:-}\" ] || exit 0; exec .claude/hooks/on-session-start.sh"
           }
         ]
       },

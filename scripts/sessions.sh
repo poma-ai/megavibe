@@ -57,9 +57,8 @@ for f in "$REG"/*.json; do
     [ -z "$live_start" ] || [ "$live_start" = "$ps_start" ] || continue
     [ "$live_start" != "$ps_start" ] || verified=true
   fi
-  line=$(jq -c --argjson fp "$pid" 'select(type == "object" and .pid == $fp and (.sessionId | type) == "string")' "$f" 2>/dev/null) || line=""
+  line=$(jq -c --argjson fp "$pid" --argjson v "$verified" 'select(type == "object" and .pid == $fp and (.sessionId | type) == "string") | . + {processVerified: $v}' "$f" 2>/dev/null) || line=""
   if [ -n "$line" ]; then
-    line=$(printf '%s' "$line" | jq -c --argjson v "$verified" '. + {processVerified: $v}')
     regs+="$line"$'\n'
     if [ -f "$LAUNCHES/$pid.json" ]; then
       rec=$(jq -c --argjson fp "$pid" 'select(type == "object" and .pid == $fp and (.startedAt | type) == "number")' "$LAUNCHES/$pid.json" 2>/dev/null) || rec=""

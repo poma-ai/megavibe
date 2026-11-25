@@ -323,8 +323,9 @@ expand_hook_commands() {
       then .command = $runner + "\"" + $root + .command + "\""
       else . end
     )
-    | walk(if type == "object" and .command? and (.command | startswith(".claude/hooks/"))
-           then .command = "\"" + $root + .command + "\"" else . end)' "$@"
+    | walk(if type == "object" and .command?
+           then .command |= sub("(?<hook>\\.claude/hooks/[A-Za-z0-9._-]+\\.sh)$"; "\"" + $root + .hook + "\"")
+           else . end)' "$@"
 }
 
 # --- Merge hooks into .claude/settings.json (first time only) ---

@@ -215,13 +215,7 @@ chmod 700 "$dir"
 notes=''
 if [ -f "$file" ]; then
   notes=$(sed -n '/^Model notes (purpose, scheduled prompts, monitors, servers, check\/restart commands):$/,$p' "$file" | sed '1d')
-  # Retired generations are evidence only and never candidates for reminders.
-  archive="$dir/restart-handover.$(date +%s).$$"
-  chmod 600 "$file"
-  mv "$file" "$archive.txt"
-  if [ -f "$status" ]; then mv "$status" "$archive.status"; else printf 'not-restarted\n' > "$archive.status"; fi
 fi
-printf 'not-restarted\n' > "$status"
 
 # A new request must not attribute detached processes from a cancelled request.
 if [ "$mode" = request ]; then rm -f "$dir/restart-processes.json"; fi
@@ -270,7 +264,17 @@ mv "$dir/restart-processes.json.tmp.$$" "$dir/restart-processes.json"
   printf '\nDetached jobs not observed during this request cannot be attributed safely. Verify every PID and start time on pickup.\nModel notes may be carried from an earlier restart; recheck their applicability.\n\nModel notes (purpose, scheduled prompts, monitors, servers, check/restart commands):\n'
   [ -z "$notes" ] || printf '%s\n' "$notes"
 } > "$file.tmp.$$"
+# Build the complete replacement before retiring the current handover. Failed
+# captures leave its authored notes available to the next request.
+if [ -f "$file" ]; then
+  # Retired generations are evidence only and never candidates for reminders.
+  archive="$dir/restart-handover.$(date +%s).$$"
+  chmod 600 "$file"
+  cp "$file" "$archive.txt"
+  if [ -f "$status" ]; then cp "$status" "$archive.status"; else printf 'not-restarted\n' > "$archive.status"; fi
+fi
 mv "$file.tmp.$$" "$file"
+printf 'not-restarted\n' > "$status"
 # Publish confirmation only after the entire exit capture succeeded. A failed
 # capture leaves the request armed, so complete cannot authorize a replacement.
 if [ "$mode" = request ]; then

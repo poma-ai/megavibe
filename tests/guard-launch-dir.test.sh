@@ -136,9 +136,10 @@ settings_match() {
     def commands: [.hooks | to_entries[] | .key as $event | .value[] |
       .hooks[] | [$event, .command]];
     commands == ($template[0] | commands | map(
-      .[1] as $path |
+      (.[1] | capture("^(?<gate>.*?)(?<path>\\.claude/hooks/[A-Za-z0-9._-]+\\.sh)$")) as $hook |
+      $hook.path as $path |
       .[1] = ((if .[0] == "PreToolUse" and ($path | test("/(block-dangerous-bash|block-public-push|rm-to-trash|enforce-pr-format|block-stray-working-context|block-permission-hooks)\\.sh$"))
-               then $runner else "" end) + "\"" + $root + "/" + $path + "\"")
+               then $runner else $hook.gate end) + "\"" + $root + "/" + $path + "\"")
     ))' "$project/.claude/settings.json" >/dev/null
 }
 runner='"$HOME/.megavibe/scripts/guard-run.sh" '

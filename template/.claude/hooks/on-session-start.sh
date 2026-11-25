@@ -27,11 +27,13 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // ""')
 # Restart pick-up precedes the fresh-project gate and also runs on resume.
 case "$SOURCE" in
   startup|resume)
-    RESTART_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
-    RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
-    if [ -n "${MEGAVIBE_RESTART_PICKUP:-}" ] && [ -f "$RH" ] &&
-       [[ "$RESTART_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
-      if bash "$RH" show "$RESTART_SID"; then exit 0; fi
+    if [ -n "${MEGAVIBE_RESTART_PICKUP:-}" ]; then
+      RESTART_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
+      RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
+      if [ -f "$RH" ] &&
+         [[ "$RESTART_SID" =~ ^[A-Za-z0-9-]{1,64}$ ]]; then
+        if bash "$RH" show "$RESTART_SID"; then exit 0; fi
+      fi
     fi
     ;;
 esac

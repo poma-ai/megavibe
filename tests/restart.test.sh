@@ -258,7 +258,7 @@ for branch in fresh resume; do
   check "$branch launcher branch records and resumes exact conversation" '[ "$(cat "$T/exec-args")" = "$(printf "%s\n" --resume exact-conversation)" ] && [ "$(cat "$T/recorded")" = recorded ]'
 done
 check 'both installer paths ship restart helpers' 'grep -q '\''"$SCRIPT_DIR/scripts/restart.sh" "$SCRIPT_DIR/scripts/restart-all.sh"'\'' "$REPO/setup.sh" && grep -q '\''"$REPO_DIR/scripts/restart.sh" "$REPO_DIR/scripts/restart-all.sh"'\'' "$REPO/megavibe"'
-check 'hook registered for resume as well as startup' 'jq -e '\''.hooks.SessionStart[] | select(any(.hooks[]; .command == ".claude/hooks/on-session-start.sh")) | .matcher == "startup|resume"'\'' "$REPO/template/.claude/settings.json" >/dev/null'
+check 'hook registered for resume as well as startup' 'jq -e '\''[.hooks.SessionStart[] | select(any(.hooks[]; .command | contains("on-session-start.sh"))) | .matcher] | sort == ["resume", "startup"]'\'' "$REPO/template/.claude/settings.json" >/dev/null'
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
 bash "$REPO/tests/restart-lifecycle.test.sh"

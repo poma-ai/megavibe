@@ -1,5 +1,5 @@
 #!/bin/bash
-# Each review-2 failing sequence, using scratch HOME and simulated ancestry.
+# Review regressions, using scratch HOME and simulated ancestry.
 # RESTART_TEST_REPO can point at an untouched HEAD copy to verify regressions.
 set -euo pipefail
 REPO=${RESTART_TEST_REPO:-$(cd "$(dirname "$0")/.." && pwd -P)}
@@ -57,10 +57,22 @@ rc=0; complete absent > "$T/out" 2>&1 || rc=$?
 check 'P1 complete fails without exit confirmation' '[ "$rc" != 0 ] && [ -s .agent/sessions/absent/restart-handover.txt ]'
 check 'P1 rejection is one line with a manual command' '[ "$(wc -l < "$T/out" | tr -d " ")" = 1 ] && grep -q "megavibe --resume absent" "$T/out"'
 arm failed-capture
+echo 'Purpose: re-arm the hourly build monitor.' >> .agent/sessions/failed-capture/restart-handover.txt
+cp .agent/sessions/failed-capture/restart-handover.txt "$T/notes-before"
 rc=0; FAIL_SCAN=1 helper capture failed-capture 100 > "$T/out" 2>&1 || rc=$?
 check 'P1 failed process capture cannot confirm exit' '[ "$rc" != 0 ]'
+check 'failed capture keeps the current handover and notes intact' 'cmp -s "$T/notes-before" .agent/sessions/failed-capture/restart-handover.txt'
 rc=0; complete failed-capture > "$T/out" 2>&1 || rc=$?
 check 'P1 complete rejects a failed capture and retains evidence' '[ "$rc" != 0 ] && find .agent/sessions/failed-capture -name "restart-handover*.txt" | read -r _'
+out=$(start failed-capture)
+check 'manual resume after failed capture has no automatic reminder' '[ -z "$out" ]'
+arm failed-capture
+check 'second request carries notes from the failed capture' 'grep -q "Purpose: re-arm the hourly build monitor." .agent/sessions/failed-capture/restart-handover.txt'
+helper capture failed-capture 100
+complete failed-capture
+pickup failed-capture
+out=$(start failed-capture)
+check 'second restart reminder includes notes from the failed capture' 'printf "%s" "$out" | jq -e '\''.hookSpecificOutput.additionalContext | contains("Purpose: re-arm the hourly build monitor.")'\'' >/dev/null'
 arm bound
 helper capture bound 100
 for mismatch in generation wrapper pid session; do
@@ -195,5 +207,50 @@ chmod +x "$T/bin/jq"
 printf '{"hook_event_name":"Stop","session_id":"ordinary","stop_hook_active":true,"background_tasks":[]}' | MEGAVIBE_BG_WATCH=0 MEGAVIBE_DISK_WATCH=0 bash "$REPO/template/.claude/hooks/watch-background.sh"
 check 'P2 ordinary disabled Stop creates no restart file' '[ ! -e .agent/LOGS/.restart-tasks.ordinary.json ] && [ ! -d .agent/sessions/ordinary ]'
 check 'P2 ordinary disabled Stop keeps its single existing JSON parse' '[ "$(wc -l < "$T/ordinary-jq" | tr -d " ")" = 1 ]'
+# Compare the changed startup/resume registration and registry reader to main,
+# counting actual jq processes (settings extraction is outside the count).
+unset MEGAVIBE_RESTART_PICKUP
+mkdir -p "$T/main" .claude/hooks
+git -C "$REPO" show main:template/.claude/hooks/on-session-start.sh > "$T/main/start.sh"
+git -C "$REPO" show main:template/.claude/settings.json > "$T/main/settings.json"
+git -C "$REPO" show main:scripts/sessions.sh > "$T/main/sessions.sh"
+cat > .claude/hooks/on-session-start.sh <<'HOOK'
+#!/bin/bash
+echo invoked >> "$FIXTURE/start-invocations"
+exec bash "$START_HOOK"
+HOOK
+chmod +x .claude/hooks/on-session-start.sh
+for source in startup resume; do
+  for version in main current; do
+    if [ "$version" = main ]; then
+      export START_HOOK="$T/main/start.sh"
+      settings="$T/main/settings.json"
+    else
+      export START_HOOK="$REPO/template/.claude/hooks/on-session-start.sh"
+      settings="$REPO/template/.claude/settings.json"
+    fi
+    commands=$("$REAL_JQ" -r --arg source "$source" '.hooks.SessionStart[] | .matcher as $m | select($source | test("^(" + $m + ")$")) | .hooks[].command | select(contains("on-session-start.sh"))' "$settings")
+    : > "$T/ordinary-jq"; : > "$T/start-invocations"
+    while IFS= read -r command; do
+      [ -n "$command" ] || continue
+      printf '{"source":"%s","session_id":"ordinary"}' "$source" | bash -c "$command" > "$T/out"
+    done <<< "$commands"
+    wc -l < "$T/ordinary-jq" | tr -d ' ' > "$T/$version-count"
+  done
+  check "ordinary $source adds no jq processes compared with main" 'cmp -s "$T/main-count" "$T/current-count"'
+done
+check 'ordinary resume gate never invokes the startup hook' '[ ! -s "$T/start-invocations" ]'
+MEGAVIBE_RESTART_PICKUP=fixture bash -c "$commands" <<<'{"source":"resume","session_id":"ordinary"}' > "$T/out"
+check 'resume gate invokes the startup hook when pickup is pending' '[ -s "$T/start-invocations" ]'
+rm -f "$CLAUDE_CONFIG_DIR/sessions/200.json"
+printf '{"pid":100,"sessionId":"ordinary"}' > "$CLAUDE_CONFIG_DIR/sessions/100.json"
+printf '{"pid":%s,"sessionId":"another"}' "$$" > "$CLAUDE_CONFIG_DIR/sessions/$$.json"
+for version in main current; do
+  if [ "$version" = main ]; then script="$T/main/sessions.sh"; else script="$REPO/scripts/sessions.sh"; fi
+  : > "$T/ordinary-jq"
+  OWNER_ALIVE=1 bash "$script" --status > "$T/out"
+  wc -l < "$T/ordinary-jq" | tr -d ' ' > "$T/$version-count"
+done
+check 'session status adds no jq processes per registry entry compared with main' 'cmp -s "$T/main-count" "$T/current-count" && [ "$(cat "$T/current-count")" = 6 ]'
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
