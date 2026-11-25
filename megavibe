@@ -19,6 +19,73 @@ set -euo pipefail
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 LAUNCH_PROJECT="$PWD"
 
+# Informational commands must exit before setup, syncs or update checks.
+# Only the first argument belongs to this dispatch; later flags go to Claude.
+case "${1:-}" in
+  --help|-h|help)
+    cat <<'EOF'
+Usage: megavibe [subcommand | options | claude-args...]
+
+With no arguments, bootstrap the current project and launch Claude Code.
+
+Subcommands:
+  help                  Show this help (also --help, -h)
+  version               Show the installed version (also --version, -V)
+  update [--check]       Install updates, or check for them
+  node ...              Manage the opt-in node and Personal Assistant (macOS)
+  assistant             Attach to the persistent Personal Assistant
+  personal              Alias for assistant
+  worktree [list|remove NAME|NAME [BRANCH]]  List, remove or create a worktree
+  reviewers [list|set [--project] REVIEWER...]  Show or choose reviewers
+  memory [list|set KEY VALUE|unset KEY]  Show or change shared-memory settings
+  usage probe|forecast|sprint  Probe usage, forecast it or show sprint advice
+  route                 Preview subscription-first model/effort routing
+  auth [HOURS]          Check how long the Claude login lasts
+  tick ...              Run one unattended watch tick
+  sessions ...          Show live Claude sessions and their parent tree
+  doctor                Diagnose split Claude memory stores
+  trash-greenlight      Install managed Trash permission rules (asks for sudo)
+  remote                Removed; print Telegram remote cleanup instructions
+  nondev                Removed; print the Megawork migration notice
+  megawork              Removed; print the Megawork migration notice
+
+Launcher options:
+  --help, -h            Show this help; first argument only
+  --version, -V         Show the installed version; first argument only
+  --no-normalize        Stay in this directory instead of the git repo root
+  --parallel-branch NAME  Choose a parallel branch (also --parallel-branch=NAME)
+  --stash               Stash tracked changes before creating a parallel worktree
+  --no-stash            Do not stash tracked changes for a parallel worktree
+
+Claude options also recognized by the launcher (forwarded unchanged):
+  --model MODEL         Choose the model; disable automatic routing
+  --effort LEVEL        Choose the effort; disable automatic routing
+  --settings SETTINGS   Use Claude settings; disable automatic routing
+  --continue, -c        Continue a conversation; keep its model
+  --resume, -r          Resume a conversation; keep its model (--resume allows a live lock)
+  --from-pr PR          Resume from a PR; keep its model
+  --fork-session        Fork a conversation; keep its model
+  --session-id ID       Use a session ID; keep its model
+
+Parallel options apply only when another session is active in the checkout.
+With an explicit branch, the default is not to stash.
+Any other argument is passed through to Claude Code; its own help is claude --help.
+A lone unknown subcommand is rejected; use a multi-word initial prompt.
+EOF
+    exit 0
+    ;;
+  --version|-V|version)
+    # The install record is plain text: commit, optionally followed by a date.
+    VERSION_COMMIT="" VERSION_DATE=""
+    if [ -f "$MEGAVIBE_HOME/version" ]; then
+      read -r VERSION_COMMIT VERSION_DATE < "$MEGAVIBE_HOME/version" || true
+    fi
+    VERSION_COMMIT="${VERSION_COMMIT:-unknown}"
+    printf 'megavibe %s%s\n' "${VERSION_COMMIT:0:8}" "${VERSION_DATE:+ ($VERSION_DATE)}"
+    exit 0
+    ;;
+esac
+
 # MEGAVIBE_PARENT_SESSION (which session launched this one) is read once and removed from the
 # environment: claude and every tool under it inherit the wrapper's environment and would hand it
 # to a launch of their own, linking a grandchild to its grandparent. It is put back only for the
@@ -1747,6 +1814,16 @@ fi
 
 # ─── Pre-flight: check setup ────────────────────────────────────────
 
+refuse_install_project() {
+  if [ . -ef "$MEGAVIBE_HOME" ]; then
+    echo "megavibe: refusing to bootstrap the Megavibe install directory; cd into a project first." >&2
+    exit 1
+  fi
+}
+# All non-bootstrapping subcommands have already dispatched. Refuse before
+# setup or the update check can change the install directory.
+refuse_install_project
+
 if [ ! -f "$MEGAVIBE_HOME/init.sh" ] || ! grep -q "megavibe-v3" "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
   if [ -f "$MEGAVIBE_HOME/setup.sh" ]; then
     # Already deployed — re-run from ~/.megavibe/
@@ -2451,6 +2528,8 @@ if [ -n "${HOME:-}" ] && [ . -ef "$HOME" ]; then
   exit 1
 fi
 
+# Normalization may also have moved a launch from a subdirectory into the install.
+refuse_install_project
 bash "$INIT_SCRIPT" .
 
 # ─── Auth check: subscription required, API key causes rate limits ──
