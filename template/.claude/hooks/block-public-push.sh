@@ -960,6 +960,7 @@ def handle_pr(act):
         return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
     if vis != "PUBLIC": return None
     slug = host + "/" + (got or nwo or "?")
+    act["public"] = slug   # from here on a failure of this guard asks instead of passing
     if known_public(slug): return None
     return [not_expected(slug)]
 

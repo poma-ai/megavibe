@@ -669,6 +669,12 @@ asks "pr edit: gh cannot tell" "$PUB" "gh pr edit 3 -R acme/mystery --title t" "
 denies "pr create after a remote change in the same call is a retry" "$PUB" "git remote set-url origin https://github.com/acme/priv.git && gh pr create --title Fix --body Done" "separate call"
 denies "pr create from an unresolvable directory is a retry" "$PUB" 'cd "$WHERE" && gh pr create --title Fix --body Done' "not statically known"
 passes "the same pr create with an explicit literal directory and -R passes" "$PUB" "cd $PUB && gh pr create -R acme/pub --title Fix --body Done"
+asks "pr create: inline GH_REPO selects a public repository that is not on the list" "$PRIV" "GH_REPO=other/surprise gh pr create --title T --body B" "not on your list"
+asks "pr create: exported GH_REPO selects a public repository that is not on the list" "$PRIV" "export GH_REPO=other/surprise; gh pr create --title T --body B" "not on your list"
+passes "pr create: GH_REPO selecting a private repository passes from a public checkout" "$PUB" "GH_REPO=acme/priv gh pr create --title T --body B"
+asks "pr create: host-qualified -R names a public repository that is not on the list" "$PRIV" "gh pr create -R github.com/other/surprise --title T --body B" "not on your list"
+asks "pr create: -R= form" "$PRIV" "gh pr create -R=other/surprise --title T --body B" "not on your list"
+asks "pr create inside bash -c" "$PRIV" "bash -c 'gh pr create -R other/surprise --title T --body B'" "not on your list"
 printf 'github.com/*\n' > "$KNOWN"
 
 # 10y. An unresolvable --git-dir / --work-tree / -C is never a silent pass.
