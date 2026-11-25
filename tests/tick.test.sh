@@ -179,7 +179,7 @@ case "$1" in
   fail) echo EXAMPLE-command-stdout; echo EXAMPLE-command-stderr >&2; exit 1 ;;
   empty) : ;;
   flood) exec yes EXAMPLE-flood ;;
-  timeout) echo "$$" > "$HOME/key-command.pid"; exec sleep 30 ;;
+  timeout) sleep 30 & echo "$!" > "$HOME/key-command.pid"; wait ;;
 esac
 EOF
 chmod +x "$T/bin/linear-key"

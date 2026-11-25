@@ -350,14 +350,16 @@ linear_key_from_command() {
   # Remove leading zeroes before shell arithmetic (which would read them as octal).
   timeout="${timeout#"${timeout%%[!0]*}"}"
   dir=$(mktemp -d "${TMPDIR:-/tmp}/tick-key.XXXXXX") || return 1
+  set -m   # the command gets its own process group, so a timeout can stop its children too
   (
     umask 077; ulimit -f 8   # a command that prints without end cannot fill the disk
     exec bash -c "$TICK_LINEAR_KEY_CMD" </dev/null >"$dir/key"
   ) 2>/dev/null &
   pid=$!
+  set +m
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$((polls / 10))" -ge "$timeout" ]; then
-      kill -KILL "$pid" 2>/dev/null
+      kill -KILL -- "-$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
       rm -rf "$dir"
       return 1
