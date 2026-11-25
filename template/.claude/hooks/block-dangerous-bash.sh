@@ -200,12 +200,24 @@ esac
 
 _TRASH_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || true)
 _TRASH_CMD=$(printf '%s' "$COMMAND" | tr -d "\"'\\\\[]" | tr '[:upper:]' '[:lower:]')
+_CHECK_TRASH=0
 case "$_TRASH_CMD $(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" in
-  *trash*|*osascript*|*osacompile*)
+  *trash*|*osascript*|*osacompile*) _CHECK_TRASH=1 ;;
+esac
+
+_LAUNCH=''
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" && "${MEGAVIBE_ALLOW_REMOVE_LAUNCH:-}" != 1 ]]; then
+  case "$_TRASH_CMD" in
+    *worktree*remove*)
+      _LAUNCH=$(CDPATH= cd -P -- "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P) || _LAUNCH='' ;;
+  esac
+fi
+
+if [[ "$_CHECK_TRASH" == 1 || -n "$_LAUNCH" ]]; then
     _TV=""
     if command -v python3 &>/dev/null; then
       read -r -d '' _TRASH_PY <<'PY' || true
-import os, re, shlex, sys
+import os, re, shlex, subprocess, sys
 
 CMD = os.environ.get("TR_CMD", "").replace("\\\n", "")
 TR = re.compile(r"\.Trash(es)?(?![A-Za-z0-9_.-])", re.I)
@@ -238,7 +250,7 @@ REDIR = {">", ">>", ">|", ">&", "<", "<<", "<<<", "<&", "<<-"}
 PUNCT = re.compile(r";;|&&|\|\||\|&|>>|>\||<<<|<<-|<<|<&|>&|[;&|()<>]")
 
 
-def nl_split(s):
+def nl_split(s, newline=";"):
     """Newlines outside quotes separate commands; comments end at the newline; quoted text is untouched."""
     out, q, i, n = [], None, 0, len(s)
     while i < n:
@@ -255,7 +267,7 @@ def nl_split(s):
             while i < n and s[i] != "\n": i += 1
             continue
         elif c == "\n":
-            out.append(" ; ")
+            out.append(" " + newline + " ")
         else:
             out.append(c)
         i += 1
@@ -292,8 +304,8 @@ def subst_bodies(s):
     return out
 
 
-def tokens(s):
-    lx = shlex.shlex(nl_split(strip_heredocs(s)), posix=True, punctuation_chars=True)
+def tokens(s, newline=";"):
+    lx = shlex.shlex(nl_split(strip_heredocs(s), newline), posix=True, punctuation_chars=True)
     lx.whitespace_split = True
     lx.commenters = ""
     out = []
@@ -327,7 +339,7 @@ def strip_redirs(t):
     return out
 
 
-def resolve(t):
+def resolve(t, skip_lookups=False):
     i, via = 0, False
     while i < len(t):
         w = t[i]; b = os.path.basename(w)
@@ -338,6 +350,8 @@ def resolve(t):
             i += 1
             posn = 1 if b in ("timeout", "gtimeout", "flock") else 0
             while i < len(t) and (t[i].startswith("-") or ASSIGN.match(t[i]) or (b in ("uv", "poetry", "bundle", "pipx", "pnpm", "yarn", "npm") and t[i] in SUBCMD)):
+                if skip_lookups and b == "command" and re.match(r"^-[A-Za-z]*[vV]", t[i]):
+                    return None, via
                 i += 2 if t[i] in WRAP[b] else 1
             i += posn
             continue
@@ -512,11 +526,58 @@ def analyse(s, st, depth=0):
     return False
 
 
+def worktree_remove(args):
+    value_options = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"}
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in value_options else 1
+    return args[i:i + 2] == ["worktree", "remove"]
+
+
+def linked_worktree(launch):
+    def git_path(flag):
+        path = subprocess.check_output(
+            ["git", "-C", launch, "rev-parse", flag], stderr=subprocess.DEVNULL
+        ).rstrip(b"\n")
+        return os.path.realpath(os.path.join(launch, os.fsdecode(path)))
+
+    try:
+        return git_path("--git-dir") != git_path("--git-common-dir")
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def removes_worktree():
+    newline = "\x01n"
+    toks = tokens(CMD, newline)
+    for pipe in pipelines(";" if t == newline else t for t in toks):
+        if len(pipe) != 1:
+            continue
+        words = strip_redirs(pipe[0])
+        i, _ = resolve(words, skip_lookups=True)
+        if (i is not None and os.path.basename(rs(words[i])) == "git"
+                and worktree_remove(words[i + 1:])):
+            return True
+    return False
+
+
 def osa_text(s):
     s = re.sub(r'"[^"]*"', " ", rs(s))
     if re.search(r"(?<![A-Za-z0-9_])(empty|secure\s*empty)(?![A-Za-z0-9_])|emptyTrash|fndremty|key code 51", s, re.I): return True
     return bool(re.search(r"(?<![A-Za-z0-9_])trash(?![A-Za-z0-9_])", s, re.I) and re.search(r"(?<![A-Za-z0-9_])(delete|remove|erase)(?![A-Za-z0-9_])", s, re.I))
 
+
+launch = os.environ.get("GUARD_LAUNCH")
+if launch:
+    try:
+        remove = removes_worktree()
+    except ValueError:
+        remove = False
+    if remove and linked_worktree(launch):
+        print("LAUNCH_GIT")
+        sys.exit(0)
+if os.environ.get("CHECK_TRASH") != "1":
+    sys.exit(0)
 
 try:
     st = {"vars": set(), "cwd": bool(TR.search(os.environ.get("TR_CWD", ""))), "interp": False, "osa": "", "subst": False, "stack": [], "pa": ""}
@@ -531,9 +592,15 @@ except ValueError:
     bad = TR.search(CMD) and re.search(r"(^|[^A-Za-z0-9_-])(rm|rmtrash|srm|shred|unlink|rmdir|rmtree)([^A-Za-z0-9_-]|$)|-delete|--del", CMD)
     print("BLOCK" if bad or (re.search(r"osascript|osacompile", CMD) and osa_text(CMD)) else "OK")
 PY
-      _TV=$(TR_CMD="$COMMAND" TR_CWD="$_TRASH_CWD" python3 -c "$_TRASH_PY" 2>/dev/null)
+      _TV=$(TR_CMD="$COMMAND" TR_CWD="$_TRASH_CWD" GUARD_LAUNCH="$_LAUNCH" \
+        CHECK_TRASH="$_CHECK_TRASH" python3 -c "$_TRASH_PY" 2>/dev/null)
     fi
-    if [ -z "$_TV" ]; then
+    if [[ "$_TV" == LAUNCH_GIT ]]; then
+      echo "Blocked: git worktree remove from a session launched in a linked worktree." >&2
+      echo "Finish and exit this session, then remove the worktree from another session, or set MEGAVIBE_ALLOW_REMOVE_LAUNCH=1 in the harness environment." >&2
+      exit 2
+    fi
+    if [[ "$_CHECK_TRASH" == 1 && -z "$_TV" ]]; then
       if printf '%s %s' "$_TRASH_CMD" "$(printf '%s' "$_TRASH_CWD" | tr '[:upper:]' '[:lower:]')" | grep -Eq '\.trash' \
          && printf '%s' "$_TRASH_CMD" | grep -Eq '(^|[^[:alnum:]_-])(rm|rmtrash|srm|shred|unlink|rmdir|rmtree|rimraf)([^[:alnum:]_-]|$)|-delete|--del'; then
         _TV=BLOCK
@@ -545,8 +612,7 @@ PY
       echo "Blocked: emptying or deleting from the Trash. It is the only undo for agent deletes. Ask the user to empty it themselves." >&2
       exit 2
     fi
-    ;;
-esac
+fi
 
 # force-push to the trunk branch
 if echo "$COMMAND" | grep -Eqi 'git[[:space:]]+push[[:space:]]+.*--force.*[[:space:]]+(main|master)'; then
