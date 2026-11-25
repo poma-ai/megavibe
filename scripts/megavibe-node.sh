@@ -28,6 +28,11 @@
 # It never stops a session either; it tells the user which one to end.
 set -euo pipefail
 
+# An explicit MEGAVIBE_PARENT_SESSION (set, even empty) is read once into private variables and removed from the
+# environment: tmux copies its client environment into a server it starts, so a leaked value would link every
+# later window on that server to this parent. It reaches a window only through the explicit `env` word below.
+NODE_PARENT_SET="${MEGAVIBE_PARENT_SESSION+x}"; NODE_PARENT="${MEGAVIBE_PARENT_SESSION-}"; unset MEGAVIBE_PARENT_SESSION
+
 MH="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 N="$MH/node"
 M="$MH/personal"
@@ -66,7 +71,7 @@ set_memory() {   # set_memory push|pull|none: exactly one switch file, or none
 start_pa() {   # the same launcher and session as node.sh and `megavibe assistant`
   command -v tmux >/dev/null 2>&1 || die "tmux is required"
   [ -d "$M" ] || die "$M does not exist; run bash setup.sh first"
-  tmux new-session -d -s "$PA_TMUX" -c "$M" env MEGAVIBE_HOME="$MH" "$N/pa-start.sh" 9>&- \
+  tmux new-session -d -s "$PA_TMUX" -c "$M" env MEGAVIBE_HOME="$MH" ${NODE_PARENT_SET:+"MEGAVIBE_PARENT_SESSION=$NODE_PARENT"} "$N/pa-start.sh" 9>&- \
     || die "could not start the PA (tmux session $PA_TMUX)"
 }
 plist_text() {
@@ -496,10 +501,11 @@ node_tmux_session() {
 # window's process). The arguments reach megavibe as they are, no shell in between. The caller records WPID first and stamps the window after (stamp_window), so a window
 # that could not be stamped is still known by its process and shows as UNSEEN, never as absent.
 open_window() {
-  local win="$1" dir="$2" ts out; shift 2
+  local win="$1" dir="$2" ts out parent="${NODE_PARENT_SET:+$NODE_PARENT}"; [ -n "$NODE_PARENT_SET" ] || parent="${CLAUDE_CODE_SESSION_ID:-}"; shift 2
+  [[ $parent =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""   # empty = "no parent" to the wrapper; a set value links this launch to the session running this command (see "Launch records" in README.md)
   ts=$(node_tmux_session)
   tm has-session -t "=$ts" 2>/dev/null || tm new-session -d -s "$ts" -c "$HOME" -n shell || die "cannot create tmux session $ts"
-  out=$(tm new-window -d -P -F '#{window_id} #{pane_pid}' -t "=$ts:" -n "$win" -c "$dir" env MEGAVIBE_HOME="$MH" megavibe --no-normalize "$@") \
+  out=$(tm new-window -d -P -F '#{window_id} #{pane_pid}' -t "=$ts:" -n "$win" -c "$dir" env MEGAVIBE_HOME="$MH" MEGAVIBE_PARENT_SESSION="$parent" megavibe --no-normalize "$@") \
     || die "could not open a tmux window in session $ts"
   WID=${out%% *}; WPID=${out##* }
   [[ $WID =~ ^@[0-9]+$ ]] && [[ $WPID =~ ^[0-9]+$ ]] || die "tmux gave no window id for the new window ($out)"

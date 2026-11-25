@@ -19,6 +19,39 @@ set -euo pipefail
 MEGAVIBE_HOME="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 LAUNCH_PROJECT="$PWD"
 
+# MEGAVIBE_PARENT_SESSION (which session launched this one) is read once and removed from the
+# environment: claude and every tool under it inherit the wrapper's environment and would hand it
+# to a launch of their own, linking a grandchild to its grandparent. It is put back only for the
+# wrapper's own re-exec (restore_launch_parent), which reads it again, and for the `node` and `assistant`
+# dispatch, which hand an explicit value to the window they open through an explicit `env` word.
+capture_launch_parent() {
+  LAUNCH_PARENT_SET="${MEGAVIBE_PARENT_SESSION+x}"
+  LAUNCH_PARENT="${MEGAVIBE_PARENT_SESSION-}"
+  LAUNCH_PPID="${MEGAVIBE_LAUNCH_PPID-}"
+  LAUNCH_PCWD="${MEGAVIBE_LAUNCH_PCWD-}"
+  unset MEGAVIBE_PARENT_SESSION MEGAVIBE_LAUNCH_PPID MEGAVIBE_LAUNCH_PCWD
+}
+# The parent's pid and cwd are resolved from its session id while that is still true and handed to the
+# re-exec with it: a parent that ran /clear in between has a new id, and resolving the old one again
+# would find nothing and make a live parent look ended.
+restore_launch_parent() {
+  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then
+    export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"
+    if [ -n "${LAUNCH_PARENT:-}" ]; then
+      # session_pid is defined further down the file: an early re-exec (the self-update sync) runs before it exists,
+      # and must still forward the pid and cwd resolved at first launch.
+      local pp=""; if declare -F session_pid >/dev/null 2>&1; then pp=$(session_pid "$LAUNCH_PARENT") || pp=""; fi
+      if [[ "$pp" =~ ^[0-9]+$ ]]; then
+        export MEGAVIBE_LAUNCH_PPID="$pp"
+        MEGAVIBE_LAUNCH_PCWD=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions/$pp.json" 2>/dev/null) && export MEGAVIBE_LAUNCH_PCWD || true
+      elif [[ "${LAUNCH_PPID:-}" =~ ^[0-9]+$ ]]; then
+        export MEGAVIBE_LAUNCH_PPID="$LAUNCH_PPID" MEGAVIBE_LAUNCH_PCWD="${LAUNCH_PCWD:-}"
+      fi
+    fi
+  fi
+}
+capture_launch_parent
+
 if [ "${1:-}" = "remote" ]; then
   cat <<'EOF'
 The Telegram remote was removed.
@@ -1087,12 +1120,14 @@ if [ "${1:-}" = "route" ]; then
 fi
 
 # megavibe tick [--name N] [org/repo ...]: one unattended watch tick (scripts/tick.sh);
-# megavibe auth [HOURS]: how long the Claude login lasts (scripts/claude-auth-check.sh).
-if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ]; then
+# megavibe auth [HOURS]: how long the Claude login lasts (scripts/claude-auth-check.sh);
+# megavibe sessions [--orphans]: live Claude sessions as a tree (scripts/sessions.sh).
+if [ "${1:-}" = "tick" ] || [ "${1:-}" = "auth" ] || [ "${1:-}" = "sessions" ]; then
   _sub="$1"; shift
   case "$_sub" in
     tick) _s="$MEGAVIBE_HOME/scripts/tick.sh" ;;
     auth) _s="$MEGAVIBE_HOME/scripts/claude-auth-check.sh" ;;
+    sessions) _s="$MEGAVIBE_HOME/scripts/sessions.sh" ;;
   esac
   [ -f "$_s" ] || { echo "megavibe $_sub: $_s not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
   exec bash "$_s" "$@"
@@ -1568,6 +1603,8 @@ if [ "${1:-}" = "node" ]; then
   _s="$MEGAVIBE_HOME/scripts/megavibe-node.sh"
   [ -f "$_s" ] || _s="$SCRIPT_DIR/scripts/megavibe-node.sh"
   [ -f "$_s" ] || { echo "megavibe node: megavibe-node.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
+  # An explicit parent (set, even empty) crosses the dispatch: capture_launch_parent removed it from the environment.
+  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"; fi
   exec bash "$_s" "$@"
 fi
 
@@ -1601,7 +1638,7 @@ if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
     echo "Starting the personal assistant (first run may take a few seconds)…"
     # Another assistant launch (or the node) may create the session meanwhile; has-session decides below.
     tmux new-session -d -s "$PERSONAL_TMUX" -c "$PERSONAL_DIR" \
-      env MEGAVIBE_HOME="$MEGAVIBE_HOME" bash "$PA_START" \
+      env MEGAVIBE_HOME="$MEGAVIBE_HOME" ${LAUNCH_PARENT_SET:+"MEGAVIBE_PARENT_SESSION=${LAUNCH_PARENT:-}"} bash "$PA_START" \
       2>/dev/null || true
     if ! tmux has-session -t "$PERSONAL_TMUX" 2>/dev/null; then
       echo "Error: could not start the personal assistant (tmux: $PERSONAL_TMUX)."
@@ -1811,6 +1848,7 @@ if [ -n "$REPO_DIR" ]; then
     # Re-exec from the updated copy so the rest of this script uses new logic,
     # handing the repo path over so the remaining syncs still happen this run.
     printf '%s\n' "$REPO_DIR" > "$MEGAVIBE_HOME/.reexec-repo.$$" 2>/dev/null || true
+    restore_launch_parent
     exec "$MEGAVIBE_HOME/megavibe" ${LAUNCH_ARGV[@]+"${LAUNCH_ARGV[@]}"}
   fi
   # Sync init.sh
@@ -1833,7 +1871,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
@@ -2550,6 +2588,92 @@ update_lock_pid() {
   fi
 }
 
+# Helper: record that THIS wrapper started claude, and on behalf of which session.
+# The session registry (~/.claude/sessions) has no parent field, so tools that list sessions
+# (`megavibe sessions`, or any other session viewer) join this record to a live session by claude's PID. Parent = the
+# explicit MEGAVIBE_PARENT_SESSION (set, even empty = "no parent"; a launcher that is not the
+# session's own child, like tmux, must pass it), else CLAUDE_CODE_SESSION_ID, believed only
+# while an ancestor process of this wrapper is that session's registered process (its registry
+# file <pid>.json names that exact id): a tmux server hands every later window the environment of
+# whoever started it, so a bare env value can name an unrelated session. Matching the registry,
+# not a process name, works for any install layout (native binary, node-hosted, versioned path).
+# A launch with no parent still gets a record, so "started by megavibe" can be told apart from a
+# bare `claude`. Never blocks or fails a launch. The record is
+# {pid, launcher, parentSessionId, parentPid, parentCwd, startedAt}; parentPid is the live parent's pid when the
+# registry knows the parent (see session_pid), so a viewer can follow a parent across /clear.
+is_session_ancestor() { # is_session_ancestor <session id>
+  local want="$1" x=$$ n=0 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions" got
+  while [ "$n" -lt 12 ]; do
+    x=$(ps -o ppid= -p "$x" 2>/dev/null | tr -d ' ')
+    [[ "$x" =~ ^[0-9]+$ ]] && [ "$x" -gt 1 ] || return 1
+    if [ -f "$dir/$x.json" ]; then
+      got=$(jq -r '.sessionId // empty' "$dir/$x.json" 2>/dev/null) || got=""
+      [ "$got" = "$want" ] && return 0
+      return 1   # the nearest registered ancestor is the launching session: a farther one is not
+    fi
+    n=$((n + 1))
+  done
+  return 1
+}
+
+# The pid of the live session registered under a session id (nothing if none). A session's id
+# changes on /clear (measured 2026-11-23: same pid, new id), so a viewer decides whether the parent
+# is still running by this pid, not by the id recorded at launch.
+session_pid() { # session_pid <session id>
+  local id="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p
+  for f in "$dir"/*.json; do
+    [ -f "$f" ] || continue
+    p=$(basename "$f" .json)
+    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    if [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$id" ] && kill -0 "$p" 2>/dev/null; then
+      echo "$p"   # a stale file of a crashed session can carry the same id as its live resume: keep looking past dead ones
+      return 0
+    fi
+  done
+  return 0
+}
+
+record_launch() {
+  local pid="${1:-}" dir="$MEGAVIBE_HOME/launches" parent="" parent_pid="" parent_cwd="" f p
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  command -v jq &>/dev/null || return 0
+  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then
+    parent="${LAUNCH_PARENT:-}"
+  elif [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && is_session_ancestor "$CLAUDE_CODE_SESSION_ID"; then
+    parent="$CLAUDE_CODE_SESSION_ID"
+  fi
+  [[ "$parent" =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
+  if [ -n "$parent" ]; then parent_pid=$(session_pid "$parent"); fi
+  [[ "$parent_pid" =~ ^[0-9]+$ ]] || parent_pid=""
+  if [ -z "$parent_pid" ] && [ -n "${LAUNCH_PARENT_SET:-}" ] && [ -n "$parent" ] && [[ "${LAUNCH_PPID:-}" =~ ^[0-9]+$ ]] && kill -0 "$LAUNCH_PPID" 2>/dev/null; then
+    parent_pid="$LAUNCH_PPID"; parent_cwd="${LAUNCH_PCWD:-}"
+  fi
+  if [ -n "$parent_pid" ] && [ -z "$parent_cwd" ]; then
+    parent_cwd=$(jq -r '.cwd // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$parent_pid.json" 2>/dev/null) || parent_cwd=""
+  fi
+  if [ -n "$parent" ]; then
+    # Keep what was resolved while the parent's id was still current: a later re-exec (restart after an
+    # update) resolves from these, because the parent may have run /clear in between (new id, same pid).
+    LAUNCH_PARENT_SET=x; LAUNCH_PARENT="$parent"; LAUNCH_PPID="$parent_pid"; LAUNCH_PCWD="$parent_cwd"
+  fi
+  (
+    umask 077
+    mkdir -p "$dir" 2>/dev/null || exit 0
+    chmod 700 "$dir" 2>/dev/null || true
+    for f in "$dir"/*.json; do
+      [ -e "$f" ] || continue
+      p=$(basename "$f" .json)
+      [[ "$p" =~ ^[0-9]+$ ]] || continue
+      kill -0 "$p" 2>/dev/null || rm -f "$f"
+    done
+    jq -n --argjson pid "$pid" --arg parent "$parent" --argjson ppid "${parent_pid:-null}" --arg pcwd "$parent_cwd" --argjson at "$(date +%s)" \
+      '{pid: $pid, launcher: "megavibe", parentSessionId: (if $parent == "" then null else $parent end), parentPid: $ppid, parentCwd: (if $pcwd == "" then null else $pcwd end), startedAt: $at}' \
+      > "$dir/$pid.json.tmp" 2>/dev/null && mv "$dir/$pid.json.tmp" "$dir/$pid.json" 2>/dev/null \
+      || rm -f "$dir/$pid.json.tmp"
+  ) 2>/dev/null || true
+  return 0
+}
+
 # Helper: release lock
 release_lock() {
   rm -rf "${WORKTREE_DIR:+$WORKTREE_DIR/}.agent/.session-lock.d" 2>/dev/null
@@ -2616,6 +2740,7 @@ if $IS_RESUME; then
   CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX="$(rc_name_prefix)" launch_claude --dangerously-skip-permissions --remote-control ${STYLE_ARGS[@]+"${STYLE_ARGS[@]}"} "$@" &
   CLAUDE_PID=$!
   update_lock_pid "$CLAUDE_PID"
+  record_launch "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
   exit 0
 fi
@@ -2910,6 +3035,7 @@ while true; do
   CLAUDE_PID=$!
   # Patch the lock with claude's actual PID (not the bash wrapper's $$)
   update_lock_pid "$CLAUDE_PID"
+  record_launch "$CLAUDE_PID"
   wait $CLAUDE_PID 2>/dev/null || true
 
   # Check for restart-after-update marker
@@ -2942,6 +3068,7 @@ while true; do
     # loop. If exec fails for any reason, fall through to the old behaviour
     # rather than dropping the session.
     if [ -x "$MEGAVIBE_HOME/megavibe" ]; then
+      restore_launch_parent
       if [ "$NORMALIZE" = "0" ]; then exec bash "$MEGAVIBE_HOME/megavibe" --no-normalize --continue; fi
       exec bash "$MEGAVIBE_HOME/megavibe" --continue
     fi

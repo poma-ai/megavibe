@@ -306,6 +306,16 @@ if [ -f "$_AG" ]; then
 | Amass gate | ${_amw} |"
 fi
 
+# Orphaned sessions: live sessions whose launcher session has ended (from the wrapper's launch records).
+# Silent when there are none; a tmux-launched helper nobody remembers is otherwise found days later.
+SESS_ROW=""
+_SS="$HOME/.megavibe/scripts/sessions.sh"
+if [ -f "$_SS" ]; then
+  _orph=$(bash "$_SS" --status 2>/dev/null </dev/null) || _orph=""
+  [ -n "$_orph" ] && SESS_ROW="
+| Orphaned sessions | ${_orph} |"
+fi
+
 # Playwright
 PLAYWRIGHT_STATUS=$(mcp_status "playwright")
 [ -z "$PLAYWRIGHT_STATUS" ] && PLAYWRIGHT_STATUS="not installed"
@@ -327,7 +337,7 @@ SUBAGENT_STATUS="
 | Codex | ${CODEX_STATUS} |
 | Gemini | ${GEMINI_STATUS} |
 | Playwright | ${PLAYWRIGHT_STATUS} |
-| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${AMASS_ROW}${REVIEWER_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
+| poma-memory | ${POMA_STATUS} |${AUTH_ROW}${AMASS_ROW}${SESS_ROW}${REVIEWER_ROW}${REVIEWER_LINE}${AUTH_LINE}${REVIEWER_DEFAULT_NOTE}"
 
 # The model reads hookSpecificOutput.additionalContext; systemMessage is shown
 # to the user only, so this block used to reach nobody it was written for. And
