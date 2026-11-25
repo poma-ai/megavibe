@@ -139,6 +139,14 @@ for name in '!!!' '' '../invalid'; do
 done
 pass
 
+setup_case empty-env
+if MEGAVIBE_PARALLEL_BRANCH='' launch --stash; then exit 1; fi
+grep -Fq 'invalid parallel branch name' "$T/err"
+no_prompt
+no_parallel
+unchanged
+pass
+
 setup_case interactive
 launch_interactive $'n\nreview\n'
 grep -Fq 'Stash them first? [Y/n]' "$T/err"
