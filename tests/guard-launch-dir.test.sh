@@ -121,6 +121,8 @@ for root in moved empty deleted; do
 done
 CLAUDE_PROJECT_DIR="$T/intact" wrapped "$T" "$missing" 'echo hello'
 check 'session hooks directory with a missing file uses the template' verdict 0 'running the template copy'
+CLAUDE_PROJECT_DIR= wrapped "$T" "$missing" 'echo hello'
+check 'an empty CLAUDE_PROJECT_DIR counts as unset (registered root is intact)' verdict 0 'running the template copy'
 CLAUDE_PROJECT_DIR="$T/deleted" MEGAVIBE_ALLOW_MISSING_LAUNCH=1 wrapped "$T" "$missing" 'echo hello'
 check 'hook environment bypasses the session-root tripwire' verdict 0 'running the template copy'
 RC=0

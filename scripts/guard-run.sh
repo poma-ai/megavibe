@@ -15,7 +15,7 @@ if [[ -f "$hook" && -x "$hook" ]]; then
 fi
 
 project_hooks=
-if [[ ${CLAUDE_PROJECT_DIR+x} ]]; then
+if [[ ${CLAUDE_PROJECT_DIR:+x} ]]; then
   project_hooks="$CLAUDE_PROJECT_DIR/.claude/hooks"
   session_hook="$project_hooks/$name"
   if [[ -f "$session_hook" && -x "$session_hook" ]]; then
