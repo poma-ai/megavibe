@@ -68,6 +68,7 @@ blocks "a local quoted rm next to a container command stays blocked" "docker exe
 blocks "a local sh -c rm after a container command stays blocked" "docker exec web ls; sh -c \"rm -r /local\""
 passes "docker exec ls before a pipe" "docker exec web ls | grep rm"
 asks "container delete after sudo" "sudo docker exec web rm /x" "/x"
+blocks "a container command inside a quoted substitution is not stripped" "echo \"\$(docker exec web ls)\"; sh -c \"rm -r /local\""
 # the kubectl production guard keeps precedence
 blocks "kubectl prod exec stays blocked" "kubectl -n prod exec mypod -- rm -rf /data"
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

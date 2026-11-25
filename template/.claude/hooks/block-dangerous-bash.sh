@@ -3031,8 +3031,19 @@ def without_container_execs(text):
     """The local real-delete check reads the whole text and cannot tell a delete inside a
     container from its own; a container exec at command position (no substitution inside) is
     judged by remote_findings instead, so it is left out of that check."""
+    def quoted_at(pos):          # is this position inside quotes (a "$( )" included)?
+        q, i = None, 0
+        while i < pos:
+            c = text[i]
+            if c == "\\" and q != "'": i += 1
+            elif q is None and c in "'\"": q = c
+            elif q == c: q = None
+            i += 1
+        return q is not None
+
     def drop(m):
         body = m.group(2)
+        if quoted_at(m.start(2)): return m.group(0)
         if re.search(r"\$\(|`|<\(|>\(", body): return m.group(0)
         try: w = shlex.split(body)
         except ValueError: return m.group(0)
