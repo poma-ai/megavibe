@@ -128,7 +128,10 @@ wc_state() { # wc_state FILE: sets WC_STATE fresh|stale|missing, WC_NEWER, WC_RE
   { [ -f "$1" ] && [ -s "$1" ]; } || return 0
   WC_NEWER=$(find .agent/events -type f ! -name '.*' -newer "$1" 2>/dev/null | wc -l | tr -d ' ')
   case "$WC_NEWER" in ''|*[!0-9]*) WC_NEWER=0 ;; esac
-  for _wf in .agent/snapshot.md .agent/DECISIONS.md .agent/TASKS.md; do
+  # An old project without an event log appends to FULL_CONTEXT.md directly.
+  _wl=".agent/snapshot.md .agent/DECISIONS.md .agent/TASKS.md"
+  [ -d .agent/events ] || _wl="$_wl .agent/FULL_CONTEXT.md"
+  for _wf in $_wl; do
     if [ "$_wf" -nt "$1" ]; then WC_REG=$((WC_REG + 1)); fi
   done
   if [ $((WC_NEWER + WC_REG)) -eq 0 ]; then WC_STATE=fresh; else WC_STATE=stale; fi

@@ -121,6 +121,36 @@ P=$(newproj empty); : > "$(wc_file "$P")"
 oncompact "$P" >/dev/null
 check "empty(post): flag set" 'flag "$P"'
 
+# Legacy project without an event log: FULL_CONTEXT.md written after the WC.
+P=$(newproj legacy); rm -r "$P/.agent/events"
+W=$(wc_file "$P"); echo "wc" > "$W"; stamp "$W" 600; stamp "$P/.agent/FULL_CONTEXT.md" 30
+precompact "$P" >/dev/null
+check "legacy(pre): FULL_CONTEXT.md newer than the WC is stale without an event log" 'flag "$P"'
+oncompact "$P" >/dev/null
+check "legacy(post): flag set" 'flag "$P"'
+P=$(newproj legacy2); rm -r "$P/.agent/events"
+W=$(wc_file "$P"); echo "wc" > "$W"; stamp "$W" 600
+oncompact "$P" >/dev/null
+check "legacy(post): fresh when nothing is newer" '! flag "$P"'
+
+# Canonical WC stale, legacy 12-char WC fresh: both hooks judge the canonical one.
+P=$(newproj split); W=$(wc_file "$P"); echo "wc" > "$W"; stamp "$W" 600
+mkdir -p "$P/.agent/sessions/$S12"; echo "old" > "$P/.agent/sessions/$S12/WORKING_CONTEXT.md"
+echo "later" > "$P/.agent/events/20200101T000100Z-x-000002.md"; stamp "$P/.agent/events/20200101T000100Z-x-000002.md" 60
+precompact "$P" >/dev/null
+check "split(pre): canonical WC decides, not the legacy one" 'flag "$P"'
+
+# A failure before the list still hands the compaction a fixed list.
+H="$T/brokenhooks"; mkdir -p "$H"; cp "$HOOKS"/*.sh "$H"/
+awk '{print} /^INPUT=\$\(cat\)$/{print "false"}' "$HOOKS/on-pre-compact.sh" > "$H/on-pre-compact.sh"
+check "fault injection applied" 'grep -qx false "$H/on-pre-compact.sh"'
+P=$(newproj broken)
+OUT=$(cd "$P" && printf '{"session_id":"%s","trigger":"auto"}' "$SID" | /bin/bash "$H/on-pre-compact.sh" 2>/dev/null); RC=$?
+check "error path: exits 0" '[ "$RC" -eq 0 ]'
+check "error path: still prints the preservation list" 'printf "%s" "$OUT" | grep -q "Megavibe preservation instructions"'
+check "error path: list printed once" '[ "$(printf "%s\n" "$OUT" | grep -c "Megavibe preservation instructions")" -eq 1 ]'
+check "error path: no project text" '! printf "%s" "$OUT" | grep -qF "$MARK"'
+
 # --- 3. Compact Instructions section in the protocol -------------------------
 BLOCK=$(sed -n '/<!-- megavibe-v3 -->/,/<!-- \/megavibe-v3 -->/p' "$REPO/template/CLAUDE.md")
 check "protocol: has a Compact Instructions heading inside the markers" 'printf "%s\n" "$BLOCK" | grep -qE "^#+ Compact Instructions$"'

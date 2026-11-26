@@ -3,6 +3,9 @@
 _hook_error() {
   local msg="on-pre-compact.sh failed at line $1: $2"
   echo "$msg" >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+  # Still hand the compaction its preservation list (fixed text, no variables):
+  # stdout is the one channel into the summary, see below.
+  [ -n "${_PC_PRINTED:-}" ] || printf '%s\n' "Megavibe preservation instructions for this summary (fixed text). Keep: every decision or question still open with the user, with its id; every background task, subagent, Monitor or Codex job still running, with its id, output path and purpose; the current goal, uncommitted files, branch, pull request and the exact next step; the paths of this session's .agent/sessions/<session id>/WORKING_CONTEXT.md, .agent/events/, .agent/DECISIONS.md and .agent/TASKS.md." 2>/dev/null
   exit 0
 }
 trap '_hook_error ${LINENO:-?} "${BASH_COMMAND:-unknown}"' ERR
@@ -88,7 +91,7 @@ IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 # because on-compact.sh (which also does it) may not run for a manual /compact.
 # Not when a non-empty WORKING_CONTEXT (full-id or legacy 12-char directory) is
 # newer than every durable input of /rehydrate (events, snapshot.md, DECISIONS.md,
-# TASKS.md): a rehydration would rebuild it from the same state. on-compact.sh
+# TASKS.md; FULL_CONTEXT.md without an event log): a rehydration would rebuild it from the same state. on-compact.sh
 # applies the same rule (keep wc_state identical in both), but it may not run
 # for a manual /compact, and then nothing would take the flag back down.
 wc_state() { # wc_state FILE: sets WC_STATE fresh|stale|missing, WC_NEWER, WC_REG
@@ -96,7 +99,10 @@ wc_state() { # wc_state FILE: sets WC_STATE fresh|stale|missing, WC_NEWER, WC_RE
   { [ -f "$1" ] && [ -s "$1" ]; } || return 0
   WC_NEWER=$(find .agent/events -type f ! -name '.*' -newer "$1" 2>/dev/null | wc -l | tr -d ' ')
   case "$WC_NEWER" in ''|*[!0-9]*) WC_NEWER=0 ;; esac
-  for _wf in .agent/snapshot.md .agent/DECISIONS.md .agent/TASKS.md; do
+  # An old project without an event log appends to FULL_CONTEXT.md directly.
+  _wl=".agent/snapshot.md .agent/DECISIONS.md .agent/TASKS.md"
+  [ -d .agent/events ] || _wl="$_wl .agent/FULL_CONTEXT.md"
+  for _wf in $_wl; do
     if [ "$_wf" -nt "$1" ]; then WC_REG=$((WC_REG + 1)); fi
   done
   if [ $((WC_NEWER + WC_REG)) -eq 0 ]; then WC_STATE=fresh; else WC_STATE=stale; fi
@@ -104,11 +110,13 @@ wc_state() { # wc_state FILE: sets WC_STATE fresh|stale|missing, WC_NEWER, WC_RE
 _PC_FRESH=0; _PC_WCSTATE=missing
 # session_id becomes a path component below: same safe-charset gate as on-compact.sh.
 case "$_PC_SIDF" in ''|.|..|*[!A-Za-z0-9._-]*) _PC_SIDF="none" ;; esac
-for _wc in ".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
-  wc_state "$_wc"
-  [ "$WC_STATE" = fresh ] && _PC_FRESH=1
-  [ "$_PC_WCSTATE" = fresh ] || [ "$WC_STATE" = missing ] || _PC_WCSTATE="$WC_STATE"
-done
+# The same file on-compact.sh judges: the full-id one, or the legacy 12-char
+# directory's only when the full-id one is empty or absent.
+_wc=".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md"
+[ -s "$_wc" ] || [ ! -s ".agent/sessions/${SID}/WORKING_CONTEXT.md" ] || _wc=".agent/sessions/${SID}/WORKING_CONTEXT.md"
+wc_state "$_wc"
+_PC_WCSTATE="$WC_STATE"
+[ "$WC_STATE" = fresh ] && _PC_FRESH=1
 if [ "$IS_SUBAGENT" -eq 0 ]; then
   if [ "$_PC_FRESH" -eq 1 ]; then rm -f "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
   else echo 0 > "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true; fi
@@ -476,6 +484,7 @@ echo "" >&2
 _PC_WCP=".agent/sessions/<this session id>/WORKING_CONTEXT.md"
 [ "$_PC_SIDF" != "none" ] && _PC_WCP=".agent/sessions/${_PC_SIDF}/WORKING_CONTEXT.md"
 case "$LAST_WRITE_MIN" in ''|*[!0-9]*) LAST_WRITE_MIN="?" ;; esac
+_PC_PRINTED=1
 cat <<PRESERVE
 Megavibe preservation instructions for this summary (fixed text; no project file is quoted here). Keep, verbatim where short:
 1. Every decision or question still open with the user, with its id (such as D7) and the default being followed meanwhile.
