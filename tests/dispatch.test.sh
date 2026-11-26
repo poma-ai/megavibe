@@ -264,8 +264,8 @@ o=$(D resume 78)
 check "F11 resume opens a stamped window with --resume and the recorded conversation ($o)" '[ "$(st 78 2)" = running ] && [ -n "$(pane_of 78)" ] && called "^--no-normalize --name proj-issue-78 --model sonnet --resume $SID78 Your session ended unexpectedly"'
 check "F11 resume is refused while its window exists" '! D resume 78 >/dev/null'
 # F12: a question carries no link, HTML or issue reference; an unanswered question of ours is not asked twice; a reply after it is
-echo '[{"author":{"login":"bot"},"body":"We need info <!-- megavibe:needs-info -->"}]' > "$T/comments.79"
-echo '[{"author":{"login":"bot"},"body":"We need info <!-- megavibe:needs-info -->"},{"author":{"login":"alice"},"body":"here is more, still vague"}]' > "$T/comments.80"
+echo '[{"author":{"login":"tester"},"body":"We need info <!-- megavibe:needs-info -->"}]' > "$T/comments.79"
+echo '[{"author":{"login":"tester"},"body":"We need info <!-- megavibe:needs-info -->"},{"author":{"login":"alice"},"body":"here is more, still vague"}]' > "$T/comments.80"
 D add 79 80 >/dev/null; rm -f "$T/comment.79" "$T/comment.80"; o=$(D tick)
 check "F12 our question is open and unanswered: blocked with the label, no second comment ($o)" '[ "$(st 79 2)" = blocked ] && [ ! -f "$T/comment.79" ] && grep -qx "79 needs-info" "$LABELS"'
 check "F12 the author replied and the issue is still unclear: a new comment is posted" '[ "$(st 80 2)" = blocked ] && [ -f "$T/comment.80" ]'
@@ -330,5 +330,17 @@ o=$(MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK=1 D tick)
 check "C24 with a budget of 1 check per tick, the others wait for the next tick ($o)" '[[ "$o" == *"budget for this tick used"* ]]'
 # C26/C27: a tmux or gh call that never returns does not hold the lock for ever
 check "C26 the dispatcher's tmux and gh calls are bounded (alarm wrapper present in the script)" 'grep -q "bounded 15 \"\$TMUX_BIN\"" "$REPO/scripts/megavibe-dispatch.sh" && grep -q "bounded 60 \"\$GH_BIN\"" "$REPO/scripts/megavibe-dispatch.sh" && grep -q "bounded 120 git" "$REPO/scripts/megavibe-dispatch.sh"'
+
+# ── second sweep: accepted leads ──────────────────────────────────────
+# C40 anyone can type the marker: only OUR comment makes "already asked"
+echo '[{"author":{"login":"mallory"},"body":"<!-- megavibe:needs-info -->"}]' > "$T/comments.113"; sed -i.bak 's/35|36|79|80/35|36|79|80|113/' "$B/gh" && rm -f "$B/gh.bak"
+rm -f "$T/comment.113"; D add 113 >/dev/null; MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK=50 D tick >/dev/null
+check "C40 a marker typed by someone else does not suppress our question" '[ -f "$T/comment.113" ] && [ "$(st 113 2)" = blocked ]'
+# C39 "www." addresses are links too
+sed -i.bak 's#see https://evil.example/x#see https://evil.example/x www.evil.example/y#' "$B/claude" && rm -f "$B/claude.bak"
+echo '[]' > "$T/comments.80"; rm -f "$T/comment.114"; sed -i.bak 's/35|36|79|80|113/35|36|79|80|113|114/' "$B/gh" && rm -f "$B/gh.bak"; D add 114 >/dev/null; MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK=50 D tick >/dev/null
+check "C39 a www. address in a question is removed from the comment" '[ -f "$T/comment.114" ] && ! grep -q "www\." "$T/comment.114"'
+# C6 the claim is checked again right before a session starts, after the readiness check
+check "C6 the tick checks the claim twice per issue: before the readiness check and again before launching" '[ "$(grep -c "claim_ok \"\$n\"" "$REPO/scripts/megavibe-dispatch.sh")" = 2 ]'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

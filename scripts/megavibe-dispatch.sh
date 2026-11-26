@@ -408,10 +408,10 @@ precheck() {
   body="${body}to start work on this we need a few things:"$'\n\n'; k=0
   while IFS= read -r txt; do
     # one plain line: no control characters, no links (a model misled by the issue could be made to write any), no raw HTML, no #123 reference
-    txt=$(clean1 "$txt" 300 | perl -pe 's{https?://\S+}{(link removed)}gi; s/[<>]//g; s/#(?=\d)/# /g' 2>/dev/null); [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
+    txt=$(clean1 "$txt" 300 | perl -pe 's{\b(?:https?://|www\.)\S+}{(link removed)}gi; s/[<>]//g; s/#(?=\d)/# /g' 2>/dev/null); [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
   body="$body"$'\n'"Reply here, then remove the \`$l\` label from this issue: that is what starts the work."$'\n\n'"$MARK"
   printf '%s\n' "$body" > "$D/.pc.comment"
-  asked=$(printf '%s' "$j" | jq -r --arg m "$MARK" '(.comments // []) as $c | [range(0; $c | length) | select(($c[.].body // "") | contains($m))] | (if length == 0 then -1 else last end) as $i | if $i < 0 then "no" elif ($c | length) - 1 > $i then "replied" else "open" end' 2>/dev/null) || asked=no
+  asked=$(printf '%s' "$j" | jq -r --arg m "$MARK" --arg me "$(conf_get me)" '(.comments // []) as $c | [range(0; $c | length) | select(($c[.].author.login // "") == $me and (($c[.].body // "") | contains($m)))] | (if length == 0 then -1 else last end) as $i | if $i < 0 then "no" elif ($c | length) - 1 > $i then "replied" else "open" end' 2>/dev/null) || asked=no
   # The label is what ends the block, so it goes on FIRST: when it cannot be set (no write access to labels), nothing is
   # posted and the issue is held, not asked about again every tick and never unblocked by its own absence.
   ensure_label
@@ -500,6 +500,7 @@ cmd_tick() {
       if [ "$pcn" -ge "${MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK:-5}" ]; then pcdeferred=$((pcdeferred + 1)); continue; fi
       pcn=$((pcn + 1)); pcrc=0; precheck "$n" || pcrc=$?; [ "$pcrc" = 0 ] || continue
     fi
+    pcrc=0; claim_ok "$n" || pcrc=$?; [ "$pcrc" = 0 ] || continue   # again: the check above can have taken minutes
     live_windows
     if [ "$WINS_STATE" = noserver ]; then die "tmux session mvd-$Q is gone; run 'megavibe dispatch start' to bring the dispatcher back"; fi
     # a start that fails (worktree in the way, tmux refusing) must not stop the others: it stays as it was and is reported
