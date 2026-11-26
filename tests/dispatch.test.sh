@@ -16,17 +16,46 @@ printf '#!/bin/bash\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nexec sleep 600\n' "$T" > "$B/megavibe"
 cat > "$B/gh" <<'EOS'
 #!/bin/bash
+# stub gh: issues 21 (title "VAGUE", asks the model-stub to flag it) and 22 (same, but opened by a bot); state in $LABELS ("N label") and $T files
+jqx=""; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" != --jq ] || jqx="${a[i+1]}"; done
+emit() { if [ -n "$jqx" ]; then jq -r "$jqx"; else cat; fi; }
 case "$1 $2" in
   "repo view") echo '{"nameWithOwner":"o/r"}' ;;
   "issue view") n=$3; [ "$n" != 99 ] || { echo "no such issue" >&2; exit 1; }
-    st=OPEN; [ "$n" != 98 ] || st=CLOSED
-    printf '{"title":"Fix thing %s\\twith a tab","body":"body of %s\\nline two","url":"https://github.com/o/r/issues/%s","state":"%s"}\n' "$n" "$n" "$n" "$st" ;;
-  "issue list") echo "$*" >> "$LISTCALLS"; case "$*" in *"--label ready"*) printf '7\n9\n1\n' ;; esac ;;
+    st=OPEN; [ "$n" != 98 ] || st=CLOSED; [ ! -f "$CLOSED" ] || ! grep -qx "$n" "$CLOSED" || st=CLOSED
+    t="Fix thing $n"; case "$n" in 21|22) t="VAGUE $n" ;; esac
+    au='{"login":"alice","is_bot":false}'; [ "$n" != 22 ] || au='{"login":"dependabot","is_bot":true}'
+    lab=$(awk -v n="$n" '$1 == n { print $2 }' "$LABELS" 2>/dev/null | jq -R . | jq -s -c 'map({name: .})')
+    jq -n -c --arg t "$t" --arg b "body of $n"$'\nline two' --arg u "https://github.com/o/r/issues/$n" --arg s "$st" --argjson l "${lab:-[]}" --argjson au "$au" --argjson num "$n" \
+      '{number: $num, title: ($t + "\twith a tab"), body: $b, url: $u, state: $s, labels: $l, author: $au, comments: []}' | emit ;;
+  "issue list") echo "$*" >> "$LISTCALLS"
+    case "$*" in
+      *"--label ready"*) printf '7\n9\n1\n' ;;
+      *"--label needs-info"*|*"--label waiting"*) lab=needs-info; case "$*" in *waiting*) lab=waiting ;; esac
+        awk -v l="$lab" '$2 == l { print $1 }' "$LABELS" 2>/dev/null | grep -vxF -f "$CLOSED" - 2>/dev/null || true ;;
+    esac ;;
+  "issue comment") n=$3; for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" != --body-file ] || cp "${a[i+1]}" "$T/comment.$n"; done
+    echo "https://github.com/o/r/issues/$n#issuecomment-1" ;;
+  "issue edit") n=$3; for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" != --add-label ] || echo "$n ${a[i+1]}" >> "$LABELS"; done ;;
+  "label list") cat "$LABELEXIST" 2>/dev/null | jq -R '{name: .}' | jq -s -c . | emit ;;
+  "label create") echo "$3" >> "$LABELEXIST" ;;
   "pr list") [ ! -f "$PRFILE" ] || grep -F "$4" "$PRFILE" | head -1 | cut -d' ' -f2 ;;
 esac
 EOS
-chmod +x "$B"/*; export PATH="$B:$PATH" HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe" PRFILE="$T/prs" LISTCALLS="$T/list.calls"; unset CLAUDE_CODE_SESSION_ID
-mkdir -p "$HOME" "$MEGAVIBE_HOME"
+cat > "$B/claude" <<'EOS'
+#!/bin/bash
+# stub claude: `auth status` says subscription; `-p` reads the prompt and answers fenced JSON, flagging VAGUE issues
+if [ "$1" = auth ]; then if [ "$(cat "$HOME/claude.mode" 2>/dev/null)" = apikey ]; then echo '{"authMethod":"api_key"}'; else echo '{"authMethod":"claude.ai"}'; fi; exit 0; fi
+p=$(cat); echo "$*" > "$HOME/claude.args"; printf '%s' "$p" > "$HOME/claude.prompt"; m=$(cat "$HOME/claude.mode" 2>/dev/null)
+case "$p" in
+  *'"title":"VAGUE'*) r=$'```json\n{"ready": false, "questions": ["What should the result look like? ping @evil", "Which version fails?"]}\n```' ;;
+  *) r='{"ready": true, "questions": []}' ;;
+esac
+[ "$m" != broken ] || { echo "boom" >&2; exit 1; }
+jq -n -c --arg r "$r" '{type: "result", is_error: false, result: $r}'
+EOS
+chmod +x "$B"/*; export PATH="$B:$PATH" HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe" PRFILE="$T/prs" LISTCALLS="$T/list.calls" LABELS="$T/labels" LABELEXIST="$T/label.exist" CLOSED="$T/closed" T="$T"; unset CLAUDE_CODE_SESSION_ID
+mkdir -p "$HOME" "$MEGAVIBE_HOME"; : > "$CLOSED"; : > "$LABELS"
 end_panes() { local p i; [ "${OWN:-0}" = 1 ] || return 0
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -HUP "$p" 2>/dev/null; done
   for i in 1 2 3 4 5 6; do tmux has-session 2>/dev/null || return 0; sleep 0.5; done
@@ -96,5 +125,44 @@ pid=$(tmux list-windows -t =mvd-proj -F '#{window_name} #{pane_pid}' | awk '$1 =
 o=$(D requeue 11); check "requeue after the window closed rewrites the task file and queues it ($o)" '[ "$(st 11 2)" = queued ] && grep -q "body of 11" "$Q/tasks/issue-11.md"'
 for s in work-ticket triage-ticket; do check "skill $s: front matter name and no mention of another skill's name" 'head -2 "$REPO/template/.claude/skills/$s/SKILL.md" | grep -qx "name: $s" && ! grep -q "implement-and-review" "$REPO/template/.claude/skills/$s/SKILL.md"'; done
 check "work-ticket and the task file both route missing info to the issue, the author and the marker" 'grep -q "megavibe:needs-info" "$REPO/template/.claude/skills/work-ticket/SKILL.md" && grep -q "ask for it on the issue" "$Q/tasks/issue-5.md"'
+
+# ── pre-check, label flow ─────────────────────────────────────────────
+rm -f "$HOME/claude.prompt"
+o=$(D add 21 22 20); o2=$(D tick); W=$(tmux list-windows -t =mvd-proj -F "#{window_name}")
+check "precheck: a vague issue is blocked without a session, a clear one starts ($o2)" '[ "$(st 21 2)" = blocked ] && ! grep -qx issue-21 <<<"$W" && [ "$(st 20 2)" = running ] && grep -qx issue-20 <<<"$W"'
+check "precheck: the call is tool-less, settings-less, sessionless" 'grep -q -- "--no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources" "$HOME/claude.args" && grep -q -- "--tools" "$HOME/claude.args"'
+check "precheck: the comment mentions the author, numbers the questions, neutralises a model-written mention, carries the marker and the label name" 'head -c 6 "$T/comment.21" | grep -q "^@alice" && grep -q "^1\. What should the result look like" "$T/comment.21" && grep -q "^2\. Which version fails" "$T/comment.21" && ! grep -q "@evil" "$T/comment.21" && grep -q "(at) evil" "$T/comment.21" && grep -q "megavibe:needs-info" "$T/comment.21" && grep -q "needs-info" "$T/comment.21"'
+check "precheck: the label was created and put on the issue; the comment URL is kept" 'grep -qx needs-info "$LABELEXIST" && grep -qx "21 needs-info" "$LABELS" && [[ "$(st 21 7)" == *issuecomment* ]]'
+check "precheck: a bot author is not mentioned" 'grep -q "^to start work" "$T/comment.22" && ! grep -q "@dependabot" "$T/comment.22"'
+
+rm -f "$HOME/claude.prompt"; o=$(D tick)
+check "tick again: a blocked issue is not asked about twice, no model call" '[ ! -f "$HOME/claude.prompt" ] && [ "$(ls "$T"/comment.21* | wc -l | tr -d " ")" = 1 ]'
+
+grep -v "^21 " "$LABELS" > "$LABELS.n"; mv "$LABELS.n" "$LABELS"; rm -f "$HOME/claude.prompt"
+o=$(D tick); W=$(tmux list-windows -t =mvd-proj -F "#{window_name}")
+check "label removed: the issue goes and starts without a second check ($o)" '[ "$(st 21 2)" = running ] && grep -qx issue-21 <<<"$W" && [ ! -f "$HOME/claude.prompt" ] && grep -q "line two" "$Q/tasks/issue-21.md"'
+check "a task file names the waiting label" 'grep -qx "Needs-info label: needs-info" "$Q/tasks/issue-21.md"'
+
+echo 22 > "$CLOSED"; o=$(D tick)
+check "a blocked issue closed meanwhile is dropped, not started ($o)" '[ "$(st 22 2)" = dropped ]'
+: > "$CLOSED"
+
+echo broken > "$HOME/claude.mode"; D add 23 >/dev/null; o2=$(D tick)
+check "claude failing: the issue is let through ($o2)" '[ "$(st 23 2)" = running ] && [[ "$o2" == *"precheck skipped (the claude call failed"* ]]'
+echo apikey > "$HOME/claude.mode"; D add 24 >/dev/null; o2=$(D tick)
+check "an API-key login is refused for the check, the issue is let through ($o2)" '[ "$(st 24 2)" = running ] && [[ "$o2" == *"not a claude.ai subscription login"* ]]'
+echo ok > "$HOME/claude.mode"
+
+echo "25 needs-info" >> "$LABELS"; D add 25 >/dev/null; o=$(D tick)
+check "an issue that already carries the label is blocked without a model call ($o)" '[ "$(st 25 2)" = blocked ] && [[ "$o" == *"already carries"* ]]'
+grep -v "^11 " "$LABELS" > "$LABELS.n"; mv "$LABELS.n" "$LABELS"
+D done 20 >/dev/null; o=$(D block 20)
+check "block adds the label to the issue ($o)" 'grep -qx "20 needs-info" "$LABELS"'
+
+D start --no-precheck --needs-label waiting >/dev/null
+check "start --no-precheck --needs-label: stored" '[ "$(awk -F= "\$1 == \"precheck\" { print \$2 }" "$Q/conf")" = off ] && [ "$(awk -F= "\$1 == \"label\" { print \$2 }" "$Q/conf")" = waiting ]'
+D drop 22 >/dev/null; D add 22 >/dev/null; o=$(D tick)
+check "precheck off: the vague issue starts anyway ($o)" '[ "$(st 22 2)" = running ]'
+check "an unusable label name is refused" '! D start --needs-label "a b" >/dev/null'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

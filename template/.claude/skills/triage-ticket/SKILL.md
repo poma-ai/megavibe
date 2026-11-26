@@ -32,7 +32,7 @@ Do not ask for what the code answers, for style preferences, or for detail that 
 
 - **Read the existing comments.** If an earlier comment of yours (it ends with `<!-- megavibe:needs-info -->`) is there and the author has not replied since, do not post again: report that the question is still open. If they replied, judge the issue again with the replies as part of it.
 - **Check who opened it.** `author.login` is the person to mention. If `author.is_bot` is true, or there is no author, post the comment without a mention and say so in your report.
-- Nothing else is written to the issue: no edits to its body, no closing, no assigning, no mentioning anyone but its author.
+- Nothing else is written to the issue: no edits to its body, no closing, no assigning, no mentioning anyone but its author. The label is the one thing besides the comment.
 
 ## The comment
 
@@ -44,12 +44,12 @@ Post with `gh issue comment <n> --body-file <file>` (a temp file, so quoting can
 1. <specific question or missing item>
 2. <...>
 
-Reply here and work picks up from your answers.
+Reply here. A maintainer removes the `<label>` label when this is answered, and work picks up from there.
 
 <!-- megavibe:needs-info -->
 ```
 
-Plain and short: no apology, no restating the issue, no praise. If the repo uses a `needs-info` (or similarly named) label and it already exists (`gh label list`), add it with `gh issue edit <n> --add-label`; never create a label.
+Plain and short: no apology, no restating the issue, no praise. Then put the waiting label on the issue: the name on the task file's `Needs-info label:` line, else `needs-info`. Create it first if the repo lacks it (`gh label list --search <name>`, then `gh label create <name> --color FBCA04 --description "Waiting for the issue author"`), then `gh issue edit <n> --add-label <name>`. A maintainer removing that label is how the answer is signalled to whoever waits on it, so say so in the comment: "Reply here. A maintainer removes the `<name>` label when this is answered, and work picks up from there." Never remove the label yourself.
 
 ## Report
 
