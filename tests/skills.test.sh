@@ -4,7 +4,7 @@
 # are explicitly unsupported. No launcher, skill command or backend is run.
 set -eu
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-INVENTORY='catchup clip doc-review finish-feature init-feature megavibe-restart prune-context rehydrate watch'
+INVENTORY='catchup clip doc-review finish-feature init-feature megavibe-restart prune-context rehydrate triage-ticket watch work-ticket'
 
 validate_skill() {
   awk -v skill="$2" '
@@ -20,6 +20,8 @@ validate_skill() {
       golden["megavibe-restart"]=""
       golden["prune-context"]=""
       golden["rehydrate"]=""
+      golden["triage-ticket"]="Bash(gh issue view *), Bash(gh issue comment *), Bash(gh issue edit *), Bash(gh label list *), Bash(gh label create *)"
+      golden["work-ticket"]="Bash"
       golden["watch"]="Bash(bash ~/.megavibe/scripts/tick.sh *), Bash(bash ~/.megavibe/scripts/claude-auth-check.sh *), Bash(basename *), Bash(printf *), Bash(shasum *), Bash(cut -c1-6 *), Bash(gh pr view *)"
       n=split(golden[skill], expected_grants, ",")
       for(i=1;i<=n;i++) {
@@ -350,6 +352,9 @@ for name in $INVENTORY; do
   reason=''
   if [ "$name" = init-feature ]; then
     reason='# Arbitrary Bash is needed for project-specific implementation and verification on the user-chosen vibe route.'
+  fi
+  if [ "$name" = work-ticket ]; then
+    reason='# Arbitrary Bash is needed: the ticket decides which build, test and git commands the implementation and its verification run.'
   fi
   reset_fixture
   set_field "$name" allowed-tools "${original:+$original, }Bash(git push *)" "$reason"

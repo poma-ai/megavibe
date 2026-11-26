@@ -1,6 +1,7 @@
 ---
 name: work-ticket
 description: Work one GitHub issue end to end in the current worktree and branch: understand it, implement it, verify it with evidence, get an independent review, open a pull request that closes it, and report. Self-contained; it can hand the implementation step to another named skill when one is configured, and works without any. Use when a task file or the user says to work on an issue or ticket (the megavibe dispatcher starts every issue session with it). Not for scoping a feature before building it (that is /init-feature) and not for reviewing someone else's PR.
+# Arbitrary Bash is needed: the ticket decides which build, test and git commands the implementation and its verification run.
 allowed-tools: Read, Glob, Grep, Bash, Write, Edit, Agent, Skill
 argument-hint: "<task file | issue number or URL>"
 ---

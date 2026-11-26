@@ -1,7 +1,7 @@
 ---
 name: triage-ticket
 description: Decide whether a GitHub issue has what is needed to start work, and when it does not, comment on the issue listing exactly what is missing and mention its author. Self-contained. Use when a task or the user says to triage, check, or ask for missing information on an issue, or when you are about to work an issue and cannot tell what to build. Not for scoping size or cost (that is /init-feature).
-allowed-tools: Read, Glob, Grep, Bash
+allowed-tools: Read, Glob, Grep, Write, Bash(gh issue view *), Bash(gh issue comment *), Bash(gh issue edit *), Bash(gh label list *), Bash(gh label create *)
 argument-hint: "<issue number or URL | task file>"
 ---
 
