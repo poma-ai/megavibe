@@ -79,9 +79,15 @@ SID=""
 [[ $SID =~ $UUID_RE ]] || SID=""
 if [ -n "$SID" ]; then
   MIN="${MEGAVIBE_NODE_TEST_RESUME_SECS:-30}"; [[ $MIN =~ ^[0-9]+$ ]] || MIN=30
-  T0=$SECONDS
-  megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" --resume "$SID" "Your session ended (a crash, a tmux restart or an exit) and was restarted: this is your previous conversation, resumed under the same session name. Read ../node/restart-note.txt if present for the last restart and secret-sync status. Your notes may have moved on without you: re-read megavibe-deliverables/STATUS.md. Check that your scheduled ticks and watches are back and set them up again if not, run 'megavibe node session check' to find repo sessions that vanished meanwhile, then tell the user in one line that you are back and what was interrupted."
+  T0=$SECONDS; RC=0
+  megavibe --no-normalize ${PA_MODEL:+--model "$PA_MODEL"} --name "$PA_NAME" --resume "$SID" "Your session ended (a crash, a tmux restart or an exit) and was restarted: this is your previous conversation, resumed under the same session name. Read ../node/restart-note.txt if present for the last restart and secret-sync status. Your notes may have moved on without you: re-read megavibe-deliverables/STATUS.md. Check that your scheduled ticks and watches are back and set them up again if not, run 'megavibe node session check' to find repo sessions that vanished meanwhile, then tell the user in one line that you are back and what was interrupted." || RC=$?
   [ $((SECONDS - T0)) -ge "$MIN" ] && exit 0
+  # 3 = the launcher refused: another live process still has this conversation open (the old PA
+  # is still running or still exiting). Starting a fresh PA would make a second one: keep the record.
+  if [ "$RC" = 3 ]; then
+    nlog "pa-start: conversation $SID is still open in another process; not resumed and no second PA started (pa.session kept)"
+    exit 0
+  fi
   # Appended, one id per line: a second failure must not erase the first id.
   printf '%s\n' "$SID" >> "$SF.failed" 2>/dev/null; : > "$SF" 2>/dev/null
   nlog "pa-start: conversation $SID could not be resumed (it ended within $MIN s); starting a fresh PA, the id is added to pa.session.failed"

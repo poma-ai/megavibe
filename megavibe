@@ -2519,7 +2519,7 @@ NORMALIZED_FROM=""
 if [ "$NORMALIZE" = "1" ]; then
   GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$GIT_ROOT" ] && [ "$GIT_ROOT" != "$(pwd -P)" ]; then
-    echo -e "  ${DIM}Launching from the repo root (${GIT_ROOT##*/}) so this project keeps one memory store.${RESET}"
+    echo -e "  ${DIM}Launching from the repo root (${GIT_ROOT##*/}) so this project keeps one transcript folder and its .agent/.${RESET}"
     echo -e "  ${DIM}Stay here instead: megavibe --no-normalize${RESET}"
     NORMALIZED_FROM="$(pwd -P)"
     cd "$GIT_ROOT"
@@ -2654,7 +2654,7 @@ second_writer_message() { # second_writer_message TARGET "<pid><TAB><tmux>"
   t=$(printf '%q' "$target")
   echo "megavibe: conversation $target is still open in another process (pid $pid)."
   echo "  Resuming it here would make two processes write one transcript; Claude Code then"
-  echo "  loses messages from one of them. Nothing was started, and that process was not touched."
+  echo "  can lose messages from one of them. Nothing was started, and that process was not touched."
   pane="%${tmx##*.%}"; sess="${tmx%%:*}"
   if [[ "$tmx" == *:*.%* ]] && [[ "$pane" =~ ^%[0-9]+$ ]] && [[ "${tmx#*:}" =~ ^@[0-9]+\.%[0-9]+$ ]]; then
     sock=$(jq -r '.socket // empty' "${MEGAVIBE_HOME:-${HOME:-}/.megavibe}/launches/$pid.json" 2>/dev/null) || sock=""
