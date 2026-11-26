@@ -54,6 +54,7 @@ Launcher options:
   --help, -h            Show this help; first argument only
   --version, -V         Show the installed version; first argument only
   --no-normalize        Stay in this directory instead of the git repo root
+  --allow-second-writer Resume a conversation another live process still has open
   --parallel-branch NAME  Choose a parallel branch (also --parallel-branch=NAME)
   --stash               Stash tracked changes before creating a parallel worktree
   --no-stash            Do not stash tracked changes for a parallel worktree
@@ -63,7 +64,8 @@ Claude options also recognized by the launcher (forwarded unchanged):
   --effort LEVEL        Choose the effort; disable automatic routing
   --settings SETTINGS   Use Claude settings; disable automatic routing
   --continue, -c        Continue a conversation; keep its model
-  --resume, -r          Resume a conversation; keep its model (--resume allows a live lock)
+  --resume, -r          Resume a conversation; keep its model (refused while another
+                        live process has that conversation open)
   --from-pr PR          Resume from a PR; keep its model
   --fork-session        Fork a conversation; keep its model
   --session-id ID       Use a session ID; keep its model
@@ -1529,8 +1531,9 @@ fi
 if [ "${1:-}" = "doctor" ]; then
   echo -e "${BOLD}megavibe doctor${RESET}"
   echo ""
-  echo -e "${BOLD}Claude memory slugs${RESET} — memory is keyed by the launch directory,"
-  echo -e "${DIM}so one project launched from two places keeps two separate stores.${RESET}"
+  echo -e "${BOLD}Claude memory slugs${RESET} — stores left split by older Claude Code versions,"
+  echo -e "${DIM}which keyed memory by the launch directory. Current versions derive it from the git${RESET}"
+  echo -e "${DIM}repository (shared by its subdirectories and worktrees): inside a repo, a split is left over.${RESET}"
   echo ""
   # The slug encodes / as -, which is lossy: poma-core and poma/core produce the
   # same slug. Don't try to decode it — read the real cwd out of a transcript.
@@ -2441,20 +2444,29 @@ INIT_SCRIPT="$MEGAVIBE_HOME/init.sh"
 if [ ! -f "$INIT_SCRIPT" ] && [ -f "$SCRIPT_DIR/init.sh" ]; then
   INIT_SCRIPT="$SCRIPT_DIR/init.sh"
 fi
-# ─── Launch root: one project, one memory slug ──────────────────────
+# ─── Launch root: one project, one transcript folder ────────────────
 #
-# Claude Code keys its auto-memory by the launch directory
-# (~/.claude/projects/<cwd-slug>/memory/). So `cd repo && megavibe` and
-# `cd repo/sub && megavibe` are different projects as far as memory is
-# concerned, and the same work ends up split across slugs that never see each
-# other. Resolve to the repository root so a project has one slug for good.
+# Claude Code files a session's transcript under the launch directory
+# (~/.claude/projects/<project>/<session-id>.jsonl, <project> = the working
+# directory with non-alphanumerics as "-"), and --continue ("the most recent
+# conversation in the current directory") looks there. So `cd repo && megavibe`
+# and `cd repo/sub && megavibe` keep their conversations apart, and the
+# project's .agent/ is at the root.
+# Resolve to the repository root so a project has one folder for good.
+# (Auto-memory is no longer the reason: current Claude Code derives its memory
+# directory from the git repository, shared by its subdirectories and worktrees;
+# https://code.claude.com/docs/en/memory.md. Older versions keyed it by the
+# launch directory, which is what `megavibe doctor` still reports on.)
 #
 # `--no-normalize` opts out for the rare case where a subdirectory really is
 # the project (a monorepo package with its own .agent/).
 NORMALIZE=1
 for _a in "$@"; do [ "$_a" = "--no-normalize" ] && NORMALIZE=0; done
+# --allow-second-writer is the launcher's own (see second_writer_gate): consumed here, never passed on.
+ALLOW_SECOND_WRITER=0
+for _a in "$@"; do [ "$_a" = "--allow-second-writer" ] && ALLOW_SECOND_WRITER=1; done
 CLAUDE_ARGV=()
-for _a in "$@"; do [ "$_a" = "--no-normalize" ] || CLAUDE_ARGV+=("$_a"); done
+for _a in "$@"; do [ "$_a" = "--no-normalize" ] || [ "$_a" = "--allow-second-writer" ] || CLAUDE_ARGV+=("$_a"); done
 set -- ${CLAUDE_ARGV[@]+"${CLAUDE_ARGV[@]}"}
 
 # Not a repo but holding several (an umbrella like ~/dev): this session's memory
@@ -2507,7 +2519,7 @@ NORMALIZED_FROM=""
 if [ "$NORMALIZE" = "1" ]; then
   GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   if [ -n "$GIT_ROOT" ] && [ "$GIT_ROOT" != "$(pwd -P)" ]; then
-    echo -e "  ${DIM}Launching from the repo root (${GIT_ROOT##*/}) so this project keeps one memory store.${RESET}"
+    echo -e "  ${DIM}Launching from the repo root (${GIT_ROOT##*/}) so this project keeps one transcript folder and its .agent/.${RESET}"
     echo -e "  ${DIM}Stay here instead: megavibe --no-normalize${RESET}"
     NORMALIZED_FROM="$(pwd -P)"
     cd "$GIT_ROOT"
@@ -2569,6 +2581,114 @@ fi
 
 # Barred: a launch that would bill per token (see bar_api_billing).
 bar_api_billing "$AUTH_JSON"
+
+# ─── Second writer: one live process per conversation ───────────────
+#
+# Claude Code does not stop an ordinary session from being resumed while another process
+# still has it open: both append to one transcript, and messages from one of them can be
+# missing when it is resumed later; the vendor's advice is --fork-session
+# (https://code.claude.com/docs/en/sessions.md, "Branch a session"). A running BACKGROUND
+# session is the exception: --resume attaches to it instead, so it is left to Claude Code.
+# So the wrapper refuses a resume whose target is held by a live process, by default, and
+# says where that process is. It never signals, stops or types into it, and never runs tmux.
+#
+# The target is the value of --resume/-r (an id, a name or a transcript path). A bare
+# --resume (the picker) and --continue cannot be resolved here without guessing Claude
+# Code's own choice, and a --fork-session gets a new id: those pass unchecked. Names
+# also pass: this live-process registry cannot establish a unique saved conversation
+# in the current project (including ended sessions and other worktrees).
+# Held = a record in Claude Code's session registry (<config>/sessions/<pid>.json) names the
+# target, its pid is alive, and it is the same process: the record's procStart matches the
+# pid's start time (UTC). Anything not established (no jq, an unreadable record, a dead
+# or reused pid, a missing or unrecognised start time, ps failing) is not held,
+# so a stale record never blocks a legitimate resume.
+resume_target() { # resume_target ARGS...: the --resume/-r value; empty for picker, fork or no resume
+  local a want=0 t=""
+  for a in "$@"; do
+    if [ "$want" = 1 ]; then
+      want=0
+      case "$a" in -*) ;; *) t="$a" ;; esac
+      continue
+    fi
+    case "$a" in
+      --fork-session) return 0 ;;
+      --resume|-r) want=1 ;;
+      --resume=*) t="${a#--resume=}" ;;
+    esac
+  done
+  printf '%s' "$t"
+}
+
+session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" of a live holder, or nothing
+  local want="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p rec sid kind start tmx now
+  [ -n "$want" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  case "$want" in *.jsonl) want=$(basename "$want" .jsonl) ;; esac
+  for f in "$dir"/*.json; do
+    [ -f "$f" ] || continue
+    p=$(basename "$f" .json)
+    [[ "$p" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$p" -gt 1 ] || continue
+    rec=$(jq -r '[.sessionId, .kind, .procStart, .tmux] | map(if type == "string" then gsub("[\u001f\n]"; " ") else "" end) | join("\u001f")' "$f" 2>/dev/null) || continue
+    IFS=$'\x1f' read -r sid kind start tmx <<<"$rec" || true
+    # Match ids only: a different conversation's name may itself be this id.
+    [ "$sid" = "$want" ] || continue
+    # A background session is left to Claude Code, which attaches to it. The registry
+    # writes that kind as "bg"; the long form is accepted too.
+    case "$kind" in [Bb][Gg]|*[Bb]ackground*) continue ;; esac
+    kill -0 "$p" 2>/dev/null || continue
+    start=$(printf '%s' "$start" | tr -s ' ' | sed 's/^ //; s/ $//')
+    if [[ "$start" =~ ^[A-Z][a-z]{2}\ [A-Z][a-z]{2}\ [0-9]{1,2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [0-9]{4}$ ]]; then
+      # The registry's procStart is the process start in ps lstart form, UTC (measured against
+      # live sessions): equal = the same process, different = the pid was reused.
+      now=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$p" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//') || now=""
+      [ -n "$now" ] && [ "$now" = "$start" ] || continue
+    else
+      # A process name cannot tie a reused pid to this recorded session.
+      continue
+    fi
+    printf '%s\t%s\n' "$p" "$tmx"
+    return 0
+  done
+  return 0
+}
+
+second_writer_message() { # second_writer_message TARGET "<pid><TAB><tmux>"
+  local target="$1" pid="${2%%$'\t'*}" tmx="" pane sess sock="" t
+  case "$2" in *$'\t'*) tmx="${2#*$'\t'}" ;; esac
+  t=$(printf '%q' "$target")
+  echo "megavibe: conversation $target is still open in another process (pid $pid)."
+  echo "  Resuming it here would make two processes write one transcript; Claude Code then"
+  echo "  can lose messages from one of them. Nothing was started, and that process was not touched."
+  pane="%${tmx##*.%}"; sess="${tmx%%:*}"
+  if [[ "$tmx" == *:*.%* ]] && [[ "$pane" =~ ^%[0-9]+$ ]] && [[ "${tmx#*:}" =~ ^@[0-9]+\.%[0-9]+$ ]]; then
+    sock=$(jq -r '.socket // empty' "${MEGAVIBE_HOME:-${HOME:-}/.megavibe}/launches/$pid.json" 2>/dev/null) || sock=""
+    sock="${sock:+-S $(printf '%q' "$sock") }"
+    echo "  It runs in tmux pane $pane (window ${tmx#*:})."
+    echo "    Read it without changing anything:  tmux ${sock}capture-pane -p -t $pane"
+    echo "    Go to it:  tmux ${sock}attach -t $(printf '%q' "$sess")   (inside tmux: tmux ${sock}switch-client -t $pane)"
+  else
+    echo "  It is not in a tmux pane megavibe knows of; find its terminal with: ps -p $pid -o tty=,command="
+  fi
+  echo "  Keep both conversations:  megavibe --resume $t --fork-session"
+  echo "  Or start a fresh session: megavibe"
+  echo "  If you mean to write from both anyway:  megavibe --allow-second-writer --resume $t"
+}
+
+second_writer_gate() { # second_writer_gate ARGS...: exit status 3 = refused
+  local target holder
+  target=$(resume_target "$@")
+  [ -n "$target" ] || return 0
+  holder=$(session_holder "$target")
+  [ -n "$holder" ] || return 0
+  if [ "${ALLOW_SECOND_WRITER:-0}" = 1 ]; then
+    echo "megavibe: --allow-second-writer: resuming $target although pid ${holder%%$'\t'*} still has it open (second writer)." >&2
+    return 0
+  fi
+  second_writer_message "$target" "$holder" >&2
+  return 3
+}
+
+second_writer_gate "$@" || exit $?
 
 # ─── Session lock (prevents accidental concurrent source edits) ──────
 #
@@ -2880,12 +3000,13 @@ if $IS_RESUME; then
   if [ -d "$LOCK_DIR" ] && is_lock_stale; then
     rm -rf "$LOCK_DIR"
   fi
-  # Try to acquire; if live lock exists, warn but don't block
+  # Try to acquire; if live lock exists, warn but don't block. The same conversation open
+  # elsewhere was already refused by second_writer_gate; this lock is the checkout's.
   if [ -d "$LOCK_DIR" ] && ! is_lock_stale; then
     echo ""
     show_lock_info
     echo ""
-    echo -e "  ${YELLOW}Resuming anyway${RESET} — Claude will reject if session is in use."
+    echo -e "  ${YELLOW}Resuming alongside it${RESET} — both sessions can edit files in this checkout."
     echo ""
   else
     acquire_lock || true

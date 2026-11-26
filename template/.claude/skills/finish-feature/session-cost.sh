@@ -2,8 +2,11 @@
 # Measure what a session actually cost, from the Claude Code transcript.
 #
 # Claude Code writes one JSONL per session to
-# ~/.claude/projects/<slugified-cwd>/<session-id>.jsonl. That is ground truth —
-# this script only adds it up. Nothing here estimates.
+# ~/.claude/projects/<project>/<session-id>.jsonl ($CLAUDE_CONFIG_DIR in place of
+# ~/.claude when set), where <project> is the working directory with every
+# non-alphanumeric character replaced by "-", cut to 200 characters plus a hash
+# when longer (https://code.claude.com/docs/en/sessions.md). That is ground
+# truth — this script only adds it up. Nothing here estimates.
 #
 # The one trap: a transcript line is a CONTENT BLOCK, not an API response. A
 # reply with a thinking block and two tool calls is three lines, each carrying
@@ -38,33 +41,62 @@ while [ $# -gt 0 ]; do
     --dir)     need_value "$1" $#; PROJECT="$2"; shift 2 ;;
     --base)    need_value "$1" $#; BASE="$2";    shift 2 ;;
     --json)    JSON=1; shift ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "session-cost: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 PROJECT="$(cd "$PROJECT" 2>/dev/null && pwd)" || { echo "session-cost: no such directory" >&2; exit 1; }
-SLUG="$(printf '%s' "$PROJECT" | sed 's|[/._]|-|g')"
+ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+SLUG="$(printf '%s' "$PROJECT" | sed 's|[^A-Za-z0-9]|-|g')"
 # macOS resolves /tmp to /private/tmp, and Claude Code slugs whichever spelling
-# it was launched with. Try the other one, and keep whichever won — the
-# subagent lookup below builds on the same slug.
-if [ ! -d "$HOME/.claude/projects/$SLUG" ]; then
-  for alt in "-private$SLUG" "${SLUG#-private}"; do
-    [ -d "$HOME/.claude/projects/$alt" ] && { SLUG="$alt"; break; }
+# it was launched with. Try the other one for short, directly encoded names.
+# For long names the docs specify truncation + hash, but not the hash algorithm.
+# A prefix only finds candidates: verify EACH transcript's recorded cwd before
+# selecting it. A sibling transcript or a unique prefix is not project identity.
+T=""
+if [ "${#SLUG}" -gt 200 ]; then
+  for candidate_slug in "$SLUG" "-private$SLUG" "${SLUG#-private}"; do
+    for candidate_dir in "$ROOT/${candidate_slug:0:200}"-*; do
+      [ -d "$candidate_dir" ] || continue
+      if [ -n "$SESSION" ]; then
+        candidates=("$candidate_dir/$SESSION.jsonl")
+      else
+        candidates=("$candidate_dir"/*.jsonl)
+      fi
+      for candidate in "${candidates[@]}"; do
+        [ -f "$candidate" ] || continue
+        # Ignore metadata without cwd; require at least one recorded cwd and
+        # reject conflicting directories or unreadable/malformed transcripts.
+        jq -se --arg project "$PROJECT" '
+          [.[] | .cwd? | select(. != null)]
+          | length > 0 and all(. == $project)
+        ' "$candidate" >/dev/null 2>&1 || continue
+        if [ -z "$T" ] || [ "$candidate" -nt "$T" ]; then T="$candidate"; fi
+      done
+    done
   done
-fi
-PDIR="$HOME/.claude/projects/$SLUG"
-[ -d "$PDIR" ] || { echo "session-cost: no transcripts for $PROJECT (looked in $PDIR)" >&2; exit 1; }
-
-if [ -n "$SESSION" ]; then
-  T="$PDIR/$SESSION.jsonl"
-  [ -f "$T" ] || { echo "session-cost: no transcript $T" >&2; exit 1; }
+  [ -n "$T" ] || { echo "session-cost: no transcripts with verified working directory for $PROJECT" >&2; exit 1; }
+  PDIR="$(dirname "$T")"
 else
-  # Newest by mtime: the live session is the one still being appended to.
-  # `|| true`: an empty dir makes ls exit 1, and under pipefail+errexit that
-  # kills the script before the error message below can explain why.
-  T="$(ls -t "$PDIR"/*.jsonl 2>/dev/null | head -1 || true)"
-  [ -n "$T" ] || { echo "session-cost: no transcripts in $PDIR" >&2; exit 1; }
+  if [ ! -d "$ROOT/$SLUG" ]; then
+    for alt in "-private$SLUG" "${SLUG#-private}"; do
+      [ -d "$ROOT/$alt" ] && { SLUG="$alt"; break; }
+    done
+  fi
+  PDIR="$ROOT/$SLUG"
+  [ -d "$PDIR" ] || { echo "session-cost: no transcripts for $PROJECT (looked in $PDIR)" >&2; exit 1; }
+
+  if [ -n "$SESSION" ]; then
+    T="$PDIR/$SESSION.jsonl"
+    [ -f "$T" ] || { echo "session-cost: no transcript $T" >&2; exit 1; }
+  else
+    # Newest by mtime: the live session is the one still being appended to.
+    # `|| true`: an empty dir makes ls exit 1, and under pipefail+errexit that
+    # kills the script before the error message below can explain why.
+    T="$(ls -t "$PDIR"/*.jsonl 2>/dev/null | head -1 || true)"
+    [ -n "$T" ] || { echo "session-cost: no transcripts in $PDIR" >&2; exit 1; }
+  fi
 fi
 SID="$(basename "$T" .jsonl)"
 
@@ -203,8 +235,9 @@ done
 [ "$runs" -gt 0 ] && SUB="$(jq -n --argjson r "$runs" --argjson g "$gen" --argjson n "$new" --argjson p "$peak" \
   '{runs:$r, generated:$g, new_material:$n, peak_context:$p}')"
 
-# /clear, --resume and /megavibe-restart each start a NEW transcript file, while
-# compaction does not. A feature spanning one of those is only half-measured
+# /clear (and a fresh launch, --fork-session or /branch) starts a NEW transcript
+# file; --resume, --continue, /megavibe-restart and compaction keep the session id
+# and append to the same file. A feature that spans a new file is only half-measured
 # here, and nothing else would say so. Count only transcripts touched since the
 # base commit: nearly every project has old ones, and a note that fires every
 # run is indistinguishable from the one time it matters.
@@ -283,7 +316,7 @@ printf '%s' "$OUT" | jq -r '
      "               \(.diff.uncommitted_paths) path(s) still uncommitted and NOT in that diff"
    else empty end),
   (if .sibling_transcripts > 0 then
-     "note           \(.sibling_transcripts) other transcript(s) for this project — /clear, --resume and /megavibe-restart each start a new one, so a feature spanning a restart is only half measured here"
+     "note           \(.sibling_transcripts) other transcript(s) for this project since the base — /clear, --fork-session and a fresh launch each start a new one, so a feature spanning one is only half measured here"
    else empty end),
   "",
   "started        \(.main.started)",

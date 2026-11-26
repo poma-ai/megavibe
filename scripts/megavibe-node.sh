@@ -640,7 +640,7 @@ cmd_session_resume() {
   if [ "$fresh" = 0 ] && [[ $sid =~ $UUID_RE ]]; then
     prompt="Your session ended unexpectedly (a crash or a tmux restart) and was resumed. Check what was in flight (git status, your last steps), then continue your task from $task: do not redo finished steps and do not discard uncommitted work. $(report_line)"
     open_window "$name" "$dir" --name "$name" ${model:+--model "$model"} --resume "$sid" "$prompt"
-    msg="resumed $name (conversation $sid) in window $WID; if that window closes at once the conversation is gone: megavibe node session resume $name --fresh"
+    msg="resumed $name (conversation $sid) in window $WID; if that window closes at once, either the conversation is still open in another process (the launcher refuses a second writer: attach to that one) or it is gone: megavibe node session resume $name --fresh"
   else
     sid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true)
     [[ $sid =~ $UUID_RE ]] || die "session resume: uuidgen did not give a session id"

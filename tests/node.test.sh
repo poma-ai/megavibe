@@ -39,7 +39,7 @@ printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/launchctl.calls"\n[ "$1" = prin
 printf '#!/bin/bash\necho Darwin\n' > "$B/uname"
 # megavibe stub: the last call's arguments one per line in megavibe.args, every call as one line in
 # megavibe.calls; it stays alive for the seconds in megavibe.sleep when that file exists.
-printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/megavibe.args"\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\n[ -e "%s/megavibe.sleep" ] && sleep "$(cat "%s/megavibe.sleep")"\nexit 0\n' "$T" "$T" "$T" "$T" > "$B/megavibe"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/megavibe.args"\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\n[ -e "%s/megavibe.sleep" ] && sleep "$(cat "%s/megavibe.sleep")"\n[ -e "%s/megavibe.rc" ] && exit "$(cat "%s/megavibe.rc")"\nexit 0\n' "$T" "$T" "$T" "$T" "$T" "$T" > "$B/megavibe"
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/claude.calls"\n' "$T" > "$B/claude"
 chmod +x "$B"/*
 export PATH="$B:$PATH"
@@ -359,6 +359,12 @@ check "pa-start: a second failed resume keeps both ids" '[ "$(sed -n 1p "$N/pa.s
 SID2=$(cat "$N/pa.session")
 check "pa-start: the fresh start after a failed resume also asks for the session check" 'grep -q "/rehydrate" "$T/megavibe.args" && grep -q "megavibe node session check" "$T/megavibe.args"'
 check "pa-start: the id that could not be resumed is kept aside and logged" '[ "$(sed -n 1p "$N/pa.session.failed" 2>/dev/null)" = "$SID1" ] && log | grep -q "could not be resumed"'
+# The launcher refuses (exit 3) a conversation another live process still holds: the old PA is
+# alive, so neither the record is dropped nor a second PA started.
+HELD=$(cat "$N/pa.session"); : > "$T/megavibe.calls"; echo 3 > "$T/megavibe.rc"; cp "$N/pa.session.failed" "$T/failed.before"
+bash "$N/pa-start.sh"
+check "pa-start: a resume refused as held (exit 3) keeps pa.session and starts no second PA" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && [ "$(cat "$N/pa.session")" = "$HELD" ] && cmp -s "$T/failed.before" "$N/pa.session.failed" && log | grep -q "still open in another process"'
+rm -f "$T/megavibe.rc"
 printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
 check "pa-start: an unusable pa.session is never passed on; fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && ! grep -q "pwned" "$T/megavibe.calls" && [ ! -e "$T/pwned" ] && grep -qx -- --session-id "$T/megavibe.args"'
 # Without a node folder (plain `megavibe assistant`, no node installed) nothing changes: no id, no file.
