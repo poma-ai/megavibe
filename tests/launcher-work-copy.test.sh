@@ -109,6 +109,12 @@ notice() {
     grep -q 'installed megavibe.*left untouched' "$ROOT/stderr" &&
     grep -Fq "bash $(printf '%q' "$SOURCE/setup.sh")" "$ROOT/stderr"
 }
+migration_notice() {
+  [ "$(wc -l < "$ROOT/stderr" | tr -d ' ')" = 1 ] &&
+    grep -q 'work copy; installed megavibe left untouched' "$ROOT/stderr" &&
+    grep -q 'move this checkout out of the installation path, preserve runtime data' "$ROOT/stderr" &&
+    ! grep -Fq "bash $(printf '%q' "$SOURCE/setup.sh")" "$ROOT/stderr"
+}
 
 for spelling in path symlink identical hardlink; do
   fixture
@@ -155,6 +161,38 @@ for spelling in cli-link installed-link; do
   check "$spelling: no work-copy notice" test "$(grep -c 'work copy' "$ROOT/stderr" || true)" = 0
 done
 
+for spelling in cli-link reverse-link; do
+  fixture
+  date +%s > "$INSTALL/.last-update-check"
+  # Establish the normal installed state, including the PA's installed hooks.
+  ENTRY="$INSTALL/megavibe"
+  launch --resume example-session
+  check "$spelling without source-repo: baseline launch succeeds" test "$RC" = 0
+  snapshot "$TEST_HOME/.claude" > "$ROOT/global-before"
+  snapshot "$ROOT/personal" > "$ROOT/personal-before"
+  snapshot "$INSTALL/template" > "$ROOT/template-before"
+  cp "$INSTALL/init.sh" "$ROOT/init-before"
+  ENTRY="$TEST_HOME/.local/bin/megavibe"
+  if [ "$spelling" = reverse-link ]; then
+    rm "$SOURCE/megavibe"
+    ln -s "$INSTALL/megavibe" "$SOURCE/megavibe"
+    ENTRY="$SOURCE/megavibe"
+  fi
+  launch --resume example-session
+  snapshot "$TEST_HOME/.claude" > "$ROOT/global-after"
+  snapshot "$ROOT/personal" > "$ROOT/personal-after"
+  snapshot "$INSTALL/template" > "$ROOT/template-after"
+  check "$spelling without source-repo: launches from another project" test "$RC" = 0
+  check "$spelling without source-repo: global protocol unchanged" cmp -s "$ROOT/global-before" "$ROOT/global-after"
+  check "$spelling without source-repo: personal hooks unchanged" cmp -s "$ROOT/personal-before" "$ROOT/personal-after"
+  check "$spelling without source-repo: installed template unchanged" cmp -s "$ROOT/template-before" "$ROOT/template-after"
+  check "$spelling without source-repo: installed init unchanged" cmp -s "$ROOT/init-before" "$INSTALL/init.sh"
+  # A missing installed helper must not fall back to resources beside the link.
+  printf '#!/bin/bash\necho called > "$CALLS/entry-helper"\n' > "$SOURCE/scripts/megavibe-node.sh"
+  launch node status
+  check "$spelling without source-repo: ignores entrypoint helper" test "$RC:$([ -e "$ROOT/calls/entry-helper" ]; echo $?)" = '1:1'
+done
+
 fixture
 rm -rf "$INSTALL" "$TEST_HOME/.claude"
 launch --resume example-session
@@ -191,7 +229,7 @@ for marker in directory file; do
     launch --resume example-session
     snapshot "$TEST_HOME" > "$ROOT/home-after"
     snapshot "$SOURCE" > "$ROOT/source-after"
-    check "override, .git $marker, protocol $protocol: refuses checkout" notice
+    check "override, .git $marker, protocol $protocol: gives migration remedy" migration_notice
     check "override, .git $marker, protocol $protocol: no writes or setup" \
       test "$RC:$(cmp -s "$ROOT/home-before" "$ROOT/home-after"; echo $?):$(cmp -s "$ROOT/source-before" "$ROOT/source-after"; echo $?):$(find "$ROOT/calls" -type f -print)" = '1:0:0:'
   done
@@ -234,6 +272,22 @@ for command in 'memory set docs_ask 1' 'memory unset docs_ask' 'reviewers set re
   check "$command: refused before dispatch" notice
   check "$command: no writes or helpers" test "$RC:$(cmp -s "$ROOT/home-before" "$ROOT/home-after"; echo $?):$(cmp -s "$ROOT/project-before" "$ROOT/project-after"; echo $?):$(cmp -s "$ROOT/worktree-before" "$ROOT/worktree-after"; echo $?):$(find "$ROOT/calls" -type f -print)" = '1:0:0:0:'
 done
+
+# Preview still writes Codex caches in an installation; a work copy must refuse
+# before invoking the real router. launch uses env -i, with no MEGAVIBE_NOW.
+fixture
+cp "$REPO/scripts/usage-route.sh" "$INSTALL/scripts/"
+mkdir -p "$TEST_HOME/.codex/sessions"
+snapshot "$TEST_HOME" > "$ROOT/home-before"
+launch route
+snapshot "$TEST_HOME" > "$ROOT/home-after"
+check 'route: refused before preview' notice
+check 'route: no writes' test "$RC:$(cmp -s "$ROOT/home-before" "$ROOT/home-after"; echo $?)" = '1:0'
+check 'route: neither Codex cache created' test "$([ -e "$INSTALL/usage/codex-row.cache" ] || [ -e "$INSTALL/usage/codex-row-forecast.cache" ]; echo $?)" = 1
+ENTRY="$INSTALL/megavibe"
+launch route
+check 'installed route: preview succeeds' test "$RC" = 0
+check 'installed route: fixture exercises both caches' test "$([ -f "$INSTALL/usage/codex-row.cache" ] && [ -f "$INSTALL/usage/codex-row-forecast.cache" ]; echo $?)" = 0
 
 for command in 'memory' 'memory list' 'reviewers' 'reviewers list' 'worktree' 'worktree list' 'help' 'version'; do
   fixture

@@ -662,6 +662,9 @@ setup's selective copies into `$HOME/.megavibe`; neither copies the source
 `.git`. Setup currently fixes that destination; a runtime relocated to a custom
 `MEGAVIBE_HOME` follows the same identity rule. A checkout at the installation
 path remains a work copy. Install deliberately with `bash megavibe/setup.sh`.
+If you cloned into the installation directory, move that directory to a separate
+checkout, copy it back to the installation path without `.git` to keep existing
+runtime data, then run `bash /path/to/checkout/setup.sh`.
 Both automatic setup branches refuse nonterminal stdin and print an explicit
 setup command. Explicit `update` and `setup.sh` keep their behavior.
 
@@ -671,9 +674,10 @@ setup command. Explicit `update` and `setup.sh` keep their behavior.
 | `memory set`, `memory unset`, `reviewers set` | Guarded |
 | `worktree NAME [BRANCH]`, `worktree remove NAME` | Guarded |
 | `node`, `tick`, `usage` (all forms) | Guarded; avoids duplicating the helpers' argument parsers |
+| `route` | Guarded; even preview writes usage caches |
 | `assistant`, `personal`, `trash-greenlight` | Guarded |
 | `update`, `update --check` | Exempt intentionally, including their existing writes |
-| `help`, `version` (and flags), `doctor`, `auth`, `sessions`, `route`, `restart-all` | Exempt; informational/reporting |
+| `help`, `version` (and flags), `doctor`, `auth`, `sessions`, `restart-all` | Exempt; informational/reporting |
 | `remote`, `nondev`, `megawork` | Exempt; print-only notices |
 | `reviewers` without `set`, `memory` without `set`/`unset`, `worktree`/`worktree list` | Exempt; listings (invalid forms only print usage) |
 
