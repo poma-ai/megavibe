@@ -75,7 +75,7 @@ printf 'SSH-2.0-test\nThis system is locked\n' > "$T/banner-up"
 printf 'This system is locked\r\n' > "$T/banner-locked"
 : > "$T/banner-empty"
 fresh() {
-  export HOME="$T/home-$1" MEGAVIBE_HOME="$T/home-$1/.megavibe" PATH="$B:/usr/bin:/bin:/usr/sbin:/sbin"
+  export HOME="$T/home-$1" MEGAVIBE_HOME="$T/home-$1/.megavibe" CLAUDE_CONFIG_DIR="$T/home-$1/config" PATH="$B:/usr/bin:/bin:/usr/sbin:/sbin"
   N="$MEGAVIBE_HOME/node"
   mkdir -p "$N/sessions" "$MEGAVIBE_HOME/scripts" "$HOME/.local/bin"
   cp "$REPO/template/node/node.sh" "$N/node.sh"
