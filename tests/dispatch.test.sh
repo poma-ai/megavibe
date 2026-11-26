@@ -410,4 +410,7 @@ kill "$LW" 2>/dev/null; wait "$LW" 2>/dev/null
 o=$(D add https://evil.example.com/o/r/issues/55 2>&1); check "R2 an issue URL on another host is refused ($o)" '[ -z "$(st 55 2)" ] && [[ "$o" == *"another repository"* ]]'
 o=$(D add 0059); check "R2 leading zeros are not kept in the issue number ($o)" '[ "$(st 59 2)" = queued ] && [ -z "$(awk -F"\t" "\$1 ~ /^0/" "$Q/queue.tsv")" ]'
 
+# third pass: a tick without jq must not read an empty state as "closed"
+check "R3 tick, resume and launch need jq before they write anything; an unreadable state is not 'closed'" '[ "$(grep -c "need perl; need jq" "$REPO/scripts/megavibe-dispatch.sh")" -ge 2 ] && grep -q "could not read its state; not started" "$REPO/scripts/megavibe-dispatch.sh"'
+
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

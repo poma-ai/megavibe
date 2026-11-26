@@ -65,7 +65,7 @@ PQ_DIR="."
 pick_queue() {   # pick_queue [NAME]: sets Q and D; with no name, from env or the repo ($PQ_DIR: the current one, or start's --dir)
   local n="${1:-${MEGAVIBE_DISPATCH_QUEUE:-}}"
   if [ -z "$n" ]; then n=$(basename "$(repo_root "$PQ_DIR")" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-'); fi
-  [[ $n =~ $NAME_RE ]] || die "queue name '$n' is not usable (lower case letters, digits, dash, underscore: a dot would be read by tmux as a pane)"
+  [[ $n =~ $NAME_RE ]] || die "queue name '$n' is not usable (lower case letters, digits, dash, underscore, up to 41 characters, starting with a letter or digit): give one with --name, or MEGAVIBE_DISPATCH_QUEUE"
   Q="$n"; D="$MH/dispatch/$Q"; TMUX_SOCK=$(conf_get socket)
 }
 conf_get() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$D/conf" 2>/dev/null || true; }
@@ -157,8 +157,8 @@ lock_live() {
   pid=$(jq -r '.pid // empty' "$meta" 2>/dev/null) || return 1
   [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  name=$(ps -p "$pid" -o comm= 2>/dev/null) || return 0   # cannot tell: treated as live, as the launcher does
-  [ -n "$name" ] || return 0
+  name=$(ps -p "$pid" -o comm= 2>/dev/null) || { LOCK_PID="$pid"; return 0; }   # cannot tell: treated as live, as the launcher does
+  [ -n "$name" ] || { LOCK_PID="$pid"; return 0; }
   case "$name" in
     *claude*|*node*) LOCK_PID="$pid"; return 0 ;;
     *bash*|*zsh*) if command -v pgrep >/dev/null 2>&1 && pgrep -P "$pid" -f claude >/dev/null 2>&1; then LOCK_PID="$pid"; return 0; fi
@@ -363,13 +363,15 @@ trust_preflight() {
   (cd "$wt" && bounded 60 "${PC_ENV[@]}" claude -p --dangerously-skip-permissions "echo ok" </dev/null >/dev/null 2>&1 9>&-) || true
 }
 launch() {   # launch N: worktree, window, record. Returns 1, having said why, when the issue could not be started.
-  local n="$1" wt sid model parent prompt wid orc=0 cur
+  local n="$1" wt sid model parent prompt wid orc=0 cur st1
   live_windows
   if win_idle "$n" >/dev/null; then say "issue $n: still has a window; not starting a second session on its worktree"; return 1; fi
   # the issue as it is NOW: closed since it was queued (a duplicate, fixed meanwhile) means nothing to do; an edited body or title is
   # what the session must work from, not the snapshot taken when it was queued
   cur=$(cd "$(conf_get repo)" && gh issue view "$n" --json title,body,url,state 2>/dev/null) || { say "issue $n: could not re-read it from GitHub; not started"; return 1; }
-  if [ "$(printf '%s' "$cur" | jq -r '.state')" != OPEN ]; then set_cols "$n" 2 dropped; say "issue $n: closed since it was queued: dropped, no session"
+  st1=$(printf '%s' "$cur" | jq -r '.state // empty' 2>/dev/null) || st1=""
+  [ -n "$st1" ] || { say "issue $n: could not read its state; not started"; return 1; }
+  if [ "$st1" != OPEN ]; then set_cols "$n" 2 dropped; say "issue $n: closed since it was queued: dropped, no session"
     (cd "$(conf_get repo)" && gh issue edit "$n" --remove-assignee "@me" >/dev/null 2>&1) || true   # the claim goes back with it
     return 1; fi
   write_task "$n" "$cur" || { say "issue $n: could not write its task file; not started"; return 1; }
@@ -529,7 +531,7 @@ claim_ok() {
 }
 cmd_tick() {
   local max running n r pr
-  lock; need_queue; need tmux; need gh; need perl
+  lock; need_queue; need tmux; need gh; need perl; need jq
   max=$(conf_get max); live_windows
   [ "$WINS_STATE" != unknown ] || die "cannot tell which windows run (tmux failed unexpectedly); nothing changed"
   # reconcile: a running issue whose window is gone has ended; a pull request from its branch (in this repository) makes it "pr".
@@ -595,7 +597,7 @@ cmd_peek() {
 # window, as `megavibe node session resume` does for the node's sessions. Never while a window for it exists.
 cmd_resume() {
   local n r wt sid model parent prompt wid orc=0
-  n=$(issue_of "${1:-}") || die "'${1:-}' is not an issue number"; need_queue; need tmux; lock
+  n=$(issue_of "${1:-}") || die "'${1:-}' is not an issue number"; need_queue; need tmux; need jq; lock
   r=$(row "$n"); [ -n "$r" ] || die "issue $n is not in queue $Q"
   case "$(col "$r" 2)" in running|ended) ;; *) die "issue $n is $(col "$r" 2): resume is for a session that ended unexpectedly (running with its window gone, or ended)" ;; esac
   live_windows; [ "$WINS_STATE" != unknown ] || die "cannot tell which windows run; nothing started"
