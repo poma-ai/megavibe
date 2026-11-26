@@ -132,7 +132,7 @@ When compacting, keep: every decision or question still open with the user, with
 
 ## Skills
 
-Megavibe provides slash commands for common workflows. Type `/` to see them. `/megavibe-restart`, `/watch` (including `status` and `off`), and `/finish-feature` are manual-only: the user types the command; the model may offer it but must not invoke the skill itself. This does not change the underlying script actions already allowed by the protocol, such as a `tick.sh` status check or `restart.sh request`. `/rehydrate`, `/catchup`, `/doc-review`, and `/init-feature` remain model-invocable, including automatic `/rehydrate` when required after compaction:
+Megavibe provides slash commands for common workflows. Type `/` to see them. `/megavibe-restart` and `/finish-feature` are manual-only: the user types the command; the model may offer it but must not invoke the skill itself. `/rehydrate`, `/catchup`, `/doc-review`, `/init-feature`, and `/watch` remain model-invocable, including automatic `/rehydrate` when required after compaction:
 - `/rehydrate` — rebuild WORKING_CONTEXT.md from .agent/ files via the allocated backend
 - `/catchup` — orient yourself at session start (.agent/ + git state)
 - `/init-feature <description|issue link>` — scope a feature before building: summary and estimate to confirm, then a fork (spec, or vibe it)

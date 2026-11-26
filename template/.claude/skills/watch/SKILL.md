@@ -1,14 +1,12 @@
 ---
+# Model-invocable because unattended recovery re-creates the watch schedule.
 name: watch
-disable-model-invocation: true
 user-invocable: true
 description: Unattended watch ticks. Schedules ~/.megavibe/scripts/tick.sh as a recurring prompt (default every 30 min) that reports review requests, comments and PR pushes on the watched repos, Linear comments, the Claude login lifetime and both subscriptions' usage; the session acts on what needs an answer. `/watch off` stops it, `/watch status` shows it.
-allowed-tools: Read, CronCreate, CronDelete, CronList, Bash(bash ~/.megavibe/scripts/tick.sh), Bash(bash ~/.megavibe/scripts/tick.sh *), Bash(bash ~/.megavibe/scripts/claude-auth-check.sh *), Bash(basename *), Bash(printf *), Bash(shasum), Bash(cut -c1-6), Bash(gh pr view *)
+allowed-tools: Read, CronCreate, CronDelete, CronList, Bash(bash ~/.megavibe/scripts/tick.sh *), Bash(bash ~/.megavibe/scripts/claude-auth-check.sh *), Bash(basename *), Bash(printf *), Bash(shasum *), Bash(cut -c1-6 *), Bash(gh pr view *)
 ---
 
 # /watch — unattended ticks
-
-Start this skill only when the user types `/watch`. The model may offer the command, but must not invoke the skill itself.
 
 `/watch [interval] [org/repo ...]`, `/watch status`, `/watch off`.
 

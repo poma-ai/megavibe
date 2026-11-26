@@ -3,7 +3,7 @@ name: finish-feature
 disable-model-invocation: true
 user-invocable: true
 description: Close out a finished feature by measuring what it actually cost — turns, tool calls, tokens, and the real size of the diff — scoring that against what /init-feature predicted, posting it as a comment on the branch's PR, and asking whether to merge that PR. Start only when the user types /finish-feature. If they ask about finished-work cost or estimate accuracy in prose, offer the command for them to type. Do NOT use to summarize work that is still in progress.
-allowed-tools: Read, Glob, Grep, Write, Edit, AskUserQuestion, Bash(bash .claude/skills/finish-feature/session-cost.sh *), Bash(git add *), Bash(git commit *), Bash(git diff *), Bash(jq *), Bash(git symbolic-ref -q HEAD), Bash(ls .agent/PLANS/*-brief.md), Bash(grep -rl *), Bash(tail -5), Bash(grep -A20 *), Bash(gh issue view *), Bash(gh auth status), Bash(gh repo view *), Bash(gh pr view *), Bash(gh pr create *), Bash(gh pr comment *), Bash(gh pr merge *), Bash(printf *), Bash(echo *), Bash(true), Bash(.claude/hooks/agent-log.sh append)
+allowed-tools: Read, Glob, Grep, Write, Edit, AskUserQuestion, Bash(bash .claude/skills/finish-feature/session-cost.sh *), Bash(git fetch *), Bash(git diff *), Bash(jq *), Bash(git symbolic-ref -q HEAD *), Bash(ls .agent/PLANS/*-brief.md *), Bash(grep -rl *), Bash(tail -5 *), Bash(grep -A20 *), Bash(gh issue view *), Bash(gh auth status *), Bash(gh repo view *), Bash(gh pr view *), Bash(gh pr create *), Bash(gh pr comment *), Bash(printf *), Bash(echo *), Bash(true *), Bash(.claude/hooks/agent-log.sh append *)
 argument-hint: "[base-ref, e.g. main]"
 ---
 

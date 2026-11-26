@@ -32,7 +32,7 @@ Copies the most recent output (or specified content) to the clipboard in the rig
    - Strip all markup
    - Use indentation and whitespace for structure
 
-3. **Copy to clipboard** using the platform tool. Pass the formatted text on stdin with a quoted here-document (for example `pbcopy <<'CLIP_TEXT'`), so its contents are not interpreted by the shell:
+3. **Copy to clipboard** using the platform tool. Pass the formatted text on stdin with a here-document whose delimiter is a long random-looking word, checked against the entire text and regenerated until it does not occur anywhere in it. Quote that delimiter in the opening here-document operator to prevent shell expansion of the contents:
    - macOS: `pbcopy`
    - Linux: `xclip -selection clipboard` or `xsel --clipboard`
    - Windows/WSL: `clip.exe`

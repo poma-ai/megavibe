@@ -1,7 +1,7 @@
 ---
 name: doc-review
 description: Independent multi-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the allocated ship readers per delegation.md in parallel; synthesizes findings into a single report.
-allowed-tools: Read, Write, Agent, Bash(ls CLAUDE.md README*.md), Bash(find docs -maxdepth 2 -name *), Bash(bash ~/.megavibe/scripts/codex-review.sh *), Bash(bash ~/.megavibe/scripts/gemini-review.sh *)
+allowed-tools: Read, Write, Agent, Bash(ls CLAUDE.md README*.md *), Bash(find docs -maxdepth 2 -name *), Bash(bash ~/.megavibe/scripts/amass.sh *), Bash(bash ~/.megavibe/scripts/codex-progress.sh *), Bash(bash ~/.megavibe/scripts/codex-review.sh *), Bash(bash ~/.megavibe/scripts/gemini-review.sh *)
 ---
 
 # Doc-review (periodic doc hygiene)
@@ -21,7 +21,9 @@ After significant docs or code edits that change the documentation surface — `
    ```
    Most projects: just `CLAUDE.md` plus zero or more `README*.md` at the root. Adapt if the project uses a `docs/` folder. If only `CLAUDE.md` exists, the review is still useful — focus on bloat and drift-vs-code.
 
-2. **Allocate each reader, then launch in PARALLEL** with the SAME files and the SAME prompt. Follow `.claude/rules/delegation.md` for continuous weighing, eligibility, ship composition and fallback; the session-start Reviewers row lists eligible backends, not mandatory calls. For an allocated subagent use Agent with `subagent_type: reviewer`, or `general-purpose` with `model: sonnet` and the text of `.claude/agents/reviewer.md` if it is not registered. For each allocated Codex reader use `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --timeout 600 --prompt "<prompt>" <files>`, selecting different models with `--model` for a two-Codex pair. Use Bash, not the removed Codex MCP. Launch long Codex calls with `run_in_background` and separate heartbeats. For permitted Gemini calls use `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --pro --prompt "<prompt>" <files>`, adding `--fallback` only under the fallback rule; never use Gemini MCP or CLI for reviews. The prompt:
+2. **Sweep and triage before readers.** Follow the sweep and waiver rules in `.claude/rules/delegation.md`: invoke `bash ~/.megavibe/scripts/amass.sh run --out <dir> --change "<change>" <files>`, then `bash ~/.megavibe/scripts/amass.sh dedupe --out <dir>`, and triage the leads before launching readers. Record any permitted waiver.
+
+   **Allocate each reader, then launch in PARALLEL** with the SAME files and the SAME prompt. Follow `.claude/rules/delegation.md` for continuous weighing, eligibility, ship composition and fallback; the session-start Reviewers row lists eligible backends, not mandatory calls. For an allocated subagent use Agent with `subagent_type: reviewer`, or `general-purpose` with `model: sonnet` and the text of `.claude/agents/reviewer.md` if it is not registered. For each allocated Codex reader use `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --timeout 600 --prompt "<prompt>" <files>`, selecting different models with `--model` for a two-Codex pair. Use Bash, not the removed Codex MCP. Launch long Codex calls with `run_in_background` and separate heartbeats using `bash ~/.megavibe/scripts/codex-progress.sh --file <rollout> --brief` (pin each job's rollout with `bash ~/.megavibe/scripts/codex-progress.sh --path --since <start>`). For permitted Gemini calls use `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --pro --prompt "<prompt>" <files>`, adding `--fallback` only under the fallback rule; never use Gemini MCP or CLI for reviews. The prompt:
 
    > Review the attached project documentation set. For each finding, output `{category, file:line, what's wrong, suggested fix}`. Categories:
    >
