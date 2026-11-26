@@ -144,7 +144,9 @@ for _wc in ".agent/sessions/${SID_FULL}/WORKING_CONTEXT.md" ".agent/sessions/${S
   # the common case — the flag is set at compaction and /rehydrate runs moments
   # later — and it produced three false nags then a false auto-clear, plus the
   # forced Stop turn this whole change exists to remove. Equality means fresh:
-  # on-compact.sh only sets the flag when the WC is over an hour old.
+  # on-compact.sh only sets the flag when the WC is missing or older than an
+  # event or register, so an existing WC predates the flag by the time those
+  # writes took; a WC written in the compaction's own second counts as fresh.
   if [ -f "$_wc" ] && [ -s "$_wc" ] && [ ! "$REHYDRATE_FLAG" -nt "$_wc" ]; then
     rm -f "$REHYDRATE_FLAG" 2>/dev/null || true
   fi

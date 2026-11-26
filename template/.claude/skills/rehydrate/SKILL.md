@@ -1,13 +1,13 @@
 ---
 name: rehydrate
-description: Full AI-powered context recovery via an allocated backend. Run `reviewers.sh digest-chain` for availability and failure fallbacks. Use after compaction or when context feels stale.
+description: Full AI-powered context recovery via an allocated backend. Run `reviewers.sh digest-chain` for availability and failure fallbacks. Use after a compaction that reports the working context missing or stale, or when context feels stale.
 ---
 
 # Re-hydrate Working Context
 
 Regenerate your session-scoped WORKING_CONTEXT.md from the durable `.agent/` files, choosing the first backend among those available by the allocation rule in `.claude/rules/delegation.md`.
 
-This is the heavy-duty recovery tool — it calls an AI backend and writes a fresh working context. For quick orientation without AI calls at **session start**, use `/catchup` instead. After compaction you do NOT need `/catchup`: the `on-compact` hook writes that orientation to `.agent/LOGS/rehydration-instructions.<session>.md` and points you at it, so `/rehydrate` is the only slash command to run.
+This is the heavy-duty recovery tool — it calls an AI backend and writes a fresh working context. For quick orientation without AI calls at **session start**, use `/catchup` instead. After compaction you do NOT need `/catchup`: the `on-compact` hook writes that orientation to `.agent/LOGS/rehydration-instructions.<session>.md` and points you at it, so `/rehydrate` is the only slash command to run, and only when that hook reports this session's working context missing or stale (an event or register written after it); when it reports it fresh, reading it is enough.
 
 ## Two hard rules (a rehydrate must never stall the session)
 

@@ -127,13 +127,24 @@ mkdir -p "$P/.agent/sessions/$SID"
 echo context > "$P/.agent/sessions/$SID/WORKING_CONTEXT.md"
 R --session "$SID12"
 has "/rehydrate optional" "unambiguous prefix finds context"
-python3 - "$P/.agent/sessions/$SID/WORKING_CONTEXT.md" <<'PY'
+python3 - "$P/.agent/sessions/$SID/WORKING_CONTEXT.md" "$P/.agent" <<'PY'
 import os, sys, time
+from pathlib import Path
+for f in Path(sys.argv[2]).rglob("*"):
+    if f.is_file():
+        os.utime(f, (time.time()-10800, time.time()-10800))
 os.utime(sys.argv[1], (time.time()-7200, time.time()-7200))
 PY
 R --session "$SID"
 eq "$RC" 0 "old context does not block"
-has "/rehydrate required" "old context reported"
+has "fresh; /rehydrate optional" "old context with nothing newer is fresh"
+echo later > "$P/.agent/events/20990101T000000Z-x-000009.md"
+R --session "$SID"
+has "/rehydrate required" "an event newer than the context makes it stale"
+mkdir -p "$P/.agent/events/nested" && mv "$P/.agent/events/20990101T000000Z-x-000009.md" "$P/.agent/events/nested/"
+R --session "$SID"
+has "/rehydrate required" "a nested newer event counts, as find does"
+mv "$P/.agent/events/nested/20990101T000000Z-x-000009.md" "$P/old-event.md"
 (cd "$P" && git init -q)
 R --session "$SID"
 has "uncommitted work:" "git state reported"
@@ -304,7 +315,8 @@ event 001 "DECISION: ship the verified result."
 OUT=$(cd "$P" && printf '{"session_id":"%s","transcript_path":"/nonexistent"}' "$SID" |
   /bin/bash .claude/hooks/on-pre-compact.sh 2>/dev/null)
 eq "$?" 0 "pre-compact hook exits successfully"
-has '"systemMessage"' "legacy message preserved"
+has "Megavibe preservation instructions" "stdout carries the preservation instructions"
+case "$OUT" in *systemMessage*|*"ship the verified result"*) eq leaked clean "stdout carries no report or event text" ;; *) eq clean clean "stdout carries no report or event text" ;; esac
 OUT=$(cat "$P/.agent/LOGS/pre-compact-alert.$SID12.md")
 has "COMPACT READINESS — ADVISORY (exit 1" "alert carries exit"
 has "1 marked-decision events" "alert carries count"
