@@ -1819,6 +1819,29 @@ fi
 
 # ─── Pre-flight: check setup ────────────────────────────────────────
 
+# Compare physical file paths, not contents, directory names or inodes (a
+# hard-linked work copy is still a different path). Follow the CLI symlink and
+# an installed launcher that is itself a symlink, using BSD-compatible tools.
+launcher_realpath() {
+  local p dir
+  p=$(resolve_link "$1") || return 1
+  [ -f "$p" ] || return 1
+  dir=$(cd -P -- "$(dirname "$p")" && pwd -P) || return 1
+  printf '%s/%s\n' "$dir" "$(basename "$p")"
+}
+RUNNING_LAUNCHER=$(launcher_realpath "$0") || RUNNING_LAUNCHER=""
+INSTALLED_LAUNCHER=$(launcher_realpath "$MEGAVIBE_HOME/megavibe") || INSTALLED_LAUNCHER=""
+if [ -z "$RUNNING_LAUNCHER" ] || [ "$RUNNING_LAUNCHER" != "$INSTALLED_LAUNCHER" ]; then
+  # Even repo-local init.sh installs a global guard runner, and the session
+  # path writes launch/restart state under MEGAVIBE_HOME. Stop before any of
+  # those writes instead of mixing work-copy files with the installed runtime.
+  # Explicit subcommands (notably update) have already dispatched above.
+  WORK_COPY_DIR="${RUNNING_LAUNCHER%/*}"
+  printf 'megavibe: work copy; installed megavibe left untouched; launch stopped because initialization and session helpers require an installation (no automatic setup). Install explicitly: bash %q\n' \
+    "${WORK_COPY_DIR:-$SCRIPT_DIR}/setup.sh" >&2
+  exit 1
+fi
+
 refuse_install_project() {
   if [ . -ef "$MEGAVIBE_HOME" ]; then
     echo "megavibe: refusing to bootstrap the Megavibe install directory; cd into a project first." >&2
@@ -1838,6 +1861,10 @@ if [ ! -f "$MEGAVIBE_HOME/init.sh" ] || ! grep -q "megavibe-v3" "$HOME/.claude/C
     echo ""
   elif [ -f "$SCRIPT_DIR/setup.sh" ]; then
     # Running from repo clone — bootstrap from source
+    if [ ! -t 0 ]; then
+      printf 'megavibe: first-time setup from a repo requires a terminal; run explicitly: bash %q\n' "$SCRIPT_DIR/setup.sh" >&2
+      exit 1
+    fi
     echo "First-time setup from repo. Running now..."
     echo ""
     bash "$SCRIPT_DIR/setup.sh"

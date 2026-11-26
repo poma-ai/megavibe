@@ -648,6 +648,18 @@ rm -rf ~/.megavibe ~/.local/bin/megavibe
 
 See [CLAUDE.md](CLAUDE.md) for full contributor documentation.
 
+**Running the launcher from a work copy.** A session launch from a file other
+than `$MEGAVIBE_HOME/megavibe` (after resolving symlinks) stops with one notice
+before setup or syncs; project initialization and session helpers require the
+installed runtime. Install that copy deliberately with `bash megavibe/setup.sh`.
+Non-interactive repo launches never perform first-time setup. For end-to-end
+tests, `HOME`, `MEGAVIBE_HOME`, and `CLAUDE_CONFIG_DIR` must **all** point into a
+scratch directory, with stub `claude`, `tmux`, and any network/tool installers
+first on `PATH` (stub `git` when testing updates). A scratch config alone is not
+isolation: setup uses `$HOME/.megavibe` and the protocol uses `$HOME/.claude`.
+To exercise a full launch, place the test launcher and its files at the scratch
+installed location. Explicit `megavibe update` and `setup.sh` keep their behavior.
+
 - **Idempotency is sacred.** Both `setup.sh` and `init.sh` are safe to re-run.
 - **Marker-based protocol updates.** `<!-- megavibe-v3 -->` markers enable surgical replacement.
 - **Infrastructure vs. user data.** Hooks/rules/skills are always overwritten. Context files are never overwritten.

@@ -5,7 +5,8 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/megavibe-guard-launch.XXXXXX")
 trap '/bin/rm -rf "$T"' EXIT
 T=$(cd "$T" && pwd -P)
 export HOME="$T/home" MEGAVIBE_INIT_SKIP_HEAL=1
-unset MEGAVIBE_HOME MEGAVIBE_ALLOW_KILL MEGAVIBE_ALLOW_REMOVE_LAUNCH MEGAVIBE_ALLOW_MISSING_LAUNCH CLAUDE_PROJECT_DIR TMUX
+unset MEGAVIBE_ALLOW_KILL MEGAVIBE_ALLOW_REMOVE_LAUNCH MEGAVIBE_ALLOW_MISSING_LAUNCH CLAUDE_PROJECT_DIR TMUX
+export MEGAVIBE_HOME="$HOME/.megavibe" CLAUDE_CONFIG_DIR="$HOME/.claude"
 WRAPPER="$HOME/.megavibe/scripts/guard-run.sh"
 HOOKS="$REPO/template/.claude/hooks"
 mkdir -p "$HOME/.megavibe/"{scripts,template/.claude} "$T/recreated/.agent" "$T/project/.claude/hooks"
