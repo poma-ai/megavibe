@@ -648,6 +648,47 @@ rm -rf ~/.megavibe ~/.local/bin/megavibe
 
 See [CLAUDE.md](CLAUDE.md) for full contributor documentation.
 
+**Running the launcher from a work copy.** Session launches and mutating
+subcommands require the installed runtime. After resolving symlinks, the running
+launcher and `$MEGAVIBE_HOME/megavibe` must be the same file (`-ef`) in the same
+physical directory, with no `.git` directory or file beside them. Pointing
+`MEGAVIBE_HOME` at a checkout cannot make it an installation. Case aliases on
+case-insensitive filesystems and installed symlinks work; equal-content copies
+and hard links from another directory are refused, since that directory could
+supply different relative runtime resources.
+
+Both the downloaded installer and `bash megavibe/setup.sh` from a clone use
+setup's selective copies into `$HOME/.megavibe`; neither copies the source
+`.git`. Setup currently fixes that destination; a runtime relocated to a custom
+`MEGAVIBE_HOME` follows the same identity rule. A checkout at the installation
+path remains a work copy. Install deliberately with `bash megavibe/setup.sh`.
+If you cloned into the installation directory, move that directory to a separate
+checkout, copy it back to the installation path without `.git` to keep existing
+runtime data, then run `bash /path/to/checkout/setup.sh`.
+Both automatic setup branches refuse nonterminal stdin and print an explicit
+setup command. Explicit `update` and `setup.sh` keep their behavior.
+
+| Command | Work-copy policy |
+|---|---|
+| Session launches (including resume/continue) | Guarded |
+| `memory set`, `memory unset`, `reviewers set` | Guarded |
+| `worktree NAME [BRANCH]`, `worktree remove NAME` | Guarded |
+| `node`, `tick`, `usage` (all forms) | Guarded; avoids duplicating the helpers' argument parsers |
+| `route` | Guarded; even preview writes usage caches |
+| `assistant`, `personal`, `trash-greenlight` | Guarded |
+| `update`, `update --check` | Exempt intentionally, including their existing writes |
+| `help`, `version` (and flags), `doctor`, `auth`, `sessions`, `restart-all` | Exempt; informational/reporting |
+| `remote`, `nondev`, `megawork` | Exempt; print-only notices |
+| `reviewers` without `set`, `memory` without `set`/`unset`, `worktree`/`worktree list` | Exempt; listings (invalid forms only print usage) |
+
+For end-to-end tests, `HOME`, `MEGAVIBE_HOME`, and `CLAUDE_CONFIG_DIR` must **all**
+point into scratch, with stub `claude`, `tmux`, and network/tool installers first
+on `PATH` (stub `git` when testing updates). A scratch config alone is not
+isolation: setup uses `$HOME/.megavibe` and the protocol uses `$HOME/.claude`.
+To exercise mutating commands or a full launch, copy the launcher and its needed
+files into the scratch installation without `.git`. No test-only guard bypass
+is needed.
+
 - **Idempotency is sacred.** Both `setup.sh` and `init.sh` are safe to re-run.
 - **Marker-based protocol updates.** `<!-- megavibe-v3 -->` markers enable surgical replacement.
 - **Infrastructure vs. user data.** Hooks/rules/skills are always overwritten. Context files are never overwritten.

@@ -10,10 +10,12 @@ printf 'git-called\n' >> "$GIT_CALLS"
 exit 1
 EOF
 chmod +x "$T/bin/git"
+cp "$REPO/megavibe" "$T/home/megavibe"
+export HOME="$T/home" CLAUDE_CONFIG_DIR="$T/config"
 export GIT_CALLS="$T/git.calls" MEGAVIBE_HOME="$T/home" PATH="$T/bin:$PATH"
 
 set +e
-out=$(bash "$REPO/megavibe" worktree --help 2>&1)
+out=$(bash "$MEGAVIBE_HOME/megavibe" worktree --help 2>&1)
 rc=$?
 set -e
 [ "$rc" = 2 ]
@@ -21,7 +23,7 @@ grep -q 'usage: megavibe worktree <name>' <<< "$out"
 [ ! -s "$GIT_CALLS" ]
 
 set +e
-out=$(bash "$REPO/megavibe" worktree '' 2>&1)
+out=$(bash "$MEGAVIBE_HOME/megavibe" worktree '' 2>&1)
 rc=$?
 set -e
 [ "$rc" = 2 ]
@@ -30,7 +32,7 @@ grep -q 'usage: megavibe worktree <name>' <<< "$out"
 
 # A valid name passes the check and reaches git (the stub fails, so the command fails after it).
 set +e
-out=$(bash "$REPO/megavibe" worktree valid-name 2>&1)
+out=$(bash "$MEGAVIBE_HOME/megavibe" worktree valid-name 2>&1)
 rc=$?
 set -e
 [ "$rc" != 2 ]

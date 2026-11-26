@@ -67,6 +67,7 @@ launch() {
   snapshot > "$ROOT/before"
   RC=0
   OUT=$(cd "$CWD" && env -i HOME="$TEST_HOME" PATH="$T/bin:$PATH" \
+    MEGAVIBE_HOME="$INSTALL" CLAUDE_CONFIG_DIR="$TEST_HOME/.claude" \
     CALLS="$ROOT/calls" CLAUDE_ARGS="$ROOT/args" FORBIDDEN="$ROOT/forbidden" \
     MEGAVIBE_ROUTER=0 MEGAVIBE_STYLE=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     "$@" /bin/bash "$INSTALL/megavibe" ${ARGV[@]+"${ARGV[@]}"} </dev/null 2>&1) || RC=$?

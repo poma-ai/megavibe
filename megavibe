@@ -160,8 +160,9 @@ RED='\033[0;31m'
 DIM='\033[2m'
 RESET='\033[0m'
 
-# Resolve the directory this script lives in (works from repo clone or ~/.local/bin/)
+# Entry directory for explicit updates; the runtime guard resolves it before use.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+UPDATE_SOURCE_DIR=""
 
 GITHUB_REPO="poma-ai/megavibe"
 GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/commits/main"
@@ -357,13 +358,11 @@ is_git_source() {
 
 # Get the source repo directory (if available)
 get_source_repo() {
-  # $MEGAVIBE_HOME itself carries setup.sh + template/ but is not a clone, so
-  # accepting it here shadowed the saved source-repo and made `is_git_source`
-  # permanently false — every update took the slow GitHub-tarball path even
-  # for author-mode installs with a real checkout. Same guard as REPO_DIR below.
-  if [ "$SCRIPT_DIR" != "$MEGAVIBE_HOME" ] \
-     && [ -f "$SCRIPT_DIR/setup.sh" ] && [ -d "$SCRIPT_DIR/template" ]; then
-    echo "$SCRIPT_DIR"
+  # Only explicit update retains checkout-entry discovery. Runtime launches
+  # use the deliberate source-repo record, never the entrypoint directory.
+  if [ -n "${UPDATE_SOURCE_DIR:-}" ] && [ "$UPDATE_SOURCE_DIR" != "$MEGAVIBE_HOME" ] \
+     && [ -f "$UPDATE_SOURCE_DIR/setup.sh" ] && [ -d "$UPDATE_SOURCE_DIR/template" ]; then
+    echo "$UPDATE_SOURCE_DIR"
   elif [ -f "$MEGAVIBE_HOME/source-repo" ]; then
     local saved
     saved="$(cat "$MEGAVIBE_HOME/source-repo")"
@@ -907,9 +906,52 @@ show_update_notice() {
   fi
 }
 
+# Follow both launcher symlink chains with BSD-compatible tools. File and parent
+# directory identity accept case aliases, but reject hard links from another
+# directory: that directory could supply different relative runtime resources.
+launcher_realpath() {
+  local p dir
+  p=$(resolve_link "$1") || return 1
+  [ -f "$p" ] || return 1
+  dir=$(cd -P -- "$(dirname "$p")" && pwd -P) || return 1
+  printf '%s/%s\n' "$dir" "$(basename "$p")"
+}
+require_installed_launcher() {
+  local running installed dir
+  running=$(launcher_realpath "$0") || running=""
+  installed=$(launcher_realpath "$MEGAVIBE_HOME/megavibe") || installed=""
+  dir="${running%/*}"
+  # setup.sh copies selected files and template/, never the source .git (clone
+  # and downloaded installs alike). MEGAVIBE_HOME cannot bless a git work copy.
+  if [ -n "$running" ] && [ "$running" -ef "$installed" ] &&
+     [ "$dir" -ef "${installed%/*}" ] && [ ! -e "$dir/.git" ] && [ ! -L "$dir/.git" ]; then
+    # A checkout may symlink TO the installed launcher: none of its resources
+    # become trusted merely because the entrypoint passed the identity check.
+    SCRIPT_DIR="$dir"
+    return 0
+  fi
+  if [ -n "$dir" ] && [ "$dir" -ef "$MEGAVIBE_HOME" ]; then
+    printf 'megavibe: work copy; installed megavibe left untouched; move this checkout out of the installation path, preserve runtime data, then install from the separate checkout (see README).\n' >&2
+  else
+    printf 'megavibe: work copy; installed megavibe left untouched; install explicitly: bash %q\n' \
+      "${dir:-$SCRIPT_DIR}/setup.sh" >&2
+  fi
+  exit 1
+}
+
+# Exempt: update (unchanged on purpose), read-only help/version/doctor/auth/sessions/restart-all, print-only notices and pure listings.
+case "${1:-}" in
+  reviewers) [ "${2:-}" != set ] || require_installed_launcher ;;
+  memory) case "${2:-}" in set|unset) require_installed_launcher ;; esac ;;
+  worktree) case "${2:-list}" in list|"") ;; *) require_installed_launcher ;; esac ;;
+  # Guard whole helper commands rather than duplicate their evolving argument parsers.
+  node|tick|usage|route|assistant|personal|trash-greenlight) require_installed_launcher ;;
+esac
+
 # ─── Update subcommand ──────────────────────────────────────────────
 
 if [ "${1:-}" = "update" ]; then
+  UPDATE_SOURCE_DIR="$SCRIPT_DIR"
   shift
   case "${1:-}" in
     --check)
@@ -1819,6 +1861,8 @@ fi
 
 # ─── Pre-flight: check setup ────────────────────────────────────────
 
+require_installed_launcher
+
 refuse_install_project() {
   if [ . -ef "$MEGAVIBE_HOME" ]; then
     echo "megavibe: refusing to bootstrap the Megavibe install directory; cd into a project first." >&2
@@ -1830,6 +1874,12 @@ refuse_install_project() {
 refuse_install_project
 
 if [ ! -f "$MEGAVIBE_HOME/init.sh" ] || ! grep -q "megavibe-v3" "$HOME/.claude/CLAUDE.md" 2>/dev/null; then
+  if [ ! -t 0 ]; then
+    SETUP_SCRIPT="$MEGAVIBE_HOME/setup.sh"
+    [ -f "$SETUP_SCRIPT" ] || SETUP_SCRIPT="$SCRIPT_DIR/setup.sh"
+    printf 'megavibe: setup requires a terminal; run explicitly: bash %q\n' "$SETUP_SCRIPT" >&2
+    exit 1
+  fi
   if [ -f "$MEGAVIBE_HOME/setup.sh" ]; then
     # Already deployed — re-run from ~/.megavibe/
     echo "Megavibe needs setup. Running now..."
@@ -1869,23 +1919,11 @@ repo_older_than_installed() {
 
 # ─── Sync everything from repo source (always) ───────────────────────
 
-# Find the source repo. Priority:
-#   1. $MEGAVIBE_HOME/source-repo pointer if valid — this is the user's
-#      actual working copy, which is where fresh edits live. MUST be checked
-#      first, because after install $MEGAVIBE_HOME itself also contains
-#      setup.sh + template/ (copied there by setup.sh) and would otherwise
-#      match the SCRIPT_DIR check below, causing a self-sync no-op that
-#      silently reverts any template updates made in the working copy.
-#   2. SCRIPT_DIR if it has setup.sh + template/ AND is not $MEGAVIBE_HOME
-#      itself — this catches the first-install case where the user runs
-#      `bash megavibe/megavibe` directly from a fresh clone before any
-#      source-repo pointer has been written.
+# Runtime source sync requires the saved source-repo record (or its handover
+# across wrapper re-exec below), never the directory containing an entry symlink.
 REPO_DIR=""
-# 0. Handed over by the re-exec below. Without this the run that updates the
-#    wrapper itself loses the repo path (after exec, SCRIPT_DIR is
-#    $MEGAVIBE_HOME), so every other sync in this block waits for the next
-#    launch. With a stale source-repo pointer, that launch may never resolve
-#    a repo (a `curl | bash` install can leave it pointing at a deleted temp dir).
+# Hand over the selected source across wrapper re-exec so this launch keeps
+# the same source even if the saved record changes in the meantime.
 #
 #    A FILE under $MEGAVIBE_HOME, never an environment variable. This value
 #    decides which `megavibe` gets installed over ~/.megavibe/megavibe and then
@@ -1912,9 +1950,6 @@ if [ -z "$REPO_DIR" ] && [ -f "$MEGAVIBE_HOME/source-repo" ]; then
   if [ -f "$SAVED_REPO/setup.sh" ] && [ -d "$SAVED_REPO/template" ]; then
     REPO_DIR="$SAVED_REPO"
   fi
-fi
-if [ -z "$REPO_DIR" ] && [ "$SCRIPT_DIR" != "$MEGAVIBE_HOME" ] && [ -f "$SCRIPT_DIR/setup.sh" ] && [ -d "$SCRIPT_DIR/template" ]; then
-  REPO_DIR="$SCRIPT_DIR"
 fi
 
 if [ -n "$REPO_DIR" ] && [ "${MEGAVIBE_INIT_ALLOW_STALE:-}" != 1 ] && repo_older_than_installed "$REPO_DIR"; then
