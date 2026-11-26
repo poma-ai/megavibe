@@ -23,8 +23,9 @@ set -u
 #
 # Triggered by: PreToolUse (Bash). Exit 0 always.
 # Skips: any command that already contains a pipe, redirect, compound
-#        operator, subshell, or process substitution (user/Claude is
-#        already shaping output — don't second-guess).
+#        operator, newline, `&`, parenthesis, subshell, or process
+#        substitution (user/Claude is already shaping output — don't
+#        second-guess; and the rewrite wraps the command in a subshell).
 
 [ -d ".agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
@@ -38,7 +39,7 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null || echo 
 
 # Skip any command that already shapes output — user is explicit
 case "$COMMAND" in
-  *'|'*|*'>'*|*'<'*|*'&&'*|*'||'*|*';'*|*'$('*|*'`'*|*'<('*|*'>('*)
+  *'|'*|*'>'*|*'<'*|*'&&'*|*'||'*|*';'*|*'$('*|*'`'*|*'<('*|*'>('*|*$'\n'*|*'&'*|*'('*|*')'*)
     exit 0
     ;;
 esac
@@ -66,11 +67,19 @@ case "$STRATEGY" in
   tee-tail)
     TS=$(date +%s)
     LOG=".agent/LOGS/bash-${TS}.log"
-    NEW_CMD="${COMMAND} 2>&1 | tee ${LOG} | tail -${LIMIT}"
+    # pipefail in a subshell: the status is npm's, in bash 3.2 and zsh alike.
+    # tee's own status is dropped (a log it cannot write must not fail npm);
+    # tail reads to EOF. The ")" goes on its own line so a trailing
+    # "# comment" cannot swallow it.
+    NEW_CMD="(set -o pipefail; ${COMMAND} 2>&1 | { tee ${LOG} || true; } | tail -${LIMIT}
+)"
     REASON="[megavibe truncate-verbose-bash] Output capped at ${LIMIT} trailing lines; full output teed to ${LOG} — Read it if you need more. Call Bash with your own pipe if you need a different shape next time."
     ;;
   head)
-    NEW_CMD="${COMMAND} | head -${LIMIT}"
+    # Same, but git dies of SIGPIPE (141) when head stops reading: that is
+    # the normal truncated case, so 141 is reported as success.
+    NEW_CMD="(set -o pipefail; ${COMMAND} | head -${LIMIT}
+s=\$?; [ \$s -eq 141 ] && s=0; exit \$s)"
     REASON="[megavibe truncate-verbose-bash] Output capped at ${LIMIT} leading lines. Call Bash with your own pipe/pager if you need a larger window."
     ;;
 esac
