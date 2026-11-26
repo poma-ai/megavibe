@@ -2594,11 +2594,13 @@ bar_api_billing "$AUTH_JSON"
 #
 # The target is the value of --resume/-r (an id, a name or a transcript path). A bare
 # --resume (the picker) and --continue cannot be resolved here without guessing Claude
-# Code's own choice, and a --fork-session gets a new id: those pass unchecked.
+# Code's own choice, and a --fork-session gets a new id: those pass unchecked. Names
+# also pass: this live-process registry cannot establish a unique saved conversation
+# in the current project (including ended sessions and other worktrees).
 # Held = a record in Claude Code's session registry (<config>/sessions/<pid>.json) names the
 # target, its pid is alive, and it is the same process: the record's procStart matches the
-# pid's start time (UTC), or, without procStart, the process is claude/node. Anything not
-# established (no jq, an unreadable record, a dead or reused pid, ps failing) is not held,
+# pid's start time (UTC). Anything not established (no jq, an unreadable record, a dead
+# or reused pid, a missing or unrecognised start time, ps failing) is not held,
 # so a stale record never blocks a legitimate resume.
 resume_target() { # resume_target ARGS...: the --resume/-r value; empty for picker, fork or no resume
   local a want=0 t=""
@@ -2618,7 +2620,7 @@ resume_target() { # resume_target ARGS...: the --resume/-r value; empty for pick
 }
 
 session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" of a live holder, or nothing
-  local want="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p rec sid name kind start tmx now comm
+  local want="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p rec sid kind start tmx now
   [ -n "$want" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   case "$want" in *.jsonl) want=$(basename "$want" .jsonl) ;; esac
@@ -2626,9 +2628,10 @@ session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" o
     [ -f "$f" ] || continue
     p=$(basename "$f" .json)
     [[ "$p" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$p" -gt 1 ] || continue
-    rec=$(jq -r '[.sessionId, .name, .kind, .procStart, .tmux] | map(if type == "string" then gsub("[\u001f\n]"; " ") else "" end) | join("\u001f")' "$f" 2>/dev/null) || continue
-    IFS=$'\x1f' read -r sid name kind start tmx <<<"$rec" || true
-    { [ "$sid" = "$want" ] || { [ -n "$name" ] && [ "$name" = "$want" ]; }; } || continue
+    rec=$(jq -r '[.sessionId, .kind, .procStart, .tmux] | map(if type == "string" then gsub("[\u001f\n]"; " ") else "" end) | join("\u001f")' "$f" 2>/dev/null) || continue
+    IFS=$'\x1f' read -r sid kind start tmx <<<"$rec" || true
+    # Match ids only: a different conversation's name may itself be this id.
+    [ "$sid" = "$want" ] || continue
     case "$kind" in *[Bb]ackground*) continue ;; esac
     kill -0 "$p" 2>/dev/null || continue
     start=$(printf '%s' "$start" | tr -s ' ' | sed 's/^ //; s/ $//')
@@ -2638,9 +2641,8 @@ session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" o
       now=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$p" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//') || now=""
       [ -n "$now" ] && [ "$now" = "$start" ] || continue
     else
-      # No procStart, or a form this wrapper does not know: fall back to the process name.
-      comm=$(ps -o comm= -p "$p" 2>/dev/null) || continue
-      case "$comm" in *claude*|*node*) ;; *) continue ;; esac
+      # A process name cannot tie a reused pid to this recorded session.
+      continue
     fi
     printf '%s\t%s\n' "$p" "$tmx"
     return 0

@@ -78,8 +78,8 @@ check 'holder: matches the transcript path form' '[ -n "$(ALIVE=4101 run "sessio
 reset
 reg 4102 "{\"pid\":4102,\"sessionId\":\"$SID\",\"name\":\"Release work\"}"
 echo claude > "$T/comm.4102"
-check 'holder: no start time, process is claude' '[ -n "$(ALIVE=4102 run "session_holder $SID")" ]'
-check 'holder: matches by session name' '[ -n "$(ALIVE=4102 run "session_holder \"Release work\"")" ]'
+check 'holder: no start time, claude name is not identity' '[ -z "$(ALIVE=4102 run "session_holder $SID")" ]'
+check 'holder: an unresolved session name passes' '[ -z "$(ALIVE=4102 run "session_holder \"Release work\"")" ]'
 echo bash > "$T/comm.4102"
 check 'holder: no start time, process is something else' '[ -z "$(ALIVE=4102 run "session_holder $SID")" ]'
 
@@ -104,7 +104,7 @@ check 'holder: pid 0 (a process group for kill) is never a holder' '[ -z "$(ALIV
 reset
 reg 4105 "{\"pid\":4105,\"sessionId\":\"$SID\",\"procStart\":\"2026-11-25T16:40:22Z\"}"
 echo /usr/local/bin/claude > "$T/comm.4105"
-check 'holder: unknown procStart form falls back to the process name (claude: held)' '[ -n "$(ALIVE=4105 run "session_holder $SID")" ]'
+check 'holder: unknown procStart form, claude name is not identity' '[ -z "$(ALIVE=4105 run "session_holder $SID")" ]'
 echo vim > "$T/comm.4105"
 check 'holder: unknown procStart form, other process: not held' '[ -z "$(ALIVE=4105 run "session_holder $SID")" ]'
 reset
@@ -121,6 +121,48 @@ rc=0; ALIVE="4101 4107" run "set -e; ALLOW_SECOND_WRITER=0; second_writer_gate -
 check 'wiring: under set -e the refusal exits 3 and nothing is launched' '[ "$rc" = 3 ] && ! grep -q launched "$T/out"'
 rc=0; ALIVE="4107" run "set -e; ALLOW_SECOND_WRITER=0; second_writer_gate --resume $SID || exit \$?; echo launched" > "$T/out" 2>&1 || rc=$?
 check 'wiring: under set -e a stale holder and a broken record still launch' '[ "$rc" = 0 ] && grep -q launched "$T/out"'
+
+# Review regressions: positive process identity and conversation identity are both required.
+# Test the gate too: fail-open means exit 0 with no warning, even with the override.
+passes_silently() {
+  local rc=0 out
+  out=$(ALIVE="4102 4108" run "ALLOW_SECOND_WRITER=${2:-0}; second_writer_gate --resume '$1'" 2>&1) || rc=$?
+  [ "$rc" = 0 ] && [ -z "$out" ]
+}
+reset
+reg 4102 "{\"sessionId\":\"$SID\"}"
+echo /example/bin/node > "$T/comm.4102"
+echo 'Thu Nov 26 09:00:00 2026' > "$T/lstart.4102"
+check 'review 1: stale record without start time, pid reused by Node, passes silently' 'passes_silently "$SID"'
+check 'review 1: unknown holder with override still passes silently' 'passes_silently "$SID" 1'
+reg 4102 "{\"sessionId\":\"$SID\",\"procStart\":\"unparseable\"}"
+check 'review 1: unparseable start time with Node pid passes silently' 'passes_silently "$SID"'
+reg 4102 "{\"sessionId\":\"$SID\",\"procStart\":\"Wed Nov 25 16:40:22 2026\"}"
+check 'review 1: recognised but different start time with Node pid passes silently' 'passes_silently "$SID"'
+
+reset
+OTHER=99999999-0000-4000-8000-000000000000
+mkdir -p "$T/project" "$T/other-project"
+cd "$T/project"
+# A has ended; B is live and named with A's UUID. A's id must never select B.
+jq -n --arg sid "$OTHER" --arg name "$SID" --arg cwd "$PWD" \
+  '{sessionId:$sid,name:$name,cwd:$cwd,procStart:"Wed Nov 25 16:40:22 2026"}' > "$CLAUDE_CONFIG_DIR/sessions/4102.json"
+echo 'Wed Nov 25 16:40:22 2026' > "$T/lstart.4102"
+check 'review 2: live B named with ended A UUID does not hold A' 'passes_silently "$SID"'
+check 'review 2: transcript path for ended A does not match B name' 'passes_silently "/example/$SID.jsonl"'
+jq -n --arg sid "$OTHER" --arg cwd "$T/other-project" \
+  '{sessionId:$sid,name:"Release work",cwd:$cwd,procStart:"Wed Nov 25 16:40:22 2026"}' > "$CLAUDE_CONFIG_DIR/sessions/4102.json"
+check 'review 2: name in another project passes silently' 'passes_silently "Release work"'
+jq -n --arg sid "$SID" --arg cwd "$PWD" \
+  '{sessionId:$sid,name:"Release work",cwd:$cwd,procStart:"Wed Nov 25 16:40:22 2026"}' > "$CLAUDE_CONFIG_DIR/sessions/4108.json"
+echo 'Wed Nov 25 16:40:22 2026' > "$T/lstart.4108"
+check 'review 2: name in both projects is not resolved by registry order' 'passes_silently "Release work"'
+jq --arg cwd "$PWD" '.cwd=$cwd' "$CLAUDE_CONFIG_DIR/sessions/4102.json" > "$T/record"
+mv "$T/record" "$CLAUDE_CONFIG_DIR/sessions/4102.json"
+check 'review 2: ambiguous name in the same project passes silently' 'passes_silently "Release work"'
+rm "$CLAUDE_CONFIG_DIR/sessions/4102.json"
+check 'review 2: one live name cannot rule out an ended namesake' 'passes_silently "Release work"'
+check 'review 2: an explicit id still finds its holder despite namesakes' '[ -n "$(ALIVE=4108 run "session_holder $SID")" ]'
 
 # second_writer_message
 reset

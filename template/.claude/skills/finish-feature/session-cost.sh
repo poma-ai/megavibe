@@ -50,31 +50,53 @@ PROJECT="$(cd "$PROJECT" 2>/dev/null && pwd)" || { echo "session-cost: no such d
 ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 SLUG="$(printf '%s' "$PROJECT" | sed 's|[^A-Za-z0-9]|-|g')"
 # macOS resolves /tmp to /private/tmp, and Claude Code slugs whichever spelling
-# it was launched with. Try the other one, and keep whichever won — the
-# subagent lookup below builds on the same slug. A name over 200 characters is
-# stored as its first 200 plus a hash of the full path, which is not recomputed
-# here: the one directory with that prefix and one more "-" segment is taken.
-if [ ! -d "$ROOT/$SLUG" ]; then
-  for alt in "-private$SLUG" "${SLUG#-private}"; do
-    [ -d "$ROOT/$alt" ] && { SLUG="$alt"; break; }
+# it was launched with. Try the other one for short, directly encoded names.
+# For long names the docs specify truncation + hash, but not the hash algorithm.
+# A prefix only finds candidates: verify EACH transcript's recorded cwd before
+# selecting it. A sibling transcript or a unique prefix is not project identity.
+T=""
+if [ "${#SLUG}" -gt 200 ]; then
+  for candidate_slug in "$SLUG" "-private$SLUG" "${SLUG#-private}"; do
+    for candidate_dir in "$ROOT/${candidate_slug:0:200}"-*; do
+      [ -d "$candidate_dir" ] || continue
+      if [ -n "$SESSION" ]; then
+        candidates=("$candidate_dir/$SESSION.jsonl")
+      else
+        candidates=("$candidate_dir"/*.jsonl)
+      fi
+      for candidate in "${candidates[@]}"; do
+        [ -f "$candidate" ] || continue
+        # Ignore metadata without cwd; require at least one recorded cwd and
+        # reject conflicting directories or unreadable/malformed transcripts.
+        jq -se --arg project "$PROJECT" '
+          [.[] | .cwd? | select(. != null)]
+          | length > 0 and all(. == $project)
+        ' "$candidate" >/dev/null 2>&1 || continue
+        if [ -z "$T" ] || [ "$candidate" -nt "$T" ]; then T="$candidate"; fi
+      done
+    done
   done
-fi
-if [ ! -d "$ROOT/$SLUG" ] && [ "${#SLUG}" -gt 200 ]; then
-  LONG="$( { ls -d "$ROOT/${SLUG:0:200}"-* 2>/dev/null || true; } )"
-  [ -n "$LONG" ] && [ "$(printf '%s\n' "$LONG" | wc -l | tr -d ' ')" = 1 ] && SLUG="$(basename "$LONG")"
-fi
-PDIR="$ROOT/$SLUG"
-[ -d "$PDIR" ] || { echo "session-cost: no transcripts for $PROJECT (looked in $PDIR)" >&2; exit 1; }
-
-if [ -n "$SESSION" ]; then
-  T="$PDIR/$SESSION.jsonl"
-  [ -f "$T" ] || { echo "session-cost: no transcript $T" >&2; exit 1; }
+  [ -n "$T" ] || { echo "session-cost: no transcripts with verified working directory for $PROJECT" >&2; exit 1; }
+  PDIR="$(dirname "$T")"
 else
-  # Newest by mtime: the live session is the one still being appended to.
-  # `|| true`: an empty dir makes ls exit 1, and under pipefail+errexit that
-  # kills the script before the error message below can explain why.
-  T="$(ls -t "$PDIR"/*.jsonl 2>/dev/null | head -1 || true)"
-  [ -n "$T" ] || { echo "session-cost: no transcripts in $PDIR" >&2; exit 1; }
+  if [ ! -d "$ROOT/$SLUG" ]; then
+    for alt in "-private$SLUG" "${SLUG#-private}"; do
+      [ -d "$ROOT/$alt" ] && { SLUG="$alt"; break; }
+    done
+  fi
+  PDIR="$ROOT/$SLUG"
+  [ -d "$PDIR" ] || { echo "session-cost: no transcripts for $PROJECT (looked in $PDIR)" >&2; exit 1; }
+
+  if [ -n "$SESSION" ]; then
+    T="$PDIR/$SESSION.jsonl"
+    [ -f "$T" ] || { echo "session-cost: no transcript $T" >&2; exit 1; }
+  else
+    # Newest by mtime: the live session is the one still being appended to.
+    # `|| true`: an empty dir makes ls exit 1, and under pipefail+errexit that
+    # kills the script before the error message below can explain why.
+    T="$(ls -t "$PDIR"/*.jsonl 2>/dev/null | head -1 || true)"
+    [ -n "$T" ] || { echo "session-cost: no transcripts in $PDIR" >&2; exit 1; }
+  fi
 fi
 SID="$(basename "$T" .jsonl)"
 
