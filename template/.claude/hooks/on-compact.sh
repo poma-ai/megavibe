@@ -21,7 +21,7 @@ set -u
 #   and the raw FULL_CONTEXT.md when it is under 10KB
 # - Emit a short additionalContext: run /rehydrate (reviewers.sh digest-chain:
 #   codex-review.sh → Claude subagent, or without Codex gemini-review.sh (capped)
-#   → Claude subagent), or read a WORKING_CONTEXT written within the hour
+#   → Claude subagent), or read a WORKING_CONTEXT newer than the durable state
 #
 # Improvements over v1:
 # - LESSONS.md included (was missing)
@@ -116,21 +116,30 @@ WC_READ="$WC_PATH"
   || WC_READ=".agent/sessions/${SID}/WORKING_CONTEXT.md"
 INSTRUCTIONS_FILE=".agent/LOGS/rehydration-instructions.${SID}.md"
 
-# WC freshness gate: if /rehydrate ran within the last hour, the existing
-# WORKING_CONTEXT is still useful and post-compact orientation injection is
-# enough. Setting the rehydration flag here would just spawn a sticky nag
-# that fires on every tool call until Claude *re-runs* /rehydrate — which
-# Claude won't do if it (correctly) decides carryover context is sufficient.
-# Skip the flag in that case; user can still invoke /rehydrate voluntarily.
-WC_FRESH=0
-# -s, not -f: /rehydrate's own failure path leaves an EMPTY WORKING_CONTEXT, and
-# an empty file written a minute ago is not a working context.
-if [ -f "$WC_READ" ] && [ -s "$WC_READ" ]; then
-  WC_MTIME=$(stat -c %Y "$WC_READ" 2>/dev/null || stat -f %m "$WC_READ" 2>/dev/null || echo 0)
-  NOW_TS=$(date +%s)
-  WC_AGE=$(( NOW_TS - WC_MTIME ))
-  [ "$WC_AGE" -lt 3600 ] 2>/dev/null && WC_FRESH=1
-fi
+# WC freshness gate: /rehydrate rebuilds WORKING_CONTEXT from the events,
+# snapshot.md, DECISIONS.md and TASKS.md. When the existing one is newer than
+# all of them, a rehydration would rebuild it from the same state, so reading
+# it is enough and no reminder is armed (the user can still run /rehydrate).
+# It is stale when any of those inputs was written after it, and missing when
+# absent or empty (-s: /rehydrate's own failure path leaves an EMPTY file).
+# Keep wc_state identical to the copy in on-pre-compact.sh.
+wc_state() { # wc_state FILE: sets WC_STATE fresh|stale|missing, WC_NEWER, WC_REG
+  WC_STATE=missing; WC_NEWER=0; WC_REG=0
+  { [ -f "$1" ] && [ -s "$1" ]; } || return 0
+  WC_NEWER=$(find .agent/events -type f ! -name '.*' -newer "$1" 2>/dev/null | wc -l | tr -d ' ')
+  case "$WC_NEWER" in ''|*[!0-9]*) WC_NEWER=0 ;; esac
+  for _wf in .agent/snapshot.md .agent/DECISIONS.md .agent/TASKS.md; do
+    if [ "$_wf" -nt "$1" ]; then WC_REG=$((WC_REG + 1)); fi
+  done
+  if [ $((WC_NEWER + WC_REG)) -eq 0 ]; then WC_STATE=fresh; else WC_STATE=stale; fi
+}
+wc_state "$WC_READ"
+WC_FRESH=0; [ "$WC_STATE" = fresh ] && WC_FRESH=1
+case "$WC_STATE" in
+  fresh) WC_WHY="Your WORKING_CONTEXT (${WC_READ}) is newer than every event and register in .agent/" ;;
+  stale) WC_WHY="Your WORKING_CONTEXT is stale: ${WC_NEWER} event(s) and ${WC_REG} register file(s) were written after it" ;;
+  *)     WC_WHY="This session has no working context yet" ;;
+esac
 
 # --- Read structured files (capped by bytes; they go into the orientation file
 # below, which Claude reads on demand — NOT into the hook output, see the end
@@ -204,12 +213,12 @@ echo "FULL_CONTEXT: ${FULL_CONTEXT_SIZE} bytes, ${FULL_CONTEXT_LINES} lines" >&2
 # One freshness-dependent instruction, used by every strategy below and by the
 # short message, so the orientation file never contradicts it.
 if [ "$WC_FRESH" -eq 1 ]; then
-  REHYDRATE_HINT="Your prior WORKING_CONTEXT (${WC_READ}) was written within the last hour
-and is likely still valid. Treat it as your source of truth — running
+  REHYDRATE_HINT="${WC_WHY}, so a rehydration would rebuild it from
+the same state. Treat it as your source of truth — running
 /rehydrate now is OPTIONAL. If you decide carryover context is enough,
 just continue working; the hooks will not remind you."
 else
-  REHYDRATE_HINT="Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
+  REHYDRATE_HINT="${WC_WHY}. Run /rehydrate — it regenerates ${WC_PATH} via the digest backend chain
 (reviewers.sh digest-chain; full AI-powered recovery). Do /rehydrate BEFORE resuming any other
 work. Until it completes, stale-context nags are suppressed for ~5 minutes
 so you get a clean window."
@@ -319,8 +328,8 @@ ${OLD_WC}"
 fi
 
 # --- Rehydration flag: one policy for every size ---
-# Pending unless a non-empty WORKING_CONTEXT was written within the hour (then
-# /rehydrate is optional and nothing reminds). An empty .agent/ always needs the
+# Pending unless the WORKING_CONTEXT is fresh (newer than every event and
+# register; then /rehydrate is optional and nothing reminds). An empty .agent/ always needs the
 # recording steps, so the bootstrap case never counts as fresh. The nag count
 # restarts with each compaction.
 rm -f ".agent/LOGS/.rehydrate-nagcount.${SID}" 2>/dev/null || true
@@ -353,9 +362,9 @@ if [ "$FULL_CONTEXT_LINES" -le 10 ]; then
 elif [ "$WC_FRESH" -eq 1 ]; then
   # WC_READ, not WC_PATH: a session from before the full-id fix keeps its WC in
   # the 12-character directory, and that is the file that was found fresh.
-  SHORT="CONTEXT WAS JUST COMPACTED. Your WORKING_CONTEXT (${WC_READ}) was written within the last hour: Read it in full and continue. /rehydrate is optional (it writes ${WC_PATH})."
+  SHORT="CONTEXT WAS JUST COMPACTED. ${WC_WHY}: Read it in full and continue. /rehydrate is optional (it writes ${WC_PATH})."
 else
-  SHORT="CONTEXT WAS JUST COMPACTED. Run /rehydrate before any other work: it rebuilds ${WC_PATH} from .agent/ and git. Then Read that file in full."
+  SHORT="CONTEXT WAS JUST COMPACTED. ${WC_WHY}. Run /rehydrate before any other work: it rebuilds ${WC_PATH} from .agent/ and git. Then Read that file in full."
 fi
 # No branch name or commit subjects here: they are text a cloned repo controls,
 # and this channel is read as instructions. They are in the orientation file.

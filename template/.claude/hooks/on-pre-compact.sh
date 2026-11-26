@@ -11,13 +11,16 @@ set -u
 # Megavibe — pre-compaction status report + grace-period and flag stamper
 # Triggered by: PreCompact (fires on BOTH auto-compact AND manual /compact)
 #
-# IMPORTANT: Claude does NOT get a turn between this hook and compaction, and
-# Claude Code DISCARDS a PreCompact hook's systemMessage (hooks reference). This
-# hook therefore reaches nobody directly: what it learns goes to stderr, to a
-# timestamped alert file, and, for the register-currency warning, to a file
-# on-compact.sh folds into the short message the post-compact model does see.
-# (Measured 2026-10-11 over 20 compactions: the old "stamp the summary" text
-# appeared in 0 of 20 summaries.)
+# IMPORTANT: Claude does NOT get a turn between this hook and compaction. The
+# hooks reference documents one channel into the compaction: when this hook
+# exits 0 without blocking, its PLAIN stdout becomes instructions for the
+# compaction summary (manual and auto, capped at 10,000 characters and cut
+# there, never saved to a file); a JSON systemMessage is discarded. So stdout
+# carries a short FIXED preservation instruction (counts and this session's
+# paths only: never text from project files, which a cloned repo can ship),
+# while the full report goes to stderr, to a timestamped alert file, and, for
+# the register-currency warning, to a file on-compact.sh folds into the short
+# message the post-compact model sees.
 #
 # Strategy:
 # - Read the tool-call counter to assess staleness
@@ -30,8 +33,8 @@ set -u
 # - Drop this session's read-delta cache, whose rows would otherwise claim
 #   that file content survived the compaction that is about to drop it
 #   (see the SID note at that block: the two hooks must agree on the name)
-# - Report what may be lost and the single required
-#   post-compact action (/rehydrate); the /catchup-equivalent orientation is
+# - Report what may be lost and the post-compact action (/rehydrate when the
+#   working context is missing or stale); the /catchup-equivalent orientation is
 #   written to a file by on-compact.sh
 
 # Only run if this is a Megavibe-initialized project
@@ -83,18 +86,28 @@ IS_SUBAGENT=0; [ -n "$_PC_AGENT" ] && IS_SUBAGENT=1
 # The nag count (log-tool-event.sh) restarts with each compaction.
 # The rehydration reminder is re-armed here too,
 # because on-compact.sh (which also does it) may not run for a manual /compact.
-# Not when a non-empty WORKING_CONTEXT (full-id or legacy 12-char directory) was
-# written within the hour: on-compact.sh applies the same rule, but it may not
-# run for a manual /compact, and then nothing would take the flag back down.
-_PC_FRESH=0
+# Not when a non-empty WORKING_CONTEXT (full-id or legacy 12-char directory) is
+# newer than every durable input of /rehydrate (events, snapshot.md, DECISIONS.md,
+# TASKS.md): a rehydration would rebuild it from the same state. on-compact.sh
+# applies the same rule (keep wc_state identical in both), but it may not run
+# for a manual /compact, and then nothing would take the flag back down.
+wc_state() { # wc_state FILE: sets WC_STATE fresh|stale|missing, WC_NEWER, WC_REG
+  WC_STATE=missing; WC_NEWER=0; WC_REG=0
+  { [ -f "$1" ] && [ -s "$1" ]; } || return 0
+  WC_NEWER=$(find .agent/events -type f ! -name '.*' -newer "$1" 2>/dev/null | wc -l | tr -d ' ')
+  case "$WC_NEWER" in ''|*[!0-9]*) WC_NEWER=0 ;; esac
+  for _wf in .agent/snapshot.md .agent/DECISIONS.md .agent/TASKS.md; do
+    if [ "$_wf" -nt "$1" ]; then WC_REG=$((WC_REG + 1)); fi
+  done
+  if [ $((WC_NEWER + WC_REG)) -eq 0 ]; then WC_STATE=fresh; else WC_STATE=stale; fi
+}
+_PC_FRESH=0; _PC_WCSTATE=missing
 # session_id becomes a path component below: same safe-charset gate as on-compact.sh.
 case "$_PC_SIDF" in ''|.|..|*[!A-Za-z0-9._-]*) _PC_SIDF="none" ;; esac
 for _wc in ".agent/sessions/${_PC_SIDF:-none}/WORKING_CONTEXT.md" ".agent/sessions/${SID}/WORKING_CONTEXT.md"; do
-  if [ -f "$_wc" ] && [ -s "$_wc" ]; then
-    _m=$(stat -c %Y "$_wc" 2>/dev/null || stat -f %m "$_wc" 2>/dev/null || echo 0)
-    case "$_m" in ''|*[!0-9]*) _m=0 ;; esac
-    [ $(( $(date +%s) - _m )) -lt 3600 ] && _PC_FRESH=1
-  fi
+  wc_state "$_wc"
+  [ "$WC_STATE" = fresh ] && _PC_FRESH=1
+  [ "$_PC_WCSTATE" = fresh ] || [ "$WC_STATE" = missing ] || _PC_WCSTATE="$WC_STATE"
 done
 if [ "$IS_SUBAGENT" -eq 0 ]; then
   if [ "$_PC_FRESH" -eq 1 ]; then rm -f "${LOGDIR}/.needs-rehydration.${SID}" 2>/dev/null || true
@@ -373,7 +386,7 @@ MSG="📋 COMPACTION IS ABOUT TO HAPPEN — CONTEXT FILE STATUS:
 
 ⚠️ If ${COUNT} is high, context accumulated in this conversation may NOT be in the .agent/ files yet. The post-compaction recovery will only have what's on disk.
 
-After compaction, run /rehydrate without asking the user, read WORKING_CONTEXT.md and continue working (if the post-compact hook reports a fresh working context, read it in full and continue instead). Recovery uses the first backend chosen by allocation in .claude/rules/delegation.md; reviewers.sh digest-chain supplies availability and failure fallbacks. The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
+After compaction, run /rehydrate without asking the user when the post-compact hook reports the working context missing or stale (older than an event or register), read WORKING_CONTEXT.md and continue working; when it reports it fresh, read it in full and continue instead. Recovery uses the first backend chosen by allocation in .claude/rules/delegation.md; reviewers.sh digest-chain supplies availability and failure fallbacks. The post-compact hook writes the full orientation (git state, DECISIONS/TASKS/LESSONS) to .agent/LOGS/rehydration-instructions.<session>.md."
 
 # Advisory report only; a finding or failed check never blocks compaction.
 READY_RC=0; READY_OUT=""
@@ -456,5 +469,18 @@ echo "(saved to $ALERT_FILE)" >&2
 echo "═══════════════════════════════════════════════════════════════" >&2
 echo "" >&2
 
-# Kept for older Claude Code versions that may still show it; current ones discard it.
-printf '%s' "$MSG" | jq -Rs '{systemMessage: .}' 2>/dev/null || true
+# --- Preservation instructions for the compaction summary (stdout) ---
+# Plain stdout is the documented channel (see the header). Fixed text, integers
+# validated above and this session's sanitised id only: the report in $MSG
+# quotes event and register text and must never reach this channel.
+_PC_WCP=".agent/sessions/<this session id>/WORKING_CONTEXT.md"
+[ "$_PC_SIDF" != "none" ] && _PC_WCP=".agent/sessions/${_PC_SIDF}/WORKING_CONTEXT.md"
+case "$LAST_WRITE_MIN" in ''|*[!0-9]*) LAST_WRITE_MIN="?" ;; esac
+cat <<PRESERVE
+Megavibe preservation instructions for this summary (fixed text; no project file is quoted here). Keep, verbatim where short:
+1. Every decision or question still open with the user, with its id (such as D7) and the default being followed meanwhile.
+2. Every background task, subagent, Monitor or Codex job still running: its task or agent id, its output or log path, and what it is for.
+3. The current goal, the files changed but not committed, the branch and any pull request number, and the exact next step.
+4. These paths: working context ${_PC_WCP}; event log .agent/events/ (rendered in .agent/FULL_CONTEXT.md); .agent/DECISIONS.md; .agent/TASKS.md.
+State at compaction: ${COUNT} tool calls since the last .agent/ write; newest event ${LAST_WRITE_MIN} min old; working context ${_PC_WCSTATE}.
+PRESERVE

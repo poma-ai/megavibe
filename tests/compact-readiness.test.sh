@@ -304,7 +304,8 @@ event 001 "DECISION: ship the verified result."
 OUT=$(cd "$P" && printf '{"session_id":"%s","transcript_path":"/nonexistent"}' "$SID" |
   /bin/bash .claude/hooks/on-pre-compact.sh 2>/dev/null)
 eq "$?" 0 "pre-compact hook exits successfully"
-has '"systemMessage"' "legacy message preserved"
+has "Megavibe preservation instructions" "stdout carries the preservation instructions"
+case "$OUT" in *systemMessage*|*"ship the verified result"*) eq leaked clean "stdout carries no report or event text" ;; *) eq clean clean "stdout carries no report or event text" ;; esac
 OUT=$(cat "$P/.agent/LOGS/pre-compact-alert.$SID12.md")
 has "COMPACT READINESS — ADVISORY (exit 1" "alert carries exit"
 has "1 marked-decision events" "alert carries count"
