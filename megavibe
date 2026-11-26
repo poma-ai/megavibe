@@ -1684,7 +1684,7 @@ fi
 # ─── Dispatch subcommand ─────────────────────────────────────────────
 #
 # megavibe dispatch ...: manager mode, one session per GitHub issue (scripts/megavibe-dispatch.sh).
-if [ "${1:-}" = "dispatch" ]; then
+if [ "${1:-}" = "dispatch" ] || [ "${1:-}" = "dispatcher" ]; then
   shift
   _s="$MEGAVIBE_HOME/scripts/megavibe-dispatch.sh"
   [ -f "$_s" ] || _s="$SCRIPT_DIR/scripts/megavibe-dispatch.sh"

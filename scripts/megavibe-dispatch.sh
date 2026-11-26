@@ -10,6 +10,9 @@
 #                            --no-precheck / --precheck turn the readiness check off / on (default on); --needs-label L (default needs-info) is the waiting label;
 #                            --allow-public lets it run on a PUBLIC repo (refused by default: see the README's trust boundary)
 #                            --total N (default: no limit) is the most issues this queue ever starts; after N, tick starts no more
+#                            In a terminal, start (and attach) then attach you to the cockpit: the sessions on the left (arrows or j/k,
+#                            Enter), the selected one on the right; --no-attach only starts it (docker, scripts)
+#   attach                   open (or rejoin) the cockpit of a running queue; cockpit builds it without attaching
 #   total N|off              change that limit (running sessions are untouched; resume and requeue of a started issue do not count again)
 #   add ISSUE... | --label NAME [--label NAME] [--limit N]   queue issues (number or URL of this repo, or the open
 #                            issues carrying every label, oldest first, at most N=30); writes each one's task file
@@ -25,7 +28,8 @@
 #   done N | block N | drop N | requeue N   mark it finished / waiting on someone / forgotten / queued again with a
 #                            fresh task file (keeps branch). done and block free the slot; the window stays open
 # The queue is chosen by --name or MEGAVIBE_DISPATCH_QUEUE (default: the repo folder's name); state lives
-# in ~/.megavibe/dispatch/<queue>/ (conf, queue.tsv, tasks/). Nothing here stops a session or merges a PR.
+# in ~/.megavibe/dispatch/<queue>/ (conf, queue.tsv, tasks/). Nothing here stops a session or merges a PR, except that when the
+# dispatcher session ends it asks whether to stop the issue sessions still running (default no; `finish` asks again).
 #
 # SHORTCUT: liveness = "window issue-N exists" (an issue session's window closes when megavibe exits). A hung
 # session keeps its window; `status` shows its idle minutes and `peek` shows why. A heartbeat is the upgrade.
@@ -41,6 +45,7 @@ parent_id() {   # the session id the windows we open belong to: the explicit one
 }
 
 MH="${MEGAVIBE_HOME:-$HOME/.megavibe}"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 die() { printf 'megavibe dispatch: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 need() { type -P "$1" >/dev/null 2>&1 || die "$1 is required"; }
@@ -171,11 +176,12 @@ lock_live() {
 
 # ── start ─────────────────────────────────────────────────────────────
 cmd_start() {
-  local max="" total="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me rv slug host
+  local max="" total="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 noattach=0 base="" repo prompt vis old wid orc me rv slug host
   while [ $# -gt 0 ]; do
     if [ "$1" = --no-precheck ]; then precheck=off; shift; continue; fi
     if [ "$1" = --precheck ]; then precheck=on; shift; continue; fi
     if [ "$1" = --allow-public ]; then allow_public=1; shift; continue; fi
+    if [ "$1" = --no-attach ]; then noattach=1; shift; continue; fi
     [ $# -ge 2 ] || die "start: $1 needs a value"
     case "$1" in --max) max="$2" ;; --total) total="$2" ;; --name) name="$2" ;; --dir) dir="$2" ;; --model) model="$2" ;; --skill) skill="$2" ;; --needs-label) nlabel="$2" ;; --base) base="$2" ;; *) die "start: unknown option $1" ;; esac
     shift 2
@@ -213,7 +219,8 @@ cmd_start() {
   conf_put me "$me"; conf_put slug "$slug"; [ -z "$host" ] || conf_put host "$host"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$total" ] || conf_put total "$total"; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
   live_windows
   if [ "$WINS_STATE" = ok ] && win_idle dispatcher >/dev/null; then
-    say "dispatcher for $Q already runs: tmux attach -t mvd-$Q   (max is now $max; tell it, or run: megavibe dispatch max $max)"
+    say "dispatcher for $Q already runs: megavibe dispatch attach   (max is now $max; tell it, or run: megavibe dispatch max $max)"
+    [ "$noattach" = 1 ] || attach_cockpit
     return 0
   fi
   [ "$WINS_STATE" != unknown ] || die "cannot tell whether tmux session mvd-$Q exists; nothing started"
@@ -221,17 +228,148 @@ cmd_start() {
   if lock_live "$repo"; then
     die "a megavibe session is active in $repo (pid $LOCK_PID): a dispatcher started there would wait at the launcher's branch-name prompt, which nobody can answer. Start it from a terminal in a checkout where no session runs, or end that session first"
   fi
-  local parent; parent=$(parent_id); orc=0
-  wid=$(open_win dispatcher dispatcher "$repo" env MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" MEGAVIBE_PARENT_SESSION="$parent" \
-    megavibe --no-normalize --name "dispatcher-$Q" ${model:+--model "$model"} "$prompt") || orc=$?
+  local parent dsid; parent=$(parent_id); orc=0
+  dsid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true); [[ $dsid =~ $UUID_RE ]] || dsid=""   # known id: the cockpit finds the dispatcher's background tasks by it
+  [ -z "$dsid" ] || conf_put dsid "$dsid"
+  wid=$(open_win dispatcher dispatcher "$repo" env MEGAVIBE_HOME="$MH" bash "$SELF" wrap "$Q" -- \
+    env MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" MEGAVIBE_PARENT_SESSION="$parent" \
+    megavibe --no-normalize --name "dispatcher-$Q" ${model:+--model "$model"} ${dsid:+--session-id "$dsid"} "$prompt") || orc=$?
   [ "$orc" != 1 ] || die "could not start the dispatcher window in tmux session mvd-$Q"
   [ "$orc" = 0 ] || say "warning: the dispatcher window $wid could not be stamped; a second start would open another dispatcher"
   # the server this queue lives on (the one `start` ran against, which may be the tmux you are in): every later call goes there
   vis=$(tm display-message -p -t "=mvd-$Q:" '#{socket_path}' 2>/dev/null) || vis=""
   case "$vis" in /*) conf_put socket "$vis"; TMUX_SOCK="$vis" ;; esac
   say "dispatcher-$Q started (max $max, worktrees cut from origin/$base)."
-  say "  watch it:   tmux attach -t mvd-$Q      (windows: dispatcher, issue-N)"
+  say "  watch it:   megavibe dispatch attach      (or tmux attach -t mvd-$Q: windows dispatcher, issue-N)"
   say "  stop it:    attach, then /exit in a window; nothing here ever kills a session"
+  [ "$noattach" = 1 ] || attach_cockpit
+}
+
+# ── closing the dispatcher ────────────────────────────────────────────
+# The dispatcher's window runs `wrap`: the session, then this question. Nothing stops an issue session unless you answer y (no answer
+# for two minutes is a no, so an unattended container never waits here for ever). A stop is Ctrl-C twice into the session's window,
+# the way you would quit it, then `claude stop` for any background copy Claude Code kept of that worktree's conversation.
+cmd_finish() {
+  need_queue; live_windows
+  [ "$WINS_STATE" = ok ] || return 0
+  local keys=() k a n r wt id
+  while IFS=$'\t' read -r k _; do [ -z "$k" ] || [ "$k" = dispatcher ] || keys+=("$k"); done < <(printf '%s\n' "$WINS" | sort -n)
+  [ ${#keys[@]} -gt 0 ] || return 0
+  printf '\nThe dispatcher has ended. %s issue session(s) still run: %s\n' "${#keys[@]}" "$(printf '#%s ' "${keys[@]}")"
+  a=""; read -r -t 120 -p "Stop them too? [y/N] " a || true; printf '\n'
+  case "$a" in y|Y|yes|YES) ;; *) say "left running: megavibe dispatch status / peek N; they stay in tmux session mvd-$Q"; return 0 ;; esac
+  for k in "${keys[@]}"; do n=$(win_id "$k") && { tm send-keys -t "$n" C-c; sleep 1; tm send-keys -t "$n" C-c 2>/dev/null; } || true; done
+  sleep 3; live_windows
+  for k in "${keys[@]}"; do
+    ! win_idle "$k" >/dev/null || say "issue $k: window still open (busy or at a prompt): attach and /exit it"
+    wt=$(col "$(row "$k")" 5)
+    if [ -d "$wt" ] && type -P claude >/dev/null 2>&1; then
+      while IFS= read -r id; do [ -z "$id" ] || { bounded 20 "$(type -P claude)" stop "$id" >/dev/null 2>&1 9>&- && say "issue $k: background copy $id stopped"; } || true; done \
+        < <(bounded 20 "$(type -P claude)" agents --json --cwd "$wt" 2>/dev/null 9>&- | jq -r '.[].id // empty' 2>/dev/null || true)
+    fi
+  done
+}
+cmd_wrap() {   # wrap QUEUE -- COMMAND...: run the session, then ask what to do with the issue sessions
+  local q="$1"; shift; [ "${1:-}" != -- ] || shift
+  pick_queue "$q"
+  local rc=0; "$@" || rc=$?
+  cmd_finish || true
+  exit "$rc"
+}
+
+# ── cockpit ───────────────────────────────────────────────────────────
+# One tmux session mvdc-Q with two panes: left a menu of the queue's windows, right a nested client of the grouped session mvdv-Q
+# (it shares mvd-Q's windows and has its own current window), so choosing an entry only moves that client; no pane is moved, the
+# windows liveness reads stay where they are, and ending the cockpit ends no session. Its status line is off in the nested client.
+cockpit() {
+  local sock menu right
+  sock=$(tm display-message -p -t "=mvd-$Q:" '#{socket_path}' 2>/dev/null) || sock=""
+  [[ $sock == /* ]] || die "cockpit: queue $Q has no running tmux session (megavibe dispatch start)"
+  [ -n "$TMUX_BIN" ] || TMUX_BIN=$(type -P tmux)
+  tm has-session -t "=mvdv-$Q" 2>/dev/null || tm new-session -d -t "mvd-$Q" -s "mvdv-$Q" || die "cockpit: could not open the view session"
+  tm set-option -t "=mvdv-$Q:" status off >/dev/null
+  tm has-session -t "=mvdc-$Q" 2>/dev/null && return 0
+  printf -v menu 'env MEGAVIBE_HOME=%q MEGAVIBE_DISPATCH_QUEUE=%q bash %q menu' "$MH" "$Q" "$SELF"
+  printf -v right 'env -u TMUX %q -S %q attach -t \\=mvdv-%s' "$TMUX_BIN" "$sock" "$Q"
+  tm new-session -d -s "mvdc-$Q" -n cockpit -x 200 -y 50 "$menu" || die "cockpit: could not open the cockpit session"
+  tm split-window -h -l 75% -t "=mvdc-$Q:cockpit" "$right" || die "cockpit: could not split the window"
+  tm set-option -t "=mvdc-$Q:" mouse on >/dev/null
+  tm set-option -t "=mvdc-$Q:" status-left "mvd-$Q " >/dev/null
+  tm set-option -t "=mvdc-$Q:" status-right "prefix+Left: sessions menu" >/dev/null
+  tm select-pane -t "=mvdc-$Q:cockpit.{right}" >/dev/null
+}
+attach_cockpit() {
+  [ -t 0 ] && [ -t 1 ] || return 0
+  cockpit
+  local sock; sock=$(tm display-message -p -t "=mvdc-$Q:" '#{socket_path}' 2>/dev/null) || sock=""
+  [[ $sock == /* ]] || { say "cockpit: not attached (could not read the tmux socket); tmux attach -t mvd-$Q"; return 0; }
+  if [ -n "${TMUX:-}" ] && [ "${TMUX%%,*}" = "$sock" ]; then exec "$TMUX_BIN" -S "$sock" switch-client -t "=mvdc-$Q" 9>&-; fi
+  exec env -u TMUX "$TMUX_BIN" -S "$sock" attach -t "=mvdc-$Q" 9>&-
+}
+# menu: the left pane. Each session is followed by its background tasks (agents, shells, monitors: Claude Code keeps one output
+# file per task in <tmp>/claude-<uid>/<project>/<session id>/tasks/); the newest few are listed, a dot marks one written to in the
+# last minute. Up/down or j/k move. Enter on a session shows its window on the right and moves focus there; Enter on a task opens
+# its output (less +F: Ctrl-C to scroll, F to follow again, q to close) in a popup.
+TASKS_SHOWN=5
+task_dir() { local d; for d in /private/tmp/claude-*/*/"$1"/tasks /tmp/claude-*/*/"$1"/tasks; do [ -d "$d" ] && { printf '%s' "$d"; return 0; }; done; return 1; }
+cmd_menu() {
+  need_queue; need tmux
+  local sel=0 kinds=() keys=() files=() k r w line key rest wid n sid td f cnt now age mark last i
+  trap 'printf "\033[?25h"' EXIT; printf '\033[?25l'
+  while :; do
+    live_windows; kinds=(); keys=(); files=(); now=$(date +%s)
+    if [ "$WINS_STATE" = ok ]; then
+      local order=()
+      ! win_idle dispatcher >/dev/null || order+=(dispatcher)
+      while IFS=$'\t' read -r k _; do [ -z "$k" ] || [ "$k" = dispatcher ] || order+=("$k"); done < <(printf '%s\n' "$WINS" | sort -n)
+      for k in ${order[@]+"${order[@]}"}; do
+        kinds+=(s); keys+=("$k"); files+=("")
+        if [ "$k" = dispatcher ]; then sid=$(conf_get dsid); else sid=$(col "$(row "$k")" 8); fi
+        [[ $sid =~ $UUID_RE ]] || continue
+        td=$(task_dir "$sid") || continue
+        cnt=0
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          cnt=$((cnt + 1)); [ "$cnt" -le "$TASKS_SHOWN" ] || break
+          kinds+=(t); keys+=("$k"); files+=("$f")
+        done < <(ls -t "$td"/*.output 2>/dev/null)
+      done
+    fi
+    n=${#kinds[@]}; [ "$sel" -lt "$n" ] || sel=$((n > 0 ? n - 1 : 0))
+    w=$(tput cols 2>/dev/null || echo 40)
+    printf '\033[H\033[2J\033[1mmvd-%s\033[0m\n\n' "$Q"
+    [ "$WINS_STATE" = ok ] || printf 'tmux: %s\n' "$WINS_STATE"
+    for ((i = 0; i < n; i++)); do
+      k=${keys[i]}
+      if [ "${kinds[i]}" = s ]; then
+        if [ "$k" = dispatcher ]; then line="dispatcher"; else r=$(row "$k"); line="#$k $(col "$r" 2) $(col "$r" 3)"; fi
+        line="${line:0:$((w > 4 ? w - 4 : 1))}"
+      else
+        f=${files[i]}; age=$((now - $(stat -f %m "$f" 2>/dev/null || echo 0))); mark=○; [ "$age" -ge 60 ] || mark=●
+        last=$(tail -c 300 "$f" 2>/dev/null | tr -d '\000-\037' | tail -c 40)
+        case "$(basename "$f")" in a*) line="  $mark agent";; *) line="  $mark task";; esac
+        line="$line $(basename "$f" .output | cut -c1-8) ${last}"; line="${line:0:$((w > 4 ? w - 4 : 1))}"
+      fi
+      if [ "$i" = "$sel" ]; then printf '\033[7m> %s\033[0m\n' "$line"; else printf '  %s\n' "$line"; fi
+    done
+    printf '\n\033[2mup/down j/k  Enter open  (prefix+Left: back here)\033[0m\n'
+    key=""; read -rsn1 -t 3 key || continue
+    case "$key" in
+      $'\e') rest=""; read -rsn2 -t 1 rest || true
+              case "$rest" in '[A') [ "$sel" -le 0 ] || sel=$((sel - 1)) ;; '[B') [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;; esac ;;
+      k) [ "$sel" -le 0 ] || sel=$((sel - 1)) ;;
+      j) [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;;
+      "") [ "$n" -gt 0 ] || continue
+          if [ "${kinds[sel]}" = t ]; then
+            printf -v line 'less +F %q' "${files[sel]}"
+            tm display-popup -t "${TMUX_PANE:-}" -E -w 90% -h 85% "$line" >/dev/null 2>&1 || true
+            continue
+          fi
+          wid=$(win_id "${keys[sel]}") || continue
+          tm select-window -t "=mvdv-$Q:$wid" >/dev/null 2>&1 || continue
+          tm select-pane -R -t "${TMUX_PANE:-}" >/dev/null 2>&1 || true ;;
+    esac
+  done
 }
 
 # ── add ───────────────────────────────────────────────────────────────
@@ -650,6 +788,11 @@ cmd="${1:-help}"; [ $# -eq 0 ] || shift
 case "$cmd" in
   help|-h|--help) sed -n '2,/^# SHORTCUT/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   start) cmd_start "$@" ;;
+  wrap) cmd_wrap "$@" ;;
+  finish) pick_queue; cmd_finish ;;
+  attach) pick_queue; need_queue; need tmux; [ -t 0 ] && [ -t 1 ] || die "attach needs a terminal (cockpit builds it without one)"; attach_cockpit ;;
+  cockpit) pick_queue; need_queue; need tmux; cockpit ;;
+  menu) pick_queue; cmd_menu ;;
   add) pick_queue; need_queue; cmd_add "$@" ;;
   tick) pick_queue; cmd_tick ;;
   status) pick_queue; cmd_status ;;

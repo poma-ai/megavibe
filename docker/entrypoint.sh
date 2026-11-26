@@ -52,7 +52,7 @@ cd "$repo"
 # ── the dispatcher ────────────────────────────────────────────────────
 queue=$(printf '%s' "$name" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-')
 export MEGAVIBE_DISPATCH_QUEUE="$queue"
-args=(start --max "${MEGAVIBE_MAX:-3}")
+args=(start --no-attach --max "${MEGAVIBE_MAX:-3}")
 [ -z "${MEGAVIBE_TOTAL:-}" ] || args+=(--total "$MEGAVIBE_TOTAL")
 [ -z "${MEGAVIBE_BASE:-}" ] || args+=(--base "$MEGAVIBE_BASE")
 [ -z "${MEGAVIBE_MODEL:-}" ] || args+=(--model "$MEGAVIBE_MODEL")

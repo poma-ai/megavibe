@@ -92,9 +92,20 @@ st() { awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }' "$Q/queue.tsv"; }
 o=$(D add 1); check "add before start refuses ($o)" '[[ "$o" == *"no dispatcher yet"* ]]'
 o=$(D start --max 2 --model sonnet); RC=$?
 check "start: dispatcher window opened in session mvd-proj ($o)" '[ $RC = 0 ] && tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx dispatcher'
-check "start: dispatcher named, model passed, prompt points at ROLE.md" 'called "^--no-normalize --name dispatcher-proj --model sonnet You are the megavibe dispatcher for queue proj.*dispatch/ROLE.md"'
+check "start: dispatcher named, model passed, prompt points at ROLE.md" 'called "^--no-normalize --name dispatcher-proj --model sonnet --session-id [0-9a-f-]* You are the megavibe dispatcher for queue proj.*dispatch/ROLE.md"'
 o=$(D start --max 2); check "start twice: no second dispatcher ($o)" '[[ "$o" == *"already runs"* ]] && [ "$(tmux list-windows -t =mvd-proj | wc -l | tr -d " ")" = 1 ]'
 
+o=$(D cockpit); RC=$?
+check "cockpit: session mvdc-proj with two panes, view session mvdv-proj, no tmux kill ($o)" '[ $RC = 0 ] && [ "$(tmux list-panes -t =mvdc-proj: -F x | wc -l | tr -d " ")" = 2 ] && tmux has-session -t =mvdv-proj && [ "$(tmux list-windows -t =mvd-proj | wc -l | tr -d " ")" = 1 ]'
+o=$(D cockpit); check "cockpit twice: still one cockpit ($o)" '[ $? = 0 ] && [ "$(tmux list-panes -t =mvdc-proj: -F x | wc -l | tr -d " ")" = 2 ]'
+sleep 1; check "cockpit: the left pane lists the dispatcher window selected" 'tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "> dispatcher"'
+tmux send-keys -t =mvdc-proj:.{left} Enter; sleep 1
+check "cockpit: Enter shows the window in the view session and moves focus right" '[ "$(tmux display-message -p -t =mvdv-proj: "#{window_name}")" = dispatcher ] && [ "$(tmux display-message -p -t =mvdc-proj:.{right} "#{pane_active}")" = 1 ]'
+DS=$(awk -F= '$1 == "dsid" { print $2 }' "$Q/conf"); TD="/tmp/claude-mvdtest-$$/p/$DS/tasks"; mkdir -p "$TD"; echo "agent says hi" > "$TD/a1234567890.output"; echo "shell out" > "$TD/bzzzz.output"
+sleep 4
+check "cockpit: the dispatcher's agents and tasks are listed below it" 'tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "agent a1234567" && tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "task bzzzz"'
+rm -r "/tmp/claude-mvdtest-$$"
+o=$(D attach </dev/null); check "attach without a terminal refuses ($o)" '[[ "$o" == *"needs a terminal"* ]]'
 o=$(D add 1 https://github.com/o/r/issues/2 3 99 98 1)
 check "add: three queued, unreadable and closed ones skipped, duplicate noted ($o)" '[ "$(st 1 2)" = queued ] && [ "$(st 2 2)" = queued ] && [ "$(st 3 2)" = queued ] && [ -z "$(st 99 2)" ] && [ -z "$(st 98 2)" ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"issue 98: not open"* ]]'
 check "add: title kept on one line (tab removed)" '[ "$(awk -F"\t" "NF != 8" "$Q/queue.tsv" | wc -l | tr -d " ")" = 0 ]'
@@ -415,5 +426,10 @@ o=$(D add 0059); check "R2 leading zeros are not kept in the issue number ($o)" 
 
 # third pass: a tick without jq must not read an empty state as "closed"
 check "R3 tick, resume and launch need jq before they write anything; an unreadable state is not 'closed'" '[ "$(grep -c "need perl; need jq" "$REPO/scripts/megavibe-dispatch.sh")" -ge 2 ] && grep -q "could not read its state; not started" "$REPO/scripts/megavibe-dispatch.sh"'
+
+# finish: asked when the dispatcher ends; no answer or n leaves the sessions, y sends Ctrl-C twice (the stub dies of it)
+D max 30 >/dev/null; D tick >/dev/null; NW=$(tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -vxc dispatcher)
+o=$(echo n | D finish); check "finish: n leaves the issue sessions running ($o)" '[ "$NW" -gt 0 ] && [[ "$o" == *"still run"* ]] && [ "$(tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -vxc dispatcher)" = "$NW" ]'
+o=$(echo y | D finish); check "finish: y stops every stamped issue session ($(tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -cE "^[0-9]+$") left)" '[ "$(tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -cE "^[0-9]+$")" = 0 ]'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]
