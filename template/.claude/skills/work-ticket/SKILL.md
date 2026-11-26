@@ -17,6 +17,7 @@ One issue, one branch, one pull request. This skill depends on no other skill: i
 
 ## Ground rules
 
+- Work only on an issue that is yours. Check `gh issue view <n> --json assignees` and `gh api user --jq .login`: assigned to you means someone (the dispatcher) already took it, so go on; assigned to anyone else means stop and report that; unassigned means take it first with `gh issue edit <n> --add-assignee @me`, re-read the assignees, and stop if anyone besides you is on it. Never work an issue someone else holds.
 - Work only in the current folder and on the current branch. Check `git rev-parse --abbrev-ref HEAD` and `git status` first. Never switch branches, rebase onto something else, or touch another worktree.
 - The base is `origin/main` (or the branch the task file names). Fetch before you open the PR and say in the PR if the base moved.
 - Never merge, close the issue by hand, force-push, or delete anything you did not create.
