@@ -123,9 +123,9 @@ check "a dropped issue can be queued again" 'D add 2 | grep -q "queued" && [ "$(
 check "the main checkout was never touched" '[ "$(git -C "$P" rev-parse --abbrev-ref HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain | grep -v "^??")" ]'
 
 o=$(D add --label ready --label p1 --limit 5)
-check "add --label: gh asked for open issues with both labels and the limit ($(cat "$LISTCALLS"))" 'grep -q -- "--label ready --label p1 --state open --limit 5" "$LISTCALLS"'
-check "add --label: new ones queued, the one already known skipped ($o)" '[ "$(st 7 2)" = queued ] && [ "$(st 9 2)" = queued ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"3 open issue(s)"* ]]'
-o=$(D add --label nothing); check "add --label with no match is fine ($o)" '[[ "$o" == *"0 open issue(s)"* ]]'
+check "add --label: gh asked for open issues with both labels and the limit ($(cat "$LISTCALLS"))" 'grep -q -- "--label ready --label p1 --state open --search no:assignee --limit 500" "$LISTCALLS"'
+check "add --label: new ones queued, the one already known skipped ($o)" '[ "$(st 7 2)" = queued ] && [ "$(st 9 2)" = queued ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"3 open unassigned issue(s)"* ]]'
+o=$(D add --label nothing); check "add --label with no match is fine ($o)" '[[ "$o" == *"0 open unassigned issue(s)"* ]]'
 check "add with nothing to add or a bad option refuses" '! D add >/dev/null && ! D add --bogus >/dev/null && ! D add --limit x 1 >/dev/null'
 
 check "no skill configured: task file has no Implementation skill line" '! grep -q "^Implementation skill:" "$Q/tasks/issue-1.md"'
@@ -342,5 +342,39 @@ echo '[]' > "$T/comments.80"; rm -f "$T/comment.114"; sed -i.bak 's/35|36|79|80|
 check "C39 a www. address in a question is removed from the comment" '[ -f "$T/comment.114" ] && ! grep -q "www\." "$T/comment.114"'
 # C6 the claim is checked again right before a session starts, after the readiness check
 check "C6 the tick checks the claim twice per issue: before the readiness check and again before launching" '[ "$(grep -c "claim_ok \"\$n\"" "$REPO/scripts/megavibe-dispatch.sh")" = 2 ]'
+
+# ── reviewer round: F1-F6 and the cheap immaterial ones ───────────────
+D max 150 >/dev/null; D start --precheck >/dev/null
+# F1 a queued issue closed before its turn gets no session; F2 the session works from the issue as it is when it starts
+D add 130 >/dev/null; echo 130 >> "$CLOSED"; o=$(D tick)
+check "R-F1 an issue closed since it was queued is dropped, no session ($o)" '[ "$(st 130 2)" = dropped ] && [[ "$o" == *"closed since it was queued"* ]] && ! tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -qx 130'
+: > "$CLOSED"
+printf 'OLDTEXT' > "$T/body.131"; D add 131 >/dev/null; printf 'NEWTEXT edited later' > "$T/body.131"; D tick >/dev/null
+check "R-F2 the task file is rewritten from the issue as it is when the session starts" 'grep -q "NEWTEXT edited later" "$Q/tasks/issue-131.md" && ! grep -q OLDTEXT "$Q/tasks/issue-131.md"'
+# F3 no dispatcher where a megavibe session already holds the checkout
+sleep 60 & LP=$!; mkdir -p "$P/.agent/.session-lock.d"; printf '{"pid":%s}\n' "$LP" > "$P/.agent/.session-lock.d/metadata.json"
+o=$(D start --name qlock 2>&1); RC=$?
+check "R-F3 start refuses while a live megavibe session holds the checkout ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"would wait at the launcher"* ]] && ! tmux has-session -t =mvd-qlock 2>/dev/null'
+kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null; o=$(D start --name qlock 2>&1)
+check "R-F3 a dead session's leftover lock does not block it ($o)" 'tmux list-windows -t =mvd-qlock -F "#{@mvd_key}" | grep -qx dispatcher'
+/bin/rm -rf "$P/.agent/.session-lock.d"
+# F4 an issue URL of another repository is refused, this repository's (trailing slash, query) is taken
+o=$(D add https://github.com/other-org/other-repo/issues/140 2>&1)
+check "R-F4 an issue URL of another repository is not queued ($o)" '[ -z "$(st 140 2)" ] && [[ "$o" == *"another repository"* ]]'
+o=$(D add 'https://github.com/o/r/issues/141/?x=1' 2>&1)
+check "R-F4 an issue URL of this repository with a trailing slash and query is queued ($o)" '[ "$(st 141 2)" = queued ]'
+o=$(D add 'no-such-ref' 12x 2>&1); check "R-F4 a bad reference is reported and does not abort the rest ($o)" '[[ "$o" == *"no-such-ref: not an issue number"* ]] && [[ "$o" == *"12x: not an issue number"* ]]'
+# F5 add --label: the OLDEST N unassigned ones, whatever order gh lists them in
+: > "$T/list.calls"; o=$(D add --label ready --limit 2 2>&1)
+check "R-F5 add --label asks gh for unassigned issues, sorts by number and says it cut to the oldest N ($o)" 'grep -q -- "--search no:assignee" "$T/list.calls" && [[ "$o" == *"taking the oldest 2"* ]] && [[ "$o" != *"issue 9:"* ]]'
+# F6 an unreadable visibility refuses (fails closed)
+: > "$T/visibility"; o=$(D start 2>&1); RC=$?
+check "R-F6 start refuses when gh does not say whether the repository is public ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"did not say whether"* ]]'
+echo PRIVATE > "$T/visibility"
+# --dir: the queue is named after the repo it points at
+o=$( cd "$T" && D start --dir "$O2" --name dirq 2>&1 ); check "R-dir start --dir from elsewhere works on that repo ($o)" '[ "$(awk -F= "\$1 == \"repo\" { print \$2 }" "$MEGAVIBE_HOME/dispatch/dirq/conf")" = "$O2" ]'
+# drop of an issue whose window is still open says so
+D add 132 >/dev/null; D tick >/dev/null; o=$(D drop 132)
+check "R-drop dropping an issue with an open window says the window stays ($o)" '[[ "$o" == *"its window is still open"* ]]'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

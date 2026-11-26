@@ -61,9 +61,10 @@ gh() { [ -n "$GH_BIN" ] || GH_BIN=$(type -P gh); bounded 60 "$GH_BIN" "$@" 9>&-;
 # windows carry the tmux window option @mvd_key (the issue number, or "dispatcher"): liveness is that stamp, not the window name.
 #   1 issue, 2 state (queued go running pr ended done blocked held dropped), 3 title, 4 branch, 5 worktree, 6 started, 7 pr url, 8 session id
 Q=""; D=""
-pick_queue() {   # pick_queue [NAME]: sets Q and D; with no name, from env or the current repo
+PQ_DIR="."
+pick_queue() {   # pick_queue [NAME]: sets Q and D; with no name, from env or the repo ($PQ_DIR: the current one, or start's --dir)
   local n="${1:-${MEGAVIBE_DISPATCH_QUEUE:-}}"
-  if [ -z "$n" ]; then n=$(basename "$(repo_root)" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._\n-' '-'); fi
+  if [ -z "$n" ]; then n=$(basename "$(repo_root "$PQ_DIR")" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._\n-' '-'); fi
   [[ $n =~ $NAME_RE ]] || die "queue name '$n' is not usable (lower case letters, digits, dot, dash, underscore)"
   Q="$n"; D="$MH/dispatch/$Q"; TMUX_SOCK=$(conf_get socket)
 }
@@ -103,7 +104,17 @@ ensure_label() {   # the waiting label exists in the repo (created once, a repo 
 # (bidirectional overrides) are removed, not escaped.
 clean1() { printf '%s' "$1" | MAXC="${2:-100}" perl -CSD -e 'local $/; my $t = <STDIN>; $t = "" unless defined $t; $t =~ s/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]//g; print substr($t, 0, $ENV{MAXC});' 2>/dev/null; }
 
-issue_of() { local v="${1##*/}"; [[ $v =~ ^[0-9]+$ ]] || die "'$1' is not an issue number or issue URL"; printf '%s' "$v"; }
+# issue_of REF: prints the issue number of a number, "#N", or an issue URL of this repository. Returns 1 for anything else and 2 for
+# an issue URL of ANOTHER repository (queued, claimed and worked here it would be a different issue with the same number).
+issue_of() {
+  local v="$1" want slug
+  if [[ $v =~ ^https?://[^/]+/([^/]+/[^/]+)/issues/([0-9]+)([/?#].*)?$ ]]; then
+    slug="${BASH_REMATCH[1]}"; want=$(conf_get slug)
+    if [ -n "$want" ] && [ "$(printf '%s' "$slug" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; then return 2; fi
+    printf '%s' "${BASH_REMATCH[2]}"
+  elif [[ $v =~ ^#?([0-9]+)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"
+  else return 1; fi
+}
 
 # ── tmux liveness ─────────────────────────────────────────────────────
 WINS=""; WINS_STATE=ok
@@ -135,7 +146,7 @@ open_win() {
 
 # ── start ─────────────────────────────────────────────────────────────
 cmd_start() {
-  local max="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me
+  local max="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me rv slug
   while [ $# -gt 0 ]; do
     if [ "$1" = --no-precheck ]; then precheck=off; shift; continue; fi
     if [ "$1" = --precheck ]; then precheck=on; shift; continue; fi
@@ -152,24 +163,27 @@ cmd_start() {
   need tmux; need gh; need git; need perl
   repo=$(repo_root "$dir")
   [ -d "$repo/.agent" ] || die "no .agent/ in $repo: run 'megavibe' there once first"
-  (cd "$repo" && gh repo view --json nameWithOwner >/dev/null 2>&1) || die "gh cannot see a GitHub repository for $repo (gh auth status; is there an origin remote?)"
+  rv=$(cd "$repo" && gh repo view --json nameWithOwner,visibility,defaultBranchRef 2>/dev/null) || die "gh cannot see a GitHub repository for $repo (gh auth status; is there an origin remote?)"
+  slug=$(printf '%s' "$rv" | jq -r '.nameWithOwner // empty'); vis=$(printf '%s' "$rv" | jq -r '.visibility // empty')
+  [[ $slug =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "gh did not say which repository $repo is"
   # Anyone can write the issues and comments these sessions read, and the sessions run with permissions bypassed and
-  # with your credentials: a public repository is refused unless you say you accept that.
-  vis=$(cd "$repo" && gh repo view --json visibility --jq .visibility 2>/dev/null) || vis=""
+  # with your credentials: a public repository is refused unless you say you accept that. An answer that does not say
+  # (visibility unreadable) is a refusal too: the gate fails closed.
+  [ -n "$vis" ] || die "gh did not say whether $repo is public: not started (--allow-public if you accept that for this repository)"
   [ "$vis" != PUBLIC ] || [ "$allow_public" = 1 ] || die "$repo is a PUBLIC repository: anyone can write the issues and comments the sessions read, and the sessions run with permissions bypassed and your credentials. Dispatch is meant for internal repositories; --allow-public if you accept that"
   if [ -z "$base" ]; then
-    base=$(cd "$repo" && gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null) || base=""
+    base=$(printf '%s' "$rv" | jq -r '.defaultBranchRef.name // empty')
     { [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$ ]] && [[ $base != *..* ]] && [ "$base" != null ]; } || base=main
   fi
-  (cd "$repo" && bounded 120 git fetch -q origin "$base") || die "git fetch origin $base failed: dispatch cuts every worktree from origin/$base (--base names another branch)"
-  pick_queue "$name"
+  (cd "$repo" && bounded 120 git fetch -q origin "$base" 9>&-) || die "git fetch origin $base failed: dispatch cuts every worktree from origin/$base (--base names another branch)"
+  PQ_DIR="$repo"; pick_queue "$name"
   mkdir -p "$D/tasks"; touch "$D/queue.tsv"
   lock   # before anything is written: two starts must not both decide what this queue is
   old=$(conf_get repo)
   [ -z "$old" ] || [ "$old" = "$repo" ] || die "queue $Q already belongs to $old (queues are named after the repo folder): give this repo its own with --name"
   me=$(cd "$repo" && gh api user --jq .login 2>/dev/null) || me=""
   [[ $me =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || die "gh could not say who you are (gh api user): dispatch claims an issue by assigning it to you"
-  conf_put me "$me"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
+  conf_put me "$me"; conf_put slug "$slug"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
   live_windows
   if [ "$WINS_STATE" = ok ] && win_idle dispatcher >/dev/null; then
     say "dispatcher for $Q already runs: tmux attach -t mvd-$Q   (max is now $max; tell it, or run: megavibe dispatch max $max)"
@@ -177,6 +191,11 @@ cmd_start() {
   fi
   [ "$WINS_STATE" != unknown ] || die "cannot tell whether tmux session mvd-$Q exists; nothing started"
   prompt="You are the megavibe dispatcher for queue $Q (repo $repo; the environment variable MEGAVIBE_DISPATCH_QUEUE=$Q selects it for every megavibe dispatch command). Read $MH/template/dispatch/ROLE.md and follow it. Queue state is in $D."
+  local lockpid
+  lockpid=$(jq -r '.pid // empty' "$repo/.agent/.session-lock.d/metadata.json" 2>/dev/null) || lockpid=""
+  if [[ $lockpid =~ ^[0-9]+$ ]] && kill -0 "$lockpid" 2>/dev/null; then
+    die "a megavibe session is active in $repo (pid $lockpid): a dispatcher started there would wait at the launcher's branch-name prompt, which nobody can answer. Start it from a terminal in a checkout where no session runs, or end that session first"
+  fi
   local parent; parent=$(parent_id); orc=0
   wid=$(open_win dispatcher dispatcher "$repo" env MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" MEGAVIBE_PARENT_SESSION="$parent" \
     megavibe --no-normalize --name "dispatcher-$Q" ${model:+--model "$model"} "$prompt") || orc=$?
@@ -224,10 +243,10 @@ EOF
   } > "$f" && mv -f "$f" "$D/tasks/issue-$n.md"
 }
 cmd_add() {
-  local ref n j title t refs=() labels=() limit=30 found
+  local ref n j title t refs=() labels=() limit=30 found irc total lnames=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --label) [ $# -ge 2 ] || die "add: --label needs a value"; labels+=(--label "$2"); shift 2 ;;
+      --label) [ $# -ge 2 ] || die "add: --label needs a value"; labels+=(--label "$2"); lnames="$lnames${lnames:+ }$2"; shift 2 ;;
       --limit) [ $# -ge 2 ] && [[ $2 =~ ^[1-9][0-9]*$ ]] || die "add: --limit needs a positive number"; limit="$2"; shift 2 ;;
       -*) die "add: unknown option $1" ;;
       *) refs+=("$1"); shift ;;
@@ -237,13 +256,19 @@ cmd_add() {
   need gh; need jq
   lock; local repo me asg a; repo=$(conf_get repo); me=$(conf_get me)
   if [ "${#labels[@]}" -gt 0 ]; then   # every --label must match (gh's AND); open issues only, oldest first; a PR is not an issue here
-    found=$(cd "$repo" && gh issue list "${labels[@]}" --state open --limit "$limit" --json number --jq 'sort_by(.number)[].number') \
+    # gh lists newest first: take (up to 500) unassigned ones and cut to the oldest N here, never in gh, or the oldest would be the ones lost
+    found=$(cd "$repo" && gh issue list "${labels[@]}" --state open --search "no:assignee" --limit 500 --json number --jq '.[].number') \
       || die "add: gh could not list issues for the label(s)"
-    say "label ${labels[*]//--label /}: $(printf '%s\n' "$found" | grep -c . || true) open issue(s) (limit $limit)"
+    found=$(printf '%s\n' "$found" | grep -E '^[0-9]+$' | sort -n || true)
+    total=$(printf '%s\n' "$found" | grep -c . || true)
+    say "label $lnames: $total open unassigned issue(s)$([ "$total" -le "$limit" ] || printf ' (taking the oldest %s: --limit)' "$limit")"
+    found=$(printf '%s\n' "$found" | head -n "$limit")
     while IFS= read -r n; do [ -z "$n" ] || refs+=("$n"); done <<<"$found"
   fi
   for ref in ${refs[@]+"${refs[@]}"}; do
-    n=$(issue_of "$ref")
+    irc=0; n=$(issue_of "$ref") || irc=$?
+    if [ "$irc" = 2 ]; then say "$ref: an issue of another repository (this queue is $(conf_get slug)); not queued"; continue; fi
+    if [ "$irc" != 0 ]; then say "$ref: not an issue number or an issue URL of this repository; not queued"; continue; fi
     if [ -n "$(row "$n")" ] && [ "$(col "$(row "$n")" 2)" != dropped ]; then say "issue $n: already in the queue ($(col "$(row "$n")" 2))"; continue; fi
     j=$(cd "$repo" && gh issue view "$n" --json title,body,url,state,assignees) || { say "issue $n: gh could not read it; not queued"; continue; }
     if [ "$(printf '%s' "$j" | jq -r '.state')" != OPEN ]; then say "issue $n: not open; not queued"; continue; fi
@@ -284,7 +309,7 @@ make_worktree() {
   local n="$1" repo br wt l; repo=$(conf_get repo); br="dispatch/issue-$n"; WT=""
   wt="$(dirname "$repo")/$(basename "$repo")-issue-$n"
   if [ ! -e "$wt" ]; then
-    bounded 120 git -C "$repo" fetch -q origin "$(base_of)" || { say "issue $n: git fetch origin $(base_of) failed; not started"; return 1; }
+    bounded 120 git -C "$repo" fetch -q origin "$(base_of)" 9>&- || { say "issue $n: git fetch origin $(base_of) failed; not started"; return 1; }
     if git -C "$repo" show-ref --verify --quiet "refs/heads/$br"; then
       git -C "$repo" worktree add -q "$wt" "$br" || { say "issue $n: git worktree add failed for existing branch $br; not started"; return 1; }
     else
@@ -306,12 +331,17 @@ trust_preflight() {
   local wt="$1" cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
   [ "$(jq -r --arg d "$wt" '.projects[$d].hasTrustDialogAccepted // false' "$cfg" 2>/dev/null)" != true ] || return 0
   pc_login || { say "  (workspace-trust not pre-accepted for $wt: $(cat "$D/.pc.why" 2>/dev/null); the session may wait at the dialog: status shows it idle, peek shows it)"; return 0; }
-  (cd "$wt" && bounded 60 "${PC_ENV[@]}" claude -p --dangerously-skip-permissions "echo ok" </dev/null >/dev/null 2>&1) || true
+  (cd "$wt" && bounded 60 "${PC_ENV[@]}" claude -p --dangerously-skip-permissions "echo ok" </dev/null >/dev/null 2>&1 9>&-) || true
 }
 launch() {   # launch N: worktree, window, record. Returns 1, having said why, when the issue could not be started.
-  local n="$1" wt sid model parent prompt wid orc=0
+  local n="$1" wt sid model parent prompt wid orc=0 cur
   live_windows
   if win_idle "$n" >/dev/null; then say "issue $n: still has a window; not starting a second session on its worktree"; return 1; fi
+  # the issue as it is NOW: closed since it was queued (a duplicate, fixed meanwhile) means nothing to do; an edited body or title is
+  # what the session must work from, not the snapshot taken when it was queued
+  cur=$(cd "$(conf_get repo)" && gh issue view "$n" --json title,body,url,state 2>/dev/null) || { say "issue $n: could not re-read it from GitHub; not started"; return 1; }
+  if [ "$(printf '%s' "$cur" | jq -r '.state')" != OPEN ]; then set_cols "$n" 2 dropped; say "issue $n: closed since it was queued: dropped, no session"; return 1; fi
+  write_task "$n" "$cur" || { say "issue $n: could not write its task file; not started"; return 1; }
   make_worktree "$n" || return 1
   wt="$WT"; [ -d "$wt" ] || { say "issue $n: no worktree; not started"; return 1; }
   trust_preflight "$wt"
@@ -525,7 +555,7 @@ cmd_status() {
   done < "$D/queue.tsv"
 }
 cmd_peek() {
-  local n; n=$(issue_of "${1:-}"); need_queue; live_windows
+  local n; n=$(issue_of "${1:-}") || die "'${1:-}' is not an issue number"; need_queue; live_windows
   win_idle "$n" >/dev/null || die "issue $n has no window"
   tm capture-pane -p -t "$(win_id "$n")" -S -40 | perl -CSD -pe 's/[^\P{Cc}\n\t]//g; s/\p{Cf}//g' 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}'
 }
@@ -533,7 +563,7 @@ cmd_peek() {
 # window, as `megavibe node session resume` does for the node's sessions. Never while a window for it exists.
 cmd_resume() {
   local n r wt sid model parent prompt wid orc=0
-  n=$(issue_of "${1:-}"); need_queue; need tmux; lock
+  n=$(issue_of "${1:-}") || die "'${1:-}' is not an issue number"; need_queue; need tmux; lock
   r=$(row "$n"); [ -n "$r" ] || die "issue $n is not in queue $Q"
   case "$(col "$r" 2)" in running|ended) ;; *) die "issue $n is $(col "$r" 2): resume is for a session that ended unexpectedly (running with its window gone, or ended)" ;; esac
   live_windows; [ "$WINS_STATE" != unknown ] || die "cannot tell which windows run; nothing started"
@@ -551,7 +581,7 @@ cmd_resume() {
 }
 cmd_max() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || die "max: a positive number"; need_queue; lock; conf_put max "$1"; say "max is $1 (running sessions are not stopped; the next tick uses it)"; }
 cmd_mark() {   # cmd_mark done|dropped|queued N
-  local n; n=$(issue_of "${2:-}"); need_queue; lock
+  local n; n=$(issue_of "${2:-}") || die "'${2:-}' is not an issue number"; need_queue; lock
   [ -n "$(row "$n")" ] || die "issue $n is not in queue $Q"
   if [ "$1" = queued ] && [ "$(col "$(row "$n")" 2)" = running ]; then die "issue $n is running; wait for its window to close"; fi
   if [ "$1" = queued ]; then
@@ -570,6 +600,7 @@ cmd_mark() {   # cmd_mark done|dropped|queued N
     (cd "$(conf_get repo)" && gh issue edit "$n" --remove-assignee "@me" >/dev/null 2>&1) || say "issue $n: could not take you off its assignees; do it by hand"
   fi
   set_cols "$n" 2 "$1"; say "issue $n: $1"
+  if [ "$1" = dropped ]; then live_windows; ! win_idle "$n" >/dev/null || say "note: its window is still open (dispatch never closes one): /exit it there"; fi
 }
 
 cmd="${1:-help}"; [ $# -eq 0 ] || shift
