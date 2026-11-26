@@ -6,7 +6,7 @@ LAUNCHER="${1:-$REPO/megavibe}"
 T=$(mktemp -d "${TMPDIR:-/tmp}/megavibe-work-copy.XXXXXX")
 trap '/bin/rm -rf "$T"' EXIT
 T=$(cd "$T" && pwd -P)
-PASS=0 FAIL=0 CASE=0
+PASS=0 FAIL=0 CASE=0 SKIP=0
 mkdir -p "$T/bin"
 cat > "$T/bin/claude" <<'STUB'
 #!/bin/bash
@@ -20,6 +20,11 @@ cat > "$T/bin/git" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CALLS/git"
 case " $* " in
+  *' rev-parse --git-dir '*) echo .git; exit 0 ;;
+  *' rev-parse --show-toplevel '*) pwd -P; exit 0 ;;
+  *' worktree list '*) printf '%s main\n' "$PWD"; exit 0 ;;
+  *' worktree add '*) mkdir -p "${@: -1}"; exit 0 ;;
+  *' worktree remove '*) rm -rf "$3"; exit 0 ;;
   *' rev-parse HEAD '*) echo 0123456789abcdef0123456789abcdef01234567; exit 0 ;;
   *' rev-list --count '*) echo 0; exit 0 ;;
   *' pull '*) exit 0 ;;
@@ -44,6 +49,8 @@ fixture() {
   PROJECT="$ROOT/project"
   mkdir -p "$INSTALL/scripts" "$SOURCE/scripts" "$PROJECT" "$ROOT/calls" \
     "$TEST_HOME/.claude" "$ROOT/config" "$TEST_HOME/.local/bin"
+  mkdir "$SOURCE/.git"
+  cp "$REPO/scripts/memory-config.sh" "$REPO/scripts/reviewers.sh" "$INSTALL/scripts/"
   cp "$LAUNCHER" "$INSTALL/megavibe"
   cp "$LAUNCHER" "$SOURCE/megavibe"
   # Different bytes ensure the old launcher's self-update/re-exec path is exercised.
@@ -110,7 +117,7 @@ for spelling in path symlink identical hardlink; do
       ln -s 'work copy' "$ROOT/source-dir"
       ln -s source-dir/megavibe "$ROOT/entry"
       ENTRY="$ROOT/entry" ;;
-    identical) cp "$INSTALL/megavibe" "$SOURCE/megavibe" ;;
+    identical) rmdir "$SOURCE/.git"; cp "$INSTALL/megavibe" "$SOURCE/megavibe" ;;
     hardlink) rm "$SOURCE/megavibe"; ln "$INSTALL/megavibe" "$SOURCE/megavibe" ;;
   esac
   snapshot "$INSTALL" > "$ROOT/install-before"
@@ -162,15 +169,111 @@ rm "$INSTALL/megavibe" "$INSTALL/init.sh" "$INSTALL/setup.sh"
 ln -s "$SOURCE/megavibe" "$INSTALL/megavibe"
 launch --resume example-session
 check 'installed repo symlink also refuses non-interactive first-time setup' test "$RC" = 1
-check 'installed repo symlink prints the first-time setup remedy' grep -Fq 'first-time setup from a repo requires a terminal; run explicitly: bash ' "$ROOT/stderr"
+check 'installed repo symlink is still a work copy' notice
 check 'installed repo symlink never calls setup' test ! -e "$ROOT/calls/setup"
 
 # Explicit update dispatch remains available from a work copy.
 fixture
-mkdir "$SOURCE/.git"
 launch update
 check 'explicit update still pulls the source checkout' grep -q 'pull --ff-only -q origin main' "$ROOT/calls/git"
 check 'explicit update exits normally without work-copy refusal' test "$RC:$(cat "$ROOT/stderr")" = '0:'
 
-printf '%s passed, %s failed\n' "$PASS" "$FAIL"
+
+# An environment override cannot make a checkout authenticate itself.
+for marker in directory file; do
+  for protocol in present missing; do
+    fixture
+    if [ "$marker" = file ]; then rmdir "$SOURCE/.git"; printf 'gitdir: ../git-store\n' > "$SOURCE/.git"; fi
+    INSTALL="$SOURCE"
+    [ "$protocol" = present ] || rm "$TEST_HOME/.claude/CLAUDE.md"
+    snapshot "$TEST_HOME" > "$ROOT/home-before"
+    snapshot "$SOURCE" > "$ROOT/source-before"
+    launch --resume example-session
+    snapshot "$TEST_HOME" > "$ROOT/home-after"
+    snapshot "$SOURCE" > "$ROOT/source-after"
+    check "override, .git $marker, protocol $protocol: refuses checkout" notice
+    check "override, .git $marker, protocol $protocol: no writes or setup" \
+      test "$RC:$(cmp -s "$ROOT/home-before" "$ROOT/home-after"; echo $?):$(cmp -s "$ROOT/source-before" "$ROOT/source-after"; echo $?):$(find "$ROOT/calls" -type f -print)" = '1:0:0:'
+  done
+done
+
+# Both automatic setup branches require a terminal, even for an installed file.
+for arm in installed fallback; do
+  fixture
+  ENTRY="$INSTALL/megavibe"
+  rm "$TEST_HOME/.claude/CLAUDE.md"
+  if [ "$arm" = fallback ]; then
+    rmdir "$SOURCE/.git"
+    rm "$INSTALL/megavibe" "$INSTALL/setup.sh"
+    ln -s "$SOURCE/megavibe" "$INSTALL/megavibe"
+    ENTRY="$SOURCE/megavibe"
+  fi
+  launch --resume example-session
+  check "$arm setup: nonterminal refusal" test "$RC" = 1
+  check "$arm setup: explicit setup remedy" grep -Fq 'setup requires a terminal; run explicitly: bash ' "$ROOT/stderr"
+  check "$arm setup: never runs setup" test ! -e "$ROOT/calls/setup"
+done
+
+# Test real settings writers and worktree dispatch; stub node's external effects.
+for command in 'memory set docs_ask 1' 'memory unset docs_ask' 'reviewers set reviewer' \
+    'worktree review' 'worktree remove review' 'node install' 'node session start test' \
+    'assistant' 'personal' 'trash-greenlight' 'tick' 'usage probe run'; do
+  fixture
+  mkdir -p "$PROJECT/.agent" "$ROOT/project-review"
+  printf '{"env":{"MEGAVIBE_MEMORY_DOCS_ASK":"0"}}\n' > "$TEST_HOME/.claude/settings.json"
+  for helper in megavibe-node tick usage-probe; do
+    printf '#!/bin/bash\necho called > "$CALLS/helper"\n' > "$INSTALL/scripts/$helper.sh"
+  done
+  snapshot "$TEST_HOME" > "$ROOT/home-before"
+  snapshot "$PROJECT" > "$ROOT/project-before"
+  snapshot "$ROOT/project-review" > "$ROOT/worktree-before"
+  launch $command
+  snapshot "$TEST_HOME" > "$ROOT/home-after"
+  snapshot "$PROJECT" > "$ROOT/project-after"
+  if [ -d "$ROOT/project-review" ]; then snapshot "$ROOT/project-review" > "$ROOT/worktree-after"; else echo removed > "$ROOT/worktree-after"; fi
+  check "$command: refused before dispatch" notice
+  check "$command: no writes or helpers" test "$RC:$(cmp -s "$ROOT/home-before" "$ROOT/home-after"; echo $?):$(cmp -s "$ROOT/project-before" "$ROOT/project-after"; echo $?):$(cmp -s "$ROOT/worktree-before" "$ROOT/worktree-after"; echo $?):$(find "$ROOT/calls" -type f -print)" = '1:0:0:0:'
+done
+
+for command in 'memory' 'memory list' 'reviewers' 'reviewers list' 'worktree' 'worktree list' 'help' 'version'; do
+  fixture
+  snapshot "$TEST_HOME" > "$ROOT/home-before"
+  snapshot "$PROJECT" > "$ROOT/project-before"
+  launch $command
+  snapshot "$TEST_HOME" > "$ROOT/home-after"
+  snapshot "$PROJECT" > "$ROOT/project-after"
+  check "$command: work-copy listing works without writes" test "$RC:$(cmp -s "$ROOT/home-before" "$ROOT/home-after"; echo $?):$(cmp -s "$ROOT/project-before" "$ROOT/project-after"; echo $?):$(cat "$ROOT/stderr")" = '0:0:0:'
+done
+
+for spelling in custom case-alias hardlink-outside; do
+  fixture
+  date +%s > "$INSTALL/.last-update-check"
+  case "$spelling" in
+    custom) mv "$INSTALL" "$ROOT/custom install"; INSTALL="$ROOT/custom install"; ENTRY="$INSTALL/megavibe" ;;
+    case-alias)
+      ENTRY="$INSTALL/MEGAVIBE"
+      if [ ! -f "$ENTRY" ]; then
+        echo 'SKIP case alias: scratch filesystem is case-sensitive'
+        SKIP=$((SKIP + 1)); continue
+      fi ;;
+    hardlink-outside)
+      # No .git here: directory identity alone must reject this hard link.
+      ln "$INSTALL/megavibe" "$ROOT/megavibe"
+      ENTRY="$ROOT/megavibe" ;;
+  esac
+  launch --resume example-session
+  if [ "$spelling" = hardlink-outside ]; then
+    check 'hard link outside installation: refused without dispatch' test "$RC:$(find "$ROOT/calls" -type f -print)" = '1:'
+    check 'hard link outside installation: work-copy notice' grep -q 'work copy' "$ROOT/stderr"
+  else
+    check "$spelling: installed launch succeeds" test "$RC" = 0
+    check "$spelling: reaches Claude" test -f "$ROOT/calls/claude"
+  fi
+done
+
+fixture
+launch update --check
+check 'update --check stays exempt' test "$RC:$(grep -c 'work copy' "$ROOT/stderr" || true)" = '0:0'
+
+printf '%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" = 0 ]

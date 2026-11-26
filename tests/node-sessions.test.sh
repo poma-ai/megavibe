@@ -25,7 +25,7 @@ printf '#!/bin/bash\necho testmac\n' > "$B/scutil"
 printf '#!/bin/bash\necho Darwin\n' > "$B/uname"
 printf '#!/bin/bash\n[ "$1" = print ] && exit 113\nexit 0\n' > "$B/launchctl"
 chmod +x "$B"/*
-export PATH="$B:$PATH"
+export PATH="$B:$PATH" CLAUDE_CONFIG_DIR="$T/config"
 export HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe"
 mkdir -p "$MEGAVIBE_HOME/personal"
 N="$MEGAVIBE_HOME/node"; S="$N/sessions"

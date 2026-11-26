@@ -6,7 +6,7 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/megavibe-restart-settings.XXXXXX")
 trap 'rm -rf "$T"' EXIT
 T=$(cd "$T" && pwd -P)
 export HOME="$T/home with spaces" MEGAVIBE_INIT_SKIP_HEAL=1
-export MEGAVIBE_HOME="$HOME/.megavibe"
+export MEGAVIBE_HOME="$HOME/.megavibe" CLAUDE_CONFIG_DIR="$HOME/.claude"
 unset MEGAVIBE_RESTART_PICKUP
 mkdir -p "$MEGAVIBE_HOME/scripts" "$MEGAVIBE_HOME/personal"
 PASS=0 FAIL=0

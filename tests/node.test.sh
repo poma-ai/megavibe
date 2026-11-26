@@ -42,7 +42,7 @@ printf '#!/bin/bash\necho Darwin\n' > "$B/uname"
 printf '#!/bin/bash\nprintf "%%s\\n" "$@" > "%s/megavibe.args"\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\n[ -e "%s/megavibe.sleep" ] && sleep "$(cat "%s/megavibe.sleep")"\n[ -e "%s/megavibe.rc" ] && exit "$(cat "%s/megavibe.rc")"\nexit 0\n' "$T" "$T" "$T" "$T" "$T" "$T" > "$B/megavibe"
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/claude.calls"\n' "$T" > "$B/claude"
 chmod +x "$B"/*
-export PATH="$B:$PATH"
+export PATH="$B:$PATH" CLAUDE_CONFIG_DIR="$T/config"
 
 # fresh: a new HOME, MEGAVIBE_HOME and tmux state; the node folder installed from the template.
 fresh() {
@@ -366,7 +366,9 @@ bash "$N/pa-start.sh"
 check "pa-start: a resume refused as held (exit 3) keeps pa.session and starts no second PA" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && [ "$(cat "$N/pa.session")" = "$HELD" ] && cmp -s "$T/failed.before" "$N/pa.session.failed" && log | grep -q "still open in another process"'
 check "pa-start: a refusal outside a terminal prints nothing and does not wait" '[ -z "$(MEGAVIBE_NODE_TEST_WAIT_SECS=30 bash "$N/pa-start.sh" 2>&1 </dev/null | cat)" ]'
 echo 3 > "$T/megavibe.rc"
-out=$(MEGAVIBE_NODE_TEST_WAIT_SECS=0 script -q /dev/null bash "$N/pa-start.sh" 2>&1 || true)
+# stdin from /dev/null: script(1) fails with "Operation not supported on socket" when its stdin is a
+# socket (a test runner without a terminal), which made this check fail depending on the caller.
+out=$(MEGAVIBE_NODE_TEST_WAIT_SECS=0 script -q /dev/null bash "$N/pa-start.sh" 2>&1 </dev/null || true)
 check "pa-start: a refusal on a terminal says the conversation is open elsewhere and how to reach it" '[[ "$out" == *"still open in another process"* ]] && [[ "$out" == *"message above says where it runs"* ]] && [[ "$out" != *"tmux attach"* ]] && [ "$(cat "$N/pa.session")" = "$HELD" ]'
 rm -f "$T/megavibe.rc"
 printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
