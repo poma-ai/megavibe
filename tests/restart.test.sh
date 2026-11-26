@@ -15,6 +15,7 @@ cat > "$T/bin/ps" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$FIXTURE/ps-calls"
 case "$*" in
+  '-o lstart= -p '*) echo 'Wed Nov 25 10:00:00 2026' ;;
   '-axo pid=,ppid=,lstart=,command='|'-axo pid=,ppid=,lstart=,comm=') echo scan >> "$FIXTURE/scans"; cat "$FIXTURE/processes" ;;
   '-o ppid= -p '*)
     if [ "$4" = "${FIXTURE_CLAUDE_PID:-100}" ]; then echo "$MEGAVIBE_RESTART_WRAPPER_PID"; else echo "${FIXTURE_CLAUDE_PID:-100}"; fi ;;
@@ -183,7 +184,10 @@ python3 - "$REPO/scripts/restart.sh" <<'BROKEN'
 import os, subprocess, sys
 r, w = os.pipe()
 os.close(r)
-subprocess.run(["bash", sys.argv[1], "show", "delivery"], stdout=w, stderr=subprocess.DEVNULL)
+result = subprocess.run(["bash", sys.argv[1], "show", "delivery"], stdout=w, stderr=subprocess.PIPE)
+assert result.returncode != 0
+assert len(result.stderr.splitlines()) == 1
+assert b'.agent/sessions/delivery/restart-handover.txt' in result.stderr
 os.close(w)
 BROKEN
 check 'failed output does not consume reminder' '[ "$(jq -r .state "$MEGAVIBE_RESTART_MARKER")" = restarted ]'

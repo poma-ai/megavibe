@@ -17,6 +17,7 @@ export -f kill
 cat > "$T/bin/ps" <<'STUB'
 #!/bin/bash
 case "$*" in
+  '-o lstart= -p '*) echo 'Wed Nov 25 10:00:00 2026' ;;
   '-o ppid= -p '*)
     case "$4" in
       100) echo "$MEGAVIBE_RESTART_WRAPPER_PID" ;;
@@ -160,9 +161,9 @@ pickup interrupted
 python3 - "$MEGAVIBE_HOME/scripts/restart.sh" "$GEN" <<'INTERRUPT'
 import os, pathlib, signal, subprocess, sys, time
 script, generation = sys.argv[1:]
-claim = pathlib.Path('.agent/sessions/interrupted/restart-handover.' + generation + '.delivering')
-# Force a blocking stdout open before Python's write using a full pipe. The
-# generation claim tells us the delivering Python owns the kernel lock.
+claim = pathlib.Path('.agent/sessions/interrupted/restart-handover.' + generation + '.delivering-shell.0')
+# Block the shell's stdout write with a full pipe. The atomic claim identifies
+# the delivering shell; SIGKILL must leave the next start able to retry.
 r, w = os.pipe()
 os.set_blocking(w, False)
 try:
@@ -174,19 +175,21 @@ p = subprocess.Popen(['bash', script, 'show', 'interrupted'], stdout=w, stderr=s
 owner = None
 for _ in range(200):
     try:
-        owner = int(claim.read_text())
+        owner = int(os.readlink(claim).split(':', 1)[0])
         break
     except (FileNotFoundError, ValueError): time.sleep(.01)
 if owner is not None:
+    other = subprocess.run(['bash', script, 'show', 'interrupted'],
+                           capture_output=True, timeout=5)
+    assert other.returncode == 0 and not other.stdout and not other.stderr
     os.kill(owner, signal.SIGKILL)
 else:
-    # HEAD has the unrecoverable directory claim; simulate its exact leftover.
-    legacy = pathlib.Path('.agent/sessions/interrupted/restart-handover.delivering')
-    legacy.mkdir(exist_ok=True)
     p.kill()
 p.wait(timeout=5)
 os.close(w); os.close(r)
+assert owner is not None, 'delivery never acquired its claim'
 INTERRUPT
+check 'a live delivery claim prevents concurrent reminder output' '[ "$(field .state)" != shown ]'
 out=$(helper show interrupted || true)
 check 'P2 interrupted delivery recovers the dead owner and emits reminder' 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext" >/dev/null'
 check 'P2 recovered delivery is consumed only after output succeeds' '[ -z "$(helper show interrupted || true)" ]'
@@ -196,6 +199,35 @@ complete interrupted
 pickup interrupted
 out=$(helper show interrupted || true)
 check 'P2 abandoned claim never suppresses a later generation' 'printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext" >/dev/null'
+# Run every lifecycle step with an allowlisted PATH that has no Python.
+mkdir -p "$T/no-python"
+for tool in bash cat chmod cp cut date find grep head jq ln mkdir mv od readlink rm sed tr wc ps; do
+  ln -s "$(command -v "$tool")" "$T/no-python/$tool"
+done
+saved_path=$PATH
+export PATH="$T/no-python"
+check 'isolated lifecycle PATH has no python3' '! command -v python3 >/dev/null 2>&1'
+arm no-python
+end no-python
+check 'no-python exit hook confirms capture' '[ "$(field .state)" = confirmed ]'
+complete no-python
+pickup no-python
+# A reused live PID must not suppress a reminder owned by an earlier process.
+ln -s "$$:old process start" ".agent/sessions/no-python/restart-handover.$GEN.delivering-shell.0"
+out=$(start no-python)
+check 'no-python lifecycle delivers header, count, observations and file path' 'printf "%s" "$out" | jq -e '\''.hookSpecificOutput.additionalContext | contains("Before the restart") and contains("1 recorded observations") and contains("PID 300") and contains(".agent/sessions/no-python/restart-handover.txt")'\'' >/dev/null'
+check 'no-python lifecycle skips a reused PID, ends shown and does not repeat' '[ "$(field .state)" = shown ] && [ -z "$(start no-python)" ]'
+arm no-python-large
+end no-python-large
+for ((i=0; i<1000; i++)); do printf 'Extra note %s: retained in the full handover.\n' "$i"; done >> .agent/sessions/no-python-large/restart-handover.txt
+complete no-python-large
+pickup no-python-large
+# A closed stdout must produce exactly one stderr line and remain deliverable.
+rc=0; helper show no-python-large >&- 2> "$T/delivery-error" || rc=$?
+check 'no-python failed delivery retains reminder and reports its path once' '[ "$rc" != 0 ] && [ "$(field .state)" = restarted ] && [ "$(wc -l < "$T/delivery-error" | tr -d " ")" = 1 ] && grep -q ".agent/sessions/no-python-large/restart-handover.txt" "$T/delivery-error"'
+out=$(start no-python-large)
+check 'no-python retry delivers bounded first lines, count and full path' 'printf "%s" "$out" | jq -e '\''.hookSpecificOutput.additionalContext | length < 2000 and contains("Before the restart") and contains("1 recorded observations") and contains("Session no-python-large") and contains("PID 300") and contains(".agent/sessions/no-python-large/restart-handover.txt") and (contains("Extra note 999") | not)'\'' >/dev/null && [ "$(field .state)" = shown ]'
+export PATH=$saved_path
 rm -f "$MEGAVIBE_RESTART_MARKER"
 export REAL_JQ="$(command -v jq)"
 cat > "$T/bin/jq" <<'JQ'

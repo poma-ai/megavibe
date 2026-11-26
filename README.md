@@ -581,9 +581,11 @@ confirms pickup. A failed launch cannot deliver a reminder on a later manual res
 attribution, and refreshed handovers archive earlier files. On startup/resume,
 the hook delivers the handover once, or a bounded summary with the observation
 count and full file path when it is too large. It marks the generation shown
-only after writing the full message or summary successfully. Delivery uses a
-generation-scoped kernel lock and records its owner PID; an interrupted delivery
-can be retried without a stale claim suppressing it. The reminder
+only after writing the full message or summary successfully. Delivery uses
+atomic, generation-scoped PID/start-time claims without requiring Python;
+retries skip dead owners without deleting claims that another retry could
+be using. Failed delivery leaves the reminder available and reports the
+handover path on stderr. The reminder
 asks the model to verify each PID/start time and actual survival before
 re-arming or restarting anything, and to say what it dropped.
 
