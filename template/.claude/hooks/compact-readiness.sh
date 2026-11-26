@@ -322,9 +322,20 @@ def main():
                                        % (row.get("kind", "?"), ident))
         wc = Path(".agent/sessions") / sid / "WORKING_CONTEXT.md"
         if sid and wc.is_file() and wc.stat().st_size:
-            age = max(0, int(time.time() - wc.stat().st_mtime))
-            info.append("WORKING_CONTEXT %s: %dm old; /rehydrate %s" %
-                        (wc, age // 60, "required" if age > 3600 else "optional"))
+            # Same rule as wc_state in on-compact.sh and on-pre-compact.sh: stale when an
+            # event or register was written after it (FULL_CONTEXT.md without an event log).
+            wc_m = wc.stat().st_mtime
+            age = max(0, int(time.time() - wc_m))
+            ev_dir = Path(".agent/events")
+            newer_ev = sum(1 for f in ev_dir.iterdir() if f.is_file() and not f.name.startswith(".")
+                           and f.stat().st_mtime > wc_m) if ev_dir.is_dir() else 0
+            regs = [".agent/snapshot.md", ".agent/DECISIONS.md", ".agent/TASKS.md"]
+            if not ev_dir.is_dir():
+                regs.append(".agent/FULL_CONTEXT.md")
+            newer_reg = sum(1 for r in regs if Path(r).is_file() and Path(r).stat().st_mtime > wc_m)
+            state = ("fresh; /rehydrate optional" if newer_ev + newer_reg == 0 else
+                     "stale (%d event(s), %d register(s) newer); /rehydrate required" % (newer_ev, newer_reg))
+            info.append("WORKING_CONTEXT %s: %dm old, %s" % (wc, age // 60, state))
         else:
             info.append("no WORKING_CONTEXT for session " + (sid or "unknown"))
         result = subprocess.run(["git", "status", "--porcelain"], stdout=subprocess.PIPE, env=dict(os.environ, GIT_OPTIONAL_LOCKS="0"),

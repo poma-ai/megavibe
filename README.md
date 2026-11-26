@@ -153,7 +153,7 @@ At high context, Claude saves decisions with reasons, tasks with owners and bloc
 
 Before the compaction, the pre-compact hook prints a short fixed list of what the summary must keep (open decisions, running background work with ids, the working-context and event-log paths, the next step); Claude Code passes a PreCompact hook's plain stdout to the compaction as instructions. The protocol's `Compact Instructions` section says the same. When Claude runs out of memory and compacts, megavibe detects it and triggers recovery. The hook writes the full orientation (git state, decisions, tasks, lessons, and the whole log when it is small) to `.agent/LOGS/rehydration-instructions.<session>.md` and gives Claude a short message pointing at it, because hook output over 10,000 characters reaches the model only as a 2,000-character preview. Then:
 
-- **Normal case** (working context missing, or older than an event or register): Claude runs `/rehydrate`, which calls Codex (or the subagent) to produce a focused ~400-line `WORKING_CONTEXT.md`
+- **Normal case** (working context missing, or older than an event or register): Claude runs `/rehydrate`, which calls Codex (or the subagent) to produce a focused ~400-line `WORKING_CONTEXT.md`. With the context watcher on, events nearly always follow the last `/rehydrate`, so this is the usual case
 - **Working context newer than every event and register** (`.agent/events/`, `snapshot.md`, `DECISIONS.md`, `TASKS.md`): Claude reads it and carries on; `/rehydrate` is optional and nothing reminds. The hook's message says which case applies and, when stale, how many events and registers were written after it
 - **Empty context** (first compaction): instructs Claude to save the compaction summary before it's lost
 

@@ -151,6 +151,10 @@ check "error path: still prints the preservation list" 'printf "%s" "$OUT" | gre
 check "error path: list printed once" '[ "$(printf "%s\n" "$OUT" | grep -c "Megavibe preservation instructions")" -eq 1 ]'
 check "error path: no project text" '! printf "%s" "$OUT" | grep -qF "$MARK"'
 
+# The two copies of wc_state must stay identical.
+fn() { sed -n '/^wc_state() {/,/^}/p' "$1"; }
+check "wc_state identical in both hooks" '[ -n "$(fn "$HOOKS/on-compact.sh")" ] && [ "$(fn "$HOOKS/on-compact.sh")" = "$(fn "$HOOKS/on-pre-compact.sh")" ]'
+
 # --- 3. Compact Instructions section in the protocol -------------------------
 BLOCK=$(sed -n '/<!-- megavibe-v3 -->/,/<!-- \/megavibe-v3 -->/p' "$REPO/template/CLAUDE.md")
 check "protocol: has a Compact Instructions heading inside the markers" 'printf "%s\n" "$BLOCK" | grep -qE "^#+ Compact Instructions$"'
