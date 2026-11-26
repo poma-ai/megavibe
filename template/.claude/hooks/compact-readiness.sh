@@ -326,13 +326,23 @@ def main():
             # event or register was written after it (FULL_CONTEXT.md without an event log).
             wc_m = wc.stat().st_mtime
             age = max(0, int(time.time() - wc_m))
+            def wc_ev_newer(f):  # find -type f -newer: regular files only, never through a symlink
+                try:
+                    return not f.is_symlink() and f.is_file() and f.stat().st_mtime > wc_m
+                except OSError:
+                    return False
             ev_dir = Path(".agent/events")
-            newer_ev = sum(1 for f in ev_dir.iterdir() if f.is_file() and not f.name.startswith(".")
-                           and f.stat().st_mtime > wc_m) if ev_dir.is_dir() else 0
+            newer_ev = sum(1 for f in ev_dir.rglob("*") if not f.name.startswith(".") and wc_ev_newer(f)) \
+                if ev_dir.is_dir() else 0
             regs = [".agent/snapshot.md", ".agent/DECISIONS.md", ".agent/TASKS.md"]
             if not ev_dir.is_dir():
                 regs.append(".agent/FULL_CONTEXT.md")
-            newer_reg = sum(1 for r in regs if Path(r).is_file() and Path(r).stat().st_mtime > wc_m)
+            def newer_reg_file(r):  # test -nt follows a symlink; a vanished file is not newer
+                try:
+                    return Path(r).stat().st_mtime > wc_m
+                except OSError:
+                    return False
+            newer_reg = sum(1 for r in regs if newer_reg_file(r))
             state = ("fresh; /rehydrate optional" if newer_ev + newer_reg == 0 else
                      "stale (%d event(s), %d register(s) newer); /rehydrate required" % (newer_ev, newer_reg))
             info.append("WORKING_CONTEXT %s: %dm old, %s" % (wc, age // 60, state))
