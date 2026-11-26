@@ -15,7 +15,8 @@
 # /model inside the session.
 # SHORTCUT: a resume that ends within 30 s counts as "could not be resumed" (the conversation is gone
 # from this Mac) and a fresh PA is started in its place; a PA the user ends within 30 s of a resume is
-# replaced by a fresh one too. Upgrade to the launcher's exit status if the wrapper ever reports one.
+# replaced by a fresh one too. The one exit status the wrapper reports is 3 (another live process still
+# has the conversation open): then the record is kept and no PA is started. Upgrade the rest if it reports more.
 # SHORTCUT: /clear inside the PA starts a new conversation the file does not know; record it with
 # `megavibe node pa session <id>` or the next restart resumes the conversation from before the /clear.
 # MEGAVIBE_NODE_TEST_BIN: tests put stub binaries first on PATH. MEGAVIBE_NODE_TEST_RESUME_SECS: tests
