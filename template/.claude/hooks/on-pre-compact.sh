@@ -2,7 +2,7 @@
 # DO NOT use set -e — this hook must be resilient to transient failures.
 _hook_error() {
   local msg="on-pre-compact.sh failed at line $1: $2"
-  echo "$msg" >> "${HOME}/.megavibe/hook-errors.log" 2>/dev/null
+  echo "$msg" >> "${HOME:-/nonexistent}/.megavibe/hook-errors.log" 2>/dev/null
   # Still hand the compaction its preservation list (fixed text, no variables):
   # stdout is the one channel into the summary, see below.
   [ -n "${_PC_PRINTED:-}" ] || printf '%s\n' "Megavibe preservation instructions for this summary (fixed text). Keep: every decision or question still open with the user, with its id; every background task, subagent, Monitor or Codex job still running, with its id, output path and purpose; the current goal, uncommitted files, branch, pull request and the exact next step; the paths of this session's .agent/sessions/<session id>/WORKING_CONTEXT.md, .agent/events/, .agent/DECISIONS.md and .agent/TASKS.md." 2>/dev/null
