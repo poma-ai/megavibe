@@ -77,6 +77,16 @@
             "command": ".claude/hooks/trash-watch.sh"
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -86,6 +96,16 @@
           {
             "type": "command",
             "command": ".claude/hooks/log-tool-event.sh"
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
           }
         ]
       }
@@ -216,6 +236,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -325,6 +355,16 @@
             "command": ".claude/hooks/usage-advisory.sh"
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "Stop": [
@@ -344,6 +384,16 @@
             "command": ".claude/hooks/watch-background.sh"
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -354,6 +404,28 @@
             "type": "command",
             "command": ".claude/hooks/status-sync.sh",
             "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/session-state.sh",
+            "timeout": 5
           }
         ]
       }

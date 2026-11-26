@@ -305,7 +305,7 @@ cmd_wrap() {   # wrap QUEUE -- COMMAND...: run the session, then ask what to do 
 # (it shares mvd-Q's windows and has its own current window), so choosing an entry only moves that client; no pane is moved, the
 # windows liveness reads stay where they are, and ending the cockpit ends no session. Its status line is off in the nested client.
 cockpit() {
-  local sock menu right cmds
+  local sock menu right cmds sumcmd
   sock=$(tm display-message -p -t "=mvd-$Q:" '#{socket_path}' 2>/dev/null) || sock=""
   [[ $sock == /* ]] || die "cockpit: queue $Q has no running tmux session (megavibe dispatch start)"
   [ -n "$TMUX_BIN" ] || TMUX_BIN=$(type -P tmux)
@@ -317,7 +317,10 @@ cockpit() {
     tm new-session -d -s "mvdc-$Q" -n cockpit -x 200 -y 50 "$menu" || die "cockpit: could not open the cockpit session"
     tm set-option -t "=mvdc-$Q:" mouse on >/dev/null
     tm set-option -t "=mvdc-$Q:" status-left "mvd-$Q " >/dev/null
-    tm set-option -t "=mvdc-$Q:" status-right "prefix+Left: sessions menu" >/dev/null
+    printf -v sumcmd 'env MEGAVIBE_HOME=%q MEGAVIBE_DISPATCH_QUEUE=%q bash %q summary --tmux' "$MH" "$Q" "$SELF"
+    tm set-option -t "=mvdc-$Q:" status-interval 5 >/dev/null
+    tm set-option -t "=mvdc-$Q:" status-right-length 90 >/dev/null
+    tm set-option -t "=mvdc-$Q:" status-right "#($sumcmd) | prefix+Left: menu" >/dev/null
   fi
   # a pane that ended (Ctrl-C in the menu, a failed split) is made again, so a second call repairs the cockpit instead of keeping it half
   cmds=$(tm list-panes -t "=mvdc-$Q:" -F '#{pane_start_command}' 2>/dev/null) || cmds=""
@@ -333,6 +336,44 @@ attach_cockpit() {
   if [ -n "${TMUX:-}" ] && [ "${TMUX%%,*}" = "$sock" ]; then exec "$TMUX_BIN" -S "$sock" switch-client -t "=mvdc-$Q" 9>&-; fi
   exec env -u TMUX "$TMUX_BIN" -S "$sock" attach -t "=mvdc-$Q" 9>&-
 }
+# ── what each session is doing ────────────────────────────────────────
+# template/.claude/hooks/session-state.sh writes $MH/status/<session id> (epoch, state, epoch the state began, detail) on the events
+# of every session dispatch started: thinking, working (the tool), input (waiting for you), idle. No file (a session without the hook,
+# an old project) means "unknown" and every reader falls back to what it knew before: the window's idle time.
+SS_STATE=""; SS_DETAIL=""; SS_SINCE=0; SS_TS=0
+sstate() {   # sstate SESSION_ID: sets SS_*; returns 1 when there is no usable record
+  SS_STATE=""; SS_DETAIL=""; SS_SINCE=0; SS_TS=0
+  [[ ${1:-} =~ ^[0-9A-Za-z-]{8,64}$ ]] || return 1
+  local f="$MH/status/$1" ts st since det
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  IFS=$'\t' read -r ts st since det < "$f" || true
+  [[ $ts =~ ^[0-9]+$ ]] && [[ $since =~ ^[0-9]+$ ]] || return 1
+  case "$st" in thinking|working|input|idle) ;; *) return 1 ;; esac
+  SS_STATE="$st"; SS_DETAIL="$(printf '%s' "$det" | tr -d '\000-\037' | cut -c1-80)"; SS_SINCE="$since"; SS_TS="$ts"
+}
+state_of() {   # state_of KEY (dispatcher or an issue number)
+  local sid; if [ "$1" = dispatcher ]; then sid=$(conf_get dsid); else sid=$(col "$(row "$1")" 8); fi
+  sstate "$sid"
+}
+age_fmt() { local s=$1; [ "$s" -ge 0 ] || s=0; if [ "$s" -lt 60 ]; then printf '%ss' "$s"; elif [ "$s" -lt 3600 ]; then printf '%sm' $((s / 60)); else printf '%sh%sm' $((s / 3600)) $(((s % 3600) / 60)); fi; }
+state_label() { case "$1" in working) printf 'working';; thinking) printf 'thinking';; input) printf 'NEEDS INPUT';; idle) printf 'idle';; esac; }
+state_glyph() { case "$1" in working) printf '▶';; thinking) printf '…';; input) printf '!';; idle) printf '·';; esac; }
+
+# summary [--tmux]: one line, how many sessions need you, work, think, idle (sessions without a record are not counted). --tmux marks
+# the attention part for a tmux status line.
+cmd_summary() {
+  need_queue; live_windows
+  [ "$WINS_STATE" = ok ] || { printf 'tmux %s\n' "$WINS_STATE"; return 0; }
+  local k cin=0 cw=0 cth=0 cid=0 out=""
+  while IFS=$'\t' read -r k _; do
+    [ -n "$k" ] || continue
+    state_of "$k" || continue
+    case "$SS_STATE" in input) cin=$((cin + 1));; working) cw=$((cw + 1));; thinking) cth=$((cth + 1));; idle) cid=$((cid + 1));; esac
+  done <<< "$WINS"
+  if [ "$cin" -gt 0 ]; then if [ "${1:-}" = --tmux ]; then out="#[fg=black,bg=yellow,bold] $cin need you #[default] "; else out="$cin need you, "; fi; fi
+  out="$out$cw working, $cth thinking, $cid idle"
+  printf '%s\n' "$out"
+}
 # menu: the left pane. Each session is followed by its background tasks (agents, shells, monitors: Claude Code keeps one output
 # file per task in <tmp>/claude-<uid>/<project>/<session id>/tasks/); the newest few are listed, a dot marks one written to in the
 # last minute. Up/down or j/k move. Enter on a session shows its window on the right and moves focus there; Enter on a task opens
@@ -342,16 +383,22 @@ task_dir() { local d; for d in ${CLAUDE_CODE_TMPDIR:+"$CLAUDE_CODE_TMPDIR"/claud
 mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1" 2>/dev/null || echo 0; }   # GNU stat first, then BSD; -L: an agent's output is a link to its transcript
 cmd_menu() {
   need_queue; need tmux
-  local sel=0 kinds=() keys=() files=() k r w line key rest wid n sid td f cnt now age mark last i gone=0 rc avail top
+  local sel=0 top=0 kinds=() keys=() files=() sts=() l2s=() hs=() k r w line key rest wid n sid td f cnt now age mark last i j gone=0 rc avail used order cin cw cth cid prev_in=" " now_in c0 c1 nxt
   trap 'printf "\033[?25h"' EXIT; printf '\033[?25l'
   while :; do
-    live_windows; kinds=(); keys=(); files=(); now=$(date +%s)
+    live_windows; kinds=(); keys=(); files=(); sts=(); l2s=(); hs=(); now=$(date +%s); now_in=" "
     if [ "$WINS_STATE" = ok ]; then
-      local order=()
+      order=()
       ! win_idle dispatcher >/dev/null || order+=(dispatcher)
       while IFS=$'\t' read -r k _; do [ -z "$k" ] || [ "$k" = dispatcher ] || order+=("$k"); done < <(printf '%s\n' "$WINS" | sort -n)
       for k in ${order[@]+"${order[@]}"}; do
-        kinds+=(s); keys+=("$k"); files+=("")
+        if state_of "$k"; then
+          kinds+=(s); keys+=("$k"); files+=(""); sts+=("$SS_STATE"); hs+=(2)
+          l2s+=("$(state_glyph "$SS_STATE") $(state_label "$SS_STATE") $(age_fmt $((now - SS_SINCE)))${SS_DETAIL:+  $SS_DETAIL}")
+          [ "$SS_STATE" != input ] || now_in="$now_in$k "
+        else
+          kinds+=(s); keys+=("$k"); files+=(""); sts+=(""); l2s+=(""); hs+=(1)
+        fi
         if [ "$k" = dispatcher ]; then sid=$(conf_get dsid); else sid=$(col "$(row "$k")" 8); fi
         [[ $sid =~ $UUID_RE ]] || continue
         td=$(task_dir "$sid") || continue
@@ -359,23 +406,37 @@ cmd_menu() {
         while IFS= read -r f; do
           [ -n "$f" ] || continue
           cnt=$((cnt + 1)); [ "$cnt" -le "$TASKS_SHOWN" ] || break
-          kinds+=(t); keys+=("$k"); files+=("$f")
+          kinds+=(t); keys+=("$k"); files+=("$f"); sts+=(""); l2s+=(""); hs+=(1)
         done < <(ls -tL "$td"/*.output 2>/dev/null)
       done
     fi
+    # a session that just began waiting for you rings the terminal bell once (tmux flags the window, a phone gets a notice)
+    for k in $now_in; do case "$prev_in" in *" $k "*) ;; *) printf '\a' ;; esac; done
+    prev_in="$now_in"
     n=${#kinds[@]}; [ "$sel" -lt "$n" ] || sel=$((n > 0 ? n - 1 : 0))
     w=$(tput cols 2>/dev/null || echo 40)
-    printf '\033[H\033[2J\033[1mmvd-%s\033[0m\n\n' "$Q"
+    printf '\033[H\033[2J\033[1mmvd-%s\033[0m\n' "$Q"
+    # one line for the whole queue: how many sessions need you, work, think, idle
+    cin=0; cw=0; cth=0; cid=0
+    for ((i = 0; i < n; i++)); do [ "${kinds[i]}" = s ] || continue; case "${sts[i]}" in input) cin=$((cin + 1));; working) cw=$((cw + 1));; thinking) cth=$((cth + 1));; idle) cid=$((cid + 1));; esac; done
+    if [ "$cin" -gt 0 ]; then printf '\033[1;33m%s need you\033[0m  ' "$cin"; fi
+    printf '%s working  %s thinking  %s idle\n\n' "$cw" "$cth" "$cid"
     [ "$WINS_STATE" = ok ] || printf 'tmux: %s\n' "$WINS_STATE"
     # the queue's tmux session is gone (three looks in a row): nothing left to list, and no reason to poll for ever
     if [ "$WINS_STATE" = noserver ]; then gone=$((gone + 1)); [ "$gone" -lt 3 ] || { printf 'queue session ended\n'; exit 0; }; else gone=0; fi
-    avail=$(( $(tput lines 2>/dev/null || echo 24) - 5 )); [ "$avail" -ge 3 ] || avail=3
-    top=0; [ "$sel" -lt "$avail" ] || top=$((sel - avail + 1))
-    for ((i = top; i < n && i < top + avail; i++)); do
+    avail=$(( $(tput lines 2>/dev/null || echo 24) - 6 )); [ "$avail" -ge 3 ] || avail=3
+    # keep the selected entry in view: a persistent top, moved only when the selection leaves the window (entries are 1 or 2 lines)
+    [ "$top" -le "$sel" ] || top=$sel
+    while :; do used=0; for ((i = top; i <= sel && i < n; i++)); do used=$((used + ${hs[i]})); done; [ "$used" -gt "$avail" ] && [ "$top" -lt "$sel" ] || break; top=$((top + 1)); done
+    used=0
+    for ((i = top; i < n; i++)); do
+      used=$((used + ${hs[i]})); [ "$used" -le "$avail" ] || break
       k=${keys[i]}
+      c0=""; c1=""
       if [ "${kinds[i]}" = s ]; then
         if [ "$k" = dispatcher ]; then line="dispatcher"; else r=$(row "$k"); line="#$k $(col "$r" 2) $(col "$r" 3)"; fi
         line="${line:0:$((w > 4 ? w - 4 : 1))}"
+        case "${sts[i]}" in input) c1='\033[1;33m';; working) c1='\033[32m';; thinking) c1='\033[36m';; idle) c1='\033[2m';; esac
       else
         f=${files[i]}; age=$((now - $(mtime "$f"))); mark=○; [ "$age" -ge 60 ] || mark=●
         last=$(tail -c 300 "$f" 2>/dev/null | tr -d '\000-\037' | tail -c 40); case "$last" in *'"'*|'{'*) last="${age}s" ;; esac   # a JSONL transcript is not readable as a tail: show its age
@@ -383,8 +444,9 @@ cmd_menu() {
         line="$line $(basename "$f" .output | cut -c1-8) ${last}"; line="${line:0:$((w > 4 ? w - 4 : 1))}"
       fi
       if [ "$i" = "$sel" ]; then printf '\033[7m> %s\033[0m\n' "$line"; else printf '  %s\n' "$line"; fi
+      if [ "${hs[i]}" = 2 ]; then line="${l2s[i]}"; printf "    \033[0m$c1%s\033[0m\n" "${line:0:$((w > 8 ? w - 8 : 1))}"; fi
     done
-    printf '\n\033[2mup/down j/k  Enter open  (prefix+Left: back here)\033[0m\n'
+    printf '\n\033[2mup/down j/k  Enter open  n next needing you\n(prefix+Left: back here)\033[0m\n'
     key=""; rc=0; read -rsn1 -t 3 key || rc=$?
     if [ "$rc" -gt 128 ]; then continue; elif [ "$rc" -ne 0 ]; then exit 0; fi   # timeout: redraw; end of input: stop, never spin
     case "$key" in
@@ -392,6 +454,8 @@ cmd_menu() {
               case "$rest" in '[A') [ "$sel" -le 0 ] || sel=$((sel - 1)) ;; '[B') [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;; esac ;;
       k) [ "$sel" -le 0 ] || sel=$((sel - 1)) ;;
       j) [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;;
+      n) nxt=""; for ((j = 1; j <= n; j++)); do i=$(((sel + j) % n)); if [ "${kinds[i]}" = s ] && [ "${sts[i]}" = input ]; then nxt=$i; break; fi; done
+         [ -z "$nxt" ] || sel=$nxt ;;
       "") [ "$n" -gt 0 ] || continue
           if [ "${kinds[sel]}" = t ]; then
             printf -v line 'less +F %q' "${files[sel]}"
@@ -717,6 +781,25 @@ claim_ok() {
   set_cols "$n" 2 dropped
   say "issue $n: assigned to \"${a:-nobody}\" now, not to you: dropped (it is not ours to work on)"; return 1
 }
+# attention: say, once per tick, which running sessions need a person: waiting for input (a permission or a question nobody sees in a
+# detached window), or idle for a long while with no pull request (stuck, or finished without saying so). Read-only; the dispatcher
+# relays it to the user. MEGAVIBE_DISPATCH_INPUT_SECS (default 120) and MEGAVIBE_DISPATCH_STUCK_MINS (default 30).
+attention() {
+  local r n now thr stuck
+  now=$(date +%s); thr="${MEGAVIBE_DISPATCH_INPUT_SECS:-120}"; stuck="${MEGAVIBE_DISPATCH_STUCK_MINS:-30}"
+  [[ $thr =~ ^[0-9]+$ ]] || thr=120; [[ $stuck =~ ^[1-9][0-9]*$ ]] || stuck=30
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    [ "$(col "$r" 2)" = running ] || continue
+    n=$(col "$r" 1); win_idle "$n" >/dev/null || continue
+    state_of "$n" || continue
+    if [ "$SS_STATE" = input ] && [ $((now - SS_SINCE)) -ge "$thr" ]; then
+      say "issue $n: NEEDS INPUT for $(age_fmt $((now - SS_SINCE)))${SS_DETAIL:+ ($SS_DETAIL)}: tell the user; \`peek $n\` shows the prompt (do not type into the window)"
+    elif [ "$SS_STATE" = idle ] && [ -z "$(col "$r" 7)" ] && [ $((now - SS_SINCE)) -ge $((stuck * 60)) ]; then
+      say "issue $n: idle for $(age_fmt $((now - SS_SINCE))) with no pull request: it may be stuck or waiting for an answer (\`peek $n\`)"
+    fi
+  done < "$D/queue.tsv"
+}
 cmd_tick() {
   local max running n r pr idle pidle
   need_queue; lock; need tmux; need gh; need perl; need jq
@@ -735,6 +818,8 @@ cmd_tick() {
       continue
     fi
     if idle=$(win_idle "$n"); then
+      # the session's own state, when its hook reported one, is a better idle clock than the window's output: a long tool run is quiet but busy
+      if state_of "$n"; then if [ "$SS_STATE" = idle ]; then idle=$(($(date +%s) - SS_SINCE)); else idle=0; fi; fi
       if [ -n "$pr" ]; then
         set_cols "$n" 7 "$pr"
         # a session that opened its pull request and then sat idle is finished even when nobody ran `done` (an unattended container has
@@ -749,6 +834,7 @@ cmd_tick() {
     else set_cols "$n" 2 ended; say "issue $n: window closed; could not look for a pull request (gh failed), will look again (resume $n continues its conversation)"; fi
   done < "$D/queue.tsv"
   unblock
+  attention
   running=$(awk -F'\t' '$2 == "running" { c++ } END { print c + 0 }' "$D/queue.tsv")
   # fill: oldest queued first (a "go" has passed its check), while below the cap; a "queued" one is checked for readiness first
   local tried=" " st pcrc pcn=0 pcdeferred=0 total started full
@@ -785,6 +871,7 @@ cmd_status() {
     [ -n "$r" ] || continue
     n=$(col "$r" 1); st=$(col "$r" 2); idle=""
     if idle=$(win_idle "$n"); then idle="window open, idle $((idle / 60))m"
+      if state_of "$n"; then idle="$idle [$(state_label "$SS_STATE") $(age_fmt $(($(date +%s) - SS_SINCE)))${SS_DETAIL:+: $SS_DETAIL}]"; fi
     elif [ "$st" = running ]; then if [ "$WINS_STATE" = ok ]; then idle="WINDOW GONE (tick will settle it)"; else idle="window state unknown"; fi
     else idle=""; fi
     printf '%-8s #%-6s %-44s %s %s\n' "$st" "$n" "$(col "$r" 3)" "$idle" "$(col "$r" 7)"
@@ -849,6 +936,7 @@ case "$cmd" in
   attach) pick_queue; need_queue; need tmux; [ -t 0 ] && [ -t 1 ] || die "attach needs a terminal (cockpit builds it without one)"; attach_cockpit ;;
   cockpit) pick_queue; need_queue; need tmux; cockpit ;;
   menu) pick_queue; cmd_menu ;;
+  summary) pick_queue; cmd_summary "$@" ;;
   add) pick_queue; need_queue; cmd_add "$@" ;;
   tick) pick_queue; cmd_tick ;;
   status) pick_queue; cmd_status ;;
@@ -860,5 +948,5 @@ case "$cmd" in
   block) pick_queue; cmd_mark blocked "$@" ;;
   drop) pick_queue; cmd_mark dropped "$@" ;;
   requeue) pick_queue; cmd_mark queued "$@" ;;
-  *) die "unknown command '$cmd' (start attach cockpit finish add tick status peek resume max total done block drop requeue)" ;;
+  *) die "unknown command '$cmd' (start attach cockpit finish summary add tick status peek resume max total done block drop requeue)" ;;
 esac

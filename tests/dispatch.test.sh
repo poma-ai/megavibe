@@ -105,6 +105,11 @@ DS=$(awk -F= '$1 == "dsid" { print $2 }' "$Q/conf"); TD="/tmp/claude-mvdtest-$$/
 sleep 4
 check "cockpit: the dispatcher's agents and tasks are listed below it" 'tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "agent a1234567" && tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "task bzzzz"'
 rm -r "/tmp/claude-mvdtest-$$"
+NOWT=$(date +%s); mkdir -p "$HOME/.megavibe/status"; printf '%s\tinput\t%s\tBash cleanup build\n' "$NOWT" "$((NOWT - 300))" > "$HOME/.megavibe/status/$DS"
+o=$(D summary); check "summary counts a session that needs you ($o)" '[[ "$o" == "1 need you,"* ]]'
+o=$(D summary --tmux); check "summary --tmux marks the attention part ($o)" '[[ "$o" == *"#[fg=black,bg=yellow,bold] 1 need you"* ]]'
+sleep 4
+check "cockpit menu: NEEDS INPUT with its detail and the queue summary" 'tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "NEEDS INPUT 5m" && tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "Bash cleanup build" && tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "1 need you"'
 o=$(D attach </dev/null); check "attach without a terminal refuses ($o)" '[[ "$o" == *"needs a terminal"* ]]'
 o=$(D add 1 https://github.com/o/r/issues/2 3 99 98 1)
 check "add: three queued, unreadable and closed ones skipped, duplicate noted ($o)" '[ "$(st 1 2)" = queued ] && [ "$(st 2 2)" = queued ] && [ "$(st 3 2)" = queued ] && [ -z "$(st 99 2)" ] && [ -z "$(st 98 2)" ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"issue 98: not open"* ]]'
@@ -445,6 +450,14 @@ D start --no-attach --name q6 >/dev/null; D add 160 >/dev/null; D max 5 >/dev/nu
 tmux kill-session -t =mvd-q6
 o=$(D status); check "F6 mvd-Q killed, windows alive in the view session: still seen as open ($o)" '[[ "$o" == *"window open"* ]]'
 o=$(D tick); check "F6 tick does not settle them as ended ($o)" '[ "$(awk -F"\t" "\$1 == 160 { print \$2 }" "$MEGAVIBE_HOME/dispatch/q6/queue.tsv")" = running ]'
+S160=$(awk -F"\t" '$1 == 160 { print $8 }' "$MEGAVIBE_HOME/dispatch/q6/queue.tsv"); NOWT=$(date +%s)
+printf '%s\tidle\t%s\t\n' "$NOWT" "$((NOWT - 2400))" > "$HOME/.megavibe/status/$S160"
+o=$(D status); check "status shows the session's state ($o)" '[[ "$o" == *"[idle 40m]"* ]]'
+o=$(D tick); check "tick: idle 40m with no PR is reported as possibly stuck ($o)" '[[ "$o" == *"issue 160: idle for 40m with no pull request"* ]]'
+printf '%s\tinput\t%s\tBash gh pr merge\n' "$NOWT" "$((NOWT - 600))" > "$HOME/.megavibe/status/$S160"
+o=$(D tick); check "tick: input for 10m is reported ($o)" '[[ "$o" == *"issue 160: NEEDS INPUT for 10m (Bash gh pr merge)"* ]]'
+printf '%s\tworking\t%s\tBash x\n' "$NOWT" "$((NOWT - 5))" > "$HOME/.megavibe/status/$S160"
+o=$(D tick); check "tick: a working session is not reported ($o)" '[[ "$o" != *"issue 160:"* ]]'
 unset MEGAVIBE_DISPATCH_QUEUE
 # F7: a cockpit that lost its menu pane is made whole again by the next call
 tmux send-keys -t =mvdc-proj:.{left} C-c; sleep 1
@@ -452,6 +465,10 @@ o=$(D cockpit); check "F7 cockpit repairs a lost pane ($o)" '[ "$(tmux list-pane
 # O2/F9: an issue with a PR and an idle window frees its slot (window kept)
 D add 150 >/dev/null; D max 100 >/dev/null; D tick >/dev/null
 echo "dispatch/issue-150 https://github.com/o/r/pull/150" >> "$PRFILE"; sleep 2
+S150=$(awk -F"\t" '$1 == 150 { print $8 }' "$Q/queue.tsv"); NOWT=$(date +%s)
+printf '%s\tworking\t%s\tBash make\n' "$NOWT" "$((NOWT - 5))" > "$HOME/.megavibe/status/$S150"
+o=$(MEGAVIBE_DISPATCH_PR_IDLE_SECS=1 D tick); check "hook state working: a quiet window with a PR keeps its slot ($o)" '[ "$(st 150 2)" = running ]'
+printf '%s\tidle\t%s\t\n' "$NOWT" "$((NOWT - 30))" > "$HOME/.megavibe/status/$S150"
 o=$(MEGAVIBE_DISPATCH_PR_IDLE_SECS=1 D tick); check "F9 idle window with a PR: state pr, window still open ($o)" '[ "$(st 150 2)" = pr ] && tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -qx 150'
 # F10: the linked context folders stay out of git status in the worktree
 check "F10 worktree links are excluded" 'grep -qx "/.agent" "$(git -C "$P" rev-parse --git-common-dir | sed "s#^\.git#$P/.git#")/info/exclude" 2>/dev/null && [ -z "$(git -C "$W/proj-issue-150" status --porcelain 2>/dev/null | grep -E "\.agent|\.claude")" ]'
