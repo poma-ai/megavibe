@@ -53,11 +53,22 @@ pa_running() { command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$PA_TMUX
 # fd 9 closed: a git or ssh child that outlives this command must not keep the node's lock.
 g() { GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" git -C "$M" "$@" < /dev/null 9>&-; }
 # The node's own lock (node.sh holds it for a whole run): a takeover or handback never runs alongside a
-# node run that could pull or commit underneath it. Waits up to 120 s.
+# node run that could pull or commit underneath it. Waits up to 120 s, then runs
+# the rest of the command in a worker. Only the waiting parent retains fd 9.
+# This is terminal: the worker's status becomes the CLI status, including failures
+# under set -e, and its EXIT cleanup completes before the parent releases the lock.
 lock_node() {
   exec 9>>"$N/.lock"
   perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or exit 1; for (1..120) { if (flock($f, LOCK_EX | LOCK_NB)) { utime undef, undef, $f; exit 0 } sleep 1 } exit 1' \
     || die "the node is busy (its lock is held); run the same command again in a minute (switch files changed so far stay changed)"
+  trap ':' TERM HUP INT
+  (
+    # A function redirection can save fd 9 on another descriptor in bash.
+    # Close it here, before any helper, pipeline or substitution starts.
+    exec 9>&-
+    "$@"
+  )
+  exit $?
 }
 conf_get() { awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); f = 1 } END { if (f) print v }' "$N/node.conf" 2>/dev/null; }
 set_memory() {   # set_memory push|pull|none: exactly one switch file, or none
@@ -228,7 +239,7 @@ deliverables_check() {
 }
 
 cmd_memory_init() {
-  local origin="$MH/personal-memory.git" files
+  local origin="$MH/personal-memory.git"
   while [ $# -gt 0 ]; do
     case "$1" in
       --origin) origin="${2:-}"; [ -n "$origin" ] || die "--origin needs a path"; shift ;;
@@ -240,7 +251,11 @@ cmd_memory_init() {
   [ -d "$M" ] || die "$M does not exist; run bash setup.sh first"
   case "$origin" in /*) ;; *) origin="$PWD/$origin" ;; esac
   # Under the node's lock: a node run must not see the half-made repo (memory.push may already be set).
-  lock_node
+  lock_node memory_init_locked "$origin"
+}
+
+memory_init_locked() {
+  local origin="$1" files
   if [ -e "$M/.git" ]; then
     if [ "$(g remote get-url origin 2>/dev/null || true)" = "$origin" ]; then
       # An earlier init that stopped after adding the origin (push failed) is finished here.
@@ -295,13 +310,17 @@ cmd_memory_init() {
 }
 
 cmd_memory_clone() {
-  local url="${1:-}" b d ts
+  local url="${1:-}"
   [ -n "$url" ] || die "memory clone: give the origin URL (host:/path/to/personal-memory.git)"
   need_install
   [ -d "$M" ] || die "$M does not exist; run bash setup.sh first"
   [ -e "$N/pa.on" ] && die "pa.on is set on this Mac; a standby copy is only made with the PA off (megavibe node pa off)"
   pa_running && die "a PA is running on this Mac (tmux $PA_TMUX); end it first"
-  lock_node
+  lock_node memory_clone_locked "$url"
+}
+
+memory_clone_locked() {
+  local url="$1" b d ts
   if [ -e "$M/.git" ]; then
     [ "$(g remote get-url origin 2>/dev/null || true)" = "$url" ] || die "$M is already a git repo with another origin; not touching it"
     say "already a copy of $url"; set_memory pull; g status --short | sed 's/^/  /'; return 0
@@ -359,7 +378,10 @@ cmd_takeover() {
   fi
   # Order matters: memory.pull goes first, so no node run can pull underneath the PA started below.
   rm -f "$N/memory.pull"
-  lock_node
+  lock_node takeover_locked
+}
+
+takeover_locked() {
   # pa.on is off until the takeover succeeds, so a refused takeover cannot have the node start a PA on an
   # unresolved history (on a Mac that was the active PA before, pa.on may still be set).
   rm -f "$N/pa.on"
@@ -401,7 +423,10 @@ cmd_takeover() {
 cmd_handback() {
   need_install
   rm -f "$N/pa.on"
-  lock_node
+  lock_node handback_locked
+}
+
+handback_locked() {
   if pa_running; then
     die "pa.on removed, so the node will not restart the PA. End the PA session first (tmux attach -t $PA_TMUX, then /exit), then run handback again."
   fi

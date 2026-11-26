@@ -54,6 +54,24 @@ CMAIL=$(conf COMMIT_EMAIL 'megavibe-node@localhost' '[A-Za-z0-9._+-]+@[A-Za-z0-9
 # helper is ever added that might.
 # A helper that cannot be started exits 127 here, not 0.
 bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@"; }
+# Never give a helper the write end of a command-substitution pipe: a descendant
+# could keep it open after the helper's alarm. Read only a regular-file snapshot
+# after waiting for the helper itself. Later descendant writes cannot extend it.
+bounded_output() (
+  # Restrict the file without changing the umask inherited by tmux sessions.
+  out=$(umask 077; mktemp "$N/.bounded-output.XXXXXX") || exit 1
+  trap 'rm -f "$out"' EXIT
+  bounded "$@" > "$out"
+  rc=$?
+  perl -e '
+    my $left = -s STDIN;
+    while ($left > 0) {
+      my $n = read(STDIN, my $buf, $left > 65536 ? 65536 : $left);
+      last unless $n; print $buf; $left -= $n;
+    }
+  ' < "$out"
+  exit "$rc"
+)
 restart_note() {
   # Every writer, including failed lock contenders, uses this stable inode.
   # Locking the note itself would stop protecting it after the atomic rename.
@@ -63,7 +81,7 @@ restart_note() {
     open(my $mutex, ">>", "$dir/.restart-note.lock") or exit 1;
     flock($mutex, LOCK_EX) or exit 1;
     if ($op eq "lock") {
-      # A successful acquisition may have refreshed the age while we waited.
+      # Acquisition or worker progress may have refreshed the age while we waited.
       my @s = stat "$dir/.lock";
       exit 0 if !@s || time - $s[9] <= $bound;
     }
@@ -131,7 +149,7 @@ fi
 trap ':' TERM HUP INT
 (
 exec 9>&-
-tmux() { bounded 15 tmux "$@" 9>&-; }
+tmux() { bounded_output 15 tmux "$@" 9>&-; }
 # These records are advisory: an unavailable clock/history or a failed write never stops supervision.
 put() { printf '%s\n' "$2" > "$N/$1.tmp" && mv -f "$N/$1.tmp" "$N/$1"; }
 epoch() { local v; v=$(cat "$N/$1" 2>/dev/null); [[ $v =~ ^[1-9][0-9]{0,10}$ ]] && printf '%s' "$v"; }
@@ -140,13 +158,13 @@ hhmm() { perl -MPOSIX=strftime -e 'print strftime("%H:%M", localtime($ARGV[0]))'
 NOW=$(date +%s); LAST=$(epoch last-alive); BOOT=""; RESTART=""
 OS=$(uname -s)
 if [ "$OS" = Darwin ]; then
-  BOOT=$(bounded 2 sysctl -n kern.boottime 2>/dev/null 9>&- | sed -nE 's/.*[ {]sec[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p')
+  BOOT=$(bounded_output 2 sysctl -n kern.boottime 2>/dev/null 9>&- | sed -nE 's/.*[ {]sec[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p')
   [[ $BOOT =~ ^[1-9][0-9]{0,10}$ ]] || BOOT=""
 fi
 if [[ $NOW =~ ^[1-9][0-9]{0,10}$ ]]; then
   if [ -n "$LAST" ] && { [ $((NOW - LAST)) -gt 900 ] || [ "${BOOT:-0}" -gt "$LAST" ]; }; then
     CLEAN=unknown
-    if [ "$OS" = Darwin ] && HISTORY=$(LC_ALL=C bounded 2 last -y -1 shutdown 2>/dev/null 9>&-); then
+    if [ "$OS" = Darwin ] && HISTORY=$(LC_ALL=C bounded_output 2 last -y -1 shutdown 2>/dev/null 9>&-); then
       # Request the year; missing/unparseable history cannot establish a shutdown date.
       SHUTDOWN=$(printf '%s\n' "$HISTORY" | perl -MTime::Local=timelocal -e '
         my $now = shift; my %mon; @mon{qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)} = (0..11);
@@ -178,9 +196,11 @@ if [[ $NOW =~ ^[1-9][0-9]{0,10}$ ]]; then
   fi
 fi 2>/dev/null
 
+# Refresh progress at step boundaries without reopening the worker's lock fd.
+touch -c "$N/.lock"
 # Preserve the existing check's names, resume commands, and UNKNOWN/UNSEEN distinctions.
 if [ -n "$RESTART" ]; then
-  CHECK=$(bounded 45 bash "$MH/scripts/megavibe-node.sh" session check 2>/dev/null 9>&-)
+  CHECK=$(bounded_output 45 bash "$MH/scripts/megavibe-node.sh" session check 2>/dev/null 9>&-)
   [ -n "$CHECK" ] || CHECK="Session check unavailable; run: megavibe node session check"
   restart_note restart "$RESTART
 $CHECK
@@ -191,12 +211,18 @@ secret_note() {
 }
 # Only `sync`, never `get`: the inspected helper reports missing prerequisites,
 # encrypted filenames and Keychain service names, not values. Its value-bearing
-# security calls suppress stderr. Still allow-list diagnostics before any disk
-# write: unexpected errors/tracebacks (or shell tracing) must not persist values.
+# security calls suppress stderr. Raw stderr lives only in an owner-only temporary
+# file; allow-list diagnostics before retaining a report, then remove the raw file.
 secret_sync() (
   umask 077
   err=$(mktemp "$N/.secret-stderr.XXXXXX") || return 1
-  bounded 60 "$HOME/.local/bin/secret" sync 2>&1 >/dev/null </dev/null | perl -e '
+  trap 'rm -f "$err" "$err.report"' EXIT
+  bounded 60 "$HOME/.local/bin/secret" sync >/dev/null 2> "$err" </dev/null
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    rm -f "$N/secret-sync-failed.txt"
+  else
+    { printf 'exit status: %s\n' "$rc"; perl -e '
     my ($line, $long, @tail) = ("", 0);
     sub keep {
       my ($s, $long) = @_;
@@ -211,7 +237,14 @@ secret_sync() (
       push @tail, "$s\n"; shift @tail while @tail > 20;
       shift @tail while length(join "", @tail) > 4096;
     }
-    while (read(STDIN, my $buf, 4096)) {
+    # Bound both bytes inspected and the snapshot: a surviving writer can neither
+    # make us wait for EOF nor keep extending the work. Ignore the first partial
+    # line if we seek into a large file; only complete diagnostics are allow-listed.
+    my $left = -s STDIN;
+    if ($left > 65536) { seek(STDIN, $left - 65536, 0); $left = 65536; $long = 1; }
+    while ($left > 0) {
+      my $n = read(STDIN, my $buf, $left > 4096 ? 4096 : $left);
+      last unless $n; $left -= $n;
       for my $c (split //, $buf) {
         if ($c eq "\n") { keep($line, $long); ($line, $long) = ("", 0); }
         elsif (length($line) < 512) { $line .= $c; } else { $long = 1; }
@@ -219,17 +252,12 @@ secret_sync() (
     }
     keep($line, $long) if length($line) || $long;
     print @tail;
-  ' > "$err"
-  rc=${PIPESTATUS[0]}
-  if [ "$rc" = 0 ]; then
-    rm -f "$N/secret-sync-failed.txt"
-  else
-    { printf 'exit status: %s\n' "$rc"; cat "$err"; } > "$err.report" &&
+    ' < "$err"; } > "$err.report" &&
       mv -f "$err.report" "$N/secret-sync-failed.txt"
   fi
-  rm -f "$err" "$err.report"
   return "$rc"
 )
+touch -c "$N/.lock"
 if [ -e "$N/node.off" ]; then
   secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no) (node off)" 2>/dev/null
   exit 0
@@ -240,6 +268,7 @@ if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
   FAILURES=$(epoch .secret-failures); FAILURES=${FAILURES:-0}; ATTEMPT=0
   START=$(epoch .started-at); START=${START:-0}
   while :; do
+    touch -c "$N/.lock"
     ATTEMPT=$((ATTEMPT + 1))
     if secret_sync; then
       [ "$FAILURES" = 0 ] || log "secret sync ok after $FAILURES failed attempts"
@@ -255,6 +284,7 @@ if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
   done
   secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no)"
 else
+  rm -f "$N/secret-sync-failed.txt"
   secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no) (sync disabled or tool unavailable)"
 fi 2>/dev/null
 
@@ -272,6 +302,7 @@ peer_state() {
 }
 SEEN_PEERS='|'
 for PEER in "${PEER_ENTRIES[@]}"; do
+  touch -c "$N/.lock"
   # Safe filenames and arguments; a bad entry cannot prevent checking the other peers.
   [[ $PEER =~ ^([A-Za-z0-9][A-Za-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9.-]*)(,([A-Za-z0-9][A-Za-z0-9.-]*))?$ ]] || {
     PEER_KEY=$(printf '%s' "$PEER" | cksum)
@@ -296,11 +327,13 @@ for PEER in "${PEER_ENTRIES[@]}"; do
   fi
 done
 
-NAME=$(bounded 10 scutil --get LocalHostName 2>/dev/null 9>&-) || NAME=""
+touch -c "$N/.lock"
+NAME=$(bounded_output 10 scutil --get LocalHostName 2>/dev/null 9>&-) || NAME=""
 case "$NAME" in ""|-*|*[!A-Za-z0-9-]*) log "unusable host name '$NAME'"; exit 1 ;; esac
 [ "${#NAME}" -le 63 ] || { log "host name too long"; exit 1; }
 command -v tmux >/dev/null 2>&1 && command -v megavibe >/dev/null 2>&1 || { log "tmux or megavibe not found"; exit 1; }
 
+touch -c "$N/.lock"
 tmux has-session -t "=$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$HOME" -n shell || { log "cannot create tmux session $TS"; exit 1; }
 # One successful listing decides what exists. If tmux cannot list, nothing is started: a failed
 # listing is not proof that a window is gone, and starting on it would duplicate a paid session.
@@ -326,6 +359,7 @@ if ! have "$NAME" && may_start node; then
 fi
 # Is a PA running here? As with the windows, only a successful listing proves its session is absent.
 # PA_UP: yes, no, or unknown (listing failed).
+touch -c "$N/.lock"
 if SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null); then
   if printf '%s\n' "$SESSIONS" | LC_ALL=C grep -qxF megavibe-personal; then PA_UP=yes; else PA_UP=no; fi
 else
@@ -351,6 +385,7 @@ fi
 # Claude login about to lapse: tell the node session once a day; it tells the PA, who tells the user.
 # The helper decides (its own contract): exit 0 = more than 168 h left, exit 1 = expires inside 168 h,
 # expired or logged out (its message says which), anything else = lifetime unknown.
+touch -c "$N/.lock"
 bounded 20 "$MH/scripts/claude-auth-check.sh" 168 > "$N/.auth-check" 2>/dev/null 9>&- < /dev/null
 arc=$?
 if [ "$arc" -ne 0 ] && [ "$arc" -ne 1 ] && [ -z "$(find "$N/.auth-unknown" -mtime -1 2>/dev/null)" ]; then
@@ -370,6 +405,7 @@ fi
 # Keep the Codex usage reading fresh for the forecast (usage-route.sh forecast): one tiny Codex call at most every
 # 30 minutes. PA only: a Mac without pa.on, and plain megavibe use, never run it. The helper skips itself when
 # a reading under 15 minutes old exists or codex is unavailable, and never raises: a failed probe is only logged by it.
+touch -c "$N/.lock"
 if [ -e "$N/pa.on" ] && [ -x "$MH/scripts/usage-probe.sh" ]; then
   PROBE_MODEL=$(conf PROBE_MODEL "" '[A-Za-z0-9][A-Za-z0-9._-]*')
   PROBE_CODEX_HOME=$(conf PROBE_CODEX_HOME "" '/[^[:cntrl:]]*')
@@ -383,8 +419,9 @@ fi
 # PA memory: a git repo in the personal folder whose origin is a bare repo on the writing Mac.
 # memory.push: this Mac writes it (commit what changed, push). memory.pull: standby copy, fast-forward
 # only, and only while no PA runs here. Neither file: nothing happens.
+touch -c "$N/.lock"
 M="$MH/personal"
-g() { GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" bounded 60 git -C "$M" "$@" 9>&- < /dev/null; }
+g() { GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" bounded_output 60 git -C "$M" "$@" 9>&- < /dev/null; }
 if [ -d "$M/.git" ] && [ -e "$N/memory.push" ]; then
   # A failing status (damaged index, lock held, timeout) must not read as "nothing changed".
   # Signing is off for these automatic commits: a signing agent is not reachable from a LaunchAgent, and a

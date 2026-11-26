@@ -11,7 +11,8 @@ set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 REAL_TMUX=$(command -v tmux) || { echo "skip: tmux not installed"; exit 0; }
 # Keep the Unix socket path short even when macOS supplies a long TMPDIR.
-T=$(mktemp -d /tmp/node-sess-test.XXXXXX) || exit 2
+# A sandbox may supply another short writable root (e.g. /private/tmp).
+T=$(mktemp -d "${NODE_SESSION_TEST_TMPDIR:-/tmp}/node-sess-test.XXXXXX") || exit 2
 T=$(cd "$T" && pwd -P)
 # Literal private server name, with a fresh socket directory for each test run.
 SOCK=mv-node-sessions-test
