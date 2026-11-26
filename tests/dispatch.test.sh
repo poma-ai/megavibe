@@ -59,7 +59,7 @@ o=$(D tick); RC=$?
 check "tick: starts exactly max=2 sessions, third stays queued ($o)" '[ $RC = 0 ] && [ "$(st 1 2)" = running ] && [ "$(st 2 2)" = running ] && [ "$(st 3 2)" = queued ]'
 W1="$T/work/proj-issue-1"
 check "tick: worktree cut from origin/main on branch dispatch/issue-1, context linked" '[ "$(git -C "$W1" rev-parse --abbrev-ref HEAD)" = dispatch/issue-1 ] && [ "$(git -C "$W1" rev-parse HEAD)" = "$(git -C "$P" rev-parse origin/main)" ] && [ -L "$W1/.agent" ] && [ -L "$W1/.claude" ]'
-check "tick: windows issue-1 and issue-2 exist, megavibe got name, model and the task prompt" 'tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx issue-1 && called "^--no-normalize --name proj-issue-1 --model sonnet --session-id [0-9a-f-]\{36\} Read the task file $Q/tasks/issue-1.md.*dispatcher-proj"'
+check "tick: windows issue-1 and issue-2 exist, megavibe got name, model and the task prompt" 'tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx issue-1 && called "^--no-normalize --name proj-issue-1 --model sonnet --session-id [0-9a-f-]\{36\} Use the work-ticket skill on the task file $Q/tasks/issue-1.md.*dispatcher-proj"'
 check "status: lists running with idle time" 'D status | grep -q "^running .*#1 .*idle 0m"'
 check "peek: works on a running window, refuses a missing one" 'D peek 1 >/dev/null && ! D peek 3 >/dev/null'
 
@@ -82,5 +82,11 @@ check "add --label: gh asked for open issues with both labels and the limit ($(c
 check "add --label: new ones queued, the one already known skipped ($o)" '[ "$(st 7 2)" = queued ] && [ "$(st 9 2)" = queued ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"3 open issue(s)"* ]]'
 o=$(D add --label nothing); check "add --label with no match is fine ($o)" '[[ "$o" == *"0 open issue(s)"* ]]'
 check "add with nothing to add or a bad option refuses" '! D add >/dev/null && ! D add --bogus >/dev/null && ! D add --limit x 1 >/dev/null'
+
+check "no skill configured: task file has no Implementation skill line" '! grep -q "^Implementation skill:" "$Q/tasks/issue-1.md"'
+D start --skill implement-and-review >/dev/null; D add 5 >/dev/null
+check "start --skill: later task files carry the Implementation skill line" 'grep -qx "Implementation skill: implement-and-review" "$Q/tasks/issue-5.md"'
+check "start --skill rejects an unusable name" '! D start --skill "a b" >/dev/null'
+check "the work-ticket skill ships and is self-contained (names no other skill)" '[ -f "$REPO/template/.claude/skills/work-ticket/SKILL.md" ] && ! grep -q "implement-and-review" "$REPO/template/.claude/skills/work-ticket/SKILL.md"'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]
