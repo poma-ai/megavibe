@@ -111,6 +111,9 @@ reset
 reg 4106 "{\"pid\":4106,\"sessionId\":\"$SID\",\"kind\":\"Background\",\"procStart\":\"Wed Nov 25 16:40:22 2026\"}"
 echo 'Wed Nov 25 16:40:22 2026' > "$T/lstart.4106"
 check 'holder: background kind in any case is left to Claude Code' '[ -z "$(ALIVE=4106 run "session_holder $SID")" ]'
+reg 4107 "{\"pid\":4107,\"sessionId\":\"$SID\",\"kind\":\"bg\",\"procStart\":\"Wed Nov 25 16:40:22 2026\"}"
+echo 'Wed Nov 25 16:40:22 2026' > "$T/lstart.4107"
+check 'holder: kind bg (the registry value for a background session) is left to Claude Code' '[ -z "$(ALIVE=4107 run "session_holder $SID")" ]'
 msg=$(run "second_writer_message $SID \"\$(printf '4101\tmain:@21.%%21;echo x')\"")
 check 'message: a malformed tmux location is not turned into a command' '! printf "%s" "$msg" | grep -q capture-pane'
 reset
