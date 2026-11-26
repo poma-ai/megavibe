@@ -89,4 +89,12 @@ check "start --skill: later task files carry the Implementation skill line" 'gre
 check "start --skill rejects an unusable name" '! D start --skill "a b" >/dev/null'
 check "the work-ticket skill ships and is self-contained (names no other skill)" '[ -f "$REPO/template/.claude/skills/work-ticket/SKILL.md" ] && ! grep -q "implement-and-review" "$REPO/template/.claude/skills/work-ticket/SKILL.md"'
 
+D max 20 >/dev/null; D add 11 >/dev/null; D tick >/dev/null
+o=$(D block 11); check "block: frees the slot, window stays ($o)" '[ "$(st 11 2)" = blocked ] && tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx issue-11'
+o=$(D requeue 11); check "requeue of a blocked issue whose window is still open is refused ($o)" '[ "$(st 11 2)" = blocked ] && [[ "$o" == *"still has its window open"* ]]'
+pid=$(tmux list-windows -t =mvd-proj -F '#{window_name} #{pane_pid}' | awk '$1 == "issue-11" { print $2 }'); kill -HUP "$pid"; sleep 1
+o=$(D requeue 11); check "requeue after the window closed rewrites the task file and queues it ($o)" '[ "$(st 11 2)" = queued ] && grep -q "body of 11" "$Q/tasks/issue-11.md"'
+for s in work-ticket triage-ticket; do check "skill $s: front matter name and no mention of another skill's name" 'head -2 "$REPO/template/.claude/skills/$s/SKILL.md" | grep -qx "name: $s" && ! grep -q "implement-and-review" "$REPO/template/.claude/skills/$s/SKILL.md"'; done
+check "work-ticket and the task file both route missing info to the issue, the author and the marker" 'grep -q "megavibe:needs-info" "$REPO/template/.claude/skills/work-ticket/SKILL.md" && grep -q "ask for it on the issue" "$Q/tasks/issue-5.md"'
+
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

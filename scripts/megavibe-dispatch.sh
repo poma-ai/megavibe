@@ -12,7 +12,8 @@
 #   status                   the queue: state, window idle time, branch, PR
 #   peek N                   the last lines of issue N's window (is it stuck on a prompt?)
 #   max N                    change the cap (running sessions are never stopped)
-#   done N | drop N | requeue N   mark it finished / forget it / queue an ended one again (keeps branch)
+#   done N | block N | drop N | requeue N   mark it finished / waiting on someone / forgotten / queued again with a
+#                            fresh task file (keeps branch). done and block free the slot; the window stays open
 # The queue is chosen by --name or MEGAVIBE_DISPATCH_QUEUE (default: the repo folder's name); state lives
 # in ~/.megavibe/dispatch/<queue>/ (conf, queue.tsv, tasks/). Nothing here stops a session or merges a PR.
 #
@@ -139,6 +140,7 @@ ${skill:+Implementation skill: $skill
 - Follow the repo's CLAUDE.md and the megavibe protocol: write the verification first, run it, get independent review before the work is called done.
 - Finish with a pull request against main that closes #$n ("Closes #$n" in the body). Do not merge it.
 - If the issue is ambiguous in a way that changes what you build, or you are blocked, say so in your report instead of guessing.
+- If the issue lacks something that changes what you build, ask for it on the issue (the triage-ticket skill does this and mentions the author), then report "blocked: needs info".
 - When you are done, or blocked, report to the session named "dispatcher-$Q" with SendMessage: one line on the end state and the PR URL.
 EOF
   } > "$f"
@@ -195,6 +197,7 @@ make_worktree() {   # make_worktree N: prints the worktree path; cut from origin
 }
 launch() {   # launch N: worktree, window, record
   local n="$1" wt sid model parent prompt wid
+  live_windows; ! win_idle "issue-$n" >/dev/null || die "issue $n still has a window; not starting a second session on its worktree"
   wt=$(make_worktree "$n")
   sid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true); [[ $sid =~ $UUID_RE ]] || die "uuidgen did not give a session id"
   model=$(conf_get model); parent="${CLAUDE_CODE_SESSION_ID:-}"; [[ $parent =~ ^[0-9A-Za-z-]{1,64}$ ]] || parent=""
@@ -252,6 +255,15 @@ cmd_mark() {   # cmd_mark done|dropped|queued N
   local n; n=$(issue_of "${2:-}"); need_queue; lock
   [ -n "$(row "$n")" ] || die "issue $n is not in queue $Q"
   if [ "$1" = queued ] && [ "$(col "$(row "$n")" 2)" = running ]; then die "issue $n is running; wait for its window to close"; fi
+  if [ "$1" = queued ]; then
+    live_windows
+    [ "$WINS_STATE" != unknown ] || die "cannot tell which windows run; nothing changed"
+    ! win_idle "issue-$n" >/dev/null || die "issue $n still has its window open (a second session on its worktree would clash): /exit it there first"
+  fi
+  if [ "$1" = queued ]; then   # a fresh task file: the issue may have been edited or answered since
+    local j; j=$(cd "$(conf_get repo)" && gh issue view "$n" --json title,body,url,state 2>/dev/null) || j=""
+    if [ -n "$j" ] && [ "$(printf '%s' "$j" | jq -r '.state')" = OPEN ]; then write_task "$n" "$j"; else say "issue $n: could not re-read it from GitHub; its old task file is kept"; fi
+  fi
   set_cols "$n" 2 "$1"; say "issue $n: $1"
 }
 
@@ -265,7 +277,8 @@ case "$cmd" in
   peek) pick_queue; cmd_peek "$@" ;;
   max) pick_queue; cmd_max "$@" ;;
   done) pick_queue; cmd_mark done "$@" ;;
+  block) pick_queue; cmd_mark blocked "$@" ;;
   drop) pick_queue; cmd_mark dropped "$@" ;;
   requeue) pick_queue; cmd_mark queued "$@" ;;
-  *) die "unknown command '$cmd' (start add tick status peek max done drop requeue)" ;;
+  *) die "unknown command '$cmd' (start add tick status peek max done block drop requeue)" ;;
 esac
