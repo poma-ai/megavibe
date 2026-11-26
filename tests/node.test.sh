@@ -367,7 +367,7 @@ check "pa-start: a resume refused as held (exit 3) keeps pa.session and starts n
 check "pa-start: a refusal outside a terminal prints nothing and does not wait" '[ -z "$(MEGAVIBE_NODE_TEST_WAIT_SECS=30 bash "$N/pa-start.sh" 2>&1 </dev/null | cat)" ]'
 echo 3 > "$T/megavibe.rc"
 out=$(MEGAVIBE_NODE_TEST_WAIT_SECS=0 script -q /dev/null bash "$N/pa-start.sh" 2>&1 || true)
-check "pa-start: a refusal on a terminal says the conversation is open elsewhere and how to reach it" '[[ "$out" == *"still open in another process"* ]] && [[ "$out" == *"tmux attach -t megavibe-personal"* ]] && [ "$(cat "$N/pa.session")" = "$HELD" ]'
+check "pa-start: a refusal on a terminal says the conversation is open elsewhere and how to reach it" '[[ "$out" == *"still open in another process"* ]] && [[ "$out" == *"message above says where it runs"* ]] && [[ "$out" != *"tmux attach"* ]] && [ "$(cat "$N/pa.session")" = "$HELD" ]'
 rm -f "$T/megavibe.rc"
 printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
 check "pa-start: an unusable pa.session is never passed on; fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && ! grep -q "pwned" "$T/megavibe.calls" && [ ! -e "$T/pwned" ] && grep -qx -- --session-id "$T/megavibe.args"'

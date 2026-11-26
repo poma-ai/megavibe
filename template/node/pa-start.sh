@@ -88,7 +88,7 @@ if [ -n "$SID" ]; then
   if [ "$RC" = 3 ]; then
     nlog "pa-start: conversation $SID is still open in another process; not resumed and no second PA started (pa.session kept)"
     if [ -t 1 ]; then
-      echo "The Personal Assistant's conversation is still open in another process, so no second one was started. Reach it with 'tmux attach -t megavibe-personal' or find its terminal; the launcher's message above names it. This window closes in 20 s."
+      echo "The Personal Assistant's conversation is still open in another process, so no second one was started. The launcher's message above says where it runs. This window closes in 20 s."
       sleep "${MEGAVIBE_NODE_TEST_WAIT_SECS:-20}"
     fi
     exit 0

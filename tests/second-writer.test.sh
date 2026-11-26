@@ -225,7 +225,7 @@ check 'wrapper: gate runs once, before the session lock and both launch paths' '
 init_line=$(grep -n '^bash "\$INIT_SCRIPT" \.' "$W" | cut -d: -f1 | head -1)
 auth_line=$(grep -n '^AUTH_JSON=.(claude auth status' "$W" | cut -d: -f1 | head -1)
 check 'wrapper: the guard runs before project initialisation and the auth check' '[ -n "$init_line" ] && [ "$gate_line" -lt "$init_line" ] && [ "$gate_line" -lt "$auth_line" ]'
-check 'wrapper: the refusal message does not claim more than the guard knows' 'grep -q "Nothing was started or changed" "$W"'
+check 'wrapper: the refusal message does not claim more than the guard knows' 'grep -q "No session was started here" "$W"'
 check 'wrapper: the override flag is consumed, never passed to claude' 'grep -q "\"\$_a\" = \"--allow-second-writer\" ] && ALLOW_SECOND_WRITER=1" "$W" && grep -q "\"--allow-second-writer\" ] || CLAUDE_ARGV+=" "$W"'
 check 'wrapper: help lists the override' 'bash "$W" --help | grep -q -- "--allow-second-writer"'
 check 'wrapper: no longer claims Claude rejects a session in use' '! grep -q "Claude will reject" "$W"'
