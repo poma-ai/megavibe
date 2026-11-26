@@ -4,6 +4,7 @@
 #   megavibe sessions            live sessions, children under the session that launched them
 #   megavibe sessions --orphans  only the orphans: sessions launched by a session that has ended
 #   megavibe sessions --status   one line for the session-start hook; prints nothing without orphans
+#   megavibe sessions --json     raw records for local tools (includes paths and verified process identity)
 #
 # Reads Claude Code's session registry (<config dir>/sessions/<pid>.json) and the launch records the
 # `megavibe` wrapper writes ($MEGAVIBE_HOME/launches/<pid>.json). A record is joined to a session by pid
@@ -31,6 +32,7 @@ case "${1:-}" in
   ""|list) mode=list ;;
   --orphans) mode=orphans ;;
   --status) mode=status ;;
+  --json) mode=json ;;
   -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
   *) echo "usage: megavibe sessions [--orphans|--status]" >&2; exit 2 ;;
 esac
@@ -49,11 +51,13 @@ for f in "$REG"/*.json; do
   [ "$pid" -gt 1 ] || continue
   kill -0 "$pid" 2>/dev/null || continue
   ps_start=$(jq -r '.procStart // empty' "$f" 2>/dev/null) || ps_start=""
+  verified=false
   if [ -n "$ps_start" ]; then
     live_start=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//') || live_start=""
     [ -z "$live_start" ] || [ "$live_start" = "$ps_start" ] || continue
+    [ "$live_start" != "$ps_start" ] || verified=true
   fi
-  line=$(jq -c --argjson fp "$pid" 'select(type == "object" and .pid == $fp and (.sessionId | type) == "string")' "$f" 2>/dev/null) || line=""
+  line=$(jq -c --argjson fp "$pid" --argjson v "$verified" 'select(type == "object" and .pid == $fp and (.sessionId | type) == "string") | . + {processVerified: $v}' "$f" 2>/dev/null) || line=""
   if [ -n "$line" ]; then
     regs+="$line"$'\n'
     if [ -f "$LAUNCHES/$pid.json" ]; then
@@ -64,6 +68,7 @@ for f in "$REG"/*.json; do
 done
 
 if [ -z "$regs" ]; then
+  [ "$mode" != json ] || echo '[]'
   [ "$mode" = list ] && echo "no live Claude sessions"
   exit 0
 fi
@@ -85,6 +90,7 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
        then ($r.parentSessionId | gsub("[^A-Za-z0-9-]"; "?") | .[0:64]) else null end) as $par
     | { pid: $s.pid, id: $s.sessionId, name: ($s.name // "?" | clean), state: ($s.status // "?" | clean),
         started: (if ($s.startedAt | type) == "number" then $s.startedAt else 0 end), dir: ($s.cwd // "" | path), cwd: ($s.cwd // ""),
+        processVerified: $s.processVerified, launch: (if $m then $r else null end),
         by: (if $m then "megavibe" else "-" end), parent: $par,
         ppid: (if $par != null and (($r.parentPid | type) == "number") then $r.parentPid else null end),
         pcwd: (if $par != null and (($r.parentCwd | type) == "string") then $r.parentCwd else null end) } ] as $base
@@ -100,7 +106,8 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
       + (if .orphan then "\tORPHAN: started by \(.parent[0:8]), which has ended" elif .maybe then "\tparent not found (resumed under a new id?)" else "" end);
     def tree($d): . as $n | line($d),
       (if $d < 8 then ($rows | map(select(.up == $n.id)) | sort_by(.started) | .[] | tree($d + 1)) else empty end);
-    if $mode == "status" then
+    if $mode == "json" then $rows | tojson
+    elif $mode == "status" then
       (if ($orph | length) + ($maybe | length) == 0 then empty
        else "\(($orph | length) + ($maybe | length)) running session(s) have a launcher that ended or cannot be found (pids: \(($orph + $maybe) | sort_by(.started) | map(.pid | tostring) | join(", "))). Tell the user; `megavibe sessions --orphans` lists them. Do not stop them yourself."
        end)
@@ -114,7 +121,7 @@ out=$(printf '%s' "$regs" | jq -s -r --argjson L "$launches" --arg home "$HOME" 
     end
 ' 2>/dev/null) || out=""
 
-if [ "$mode" = status ]; then
+if [ "$mode" = status ] || [ "$mode" = json ]; then
   if [ -n "$out" ]; then printf '%s\n' "$out"; fi
   exit 0
 fi

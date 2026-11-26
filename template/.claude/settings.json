@@ -111,6 +111,15 @@
         ]
       },
       {
+        "matcher": "resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/restart-pickup.sh"
+          }
+        ]
+      },
+      {
         "matcher": "compact",
         "hooks": [
           {

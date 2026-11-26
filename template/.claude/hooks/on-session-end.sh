@@ -25,6 +25,18 @@ set -u
 command -v jq &>/dev/null || exit 0
 
 INPUT=$(cat)
+# Capture before the harness and existing cleanup retire session-owned work.
+# Ordinary exits never create a handover.
+RH="${MEGAVIBE_HOME:-$HOME/.megavibe}/scripts/restart.sh"
+RMARK=${MEGAVIBE_RESTART_MARKER:-}
+if [ -f "$RH" ] && [ -n "$RMARK" ] && [ -f "$RMARK" ]; then
+  FULL_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""')
+  # The helper resolves the nearest Claude ancestor before either capturing
+  # or cancelling (/clear). Inherited markers alone confer no ownership.
+  END_REASON=$(printf '%s' "$INPUT" | jq -r '.reason // ""')
+  bash "$RH" capture "$FULL_SID" "" "" "$END_REASON" >/dev/null || true
+fi
+
 SID=$(echo "$INPUT" | jq -r '.session_id // ""' | cut -c1-12)
 [ -n "$SID" ] || exit 0
 

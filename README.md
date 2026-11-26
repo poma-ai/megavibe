@@ -84,6 +84,7 @@ Launcher commands:
 ```bash
 megavibe --help       # launcher commands and options (also -h or help)
 megavibe --version    # installed commit, or unknown (also -V or version)
+megavibe restart-all [--dry-run] [--others]  # report sessions needing manual restart
 ```
 
 Help and version work only as the first argument and exit without setup, updates,
@@ -533,6 +534,60 @@ curl -fsSL https://raw.githubusercontent.com/poma-ai/megavibe/main/install.sh | 
 Or if you have a local clone: `bash megavibe/setup.sh`
 
 `megavibe update` (which `/megavibe-restart` also runs) has two arms. On a copy installed by `install.sh` it downloads the latest version and runs its `setup.sh --update`: no questions at all, not "Automatic or Custom?", not "Install X?", not the login pause, not the Gemini key, no sudo password, no Homebrew, pip, git or npx confirmation (their non-interactive switches are set for the run, and an update installs no OS package for the optional Python/pip bootstrap, since dpkg's conffile question has no environment switch), so the setup phase of a restart never stops on a prompt, also over Remote Control. What this does not cover: a broken install, where a required tool is missing altogether (setup then re-runs that tool's own installer, with its own behaviour), and a sign-in a tool asks for on its own at launch. Update mode refreshes what is installed and leaves out what was never chosen on a Custom install (Codex, Gemini, the Playwright MCP server); `bash setup.sh` without the flag is the way to add one later. (Separately, the launcher's once-a-day background `npm i -g` keeps the Codex and Gemini CLIs current; it predates update mode and does not consult that choice.) On a git clone of this repo, `megavibe update` only fast-forwards the checkout: changes apply on the next launch, and `setup.sh` is not run.
+
+**Restart open sessions.** An update takes effect in each session after it restarts.
+`megavibe restart-all [--dry-run] [--others]` reports live recorded sessions,
+with its name, full project directory, readable tmux pane location, exact manual
+restart command, skip reason and final counts. tmux is optional; location queries
+never start a server. **Automatic pane input has
+been removed.** tmux cannot atomically verify Claude's process identity,
+foreground group and entire empty editor while submitting `/exit`. A snapshot
+or an opt-in armed marker cannot exclude a later user edit or foreground change.
+The command never sends keys, signals, prepares a handover or claims a restart.
+`--others` excludes the calling session; otherwise it is reported last.
+
+Run `/megavibe-restart` inside each session you want to restart, then type
+`/exit` yourself. It saves `.agent/sessions/<session id>/restart-handover.txt`.
+The launcher re-executes its updated copy with `--resume <session id>`, including
+when already resumed. **Unknown IDs are skipped**, with a one-line notice;
+we removed the old single-session `--continue` fallback too. Shared legacy
+markers are ignored. A launcher predating scoped markers requires one manual
+restart before this feature can be used.
+
+Handovers record task IDs, numeric start times, bounded local output paths,
+and observed process PIDs, start times and executable identifiers (at most
+256 characters). **All command arguments and registry command/description
+text are omitted**, which also removes secret option values, assignments,
+authorization headers and URL userinfo. Environment values are never recorded.
+Restart files are owner-only. Do not put credentials in authored notes.
+
+Process observation runs only during an explicit capture, never on ordinary
+Stop hooks. Restart-specific task metadata is retained only while this session
+has an explicit restart request. At SessionEnd,
+the helper refreshes machine evidence while preserving authored notes about
+purposes, scheduled prompts, heartbeats and work that cannot be attributed
+from process ancestry. A child is labelled “expected to end with the session”;
+a previously observed detached process is labelled “may survive (not verified)”.
+Neither label proves survival. Missing processes are dropped from the fresh
+capture; unknown or unavailable evidence is reported as such.
+
+A capture starts as `not-restarted`; cancellation retains the handover but
+cannot activate a reminder. One request record binds its generation, wrapper
+identity, owning Claude PID and session ID. Only that Claude process can capture
+or cancel it; `/clear` in that process cancels with a notice. A matching successful
+exit capture and confirmed process exit allow the launcher to attempt replacement.
+The capture stays `not-restarted` until the matching replacement SessionStart
+confirms pickup. A failed launch cannot deliver a reminder on a later manual resume. New requests discard old process
+attribution, and refreshed handovers archive earlier files. On startup/resume,
+the hook delivers the handover once, or a bounded summary with the observation
+count and full file path when it is too large. It marks the generation shown
+only after writing the full message or summary successfully. Delivery uses
+atomic, generation-scoped PID/start-time claims without requiring Python;
+retries skip dead owners without deleting claims that another retry could
+be using. Failed delivery leaves the reminder available and reports the
+handover path on stderr. The reminder
+asks the model to verify each PID/start time and actual survival before
+re-arming or restarting anything, and to say what it dropped.
 
 **What changed?** `megavibe update` (which `/megavibe-restart` also runs) writes a short plain-language note of what the update changed, so the next session can show it. At update time it makes one call, `claude -p --model haiku --output-format json`, over the commit messages of the range: no tools, no settings or hooks (so no `apiKeyHelper` is loaded either), no MCP servers, a scratch working directory, and the variables that would point it at an API key or another provider (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the Bedrock, Vertex and Foundry switches) removed, so it uses your subscription. If your Claude login itself is a console API key, the call is billed to it: a few thousand Haiku tokens per update. `MEGAVIBE_UPDATE_SUMMARY=0` turns the call off. The wait is at most 25 seconds by default; `MEGAVIBE_UPDATE_SUMMARY_TIMEOUT=<seconds>` takes one to three digits and is clamped to 1-120, anything else means 25. An answer that is not one complete, successful JSON document (an error, a login message, a truncated or doubled output) is never used as a note.
 
