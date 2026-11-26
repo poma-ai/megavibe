@@ -1,10 +1,13 @@
 ---
 name: megavibe-restart
+disable-model-invocation: true
+user-invocable: true
 description: Save background work, update megavibe and resume this exact conversation
-user_invocable: true
 ---
 
 # Megavibe Restart
+
+Start this skill only when the user types `/megavibe-restart`. The model may offer the command, but must not invoke the skill itself.
 
 Update megavibe and resume this conversation with new hooks, rules, and skills.
 

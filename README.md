@@ -362,7 +362,7 @@ A subagent's prompt cache lives 5 minutes by default (the main thread's usually 
 
 ### Slash commands
 
-Inside a megavibe session:
+Inside a megavibe session, type the commands below. `/megavibe-restart` and `/finish-feature` are manual-only: Claude may offer them, but only a command typed by the user starts the skill. `/rehydrate`, `/catchup`, `/doc-review`, `/init-feature`, and `/watch` remain model-invocable; Claude still runs `/rehydrate` itself when post-compaction recovery requires it.
 
 | Command | When to use |
 |---------|------------|
@@ -373,9 +373,11 @@ Inside a megavibe session:
 | `/megavibe-restart` | Update megavibe and restart the session so new hooks/rules/skills apply. When an update landed, the resumed session's start-up message carries a short note of what it changed (see [Updating](#updating)) |
 | `/init-feature <description \| issue link>` | **Before starting a feature** — takes prose or a GitHub issue link; produces a scoped summary and a complexity/token estimate you confirm or send back, then you pick: write a spec or vibe it, and whether to post the result to that ticket or open a new one |
 | `/finish-feature [base]` | **After finishing one** — measures turns, tool calls and tokens actually spent from the transcript, scores them against what `/init-feature` predicted, comments the result on the PR and offers to merge it |
-| `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
+| `/clip` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/watch [interval] [org/repo ...]` | **Before leaving a session unattended** — schedules `tick.sh` as a recurring prompt (30 min default): review requests, pushes, reviews and comments from others on the watched repos, Linear comments, orphaned sessions, the login lifetime, both subscriptions' usage; the session acts on it. `/watch status`, `/watch off`. See "Unattended windows" |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
+
+**Upgrading from the custom `/copy` skill:** it is now `/clip`. Until the old `.claude/skills/copy/` directory is removed, the old skill keeps shadowing Claude Code's built-in `/copy` command. Project sync in `init.sh` (also called by the launcher) copies current skills but has no retired-file cleanup mechanism. After syncing, confirm `.claude/skills/clip/SKILL.md` exists, then manually remove the old megavibe `.claude/skills/copy/` directory from each previously initialized project. Inspect it first and preserve any local customizations outside the skills directory. Restart the session to refresh the command list.
 
 ---
 
@@ -550,7 +552,7 @@ or an opt-in armed marker cannot exclude a later user edit or foreground change.
 The command never sends keys, signals, prepares a handover or claims a restart.
 `--others` excludes the calling session; otherwise it is reported last.
 
-Run `/megavibe-restart` inside each session you want to restart, then type
+Type `/megavibe-restart` inside each session you want to restart, then type
 `/exit` yourself. It saves `.agent/sessions/<session id>/restart-handover.txt`.
 The launcher re-executes its updated copy with `--resume <session id>`, including
 when already resumed. **Unknown IDs are skipped**, with a one-line notice;

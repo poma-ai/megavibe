@@ -1,7 +1,7 @@
 ---
 name: catchup
 description: Quick orientation on project state. Reads .agent/ files and git history — no AI calls, finishes in seconds.
-allowed-tools: Read, Glob, Grep, Bash
+allowed-tools: Read, Glob, Grep, Bash(git log *), Bash(git diff *), Bash(git branch --show-current *), Bash(git fetch *), Bash(git status *)
 ---
 
 # Catch Up on Project State
