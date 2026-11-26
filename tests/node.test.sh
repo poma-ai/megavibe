@@ -173,7 +173,7 @@ check "node: an inherited LC_ALL=C is not passed on either ($(tr '\n' ';' < "$TM
 check "pa.on: PA started in megavibe-personal through pa-start.sh" '[ -e "$TMUXSTATE/s/megavibe-personal" ] && grep -q "$N/pa-start.sh" "$TMUXSTATE/cmd.megavibe-personal"'
 fresh 5b; ctl install --pa; chmod -x "$N/pa-start.sh"; node
 check "pa.on, launcher not executable: logged, not started" '[ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "pa-start.sh is missing or not executable"'
-fresh 5d; ctl install --pa; git -C "$REPO" show main:template/node/pa-start.sh > "$N/pa-start.sh"; node
+fresh 5d; ctl install --pa; printf '#!/bin/bash\n# an older launcher: it takes every argument for a start and has no way to be asked\nexec megavibe --no-normalize "$@"\n' > "$N/pa-start.sh"; chmod +x "$N/pa-start.sh"; node
 check "pa.on with a launcher older than node.sh: never asked --running, not started, logged" '[ ! -e "$T/megavibe.calls" ] && [ ! -e "$TMUXSTATE/s/megavibe-personal" ] && log | grep -q "older than node.sh"'
 fresh 5e; ctl install; echo "# old" >> "$N/pa-start.sh"; echo "# old" >> "$N/node.sh"; cp "$N/node.sh" "$T/node.old"; chmod 500 "$N"; ctl install; chmod 700 "$N"
 check "install that cannot write the launcher: exits non-zero and leaves node.sh alone ($o)" '[ "$RC" != 0 ] && cmp -s "$N/node.sh" "$T/node.old"'
@@ -364,6 +364,10 @@ check "pa-start: the id that could not be resumed is kept aside and logged" '[ "
 HELD=$(cat "$N/pa.session"); : > "$T/megavibe.calls"; echo 3 > "$T/megavibe.rc"; cp "$N/pa.session.failed" "$T/failed.before"
 bash "$N/pa-start.sh"
 check "pa-start: a resume refused as held (exit 3) keeps pa.session and starts no second PA" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && [ "$(cat "$N/pa.session")" = "$HELD" ] && cmp -s "$T/failed.before" "$N/pa.session.failed" && log | grep -q "still open in another process"'
+check "pa-start: a refusal outside a terminal prints nothing and does not wait" '[ -z "$(MEGAVIBE_NODE_TEST_WAIT_SECS=30 bash "$N/pa-start.sh" 2>&1 </dev/null | cat)" ]'
+echo 3 > "$T/megavibe.rc"
+out=$(MEGAVIBE_NODE_TEST_WAIT_SECS=0 script -q /dev/null bash "$N/pa-start.sh" 2>&1 || true)
+check "pa-start: a refusal on a terminal says the conversation is open elsewhere and how to reach it" '[[ "$out" == *"still open in another process"* ]] && [[ "$out" == *"tmux attach -t megavibe-personal"* ]] && [ "$(cat "$N/pa.session")" = "$HELD" ]'
 rm -f "$T/megavibe.rc"
 printf 'not-a-uuid; touch %s/pwned\n' "$T" > "$N/pa.session"; : > "$T/megavibe.calls"; bash "$N/pa-start.sh"
 check "pa-start: an unusable pa.session is never passed on; fresh start" '[ "$(wc -l < "$T/megavibe.calls" | tr -d " ")" = 1 ] && ! grep -q "pwned" "$T/megavibe.calls" && [ ! -e "$T/pwned" ] && grep -qx -- --session-id "$T/megavibe.args"'

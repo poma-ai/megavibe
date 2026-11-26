@@ -20,7 +20,7 @@
 # SHORTCUT: /clear inside the PA starts a new conversation the file does not know; record it with
 # `megavibe node pa session <id>` or the next restart resumes the conversation from before the /clear.
 # MEGAVIBE_NODE_TEST_BIN: tests put stub binaries first on PATH. MEGAVIBE_NODE_TEST_RESUME_SECS: tests
-# shorten the 30 s. Nothing else reads them.
+# shorten the 30 s; MEGAVIBE_NODE_TEST_WAIT_SECS the 20 s wait before a window closes. Nothing else reads them.
 # The inherited PATH comes first (a claude under an npm prefix or nvm must stay reachable for
 # `megavibe assistant`); the standard directories are only appended, for the LaunchAgent's sparse PATH.
 export PATH="${MEGAVIBE_NODE_TEST_BIN:+$MEGAVIBE_NODE_TEST_BIN:}${PATH:+$PATH:}/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -87,6 +87,10 @@ if [ -n "$SID" ]; then
   # is still running or still exiting). Starting a fresh PA would make a second one: keep the record.
   if [ "$RC" = 3 ]; then
     nlog "pa-start: conversation $SID is still open in another process; not resumed and no second PA started (pa.session kept)"
+    if [ -t 1 ]; then
+      echo "The Personal Assistant's conversation is still open in another process, so no second one was started. Reach it with 'tmux attach -t megavibe-personal' or find its terminal; the launcher's message above names it. This window closes in 20 s."
+      sleep "${MEGAVIBE_NODE_TEST_WAIT_SECS:-20}"
+    fi
     exit 0
   fi
   # Appended, one id per line: a second failure must not erase the first id.

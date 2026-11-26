@@ -12,7 +12,7 @@ trap 'rm -rf "$T"' EXIT
 PASS=0 FAIL=0
 check() { if eval "$2"; then PASS=$((PASS+1)); echo "PASS $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; fi; }
 
-for fn in resume_target session_holder second_writer_message second_writer_gate; do
+for fn in resume_target session_holder second_writer_message second_writer_gate show_lock_info; do
   sed -n "/^$fn() {/,/^}/p" "$REPO/megavibe" >> "$T/fn.sh"
 done
 
@@ -46,7 +46,7 @@ reg() { # reg PID JSON
 reset() { rm -f "$CLAUDE_CONFIG_DIR/sessions/"* "$MEGAVIBE_HOME/launches/"* "$T"/lstart.* "$T"/comm.*; }
 SID=0b6f6c1e-1111-4222-8333-444455556666
 
-check 'all four functions are in the wrapper' '[ "$(grep -c "^[a-z_]*() {" "$T/fn.sh")" = 4 ]'
+check 'all five functions are in the wrapper' '[ "$(grep -c "^[a-z_]*() {" "$T/fn.sh")" = 5 ]'
 
 # resume_target
 tgt() { run "resume_target $*"; }
@@ -197,11 +197,35 @@ rc=0; out=$(ALIVE=4101 PATH="$T/nojq:/usr/bin:/bin" run "command() { [ \"\$2\" =
 check 'gate: without jq it cannot know, so it does not block' '[ "$rc" = 0 ]'
 check 'tmux was never run' '[ ! -e "$T/tmux-called" ]'
 
+# Lock notice: no resume line that the guard would refuse; no line at all without an id.
+lock_notice() { # lock_notice SESSION_ID_IN_LOCK
+  printf '{"pid":4101,"session_id":"%s","branch":"b","started":"x","tty":"/dev/ttys001"}\n' "$1" > "$T/lock.json"
+  run "YELLOW=; RESET=; LOCK_META=$T/lock.json; show_lock_info"
+}
+check 'lock notice: a live session is offered attach or fork, not a plain resume' 'o=$(lock_notice "$SID"); printf "%s" "$o" | grep -qF -- "--resume $SID --fork-session" && ! printf "%s" "$o" | grep -q "Resume it"'
+check 'lock notice: the placeholder id of a fresh launch prints no resume line' 'o=$(lock_notice pending); ! printf "%s" "$o" | grep -qi "resume" && printf "%s" "$o" | grep -q "PID: 4101"'
+check 'lock notice: an unreadable id prints no resume line' 'o=$(lock_notice "?"); ! printf "%s" "$o" | grep -qi "resume"'
+
+# No registry scan for anything that is not an id or a transcript path.
+printf '#!/bin/bash\necho x >> "$FIXT/jq-called"\nexec /usr/bin/jq "$@"\n' > "$T/bin/jq"; chmod +x "$T/bin/jq"
+reset; reg 4101 "{\"pid\":4101,\"sessionId\":\"$SID\"}"; rm -f "$T/jq-called"
+ALIVE=4101 run "session_holder 'Release work'" >/dev/null
+check 'holder: a name starts no jq' '[ ! -e "$T/jq-called" ]'
+ALIVE=4101 run "session_holder $SID" >/dev/null
+check 'holder: an id still scans the registry' '[ -e "$T/jq-called" ]'
+rm -f "$T/jq-called"; ALIVE=4101 run "session_holder /x/projects/-p/$SID.jsonl" >/dev/null
+check 'holder: a transcript path still scans the registry' '[ -e "$T/jq-called" ]'
+rm -f "$T/bin/jq"
+
 # Wiring in the wrapper
 W="$REPO/megavibe"
 gate_line=$(grep -n '^second_writer_gate "\$@" || exit' "$W" | cut -d: -f1 | head -1)
 lock_line=$(grep -n '^# ─── Session lock' "$W" | cut -d: -f1)
 check 'wrapper: gate runs once, before the session lock and both launch paths' '[ -n "$gate_line" ] && [ "$(grep -c "^second_writer_gate " "$W")" = 1 ] && [ "$gate_line" -lt "$lock_line" ]'
+init_line=$(grep -n '^bash "\$INIT_SCRIPT" \.' "$W" | cut -d: -f1 | head -1)
+auth_line=$(grep -n '^AUTH_JSON=.(claude auth status' "$W" | cut -d: -f1 | head -1)
+check 'wrapper: the guard runs before project initialisation and the auth check' '[ -n "$init_line" ] && [ "$gate_line" -lt "$init_line" ] && [ "$gate_line" -lt "$auth_line" ]'
+check 'wrapper: the refusal message does not claim more than the guard knows' 'grep -q "Nothing was started or changed" "$W"'
 check 'wrapper: the override flag is consumed, never passed to claude' 'grep -q "\"\$_a\" = \"--allow-second-writer\" ] && ALLOW_SECOND_WRITER=1" "$W" && grep -q "\"--allow-second-writer\" ] || CLAUDE_ARGV+=" "$W"'
 check 'wrapper: help lists the override' 'bash "$W" --help | grep -q -- "--allow-second-writer"'
 check 'wrapper: no longer claims Claude rejects a session in use' '! grep -q "Claude will reject" "$W"'
