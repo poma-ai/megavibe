@@ -36,7 +36,7 @@ Do not ask for what the code answers, for style preferences, or for detail that 
 
 ## The comment
 
-Post with `gh issue comment <n> --body-file <file>` (a temp file, so quoting cannot break it):
+Put the waiting label on the issue FIRST (see below). If that fails (no permission), post nothing and report `held: could not label`; a comment without its label would never be unblocked. Then post with `gh issue comment <n> --body-file <file>` (a temp file, so quoting cannot break it); if posting fails, take the label off again. The comment:
 
 ```
 @<author> to start work on this we need a few things:
@@ -49,7 +49,7 @@ Reply here, then remove the `<label>` label from this issue: that is what starts
 <!-- megavibe:needs-info -->
 ```
 
-Plain and short: no apology, no restating the issue, no praise. Then put the waiting label on the issue: the name on the task file's `Needs-info label:` line, else `needs-info`. Create it first if the repo lacks it (`gh label list --search <name>`, then `gh label create <name> --color FBCA04 --description "Waiting for the issue author"`), then `gh issue edit <n> --add-label <name>`. Removing that label is how the answer is signalled to whoever waits on it (on an internal repo its author can do it), so say so in the comment: "Reply here, then remove the `<name>` label from this issue: that is what starts the work." Never remove the label yourself.
+Plain and short: no apology, no restating the issue, no praise. The label: the name on the task file's `Needs-info label:` line, else `needs-info`. Create it first if the repo lacks it (`gh label list --search <name>`, then `gh label create <name> --color FBCA04 --description "Waiting for the issue author"`), then `gh issue edit <n> --add-label <name>`. Removing that label is how the answer is signalled to whoever waits on it (on an internal repo its author can do it), so say so in the comment: "Reply here, then remove the `<name>` label from this issue: that is what starts the work." Never remove the label yourself.
 
 ## Report
 

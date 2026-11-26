@@ -2719,8 +2719,20 @@ bar_api_billing "$AUTH_JSON"
 # Design: mkdir-based atomic lock with JSON metadata.
 # Staleness: PID dead AND not a claude/node process.
 
-LOCK_DIR=".agent/.session-lock.d"
-LOCK_META="$LOCK_DIR/metadata.json"
+# A linked worktree links .agent/ back to the main checkout (`megavibe worktree`, `megavibe dispatch`), so a lock kept
+# there is shared: every worktree session would see the main checkout's session as "another session in this checkout"
+# and stop at the branch-name prompt (a detached tmux window cannot answer it). The lock protects SOURCE files, so it
+# lives with the working tree it protects: in that tree's own git dir. A checkout whose .agent/ is its own keeps the old
+# place. Called again after the launcher changes directory.
+set_lock_dir() {
+  local gd
+  LOCK_DIR=".agent/.session-lock.d"
+  if [ -L .agent ] && gd=$(git rev-parse --absolute-git-dir 2>/dev/null) && [ -d "$gd" ]; then
+    LOCK_DIR="$gd/megavibe-session-lock.d"
+  fi
+  LOCK_META="$LOCK_DIR/metadata.json"
+}
+set_lock_dir
 IS_RESUME=false
 WORKTREE_DIR=""
 
@@ -2901,10 +2913,13 @@ record_launch() {
 
 # Helper: release lock
 release_lock() {
-  rm -rf "${WORKTREE_DIR:+$WORKTREE_DIR/}.agent/.session-lock.d" 2>/dev/null
-  rm -rf ".agent/.session-lock.d" 2>/dev/null
-  # Clean up legacy flat lock file if present
-  rm -f ".agent/.session-lock" 2>/dev/null
+  rm -rf "$LOCK_DIR" 2>/dev/null
+  # Where .agent/ is shared through a link, those paths are another tree's lock: leave them.
+  if [ "$LOCK_DIR" = ".agent/.session-lock.d" ]; then
+    rm -rf "${WORKTREE_DIR:+$WORKTREE_DIR/}.agent/.session-lock.d" 2>/dev/null
+    # Clean up legacy flat lock file if present
+    rm -f ".agent/.session-lock" 2>/dev/null
+  fi
 }
 
 # Remote Control names a session "<prefix>-..." with the hostname as prefix, so
@@ -3126,6 +3141,7 @@ if [ -d "$LOCK_DIR" ]; then
       echo ""
       bash "$INIT_SCRIPT" "$WORKTREE_DIR"
       cd "$WORKTREE_DIR"
+      set_lock_dir
       echo -e "  ${BOLD}Working in:${RESET} $WORKTREE_DIR"
       echo -e "  ${BOLD}Branch:${RESET}     $BRANCH_NAME"
       echo -e "  ${DIM}This session has its own megavibe-deliverables/ (decisions: $WORKTREE_DIR/megavibe-deliverables/STATUS.md)${RESET}"
