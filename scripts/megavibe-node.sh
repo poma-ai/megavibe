@@ -49,14 +49,14 @@ SESSION_RE='^[a-z0-9][a-z0-9._-]{0,62}$'
 die() { printf 'megavibe node: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 need_install() { [ -f "$N/node.sh" ] || die "not installed; run: megavibe node install"; }
-pa_running() { command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$PA_TMUX" 2>/dev/null; }
+pa_running() { command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$PA_TMUX" 2>/dev/null 9>&-; }
 # fd 9 closed: a git or ssh child that outlives this command must not keep the node's lock.
 g() { GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" git -C "$M" "$@" < /dev/null 9>&-; }
 # The node's own lock (node.sh holds it for a whole run): a takeover or handback never runs alongside a
 # node run that could pull or commit underneath it. Waits up to 120 s.
 lock_node() {
   exec 9>>"$N/.lock"
-  perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or exit 1; for (1..120) { exit 0 if flock($f, LOCK_EX | LOCK_NB); sleep 1 } exit 1' \
+  perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or exit 1; for (1..120) { if (flock($f, LOCK_EX | LOCK_NB)) { utime undef, undef, $f; exit 0 } sleep 1 } exit 1' \
     || die "the node is busy (its lock is held); run the same command again in a minute (switch files changed so far stay changed)"
 }
 conf_get() { awk -v k="$1" 'index($0, k "=") == 1 { v = substr($0, length(k) + 2); f = 1 } END { if (f) print v }' "$N/node.conf" 2>/dev/null; }
@@ -214,6 +214,7 @@ cmd_status() {
     say "memory repo:  none"
   fi
   [ -f "$N/node.log" ] && { say "node.log (last 5):"; tail -n 5 "$N/node.log" | sed 's/^/  /'; }
+  [ -f "$N/restart-note.txt" ] && { say "node notice:"; cat "$N/restart-note.txt"; }
   return 0
 }
 

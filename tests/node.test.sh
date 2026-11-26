@@ -148,7 +148,7 @@ printf '#!/bin/bash\nprintf "%%s|%%s|%%s\\n" "$*" "${MEGAVIBE_PROBE_MODEL:-}" "$
 rm -f "$T/probe.calls"; printf 'PROBE_MODEL=my-model\nPROBE_CODEX_HOME=/tmp/some codex\n' >> "$N/node.conf"; node
 check "node with pa.on: probe model and Codex home from node.conf reach the probe" '[ "$(cat "$T/probe.calls" 2>/dev/null)" = "run --every 30|my-model|/tmp/some codex" ]'
 
-# PA secrets sync: run by the node on a PA Mac that has the secrets tool; failure logged without its text
+# PA secrets sync: stdout discarded; failures retain a separate status/stderr report.
 fresh 4s; ctl install
 mkdir -p "$HOME/.local/bin"; printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/secret.calls"\n' "$T" > "$HOME/.local/bin/secret"; chmod +x "$HOME/.local/bin/secret"
 node
@@ -157,7 +157,7 @@ touch "$N/pa.on"; node
 check "node with pa.on: secret sync runs on every run" '[ "$(cat "$T/secret.calls" 2>/dev/null)" = "sync" ]'
 printf '#!/bin/bash\necho SECRETVALUE; exit 3\n' > "$HOME/.local/bin/secret"
 node
-check "failed secret sync: logged without its output" 'log | grep -q "secret sync failed" && ! log | grep -q SECRETVALUE && [ ! -e "$N/secret-sync.log" ]'
+check "failed secret sync: status retained, stdout excluded" 'log | grep -q "secret sync failed" && grep -qx "exit status: 3" "$N/secret-sync-failed.txt" && ! grep -R -q SECRETVALUE "$N"'
 mv "$HOME/.local/bin/secret" "$HOME/.local/bin/secret.off"; node
 check "no secrets tool: nothing happens, exit 0" '[ "$RC" = 0 ] && [ "$(cat "$T/secret.calls")" = "sync" ]'
 
@@ -426,13 +426,13 @@ check "pa-start: inherited PATH entries stay reachable ($o)" '[[ "$o" == "$T/cus
 # ── the wrapper: megavibe assistant and megavibe node use the same launcher ──
 # init.sh (run by the wrapper on every PA start) leaves the memory repo's allow-list .gitignore alone.
 fresh 10; mkdir -p "$M/megavibe-deliverables"; cp "$REPO/template/node/memory.gitignore" "$M/.gitignore"; git -C "$M" init -q
-bash "$REPO/init.sh" "$M" > "$T/init.log" 2>&1
+printf 'HOME=%s\nMEGAVIBE_HOME=%s\nCLAUDE_CONFIG_DIR=%s\n' "$HOME" "$MEGAVIBE_HOME" "$CLAUDE_CONFIG_DIR"; bash "$REPO/init.sh" "$M" > "$T/init.log" 2>&1
 check "init.sh: memory allow-list keeps deliverables tracked, private files still ignored" '! git -C "$M" check-ignore -q megavibe-deliverables/new.md && git -C "$M" check-ignore -q CLAUDE.local.md'
-bash "$REPO/init.sh" "$M" > "$T/init2.log" 2>&1
+printf 'HOME=%s\nMEGAVIBE_HOME=%s\nCLAUDE_CONFIG_DIR=%s\n' "$HOME" "$MEGAVIBE_HOME" "$CLAUDE_CONFIG_DIR"; bash "$REPO/init.sh" "$M" > "$T/init2.log" 2>&1
 check "init.sh: allow-list exception is idempotent" '! git -C "$M" check-ignore -q megavibe-deliverables/new.md && [ "$(grep -cx megavibe-deliverables "$M/.gitignore")" = 0 ]'
 # An ordinary project with an allow-list but no deliverables negation keeps every protection.
 P="$T/plainproj"; mkdir -p "$P/src"; git -C "$P" init -q; printf '/*\n!/src/\n' > "$P/.gitignore"
-bash "$REPO/init.sh" "$P" > "$T/init3.log" 2>&1
+printf 'HOME=%s\nMEGAVIBE_HOME=%s\nCLAUDE_CONFIG_DIR=%s\n' "$HOME" "$MEGAVIBE_HOME" "$CLAUDE_CONFIG_DIR"; bash "$REPO/init.sh" "$P" > "$T/init3.log" 2>&1
 check "init.sh: ordinary /* project still ignores CLAUDE.local.md in an allowed dir" 'touch "$P/src/CLAUDE.local.md" && git -C "$P" check-ignore -q src/CLAUDE.local.md'
 check "wrapper: update path syncs megavibe-node.sh like setup.sh" 'grep -q "REPO_DIR/scripts/megavibe-node.sh" "$REPO/megavibe" && grep -q "SCRIPT_DIR/scripts/megavibe-node.sh" "$REPO/setup.sh"'
 check "wrapper: assistant starts pa-start.sh, not claude directly" 'sed -n "/Assistant subcommand/,/exec tmux attach/p" "$REPO/megavibe" | grep -q "bash \"\$PA_START\"" && ! sed -n "/Assistant subcommand/,/exec tmux attach/p" "$REPO/megavibe" | grep -q "claude --dangerously"'
