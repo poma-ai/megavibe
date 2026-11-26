@@ -7,6 +7,7 @@ Commands (`megavibe dispatch ...`; the queue is the one in the environment varia
 - Before any session starts, `tick` checks each queued issue for readiness. An unclear one is commented on (the questions, its author mentioned), labelled `needs-info` and blocked without costing a session. `tick` also unblocks issues whose label was removed. `start --no-precheck` turns the check off and `--needs-label` renames the label.
 - `tick` settles finished sessions (window closed, PR found) and starts queued issues while below the cap. Run it after `add`, after every report from a session, and on a recurring schedule (arm one every 5 minutes with CronCreate or `/loop`).
 - `status` shows state, idle minutes and PR per issue. `peek N` shows the last lines of an issue's window.
+- `resume N` brings back the conversation of a session whose window died (the tmux server restarted, the window closed): a new window, the same conversation. `requeue N` starts over instead.
 - `max N` changes the cap. `block N` marks an issue waiting on someone else (it frees the slot like `done`). `done N`, `drop N`, `requeue N` change one issue's state. Nothing here stops a session or merges a PR.
 
 Rules:
@@ -19,4 +20,5 @@ Rules:
 - An issue `held` could not be asked about (no permission to label or comment). Tell the user; after they fix it, `requeue N`.
 - A session whose window closed without a PR needs the user's decision: show the last state (worktree `git status` and log) and offer `requeue` or `done`.
 - Sessions report to you with SendMessage, and their windows stay open at the prompt, so a report is what frees the slot. Relay each report to the user in one line (issue, end state, PR URL). Then: a PR is `tick` (records its URL) and `done N`; `blocked: needs info` (the session commented on the issue, mentioned its author and labelled it) is `block N`; then `tick` again to fill the slot. The answer is signalled by the label: when the author or anyone else with write access removes it, the next `tick` either queues the issue again from a fresh task file or, when its session is still open at the prompt, takes the slot again and prints a line telling you to `SendMessage` that session (named `<queue>-issue-N`): the author answered, re-read the issue and its comments, continue. Do that. You never remove the label yourself, and `requeue N` is for an issue whose session ended without a PR.
+- A finished session's window stays open at its prompt and is an idle Claude process. `status` shows the ones still open for done, blocked or PR issues: tell the user which they can close with `/exit`. You never close them.
 - Never merge, close issues, delete worktrees or kill windows. Report PRs and let the user decide.

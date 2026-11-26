@@ -12,22 +12,22 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/dispatch-test.XXXXXX") || exit 2; T=$(cd "$T" && 
 SOCK="mvdtest-${T##*.}-$$"; PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 B="$T/bin"; mkdir -p "$B"
-printf '#!/bin/bash\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$REAL_TMUX" "$SOCK" > "$B/tmux"
-printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nprintf "%%s %%s\\n" "$3" "${MEGAVIBE_DISPATCH_QUEUE-unset}" >> "%s/megavibe.env"\nexec sleep 600\n' "$T" "$T" > "$B/megavibe"
+printf '#!/bin/bash\n[ -z "${MEGAVIBE_PARENT_SESSION+x}" ] || echo leak >> "%s/tmux.leak"\necho "$*" >> "%s/tmux.args"\nexec env -u TMUX -u TMUX_PANE "%s" -L "%s" -f /dev/null "$@"\n' "$T" "$T" "$REAL_TMUX" "$SOCK" > "$B/tmux"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s/megavibe.calls"\nprintf "%%s %%s %%s\\n" "$3" "${MEGAVIBE_DISPATCH_QUEUE-unset}" "${MEGAVIBE_PARENT_SESSION-unset}" >> "%s/megavibe.env"\nexec sleep 600\n' "$T" "$T" > "$B/megavibe"
 cat > "$B/gh" <<'EOS'
 #!/bin/bash
 # stub gh: issues 21 (title "VAGUE", asks the model-stub to flag it) and 22 (same, but opened by a bot); state in $LABELS ("N label") and $T files
 jqx=""; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" != --jq ] || jqx="${a[i+1]}"; done
 emit() { if [ -n "$jqx" ]; then jq -r "$jqx"; else cat; fi; }
 case "$1 $2" in
-  "repo view") jq -n -c --arg v "$(cat "$T/visibility" 2>/dev/null || echo PRIVATE)" '{nameWithOwner: "o/r", visibility: $v}' | emit ;;
+  "repo view") jq -n -c --arg v "$(cat "$T/visibility" 2>/dev/null || echo PRIVATE)" '{nameWithOwner: "o/r", visibility: $v, defaultBranchRef: {name: "main"}}' | emit ;;
   "issue view") n=$3; [ "$n" != 99 ] || { echo "no such issue" >&2; exit 1; }
     st=OPEN; [ "$n" != 98 ] || st=CLOSED; [ ! -f "$CLOSED" ] || ! grep -qx "$n" "$CLOSED" || st=CLOSED
-    t="Fix thing $n"; case "$n" in 21|22|35|36) t="VAGUE $n" ;; esac; [ ! -f "$T/title.$n" ] || t=$(cat "$T/title.$n")
+    t="Fix thing $n"; case "$n" in 21|22|35|36|79|80) t="VAGUE $n" ;; esac; [ ! -f "$T/title.$n" ] || t=$(cat "$T/title.$n")
     au='{"login":"alice","is_bot":false}'; [ "$n" != 22 ] || au='{"login":"dependabot","is_bot":true}'
     lab=$(awk -v n="$n" '$1 == n { print $2 }' "$LABELS" 2>/dev/null | jq -R . | jq -s -c 'map({name: .})')
     jq -n -c --arg t "$t" --arg b "$( [ -f "$T/body.$n" ] && cat "$T/body.$n" || printf 'body of %s\nline two' "$n")" --arg u "https://github.com/o/r/issues/$n" --arg s "$st" --argjson l "${lab:-[]}" --argjson au "$au" --argjson num "$n" \
-      '{number: $num, title: ($t + "\twith a tab"), body: $b, url: $u, state: $s, labels: $l, author: $au, comments: []}' | emit ;;
+      '{number: $num, title: ($t + "\twith a tab"), body: $b, url: $u, state: $s, labels: $l, author: $au, comments: []}' | jq -c --slurpfile cm <(cat "$T/comments.$n" 2>/dev/null || echo '[]') '.comments = $cm[0]' | emit ;;
   "issue list") echo "$*" >> "$LISTCALLS"
     case "$*" in
       *"--label ready"*) printf '7\n9\n1\n' ;;
@@ -43,7 +43,8 @@ case "$1 $2" in
     done ;;
   "label list") cat "$LABELEXIST" 2>/dev/null | jq -R '{name: .}' | jq -s -c . | emit ;;
   "label create") echo "$3" >> "$LABELEXIST" ;;
-  "pr list") [ ! -f "$PRFILE" ] || grep -F "$4" "$PRFILE" | head -1 | cut -d' ' -f2 ;;
+  "pr list") [ "$(cat "$T/gh.mode" 2>/dev/null)" != prfail ] || exit 1
+    { [ ! -f "$PRFILE" ] || awk -v b="$4" '$1 == b { print $2, ($3 == "cross" ? "true" : "false") }' "$PRFILE"; } | jq -R -s -c 'split("\n") | map(select(length > 0) | split(" ") | {url: .[0], isCrossRepository: (.[1] == "true")})' | emit ;;
 esac
 EOS
 cat > "$B/claude" <<'EOS'
@@ -55,11 +56,11 @@ case "$*" in *--dangerously-skip-permissions*)
   jq -n --arg d "$PWD" '{projects: {($d): {hasTrustDialogAccepted: true}}}' > "$HOME/.claude.json.new"
   if [ -f "$HOME/.claude.json" ]; then jq -s '.[0] * .[1]' "$HOME/.claude.json" "$HOME/.claude.json.new" > "$HOME/.claude.json.m" && mv "$HOME/.claude.json.m" "$HOME/.claude.json"; else mv "$HOME/.claude.json.new" "$HOME/.claude.json"; fi
   exit 0 ;; esac
-p=$(cat); echo "$*" > "$HOME/claude.args"; printf '%s' "$p" > "$HOME/claude.prompt"; m=$(cat "$HOME/claude.mode" 2>/dev/null)
+p=$(cat); echo "$PWD" > "$HOME/claude.pwd"; echo "$*" > "$HOME/claude.args"; printf '%s' "$p" > "$HOME/claude.prompt"; m=$(cat "$HOME/claude.mode" 2>/dev/null)
 n=0; if [ -n "$m" ] && [ "$m" != broken ]; then while ! mkdir "$HOME/claude.lock" 2>/dev/null; do sleep 0.05; done; echo x >> "$HOME/claude.n"; n=$(wc -l < "$HOME/claude.n" | tr -d ' '); rmdir "$HOME/claude.lock"; fi
 case "$m$n" in one1|two1|two2) p='"title":"VAGUE' ;; one2|one3|two3) p='clear' ;; esac
 case "$p" in
-  *'"title":"VAGUE'*) r=$'```json\n{"ready": false, "questions": ["What should the result look like? ping @evil", "Which version fails?"]}\n```' ;;
+  *'"title":"VAGUE'*) r=$'```json\n{"ready": false, "questions": ["What should the result look like? ping @evil", "Which version fails? see https://evil.example/x and #12 <b>x</b>"]}\n```' ;;
   *) r='{"ready": true, "questions": []}' ;;
 esac
 [ "$m" != broken ] || { echo "boom" >&2; exit 1; }
@@ -71,9 +72,9 @@ end_panes() { local p i; [ "${OWN:-0}" = 1 ] || return 0
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -HUP "$p" 2>/dev/null; done
   for i in 1 2 3 4 5 6; do tmux has-session 2>/dev/null || return 0; sleep 0.5; done
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -KILL "$p" 2>/dev/null; done; }
-cleanup() { end_panes; sleep 1; rm -rf "$T"; }; trap cleanup EXIT
+cleanup() { end_panes; sleep 1; case "$SP" in */"$SOCK") tmux has-session 2>/dev/null || rm -f "$SP" ;; esac; rm -rf "$T"; }; trap cleanup EXIT
 tmux new-session -d -s guard sleep 600 || { echo "could not start private tmux"; exit 2; }
-case "$(tmux display-message -p '#{socket_path}')" in */"$SOCK") OWN=1 ;; *) echo "ABORT: not the private socket"; exit 2 ;; esac
+SP=$(tmux display-message -p '#{socket_path}'); case "$SP" in */"$SOCK") OWN=1 ;; *) echo "ABORT: not the private socket"; exit 2 ;; esac
 
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/work/proj" 2>/dev/null || { mkdir -p "$T/work"; git init -q -b main "$T/work/proj"; }
 P="$T/work/proj"; cd "$P" || exit 2
@@ -217,7 +218,7 @@ o=$( cd "$O2" && D start 2>&1 ); RC=$?
 check "F6 same folder name: refused, the live queue still points at its repo ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"already belongs to"* ]] && [ "$(awk -F= "\$1 == \"repo\" { print \$2 }" "$Q/conf")" = "$P" ]'
 o=$( cd "$O2" && D start --name proj2 2>&1 ); RC=$?
 check "F6 --name: its own queue and dispatcher ($o)" '[ "$RC" = 0 ] && tmux list-windows -t =mvd-proj2 -F "#{window_name}" | grep -qx dispatcher && [ -f "$MEGAVIBE_HOME/dispatch/proj2/conf" ]'
-check "F6 the queue name is exported to the dispatcher window and to issue windows" 'grep -q "^dispatcher-proj2 proj2$" "$T/megavibe.env" && grep -q "^proj-issue-1 proj$" "$T/megavibe.env"'
+check "F6 the queue name is exported to the dispatcher window and to issue windows" 'grep -q "^dispatcher-proj2 proj2 " "$T/megavibe.env" && grep -q "^proj-issue-1 proj " "$T/megavibe.env"'
 # F7: no label permission: nothing is posted, the issue is held; a failed comment takes the label back; block by hand needs the label
 echo nolabel > "$T/gh.mode"; D add 35 >/dev/null; o=$(D tick)
 check "F7 label cannot be added: HELD, no comment posted ($o)" '[ "$(st 35 2)" = held ] && [[ "$o" == *"HELD"* ]] && [ ! -f "$T/comment.35" ]'
@@ -238,5 +239,48 @@ check "F9 a fresh worktree is pre-accepted from inside it" 'grep -qx "$W/proj-is
 jq -n --arg d "$W/proj-issue-39" '{projects: {($d): {hasTrustDialogAccepted: true}}}' > "$HOME/.claude.json"; rm -f "$HOME/claude.trust"; D add 39 >/dev/null; D tick >/dev/null
 check "F9 an already accepted worktree is not pre-accepted again" '[ ! -f "$HOME/claude.trust" ] || ! grep -qx "$W/proj-issue-39" "$HOME/claude.trust"'
 check "F9 the trust call is the subscription-only claude, not counted as a voter" '[ "$(tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -cx issue-39)" = 1 ]'
+
+# ── deep-review fixes F10-F14 ─────────────────────────────────────────
+D max 80 >/dev/null; D start --precheck >/dev/null
+pane_of() { tmux list-windows -t =mvd-proj -F '#{@mvd_key} #{pane_pid}' | awk -v k="$1" '$1 == k { print $2 }'; }
+# F10: a failed gh is not "no PR" and is looked at again; a fork's branch of the same name is not our PR
+D add 70 >/dev/null; D tick >/dev/null; kill -HUP "$(pane_of 70)"; sleep 1; echo prfail > "$T/gh.mode"; o=$(D tick)
+check "F10 gh fails when the window is gone: ended, said so, not 'NO pull request' ($o)" '[ "$(st 70 2)" = ended ] && [[ "$o" == *"could not look for a pull request"* ]] && [[ "$o" != *"NO pull request"* ]]'
+echo ok > "$T/gh.mode"; echo "dispatch/issue-70 https://github.com/o/r/pull/70" >> "$PRFILE"; o=$(D tick)
+check "F10 an ended issue is looked at again and its PR is found later ($o)" '[ "$(st 70 2)" = pr ] && [ "$(st 70 7)" = "https://github.com/o/r/pull/70" ]'
+D add 71 >/dev/null; D tick >/dev/null; kill -HUP "$(pane_of 71)"; sleep 1; echo "dispatch/issue-71 https://github.com/fork/r/pull/9 cross" >> "$PRFILE"; o=$(D tick)
+check "F10 a pull request from a fork's same-named branch is not recorded ($o)" '[ "$(st 71 2)" = ended ] && [[ "$o" == *"NO pull request"* ]]'
+# F11: calls go to the recorded server; liveness is the stamp (a user's window named issue-77 does not count); resume
+check "F11 the queue's tmux server is recorded and every later call names it with -S" '[ -n "$(awk -F= "\$1 == \"socket\" { print \$2 }" "$Q/conf")" ] && grep -q -- "-S $(awk -F= "\$1 == \"socket\" { print \$2 }" "$Q/conf") list-windows" "$T/tmux.args"'
+tmux new-window -d -t =mvd-proj: -n issue-77 sleep 100; D add 77 >/dev/null; o=$(D tick)
+check "F11 an unstamped window named like the issue does not block it ($o)" '[ "$(st 77 2)" = running ]'
+D add 78 >/dev/null; D tick >/dev/null; SID78=$(st 78 8); kill -HUP "$(pane_of 78)"; sleep 1; D tick >/dev/null
+check "F11 resume refuses an issue that is not ended or lost its window, accepts the one whose window is gone" '! D resume 77 >/dev/null && [ "$(st 78 2)" = ended ]'
+o=$(D resume 78)
+check "F11 resume opens a stamped window with --resume and the recorded conversation ($o)" '[ "$(st 78 2)" = running ] && [ -n "$(pane_of 78)" ] && called "^--no-normalize --name proj-issue-78 --model sonnet --resume $SID78 Your session ended unexpectedly"'
+check "F11 resume is refused while its window exists" '! D resume 78 >/dev/null'
+# F12: a question carries no link, HTML or issue reference; an unanswered question of ours is not asked twice; a reply after it is
+echo '[{"author":{"login":"bot"},"body":"We need info <!-- megavibe:needs-info -->"}]' > "$T/comments.79"
+echo '[{"author":{"login":"bot"},"body":"We need info <!-- megavibe:needs-info -->"},{"author":{"login":"alice"},"body":"here is more, still vague"}]' > "$T/comments.80"
+D add 79 80 >/dev/null; rm -f "$T/comment.79" "$T/comment.80"; o=$(D tick)
+check "F12 our question is open and unanswered: blocked with the label, no second comment ($o)" '[ "$(st 79 2)" = blocked ] && [ ! -f "$T/comment.79" ] && grep -qx "79 needs-info" "$LABELS"'
+check "F12 the author replied and the issue is still unclear: a new comment is posted" '[ "$(st 80 2)" = blocked ] && [ -f "$T/comment.80" ]'
+check "F12 the comment has no link, no HTML and no #N autolink" '! grep -q "https://" "$T/comment.80" && ! grep -q "<b>" "$T/comment.80" && grep -q "(link removed)" "$T/comment.80" && grep -q "# 12" "$T/comment.80" && ! grep -q "#12" "$T/comment.80"'
+check "F12 the voters run from an empty folder of their own, not the repo" '[[ "$(cat "$HOME/claude.pwd")" == */dispatch/proj/pc.cwd ]]'
+# F13: an explicit parent reaches the windows through env only and never the tmux server; an explicit empty one means no parent
+D add 81 >/dev/null; MEGAVIBE_PARENT_SESSION=parent-9 D tick >/dev/null
+check "F13 an explicit parent session id reaches the issue window, and does not leak into the tmux server's environment" 'grep -q "^proj-issue-81 proj parent-9$" "$T/megavibe.env" && [ ! -f "$T/tmux.leak" ]'
+D add 82 >/dev/null; MEGAVIBE_PARENT_SESSION= CLAUDE_CODE_SESSION_ID=zzz-1 D tick >/dev/null
+check "F13 an explicit empty parent means none, whatever session this runs in" 'grep -q "^proj-issue-82 proj $" "$T/megavibe.env"'
+D add 83 >/dev/null; CLAUDE_CODE_SESSION_ID=zzz-2 D tick >/dev/null
+check "F13 with none given, the session this runs in is the parent" 'grep -q "^proj-issue-83 proj zzz-2$" "$T/megavibe.env"'
+# F14: the default branch is the base (--base overrides), the task file says so, status shows windows left open
+check "F14 the base branch was recorded from the repo's default" '[ "$(awk -F= "\$1 == \"base\" { print \$2 }" "$Q/conf")" = main ]'
+o=$(D start --base nonexistent 2>&1); check "F14 a base that does not exist on origin refuses ($o)" '[[ "$o" == *"git fetch origin nonexistent failed"* ]]'
+DEV=$(git -C "$P" commit-tree "$(git -C "$P" rev-parse main^{tree})" -p "$(git -C "$P" rev-parse main)" -m dev); git -C "$P" push -q origin "$DEV:refs/heads/develop"
+o=$(D start --name qb --base develop 2>&1); MEGAVIBE_DISPATCH_QUEUE=qb D add 90 >/dev/null; MEGAVIBE_DISPATCH_QUEUE=qb D tick >/dev/null
+check "F14 --base develop: the worktree is cut from origin/develop and the task file names it ($o)" '[ "$(git -C "$T/work/proj-issue-90" rev-parse HEAD)" = "$DEV" ] && grep -q "pull request against develop" "$MEGAVIBE_HOME/dispatch/qb/tasks/issue-90.md" && grep -q "cut from origin/develop" "$MEGAVIBE_HOME/dispatch/qb/tasks/issue-90.md"'
+D done 78 >/dev/null
+check "F14 status shows the window of a finished issue that is still open" 'D status | grep -E "^done +#78 " | grep -q "window open"'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]
