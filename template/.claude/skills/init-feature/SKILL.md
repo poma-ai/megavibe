@@ -1,6 +1,7 @@
 ---
 name: init-feature
 description: Scope a feature before any code is written, from a description or from a GitHub issue link — a what-to-do summary and a complexity and token estimate from countable evidence, which the user confirms or sends back for discussion, then a fork they choose: write a spec, or vibe it, and optionally post the summary to the ticket it came from or open a new one. Use when the user types /init-feature, or explicitly asks to scope, size, estimate, or "init" a feature before building it. Do NOT use for a plain request to build, add, fix or start something — that is ordinary work, not a scoping run.
+# Arbitrary Bash is needed for project-specific implementation and verification on the user-chosen vibe route.
 allowed-tools: Read, Glob, Grep, Bash, Write, Agent, Skill, AskUserQuestion
 argument-hint: "<feature description | github issue link or #n>"
 ---

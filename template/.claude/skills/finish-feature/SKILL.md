@@ -1,11 +1,15 @@
 ---
 name: finish-feature
-description: Close out a finished feature by measuring what it actually cost — turns, tool calls, tokens, and the real size of the diff — scoring that against what /init-feature predicted, posting it as a comment on the branch's PR, and asking whether to merge that PR. Use when the user types /finish-feature, or explicitly asks how much a finished piece of work cost, how many turns or tokens it took, or how the estimate held up. Do NOT use to summarize work that is still in progress.
-allowed-tools: Read, Glob, Grep, Bash, Write, Edit, AskUserQuestion
+disable-model-invocation: true
+user-invocable: true
+description: Close out a finished feature by measuring what it actually cost — turns, tool calls, tokens, and the real size of the diff — scoring that against what /init-feature predicted, posting it as a comment on the branch's PR, and asking whether to merge that PR. Start only when the user types /finish-feature. If they ask about finished-work cost or estimate accuracy in prose, offer the command for them to type. Do NOT use to summarize work that is still in progress.
+allowed-tools: Read, Glob, Grep, Write, Edit, AskUserQuestion, Bash(bash .claude/skills/finish-feature/session-cost.sh *), Bash(git add *), Bash(git commit *), Bash(git diff *), Bash(jq *), Bash(git symbolic-ref -q HEAD), Bash(ls .agent/PLANS/*-brief.md), Bash(grep -rl *), Bash(tail -5), Bash(grep -A20 *), Bash(gh issue view *), Bash(gh auth status), Bash(gh repo view *), Bash(gh pr view *), Bash(gh pr create *), Bash(gh pr comment *), Bash(gh pr merge *), Bash(printf *), Bash(echo *), Bash(true), Bash(.claude/hooks/agent-log.sh append)
 argument-hint: "[base-ref, e.g. main]"
 ---
 
 # Finish feature
+
+Start this skill only when the user types `/finish-feature`. The model may offer the command, but must not invoke the skill itself.
 
 The other half of `/init-feature`. That skill predicts; this one measures, and puts the two side by side. An estimate nobody scores never improves.
 

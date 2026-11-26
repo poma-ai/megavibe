@@ -1,7 +1,7 @@
 ---
 name: doc-review
 description: Independent multi-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the allocated ship readers per delegation.md in parallel; synthesizes findings into a single report.
-allowed-tools: Bash, Read, Write, Agent
+allowed-tools: Read, Write, Agent, Bash(ls CLAUDE.md README*.md), Bash(find docs -maxdepth 2 -name *), Bash(bash ~/.megavibe/scripts/codex-review.sh *), Bash(bash ~/.megavibe/scripts/gemini-review.sh *)
 ---
 
 # Doc-review (periodic doc hygiene)
