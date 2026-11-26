@@ -43,7 +43,7 @@ Subagents are counted separately because they run in their own windows. Their co
 
 ## Step 2 — Bound what you are attributing
 
-The transcript covers the **whole session**, not just this feature — and it may not even cover all of it. `/clear`, `--resume` and `/megavibe-restart` each start a new transcript file while compaction does not, so a feature that spanned a restart is measured from the last file only. The script counts the project's other transcripts and says so; when it does, say it in the report rather than presenting a half-measurement as the total. If the session also did unrelated work, say so and bound it — the `started`/`ended` timestamps and the human-turn count are the handles. An unqualified session total attributed to one feature is a wrong number with a right provenance.
+The transcript covers the **whole session**, not just this feature — and it may not even cover all of it. `/clear`, `--fork-session`, `/branch` and a fresh launch each start a new transcript file; `--resume`, `--continue`, `/megavibe-restart` and compaction keep the session id and append to the same file. A feature that spanned a new file is measured from the last file only. The script counts the project's other transcripts and says so; when it does, say it in the report rather than presenting a half-measurement as the total. If the session also did unrelated work, say so and bound it — the `started`/`ended` timestamps and the human-turn count are the handles. An unqualified session total attributed to one feature is a wrong number with a right provenance.
 
 ## Step 3 — Find the prediction
 
