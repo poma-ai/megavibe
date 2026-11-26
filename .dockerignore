@@ -1,0 +1,6 @@
+.git
+.agent
+.claude/settings.local.json
+megavibe-deliverables
+docker/.env
+node_modules
