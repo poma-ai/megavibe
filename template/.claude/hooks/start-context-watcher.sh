@@ -118,7 +118,7 @@ if [ -f "$RV_SH" ]; then
      && bash "$HOME/.megavibe/scripts/backends.sh" enabled gemini >/dev/null 2>&1; then BK_CHAIN="$BK_CHAIN gemini"; fi
   case " $BK_CHAIN " in
     *" codex "*|*" gemini "*) ;;
-    *[!\ ]*) echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) not started: no allowed backend is usable (MEGAVIBE_BACKENDS, Codex login)" >> "$SPAWN_LOG" 2>/dev/null; exit 0 ;;
+    *[!\ ]*) echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) not started: no allowed backend is usable (MEGAVIBE_BACKENDS, Codex login; a Codex API key alone needs MEGAVIBE_CODEX_AUTH=2)" >> "$SPAWN_LOG" 2>/dev/null; exit 0 ;;
   esac
 fi
 if tmux new -d -s "$TMUX_SESSION" \
