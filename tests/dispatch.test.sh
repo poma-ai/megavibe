@@ -47,6 +47,8 @@ cat > "$B/claude" <<'EOS'
 # stub claude: `auth status` says subscription; `-p` reads the prompt and answers fenced JSON, flagging VAGUE issues
 if [ "$1" = auth ]; then if [ "$(cat "$HOME/claude.mode" 2>/dev/null)" = apikey ]; then echo '{"authMethod":"api_key"}'; else echo '{"authMethod":"claude.ai"}'; fi; exit 0; fi
 p=$(cat); echo "$*" > "$HOME/claude.args"; printf '%s' "$p" > "$HOME/claude.prompt"; m=$(cat "$HOME/claude.mode" 2>/dev/null)
+n=0; if [ -n "$m" ] && [ "$m" != broken ]; then while ! mkdir "$HOME/claude.lock" 2>/dev/null; do sleep 0.05; done; echo x >> "$HOME/claude.n"; n=$(wc -l < "$HOME/claude.n" | tr -d ' '); rmdir "$HOME/claude.lock"; fi
+case "$m$n" in one1|two1|two2) p='"title":"VAGUE' ;; one2|one3|two3) p='clear' ;; esac
 case "$p" in
   *'"title":"VAGUE'*) r=$'```json\n{"ready": false, "questions": ["What should the result look like? ping @evil", "Which version fails?"]}\n```' ;;
   *) r='{"ready": true, "questions": []}' ;;
@@ -148,7 +150,7 @@ check "a blocked issue closed meanwhile is dropped, not started ($o)" '[ "$(st 2
 : > "$CLOSED"
 
 echo broken > "$HOME/claude.mode"; D add 23 >/dev/null; o2=$(D tick)
-check "claude failing: the issue is let through ($o2)" '[ "$(st 23 2)" = running ] && [[ "$o2" == *"precheck skipped (the claude call failed"* ]]'
+check "claude failing: the issue is let through ($o2)" '[ "$(st 23 2)" = running ] && [[ "$o2" == *"precheck skipped (0 of 3 voters answered"* ]]'
 echo apikey > "$HOME/claude.mode"; D add 24 >/dev/null; o2=$(D tick)
 check "an API-key login is refused for the check, the issue is let through ($o2)" '[ "$(st 24 2)" = running ] && [[ "$o2" == *"not a claude.ai subscription login"* ]]'
 echo ok > "$HOME/claude.mode"
@@ -164,5 +166,13 @@ check "start --no-precheck --needs-label: stored" '[ "$(awk -F= "\$1 == \"preche
 D drop 22 >/dev/null; D add 22 >/dev/null; o=$(D tick)
 check "precheck off: the vague issue starts anyway ($o)" '[ "$(st 22 2)" = running ]'
 check "an unusable label name is refused" '! D start --needs-label "a b" >/dev/null'
+
+# ── voting: three voters, strict majority of those that answered ──────
+D max 30 >/dev/null; D start --precheck --needs-label needs-info >/dev/null
+echo one > "$HOME/claude.mode"; rm -f "$HOME/claude.n"; D add 26 >/dev/null; o=$(D tick)
+check "one of three says not ready: the issue is let through ($o)" '[ "$(st 26 2)" = running ] && [ "$(wc -l < "$HOME/claude.n" | tr -d " ")" = 3 ]'
+echo two > "$HOME/claude.mode"; rm -f "$HOME/claude.n"; D add 27 >/dev/null; o=$(D tick)
+check "two of three say not ready: blocked, and the log says how they voted ($o)" '[ "$(st 27 2)" = blocked ] && [[ "$o" == *"2 of 3 say not ready"* ]]'
+echo ok > "$HOME/claude.mode"; rm -f "$HOME/claude.n"
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]
