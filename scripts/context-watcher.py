@@ -448,9 +448,9 @@ def _backend_order(preferred: str) -> list:
             # digest-chain did not answer: keep the allow-list in force anyway
             # (a failed helper must never widen what may be spent).
             base = _allowed_only(base)
-    if os.environ.get("MEGAVIBE_GEMINI_DIGEST") == "1" and "codex" in base and "gemini" not in base \
-            and _backend_enabled("gemini"):
-        # The user opted Gemini in as Codex's fallback (gemini-review.sh still applies its caps).
+    if os.environ.get("MEGAVIBE_GEMINI_DIGEST") == "1" and "gemini" not in base \
+            and os.environ.get("GEMINI_API_KEY", "").strip() and _backend_enabled("gemini"):
+        # The user opted Gemini in as Codex's fallback, or as its replacement while Codex is logged out (gemini-review.sh still applies its caps).
         base = base + ["gemini"]
     if preferred in ("codex", "gemini") and preferred not in base and _backend_enabled(preferred):
         # An explicit --backend choice is honoured even where digest-chain would not offer

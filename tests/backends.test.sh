@@ -16,7 +16,7 @@ EOS
 chmod +x "$T/bin/codex"
 export HOME="$T/home" CODEX_HOME="$T/home/.codex" PATH="$T/bin:$PATH" MEGAVIBE_HOME="$T/home/.megavibe" CLAUDE_PROJECT_DIR="$T/proj"
 export CODEX_TEST_LOGINS="$T/logins" CODEX_TEST_LOGGED_IN="$T/logged-in" CODEX_TEST_CALLS="$T/calls"
-unset MEGAVIBE_BACKENDS MEGAVIBE_REVIEWERS MEGAVIBE_CODEX_AUTH MEGAVIBE_CODEX_OK GEMINI_API_KEY MEGAVIBE_GEMINI_DIGEST
+unset CODEX_API_KEY CODEX_ACCESS_TOKEN OPENAI_API_KEY MEGAVIBE_CODEX_KEYED MEGAVIBE_BACKENDS MEGAVIBE_REVIEWERS MEGAVIBE_CODEX_AUTH MEGAVIBE_CODEX_OK GEMINI_API_KEY MEGAVIBE_GEMINI_DIGEST
 B="$REPO/scripts/backends.sh"; RV="$REPO/scripts/reviewers.sh"
 rcof() { local r=0; "$@" >/dev/null 2>&1 || r=$?; echo "$r"; }
 eq() { [ "$1" = "$2" ] || { echo "FAIL $3: got '$1' want '$2'" >&2; exit 1; }; }
@@ -136,10 +136,12 @@ eq "$(cd "$T/other" && env -u CLAUDE_PROJECT_DIR "$B" list | tr '\n' ' ')" "clau
 rm -f "$CODEX_TEST_LOGGED_IN"
 eq "$(rcof "$B" codex-auth)" 1 "logged out and no key"
 eq "$(rcof env CODEX_API_KEY=k "$B" codex-auth)" 2 "CODEX_API_KEY: unknown"
-eq "$(rcof env OPENAI_API_KEY=k "$B" usable codex)" 2 "OPENAI_API_KEY: usable codex is unknown, not 1"
-eq "$(rcof env MEGAVIBE_CODEX_KEYED=1 "$B" codex-auth)" 2 "keyed flag carried across the tmux boundary"
-printf 'model_provider = "azure"\n' > "$T/home/.codex/config.toml"
-eq "$(rcof "$B" codex-auth)" 2 "custom model_provider: unknown"
+eq "$(rcof env OPENAI_API_KEY=k "$B" usable codex)" 1 "an unrelated OPENAI_API_KEY does not override a definitive 'not logged in'"
+printf 'model_provider = "openai"\n' > "$T/home/.codex/config.toml"
+eq "$(rcof "$B" codex-auth)" 1 "a model_provider line does not override 'not logged in'"
+mkdir -p "$T/gitproj/.claude" "$T/gitproj/sub"; git -C "$T/gitproj" init -q
+echo '{"env":{"MEGAVIBE_BACKENDS":"claude"}}' > "$T/gitproj/.claude/settings.local.json"
+eq "$(cd "$T/gitproj/sub" && env -u CLAUDE_PROJECT_DIR "$B" list | tr '\n' ' ')" "claude " "review N1: project pin found from a subdirectory"
 rm -f "$T/home/.codex/config.toml"
 
 # review F3: MEGAVIBE_GEMINI_DIGEST=1 keeps an allowed Gemini after Codex in the watcher

@@ -57,10 +57,17 @@ _raw_value() {
     RAW_VALUE="$MEGAVIBE_BACKENDS"; RAW_SRC="environment (MEGAVIBE_BACKENDS)"
     return 0
   fi
-  local f v root="${CLAUDE_PROJECT_DIR:-}" local_f
+  local f v root="${CLAUDE_PROJECT_DIR:-}"
   # When a project is named, only ITS settings.local.json counts: the working directory may be another project.
-  if [ -n "$root" ]; then local_f="$root/.claude/settings.local.json"; else local_f=".claude/settings.local.json"; fi
-  for f in "$local_f" "$HOME/.claude/settings.json"; do
+  # With none named, the working directory's file and then the git root's (so a subdirectory still sees the project's pin).
+  local files=()
+  if [ -n "$root" ]; then files=("$root/.claude/settings.local.json")
+  else
+    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    files=(".claude/settings.local.json"); [ -z "$root" ] || files+=("$root/.claude/settings.local.json")
+  fi
+  files+=("$HOME/.claude/settings.json")
+  for f in "${files[@]}"; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     if ! command -v jq >/dev/null 2>&1; then
       echo "backends.sh: jq is not installed — cannot read MEGAVIBE_BACKENDS from $f; allowing claude only" >&2
@@ -130,13 +137,12 @@ _bounded() {
 _codex_auth() {
   case "${MEGAVIBE_CODEX_AUTH:-}" in 0|1|2) return "$MEGAVIBE_CODEX_AUTH" ;; esac
   command -v "$CODEX_BIN" >/dev/null 2>&1 || return 1
-  # `codex login status` reports "Not logged in" (exit 1) for a Codex that works through CODEX_API_KEY,
-  # CODEX_ACCESS_TOKEN, OPENAI_API_KEY or a custom model_provider, so for those the answer is "unknown",
-  # which callers treat as usable. MEGAVIBE_CODEX_KEYED=1 carries "a key was set" across the tmux boundary
-  # without copying the secret.
-  local keyed=0 cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
-  if [ "${MEGAVIBE_CODEX_KEYED:-}" = 1 ] || [ -n "${CODEX_API_KEY:-}" ] || [ -n "${CODEX_ACCESS_TOKEN:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then keyed=1; fi
-  if [ "$keyed" = 0 ] && [ -f "$cfg" ] && grep -Eq '^[[:space:]]*model_provider[[:space:]]*=' "$cfg" 2>/dev/null; then keyed=1; fi
+  # `codex login status` reads "Not logged in" (exit 1) for a Codex that works through CODEX_API_KEY, so that
+  # variable alone makes the answer "unknown" (usable). Other credentials (OPENAI_API_KEY is often set for
+  # unrelated tools, a model_provider line is standard) do not show how Codex authenticates: a user who
+  # authenticates that way sets MEGAVIBE_CODEX_AUTH=2.
+  local keyed=0
+  [ -z "${CODEX_API_KEY:-}" ] || keyed=1
   # Not cached on purpose: a cached "logged in" outlived a logout (and a test run with a stub
   # codex wrote one into the real home), while the probe itself takes about 0.1 s.
   local rc=0

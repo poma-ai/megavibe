@@ -20,7 +20,7 @@ EOS
 chmod +x "$T/bin/codex" "$T/bin/tmux"
 export HOME="$T/home" CODEX_HOME="$T/home/.codex" PATH="$T/bin:$PATH"
 export CODEX_TEST_LOGGED_IN="$T/logged-in" TMUX_TEST_LOG="$T/tmux.log"
-unset MEGAVIBE_BACKENDS MEGAVIBE_REVIEWERS MEGAVIBE_CODEX_AUTH MEGAVIBE_CODEX_OK GEMINI_API_KEY MEGAVIBE_WATCHER
+unset CODEX_API_KEY CODEX_ACCESS_TOKEN OPENAI_API_KEY MEGAVIBE_CODEX_KEYED MEGAVIBE_BACKENDS MEGAVIBE_REVIEWERS MEGAVIBE_CODEX_AUTH MEGAVIBE_CODEX_OK GEMINI_API_KEY MEGAVIBE_WATCHER
 HOOK="$REPO/template/.claude/hooks/start-context-watcher.sh"
 INPUT=$(printf '{"session_id":"aaaaaaaaaaaabbbb","transcript_path":"%s"}' "$T/transcript.jsonl")
 eq() { [ "$1" = "$2" ] || { echo "FAIL $3: got '$1' want '$2'" >&2; exit 1; }; }
@@ -35,14 +35,12 @@ touch "$CODEX_TEST_LOGGED_IN"
 run_hook; eq "$(spawned)" yes "logged-in Codex: watcher starts"
 grep -q -- "-u MEGAVIBE_BACKENDS CLAUDE_PROJECT_DIR=" "$TMUX_TEST_LOG" || { echo "FAIL: unset pin not passed explicitly" >&2; cat "$TMUX_TEST_LOG" >&2; exit 1; }
 grep -q -- "-u MEGAVIBE_CODEX_AUTH" "$TMUX_TEST_LOG" || { echo "FAIL: unset codex-auth override not passed explicitly" >&2; exit 1; }
-if grep -q "MEGAVIBE_CODEX_KEYED" "$TMUX_TEST_LOG"; then echo "FAIL: keyed flag without a key" >&2; exit 1; fi
 MEGAVIBE_CODEX_AUTH=2 run_hook
 grep -q "MEGAVIBE_CODEX_AUTH=2" "$TMUX_TEST_LOG" || { echo "FAIL: MEGAVIBE_CODEX_AUTH override not forwarded to the watcher" >&2; cat "$TMUX_TEST_LOG" >&2; exit 1; }
-CODEX_API_KEY=secret-value run_hook
-grep -q "MEGAVIBE_CODEX_KEYED=1" "$TMUX_TEST_LOG" || { echo "FAIL: keyed flag not forwarded" >&2; exit 1; }
-if grep -q "secret-value" "$TMUX_TEST_LOG"; then echo "FAIL: the key itself reached the tmux command line" >&2; exit 1; fi
 rm -f "$CODEX_TEST_LOGGED_IN"
-CODEX_API_KEY=k run_hook; eq "$(spawned)" yes "logged-out login but a Codex API key: watcher starts"
+CODEX_API_KEY=secret-value run_hook; eq "$(spawned)" no "keyed-only Codex: the watcher would not have the key, so it is not started"
+MEGAVIBE_CODEX_AUTH=2 CODEX_API_KEY=secret-value run_hook; eq "$(spawned)" yes "explicit MEGAVIBE_CODEX_AUTH=2: watcher starts"
+if grep -q "secret-value" "$TMUX_TEST_LOG"; then echo "FAIL: the key itself reached the tmux command line" >&2; exit 1; fi
 touch "$CODEX_TEST_LOGGED_IN"
 
 export MEGAVIBE_BACKENDS="claude"
@@ -52,6 +50,10 @@ export MEGAVIBE_BACKENDS="claude gemini" GEMINI_API_KEY=k
 rm -f "$CODEX_TEST_LOGGED_IN"
 run_hook; eq "$(spawned)" yes "pin naming gemini, Codex logged out: watcher starts for Gemini"
 grep -q 'MEGAVIBE_BACKENDS=claude\\ gemini' "$TMUX_TEST_LOG" || { echo "FAIL: pin not quoted into the tmux command" >&2; cat "$TMUX_TEST_LOG" >&2; exit 1; }
+
+unset MEGAVIBE_BACKENDS
+rm -f "$CODEX_TEST_LOGGED_IN"
+MEGAVIBE_GEMINI_DIGEST=1 GEMINI_API_KEY=k run_hook; eq "$(spawned)" yes "review N5: logged-out Codex, Gemini opted in: watcher starts"
 
 export MEGAVIBE_BACKENDS='claude; touch '"$T"'/pwned'
 run_hook; [ ! -e "$T/pwned" ] || { echo "FAIL: pin text was executed" >&2; exit 1; }
