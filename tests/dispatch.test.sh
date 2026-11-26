@@ -119,6 +119,9 @@ check "tick: ended session without a PR becomes ended and says so ($o)" '[ "$(st
 o=$(D requeue 2); check "requeue: ended goes back to queued; a running one is refused" '[ "$(st 2 2)" = queued ] && ! D requeue 3 >/dev/null'
 D max 1 >/dev/null; o=$(D tick); check "max 1 with one running: nothing new starts ($o)" '[ "$(st 2 2)" = queued ] && [[ "$o" == *"1 running (max 1)"* ]]'
 D done 1 >/dev/null; D drop 2 >/dev/null; check "done/drop set states" '[ "$(st 1 2)" = done ] && [ "$(st 2 2)" = dropped ]'
+D max 5 >/dev/null; D total 2 >/dev/null; D add 40 >/dev/null; o=$(D tick); check "total 2 with issues 1, 2 and 3 started: a new issue does not start although slots are free ($o)" '[ "$(st 40 2)" = queued ] && [[ "$o" == *"total of 2"* ]]'
+check "total refuses 0 and text" '! D total 0 >/dev/null 2>&1 && ! D total x >/dev/null 2>&1'
+D total off >/dev/null; D drop 40 >/dev/null; D max 1 >/dev/null; check "total off clears it" '! grep -q "^total=[0-9]" "$Q/conf"'
 check "a dropped issue can be queued again" 'D add 2 | grep -q "queued" && [ "$(st 2 2)" = queued ]'
 check "the main checkout was never touched" '[ "$(git -C "$P" rev-parse --abbrev-ref HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain | grep -v "^??")" ]'
 

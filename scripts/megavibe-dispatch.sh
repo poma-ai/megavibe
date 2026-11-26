@@ -4,11 +4,13 @@
 # own tmux window of the session mvd-<queue>. Attach with `tmux attach -t mvd-<queue>`: the dispatcher is
 # window "dispatcher", every issue session is window "issue-N", and a session's own subagents live in it.
 #
-#   start [--max N] [--name Q] [--dir REPO] [--model M] [--skill S] [--base B]   open the dispatcher in tmux (run it in the repo);
+#   start [--max N] [--total N] [--name Q] [--dir REPO] [--model M] [--skill S] [--base B]   open the dispatcher in tmux (run it in the repo);
 #                            B (default: the repo's default branch) is the branch worktrees are cut from and PRs target;
 #                            S (default $MEGAVIBE_TICKET_SKILL) is the skill the issue sessions hand implementation to;
 #                            --no-precheck / --precheck turn the readiness check off / on (default on); --needs-label L (default needs-info) is the waiting label;
 #                            --allow-public lets it run on a PUBLIC repo (refused by default: see the README's trust boundary)
+#                            --total N (default: no limit) is the most issues this queue ever starts; after N, tick starts no more
+#   total N|off              change that limit (running sessions are untouched; resume and requeue of a started issue do not count again)
 #   add ISSUE... | --label NAME [--label NAME] [--limit N]   queue issues (number or URL of this repo, or the open
 #                            issues carrying every label, oldest first, at most N=30); writes each one's task file
 #                            Only UNASSIGNED issues are taken, and taking one assigns it to you (@me): the claim other
@@ -169,16 +171,17 @@ lock_live() {
 
 # ── start ─────────────────────────────────────────────────────────────
 cmd_start() {
-  local max="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me rv slug host
+  local max="" total="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me rv slug host
   while [ $# -gt 0 ]; do
     if [ "$1" = --no-precheck ]; then precheck=off; shift; continue; fi
     if [ "$1" = --precheck ]; then precheck=on; shift; continue; fi
     if [ "$1" = --allow-public ]; then allow_public=1; shift; continue; fi
     [ $# -ge 2 ] || die "start: $1 needs a value"
-    case "$1" in --max) max="$2" ;; --name) name="$2" ;; --dir) dir="$2" ;; --model) model="$2" ;; --skill) skill="$2" ;; --needs-label) nlabel="$2" ;; --base) base="$2" ;; *) die "start: unknown option $1" ;; esac
+    case "$1" in --max) max="$2" ;; --total) total="$2" ;; --name) name="$2" ;; --dir) dir="$2" ;; --model) model="$2" ;; --skill) skill="$2" ;; --needs-label) nlabel="$2" ;; --base) base="$2" ;; *) die "start: unknown option $1" ;; esac
     shift 2
   done
   [ -z "$max" ] || [[ $max =~ ^[1-9][0-9]*$ ]] || die "start: --max must be a positive number"
+  [ -z "$total" ] || [[ $total =~ ^[1-9][0-9]*$ ]] || die "start: --total must be a positive number"
   [ -z "$model" ] || [[ $model =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "start: unusable --model"
   [ -z "$skill" ] || [[ $skill =~ ^[A-Za-z0-9][A-Za-z0-9:._-]{0,80}$ ]] || die "start: unusable --skill name"
   [ -z "$nlabel" ] || [[ $nlabel =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$ ]] || die "start: unusable --needs-label (letters, digits, dot, dash, underscore)"
@@ -207,7 +210,7 @@ cmd_start() {
   me=$(cd "$repo" && gh api user --jq .login 2>/dev/null) || me=""
   [[ $me =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || die "gh could not say who you are (gh api user): dispatch claims an issue by assigning it to you"
   host=$(printf '%s' "$rv" | jq -r '.url // empty' | sed -n 's#^https\{0,1\}://\([^/]*\)/.*#\1#p')
-  conf_put me "$me"; conf_put slug "$slug"; [ -z "$host" ] || conf_put host "$host"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
+  conf_put me "$me"; conf_put slug "$slug"; [ -z "$host" ] || conf_put host "$host"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$total" ] || conf_put total "$total"; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
   live_windows
   if [ "$WINS_STATE" = ok ] && win_idle dispatcher >/dev/null; then
     say "dispatcher for $Q already runs: tmux attach -t mvd-$Q   (max is now $max; tell it, or run: megavibe dispatch max $max)"
@@ -554,9 +557,14 @@ cmd_tick() {
   unblock
   running=$(awk -F'\t' '$2 == "running" { c++ } END { print c + 0 }' "$D/queue.tsv")
   # fill: oldest queued first (a "go" has passed its check), while below the cap; a "queued" one is checked for readiness first
-  local tried=" " st pcrc pcn=0 pcdeferred=0
+  local tried=" " st pcrc pcn=0 pcdeferred=0 total started full
+  total=$(conf_get total); [[ $total =~ ^[1-9][0-9]*$ ]] || total=""
+  started=$(awk -F'\t' '$6 != "" { c++ } END { print c + 0 }' "$D/queue.tsv")
   while [ "$running" -lt "$max" ]; do
-    r=$(awk -F'\t' -v t="$tried" '($2 == "queued" || $2 == "go") && index(t, " " $1 " ") == 0 { print; exit }' "$D/queue.tsv"); [ -n "$r" ] || break
+    # once the total is reached only an issue this queue started before (requeued or unblocked) may start again: it is already counted
+    full=0; if [ -n "$total" ] && [ "$started" -ge "$total" ]; then full=1; fi
+    r=$(awk -F'\t' -v t="$tried" -v full="$full" '($2 == "queued" || $2 == "go") && index(t, " " $1 " ") == 0 && (full == 0 || $6 != "") { print; exit }' "$D/queue.tsv")
+    if [ -z "$r" ]; then [ "$full" = 0 ] || say "total of $total started issue(s) reached: no new issue is started (total N raises it)"; break; fi
     n=$(col "$r" 1); st=$(col "$r" 2); tried="$tried$n "
     pcrc=0; claim_ok "$n" || pcrc=$?; [ "$pcrc" = 0 ] || continue
     if [ "$st" = queued ] && [ "$(conf_get precheck)" != off ]; then
@@ -568,7 +576,7 @@ cmd_tick() {
     live_windows
     if [ "$WINS_STATE" = noserver ]; then die "tmux session mvd-$Q is gone; run 'megavibe dispatch start' to bring the dispatcher back"; fi
     # a start that fails (worktree in the way, tmux refusing) must not stop the others: it stays as it was and is reported
-    if (launch "$n"); then running=$((running + 1)); else say "issue $n: not started (see the message above)"; fi
+    if (launch "$n"); then running=$((running + 1)); if [ -z "$(col "$r" 6)" ]; then started=$((started + 1)); fi; else say "issue $n: not started (see the message above)"; fi
   done
   [ "$pcdeferred" = 0 ] || say "readiness check budget for this tick used: $pcdeferred queued issue(s) are checked on the next tick"
   say "tick: $running running (max $max), $(awk -F'\t' '$2 == "queued" || $2 == "go" { c++ } END { print c + 0 }' "$D/queue.tsv") queued, $(awk -F'\t' '$2 == "blocked" { c++ } END { print c + 0 }' "$D/queue.tsv") blocked, $(awk -F'\t' '$2 == "held" { c++ } END { print c + 0 }' "$D/queue.tsv") held"
@@ -578,7 +586,7 @@ cmd_tick() {
 cmd_status() {
   local r n st idle
   need_queue; live_windows
-  say "queue $Q  repo $(conf_get repo)  max $(conf_get max)  tmux mvd-$Q$([ "$WINS_STATE" = ok ] || printf ' (%s)' "$WINS_STATE")"
+  say "queue $Q  repo $(conf_get repo)  max $(conf_get max)  total $(conf_get total | grep . || echo off)  tmux mvd-$Q$([ "$WINS_STATE" = ok ] || printf ' (%s)' "$WINS_STATE")"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     n=$(col "$r" 1); st=$(col "$r" 2); idle=""
@@ -613,6 +621,7 @@ cmd_resume() {
   set_cols "$n" 2 running 6 "$(date '+%F %T')"
   say "resumed issue $n (conversation $sid) in window $wid; if that window closes at once the conversation is gone: requeue $n starts over"
 }
+cmd_total() { { [ "${1:-}" = off ] || [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; } || die "total: a positive number, or off"; need_queue; lock; if [ "$1" = off ]; then conf_put total ""; else conf_put total "$1"; fi; say "total is $1 (counted over every issue this queue ever started; running sessions are not stopped)"; }
 cmd_max() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || die "max: a positive number"; need_queue; lock; conf_put max "$1"; say "max is $1 (running sessions are not stopped; the next tick uses it)"; }
 cmd_mark() {   # cmd_mark done|dropped|queued N
   local n; n=$(issue_of "${2:-}") || die "'${2:-}' is not an issue number"; need_queue; lock
@@ -647,9 +656,10 @@ case "$cmd" in
   peek) pick_queue; cmd_peek "$@" ;;
   resume) pick_queue; cmd_resume "$@" ;;
   max) pick_queue; cmd_max "$@" ;;
+  total) pick_queue; cmd_total "$@" ;;
   done) pick_queue; cmd_mark done "$@" ;;
   block) pick_queue; cmd_mark blocked "$@" ;;
   drop) pick_queue; cmd_mark dropped "$@" ;;
   requeue) pick_queue; cmd_mark queued "$@" ;;
-  *) die "unknown command '$cmd' (start add tick status peek resume max done block drop requeue)" ;;
+  *) die "unknown command '$cmd' (start add tick status peek resume max total done block drop requeue)" ;;
 esac
