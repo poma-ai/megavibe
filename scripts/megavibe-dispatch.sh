@@ -42,7 +42,7 @@ MH="${MEGAVIBE_HOME:-$HOME/.megavibe}"
 die() { printf 'megavibe dispatch: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 need() { type -P "$1" >/dev/null 2>&1 || die "$1 is required"; }
-NAME_RE='^[a-z0-9][a-z0-9._-]{0,40}$'
+NAME_RE='^[a-z0-9][a-z0-9_-]{0,40}$'
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 TAB=$'\t'
 
@@ -64,8 +64,8 @@ Q=""; D=""
 PQ_DIR="."
 pick_queue() {   # pick_queue [NAME]: sets Q and D; with no name, from env or the repo ($PQ_DIR: the current one, or start's --dir)
   local n="${1:-${MEGAVIBE_DISPATCH_QUEUE:-}}"
-  if [ -z "$n" ]; then n=$(basename "$(repo_root "$PQ_DIR")" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._\n-' '-'); fi
-  [[ $n =~ $NAME_RE ]] || die "queue name '$n' is not usable (lower case letters, digits, dot, dash, underscore)"
+  if [ -z "$n" ]; then n=$(basename "$(repo_root "$PQ_DIR")" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n-' '-'); fi
+  [[ $n =~ $NAME_RE ]] || die "queue name '$n' is not usable (lower case letters, digits, dash, underscore: a dot would be read by tmux as a pane)"
   Q="$n"; D="$MH/dispatch/$Q"; TMUX_SOCK=$(conf_get socket)
 }
 conf_get() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$D/conf" 2>/dev/null || true; }
@@ -107,12 +107,13 @@ clean1() { printf '%s' "$1" | MAXC="${2:-100}" perl -CSD -e 'local $/; my $t = <
 # issue_of REF: prints the issue number of a number, "#N", or an issue URL of this repository. Returns 1 for anything else and 2 for
 # an issue URL of ANOTHER repository (queued, claimed and worked here it would be a different issue with the same number).
 issue_of() {
-  local v="$1" want slug
-  if [[ $v =~ ^https?://[^/]+/([^/]+/[^/]+)/issues/([0-9]+)([/?#].*)?$ ]]; then
-    slug="${BASH_REMATCH[1]}"; want=$(conf_get slug)
+  local v="$1" want slug host wanthost
+  if [[ $v =~ ^https?://([^/]+)/([^/]+/[^/]+)/issues/([0-9]+)([/?#].*)?$ ]]; then
+    host="${BASH_REMATCH[1]}"; slug="${BASH_REMATCH[2]}"; want=$(conf_get slug); wanthost=$(conf_get host)
     if [ -n "$want" ] && [ "$(printf '%s' "$slug" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; then return 2; fi
-    printf '%s' "${BASH_REMATCH[2]}"
-  elif [[ $v =~ ^#?([0-9]+)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"
+    if [ -n "$wanthost" ] && [ "$(printf '%s' "$host" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$wanthost" | tr 'A-Z' 'a-z')" ]; then return 2; fi
+    printf '%s' "$((10#${BASH_REMATCH[3]}))"
+  elif [[ $v =~ ^#?([0-9]+)$ ]]; then printf '%s' "$((10#${BASH_REMATCH[1]}))"
   else return 1; fi
 }
 
@@ -144,9 +145,31 @@ open_win() {
   printf '%s' "$wid"; stamp "$wid" "$key" || return 2
 }
 
+# lock_live REPO: a megavibe session holds REPO's checkout. The lock is where the launcher keeps it (set_lock_dir in megavibe: the
+# working tree's own git dir when .agent is a link, else .agent/.session-lock.d) and is judged by the launcher's rule: the pid is
+# alive AND is a claude or node process, or a shell with a claude child. Sets LOCK_PID.
+LOCK_PID=""
+lock_live() {
+  local repo="$1" dir meta pid name
+  dir="$repo/.agent/.session-lock.d"
+  if [ -L "$repo/.agent" ]; then dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)/megavibe-session-lock.d"; fi
+  meta="$dir/metadata.json"; [ -f "$meta" ] || return 1
+  pid=$(jq -r '.pid // empty' "$meta" 2>/dev/null) || return 1
+  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  name=$(ps -p "$pid" -o comm= 2>/dev/null) || return 0   # cannot tell: treated as live, as the launcher does
+  [ -n "$name" ] || return 0
+  case "$name" in
+    *claude*|*node*) LOCK_PID="$pid"; return 0 ;;
+    *bash*|*zsh*) if command -v pgrep >/dev/null 2>&1 && pgrep -P "$pid" -f claude >/dev/null 2>&1; then LOCK_PID="$pid"; return 0; fi
+                  command -v pgrep >/dev/null 2>&1 || { LOCK_PID="$pid"; return 0; }; return 1 ;;
+  esac
+  return 1
+}
+
 # ── start ─────────────────────────────────────────────────────────────
 cmd_start() {
-  local max="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me rv slug
+  local max="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 base="" repo prompt vis old wid orc me rv slug host
   while [ $# -gt 0 ]; do
     if [ "$1" = --no-precheck ]; then precheck=off; shift; continue; fi
     if [ "$1" = --precheck ]; then precheck=on; shift; continue; fi
@@ -160,10 +183,10 @@ cmd_start() {
   [ -z "$skill" ] || [[ $skill =~ ^[A-Za-z0-9][A-Za-z0-9:._-]{0,80}$ ]] || die "start: unusable --skill name"
   [ -z "$nlabel" ] || [[ $nlabel =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$ ]] || die "start: unusable --needs-label (letters, digits, dot, dash, underscore)"
   [ -z "$base" ] || { [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$ ]] && [[ $base != *..* ]]; } || die "start: unusable --base"
-  need tmux; need gh; need git; need perl
+  need tmux; need gh; need git; need perl; need jq
   repo=$(repo_root "$dir")
   [ -d "$repo/.agent" ] || die "no .agent/ in $repo: run 'megavibe' there once first"
-  rv=$(cd "$repo" && gh repo view --json nameWithOwner,visibility,defaultBranchRef 2>/dev/null) || die "gh cannot see a GitHub repository for $repo (gh auth status; is there an origin remote?)"
+  rv=$(cd "$repo" && gh repo view --json nameWithOwner,url,visibility,defaultBranchRef 2>/dev/null) || die "gh cannot see a GitHub repository for $repo (gh auth status; is there an origin remote?)"
   slug=$(printf '%s' "$rv" | jq -r '.nameWithOwner // empty'); vis=$(printf '%s' "$rv" | jq -r '.visibility // empty')
   [[ $slug =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "gh did not say which repository $repo is"
   # Anyone can write the issues and comments these sessions read, and the sessions run with permissions bypassed and
@@ -183,7 +206,8 @@ cmd_start() {
   [ -z "$old" ] || [ "$old" = "$repo" ] || die "queue $Q already belongs to $old (queues are named after the repo folder): give this repo its own with --name"
   me=$(cd "$repo" && gh api user --jq .login 2>/dev/null) || me=""
   [[ $me =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || die "gh could not say who you are (gh api user): dispatch claims an issue by assigning it to you"
-  conf_put me "$me"; conf_put slug "$slug"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
+  host=$(printf '%s' "$rv" | jq -r '.url // empty' | sed -n 's#^https\{0,1\}://\([^/]*\)/.*#\1#p')
+  conf_put me "$me"; conf_put slug "$slug"; [ -z "$host" ] || conf_put host "$host"; conf_put repo "$repo"; conf_put base "$base"; if [ -n "$max" ]; then conf_put max "$max"; elif [ -z "$(conf_get max)" ]; then max=3; conf_put max 3; else max=$(conf_get max); fi; [ -z "$model" ] || conf_put model "$model"; [ -z "$skill" ] || conf_put skill "$skill"; [ -z "$precheck" ] || conf_put precheck "$precheck"; [ -z "$nlabel" ] || conf_put label "$nlabel"
   live_windows
   if [ "$WINS_STATE" = ok ] && win_idle dispatcher >/dev/null; then
     say "dispatcher for $Q already runs: tmux attach -t mvd-$Q   (max is now $max; tell it, or run: megavibe dispatch max $max)"
@@ -191,10 +215,8 @@ cmd_start() {
   fi
   [ "$WINS_STATE" != unknown ] || die "cannot tell whether tmux session mvd-$Q exists; nothing started"
   prompt="You are the megavibe dispatcher for queue $Q (repo $repo; the environment variable MEGAVIBE_DISPATCH_QUEUE=$Q selects it for every megavibe dispatch command). Read $MH/template/dispatch/ROLE.md and follow it. Queue state is in $D."
-  local lockpid
-  lockpid=$(jq -r '.pid // empty' "$repo/.agent/.session-lock.d/metadata.json" 2>/dev/null) || lockpid=""
-  if [[ $lockpid =~ ^[0-9]+$ ]] && kill -0 "$lockpid" 2>/dev/null; then
-    die "a megavibe session is active in $repo (pid $lockpid): a dispatcher started there would wait at the launcher's branch-name prompt, which nobody can answer. Start it from a terminal in a checkout where no session runs, or end that session first"
+  if lock_live "$repo"; then
+    die "a megavibe session is active in $repo (pid $LOCK_PID): a dispatcher started there would wait at the launcher's branch-name prompt, which nobody can answer. Start it from a terminal in a checkout where no session runs, or end that session first"
   fi
   local parent; parent=$(parent_id); orc=0
   wid=$(open_win dispatcher dispatcher "$repo" env MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" MEGAVIBE_PARENT_SESSION="$parent" \
@@ -257,9 +279,16 @@ cmd_add() {
   lock; local repo me asg a; repo=$(conf_get repo); me=$(conf_get me)
   if [ "${#labels[@]}" -gt 0 ]; then   # every --label must match (gh's AND); open issues only, oldest first; a PR is not an issue here
     # gh lists newest first: take (up to 500) unassigned ones and cut to the oldest N here, never in gh, or the oldest would be the ones lost
-    found=$(cd "$repo" && gh issue list "${labels[@]}" --state open --search "no:assignee" --limit 500 --json number --jq '.[].number') \
+    found=$(cd "$repo" && gh issue list "${labels[@]}" --state open --search "no:assignee sort:created-asc" --limit 500 --json number --jq '.[].number') \
       || die "add: gh could not list issues for the label(s)"
     found=$(printf '%s\n' "$found" | grep -E '^[0-9]+$' | sort -n || true)
+    local kept="" r0
+    while IFS= read -r n; do   # dropped on purpose (or taken by someone): a label sweep does not bring it back
+      [ -n "$n" ] || continue; r0=$(row "$n")
+      [ -n "$r0" ] && [ "$(col "$r0" 2)" = dropped ] && continue
+      kept="$kept$n"$'\n'
+    done <<<"$found"
+    found="$kept"
     total=$(printf '%s\n' "$found" | grep -c . || true)
     say "label $lnames: $total open unassigned issue(s)$([ "$total" -le "$limit" ] || printf ' (taking the oldest %s: --limit)' "$limit")"
     found=$(printf '%s\n' "$found" | head -n "$limit")
@@ -340,7 +369,9 @@ launch() {   # launch N: worktree, window, record. Returns 1, having said why, w
   # the issue as it is NOW: closed since it was queued (a duplicate, fixed meanwhile) means nothing to do; an edited body or title is
   # what the session must work from, not the snapshot taken when it was queued
   cur=$(cd "$(conf_get repo)" && gh issue view "$n" --json title,body,url,state 2>/dev/null) || { say "issue $n: could not re-read it from GitHub; not started"; return 1; }
-  if [ "$(printf '%s' "$cur" | jq -r '.state')" != OPEN ]; then set_cols "$n" 2 dropped; say "issue $n: closed since it was queued: dropped, no session"; return 1; fi
+  if [ "$(printf '%s' "$cur" | jq -r '.state')" != OPEN ]; then set_cols "$n" 2 dropped; say "issue $n: closed since it was queued: dropped, no session"
+    (cd "$(conf_get repo)" && gh issue edit "$n" --remove-assignee "@me" >/dev/null 2>&1) || true   # the claim goes back with it
+    return 1; fi
   write_task "$n" "$cur" || { say "issue $n: could not write its task file; not started"; return 1; }
   make_worktree "$n" || return 1
   wt="$WT"; [ -d "$wt" ] || { say "issue $n: no worktree; not started"; return 1; }
@@ -373,7 +404,7 @@ pc_login() {   # the check may run: claude is there and logged in with a subscri
     if [ -n "${!v+x}" ]; then PC_ENV+=("$v=${!v}"); fi
   done
   command -v claude >/dev/null 2>&1 || { echo "claude not found" > "$why"; return 1; }
-  st=$("${PC_ENV[@]}" bash -c 'exec 2>/dev/null; claude auth status' 2>/dev/null </dev/null | jq -r '.authMethod // empty' 2>/dev/null) || st=""
+  st=$("${PC_ENV[@]}" bash -c 'exec 2>/dev/null; claude auth status' 2>/dev/null </dev/null 9>&- | jq -r '.authMethod // empty' 2>/dev/null) || st=""
   [ "$st" = claude.ai ] || { echo "not a claude.ai subscription login (a saved API key would bill)" > "$why"; return 1; }
 }
 # pc_one PROMPTFILE K: one voter. Its answer text (the model's reply, newlines flattened, first { to last }) goes to $D/.pc.ans.K,
@@ -382,7 +413,7 @@ pc_one() {
   local out="$D/.pc.out.$2" ans="$D/.pc.ans.$2"; : > "$ans"; mkdir -p "$D/pc.cwd"
   # from an empty folder of its own, as amass.sh does: not from the repo, so nothing in the repo is a candidate for loading
   ( cd "$D/pc.cwd" && bounded 120 "${PC_ENV[@]}" claude -p --model "${MEGAVIBE_DISPATCH_PRECHECK_MODEL:-haiku}" --output-format json --tools "" \
-    --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" < "$1" > "$out" 2>/dev/null ) || return 0
+    --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" < "$1" > "$out" 2>/dev/null 9>&- ) || return 0
   jq -r 'select(type == "object" and .is_error == false and (.result | type) == "string") | .result' "$out" 2>/dev/null \
     | tr '\n' ' ' | sed -e 's/^[^{]*//' -e 's/[^}]*$//' > "$ans" || true
 }
@@ -401,8 +432,9 @@ EOF
 # 2 = could not post the comment (left queued, tried again next tick)
 precheck() {
   local n="$1" j l author bot txt qs body rc=0 url pf="$D/.pc.prompt" k a votes valid flagged asked
-  l=$(nlabel); j=$(cd "$(conf_get repo)" && gh issue view "$n" --json number,title,body,url,labels,author,comments 2>/dev/null) \
+  l=$(nlabel); j=$(cd "$(conf_get repo)" && gh issue view "$n" --json number,title,body,url,state,labels,author,comments 2>/dev/null) \
     || { say "issue $n: precheck skipped (gh could not read it)"; return 0; }
+  [ "$(printf '%s' "$j" | jq -r '.state // "OPEN"')" = OPEN ] || return 0   # closed since it was queued: nothing is written to it; launch drops it
   if printf '%s' "$j" | jq -e --arg l "$l" '[.labels[]?.name] | index($l)' >/dev/null 2>&1; then
     set_cols "$n" 2 blocked; say "issue $n: already carries '$l': blocked until the label is removed"; return 1
   fi
@@ -534,7 +566,7 @@ cmd_tick() {
     live_windows
     if [ "$WINS_STATE" = noserver ]; then die "tmux session mvd-$Q is gone; run 'megavibe dispatch start' to bring the dispatcher back"; fi
     # a start that fails (worktree in the way, tmux refusing) must not stop the others: it stays as it was and is reported
-    if (launch "$n"); then running=$((running + 1)); else say "issue $n: could not be started (see the message above); it keeps its state"; fi
+    if (launch "$n"); then running=$((running + 1)); else say "issue $n: not started (see the message above)"; fi
   done
   [ "$pcdeferred" = 0 ] || say "readiness check budget for this tick used: $pcdeferred queued issue(s) are checked on the next tick"
   say "tick: $running running (max $max), $(awk -F'\t' '$2 == "queued" || $2 == "go" { c++ } END { print c + 0 }' "$D/queue.tsv") queued, $(awk -F'\t' '$2 == "blocked" { c++ } END { print c + 0 }' "$D/queue.tsv") blocked, $(awk -F'\t' '$2 == "held" { c++ } END { print c + 0 }' "$D/queue.tsv") held"

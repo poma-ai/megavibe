@@ -21,7 +21,7 @@ jqx=""; a=("$@"); for ((i = 0; i < ${#a[@]}; i++)); do [ "${a[i]}" != --jq ] || 
 emit() { if [ -n "$jqx" ]; then jq -r "$jqx"; else cat; fi; }
 case "$1 $2" in
   "api user") jq -n -c '{login: "tester"}' | emit ;;
-  "repo view") jq -n -c --arg v "$(cat "$T/visibility" 2>/dev/null || echo PRIVATE)" '{nameWithOwner: "o/r", visibility: $v, defaultBranchRef: {name: "main"}}' | emit ;;
+  "repo view") jq -n -c --arg v "$(cat "$T/visibility" 2>/dev/null || echo PRIVATE)" '{nameWithOwner: "o/r", url: "https://github.com/o/r", visibility: $v, defaultBranchRef: {name: "main"}}' | emit ;;
   "issue view") n=$3; [ "$n" != 99 ] || { echo "no such issue" >&2; exit 1; }
     st=OPEN; [ "$n" != 98 ] || st=CLOSED; [ ! -f "$CLOSED" ] || ! grep -qx "$n" "$CLOSED" || st=CLOSED
     t="Fix thing $n"; case "$n" in 21|22|35|36|79|80) t="VAGUE $n" ;; esac; [ ! -f "$T/title.$n" ] || t=$(cat "$T/title.$n")
@@ -123,7 +123,7 @@ check "a dropped issue can be queued again" 'D add 2 | grep -q "queued" && [ "$(
 check "the main checkout was never touched" '[ "$(git -C "$P" rev-parse --abbrev-ref HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain | grep -v "^??")" ]'
 
 o=$(D add --label ready --label p1 --limit 5)
-check "add --label: gh asked for open issues with both labels and the limit ($(cat "$LISTCALLS"))" 'grep -q -- "--label ready --label p1 --state open --search no:assignee --limit 500" "$LISTCALLS"'
+check "add --label: gh asked for open issues with both labels and the limit ($(cat "$LISTCALLS"))" 'grep -q -- "--label ready --label p1 --state open --search no:assignee sort:created-asc --limit 500" "$LISTCALLS"'
 check "add --label: new ones queued, the one already known skipped ($o)" '[ "$(st 7 2)" = queued ] && [ "$(st 9 2)" = queued ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"3 open unassigned issue(s)"* ]]'
 o=$(D add --label nothing); check "add --label with no match is fine ($o)" '[[ "$o" == *"0 open unassigned issue(s)"* ]]'
 check "add with nothing to add or a bad option refuses" '! D add >/dev/null && ! D add --bogus >/dev/null && ! D add --limit x 1 >/dev/null'
@@ -352,7 +352,7 @@ check "R-F1 an issue closed since it was queued is dropped, no session ($o)" '[ 
 printf 'OLDTEXT' > "$T/body.131"; D add 131 >/dev/null; printf 'NEWTEXT edited later' > "$T/body.131"; D tick >/dev/null
 check "R-F2 the task file is rewritten from the issue as it is when the session starts" 'grep -q "NEWTEXT edited later" "$Q/tasks/issue-131.md" && ! grep -q OLDTEXT "$Q/tasks/issue-131.md"'
 # F3 no dispatcher where a megavibe session already holds the checkout
-sleep 60 & LP=$!; mkdir -p "$P/.agent/.session-lock.d"; printf '{"pid":%s}\n' "$LP" > "$P/.agent/.session-lock.d/metadata.json"
+ln -sf "$(command -v sleep)" "$B/claude-locktest"; "$B/claude-locktest" 60 & LP=$!; mkdir -p "$P/.agent/.session-lock.d"; printf '{"pid":%s}\n' "$LP" > "$P/.agent/.session-lock.d/metadata.json"
 o=$(D start --name qlock 2>&1); RC=$?
 check "R-F3 start refuses while a live megavibe session holds the checkout ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"would wait at the launcher"* ]] && ! tmux has-session -t =mvd-qlock 2>/dev/null'
 kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null; o=$(D start --name qlock 2>&1)
@@ -376,5 +376,38 @@ o=$( cd "$T" && D start --dir "$O2" --name dirq 2>&1 ); check "R-dir start --dir
 # drop of an issue whose window is still open says so
 D add 132 >/dev/null; D tick >/dev/null; o=$(D drop 132)
 check "R-drop dropping an issue with an open window says the window stays ($o)" '[[ "$o" == *"its window is still open"* ]]'
+
+
+# ── second re-review: F1-F3 and the cheap ones ────────────────────────
+D max 200 >/dev/null; D start --precheck >/dev/null
+# R2-F1 a dot in the repo folder name must not break the queue (tmux reads "=mvd-a.b" as session a, pane b)
+mkdir -p "$T/dots"; git init -q -b main "$T/dots/next.js"; ( cd "$T/dots/next.js" && git config user.email t@t && git config user.name t && echo c > c && git add c && git commit -qm i && git remote add origin "$T/origin.git" && mkdir -p .agent )
+o=$( cd "$T/dots/next.js" && D start 2>&1 ); RC=$?
+check "R2-F1 a repo folder with a dot gets a queue name without it and starts ($o)" '[ "$RC" = 0 ] && [ -f "$MEGAVIBE_HOME/dispatch/next-js/conf" ] && tmux list-windows -t =mvd-next-js -F "#{@mvd_key}" | grep -qx dispatcher'
+# R2-F2 a repeated add --label does not bring back what was dropped; an explicit add N does
+: > "$T/list.calls"; D add --label ready >/dev/null; D drop 7 >/dev/null; o=$(D add --label ready 2>&1)
+check "R2-F2 a label sweep leaves a dropped issue dropped ($o)" '[ "$(st 7 2)" = dropped ]'
+D add 7 >/dev/null; check "R2-F2 an explicit add of that issue queues it again" '[ "$(st 7 2)" = queued ]'
+# R2-F3 a queued issue that was closed gets no readiness comment, no label, no vote
+grep -vx "35 needs-info" "$LABELS" > "$LABELS.n"; mv "$LABELS.n" "$LABELS"; rm -f "$T/comment.35"; D drop 35 >/dev/null; : > "$T/assignees.35"; rm -f "$T/comment.35"; D add 35 >/dev/null; echo 35 >> "$CLOSED"; rm -f "$HOME/claude.n"
+o=$(MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK=50 D tick); : > "$CLOSED"
+check "R2-F3 a vague issue closed before its turn: no comment, no label, dropped ($o)" '[ ! -f "$T/comment.35" ] && ! grep -qx "35 needs-info" "$LABELS" && [ "$(st 35 2)" = dropped ]'
+# voters hold no queue lock after the command ends (a child left behind by claude -p)
+sed -i.bak 's/^\[ "\$m" != broken \] .*/&\n[ "$m" != leak ] || { sleep 20 \& }/' "$B/claude" && rm -f "$B/claude.bak"
+echo leak > "$HOME/claude.mode"; D add 133 >/dev/null; MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK=50 D tick >/dev/null
+check "R2 a process a voter leaves behind does not keep the queue lock" '[ -z "$(lsof -t "$Q/.lock" 2>/dev/null)" ]'
+echo ok > "$HOME/claude.mode"
+# the live-session check follows the launcher: a live pid that is not claude/node/a shell is stale; the lock of a worktree lives in its git dir
+sleep 60 & SL=$!; mkdir -p "$P/.agent/.session-lock.d"; printf '{"pid":%s}\n' "$SL" > "$P/.agent/.session-lock.d/metadata.json"
+o=$(D start --name qstale 2>&1); check "R2 a live pid that is not a claude/node process is a stale lock and does not block start ($o)" 'tmux list-windows -t =mvd-qstale -F "#{@mvd_key}" | grep -qx dispatcher'
+kill "$SL" 2>/dev/null; wait "$SL" 2>/dev/null; /bin/rm -rf "$P/.agent/.session-lock.d"
+git -C "$P" worktree add -q --no-track -b wtlock "$T/wtlock" origin/main; ln -s "$P/.agent" "$T/wtlock/.agent"; GDW=$(git -C "$T/wtlock" rev-parse --absolute-git-dir)
+"$B/claude-locktest" 60 & LW=$!; mkdir -p "$GDW/megavibe-session-lock.d"; printf '{"pid":%s}\n' "$LW" > "$GDW/megavibe-session-lock.d/metadata.json"
+o=$(D start --dir "$T/wtlock" --name qwt 2>&1); RC=$?
+check "R2 a live session in a linked worktree (lock in its git dir) blocks start there ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"would wait at the launcher"* ]]'
+kill "$LW" 2>/dev/null; wait "$LW" 2>/dev/null
+# issue_of: the URL's host must be this repository's, leading zeros are not part of the number
+o=$(D add https://evil.example.com/o/r/issues/55 2>&1); check "R2 an issue URL on another host is refused ($o)" '[ -z "$(st 55 2)" ] && [[ "$o" == *"another repository"* ]]'
+o=$(D add 0059); check "R2 leading zeros are not kept in the issue number ($o)" '[ "$(st 59 2)" = queued ] && [ -z "$(awk -F"\t" "\$1 ~ /^0/" "$Q/queue.tsv")" ]'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]
