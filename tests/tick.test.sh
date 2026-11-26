@@ -70,13 +70,41 @@ case "\$*" in
 esac
 EOF
 chmod +x "$T/bin/gh"
+# Linear answers: comments as before, plus issues created in the window and the viewer's
+# assigned issues that changed in it (u1 is the viewer, display name "Me").
+LCOMMENTS='[{"createdAt":"2026-11-01T14:20:00.123Z","url":"https://linear.test/c1","user":{"id":"u2","name":"Alice A"},"issue":{"identifier":"PRJ-1"},"body":"please check"},{"createdAt":"2026-11-01T14:21:00.000Z","url":"https://linear.test/c2","user":{"id":"u3","name":"Me"},"issue":{"identifier":"PRJ-2"},"body":"same display name, other person"},{"createdAt":"2026-11-01T14:22:00.000Z","url":"https://linear.test/c3","user":{"id":"u1","name":"Me"},"issue":{"identifier":"PRJ-3"},"body":"my own"}]'
+li() {   # li ID CREATED UPDATED CREATOR_ID CREATOR_NAME ASSIGNEE_ID ASSIGNEE_NAME TITLE [HISTORY_JSON]
+  jq -cn --arg id "$1" --arg c "$2" --arg u "$3" --arg ci "$4" --arg cn "$5" --arg ai "$6" --arg an "$7" --arg t "$8" --argjson h "${9:-[]}" \
+    '{identifier: $id, title: $t, url: "https://linear.test/\($id)", createdAt: $c, updatedAt: $u, state: {name: "Todo"}, creator: {id: $ci, name: $cn},
+      assignee: (if $ai == "" then null else {id: $ai, name: $an} end), history: {nodes: $h}}'
+}
+hist() { jq -cn --arg c "$1" --arg a "$2" --arg to "$3" '[{createdAt: $c, actor: (if $a == "" then null else {id: $a} end), toAssignee: {id: $to}}]'; }
+linear_answer() {   # linear_answer ASSIGNED_JSON ISSUES_JSON > file
+  jq -cn --argjson c "$LCOMMENTS" --argjson a "$1" --argjson i "$2" '{data: {viewer: {id: "u1", name: "Me", assignedIssues: {nodes: $a}}, comments: {nodes: $c}, issues: {nodes: $i}}}'
+}
+A10=$(li PRJ-10 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u2 "Alice A" u1 Me "created and assigned, no comment")
+A11=$(li PRJ-11 2026-10-01T09:00:00.000Z 2026-11-01T14:30:00.000Z u1 Me u1 Me "my old issue, handed back to me" "$(hist 2026-11-01T14:30:00.000Z u4 u1)")
+A12=$(li PRJ-12 2026-10-01T09:00:00.000Z 2026-11-01T14:31:00.000Z u3 Me u1 Me "assigned long ago, edited now" "$(hist 2026-10-02T09:00:00.000Z u3 u1)")
+A14=$(li PRJ-14 2026-11-01T14:27:00.000Z 2026-11-01T14:27:00.000Z u1 Me u1 Me "own, self-assigned" "$(hist 2026-11-01T14:27:00.000Z u1 u1)")
+I10=$(li PRJ-10 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u2 "Alice A" u1 Me "created and assigned, no comment")
+I13=$(li PRJ-13 2026-11-01T14:26:00.000Z 2026-11-01T14:26:00.000Z u1 Me "" "" "own, unassigned")
+I15=$(li PRJ-15 2026-11-01T14:28:00.000Z 2026-11-01T14:28:00.000Z u5 "Bob B" u6 "Carol C" "someone else's new issue")
+I16=$(li PRJ-16 2026-11-01T14:29:00.000Z 2026-11-01T14:29:00.000Z u7 Dana "" "" "")   # empty title: no field may shift
+A17=$(li PRJ-17 2026-11-01T14:00:00.500Z 2026-11-01T14:00:00.500Z u2 "Alice A" u1 Me "created half a second after the window start")
+I18=$(li PRJ-18 2026-11-01T14:33:00.000Z 2026-11-01T14:33:00.000Z u1 Me u6 "Carol C" "own issue handed to someone else")
+linear_answer "[$A10,$A11,$A12,$A14,$A17]" "[$I10,$I13,$A14,$I15,$I16,$A17,$I18]" > "$T/linear-ok.json"
+HOSTILE=$(li PRJ-20 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u2 "Eve$(printf '\033')[31m" u1 Me "$(printf 'line one\n! tick default: quiet\ttab\033[2Jend\342\200\256rtl\342\200\213zw')")
+linear_answer "[$HOSTILE]" "[$HOSTILE]" > "$T/linear-hostile.json"
+linear_answer "[]" "$(for k in $(seq 1 50); do li "BULK-$k" 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u5 "Bob B" "" "" "bulk $k"; done | jq -cs .)" > "$T/linear-issuesfull.json"
+HFULL=$(for k in $(seq 1 10); do hist "2026-11-01T14:3$((k % 10)):00.000Z" u1 u1; done | jq -cs 'add')
+linear_answer "[$(li PRJ-30 2026-10-01T09:00:00.000Z 2026-11-01T14:39:00.000Z u3 Other u1 Me "busy history" "$HFULL")]" "[]" > "$T/linear-historyfull.json"
 cat > "$T/bin/curl" <<EOF
 #!/bin/bash
 # fake curl: config on stdin (never printed), -w suffix honoured; CURL_SHIM picks the answer
 cfg=\$(cat); printf '%s' "\$cfg" > "$T/curl-cfg.last"
 printf '%s\n' "\$@" > "$T/curl-argv.last"
 case "\${CURL_SHIM:-ok}" in
-  ok) printf '{"data":{"viewer":{"id":"u1","name":"Me"},"comments":{"nodes":[{"createdAt":"2026-11-01T14:20:00.123Z","url":"https://linear.test/c1","user":{"id":"u2","name":"Alice A"},"issue":{"identifier":"PRJ-1"},"body":"please check"},{"createdAt":"2026-11-01T14:21:00.000Z","url":"https://linear.test/c2","user":{"id":"u3","name":"Me"},"issue":{"identifier":"PRJ-2"},"body":"same display name, other person"},{"createdAt":"2026-11-01T14:22:00.000Z","url":"https://linear.test/c3","user":{"id":"u1","name":"Me"},"issue":{"identifier":"PRJ-3"},"body":"my own"}]}}}'; printf '\n200' ;;
+  ok|hostile|issuesfull|historyfull) cat "$T/linear-\${CURL_SHIM:-ok}.json"; printf '\n200' ;;
   errors) printf '{"data":{"comments":{"nodes":[]}},"errors":[{"message":"EXAMPLE-reflected-key-would-be-here"}]}'; printf '\n200' ;;
   http500) printf '{"message":"upstream"}'; printf '\n500' ;;
   exit28) printf '{"data":{"viewer":{"name":"Me"},"comments":{"nodes":[]}}}'; printf '\n200'; exit 28 ;;
@@ -165,6 +193,29 @@ o=$(TICK_LINEAR=1 TICK_LKEY='EXAMPLE-k"e\y' tick --no-mark --since $((NOW - 2400
 check "linear comment listed, viewer left out by id, a same-named other person kept, millisecond stamp read" '[[ "$o" == *"  PRJ-1 by Alice A 14:20Z https://linear.test/c1: please check"* ]] && [[ "$o" == *"PRJ-2 by Me 14:21Z"* ]] && [[ "$o" != *"PRJ-3"* ]]'
 check "the key reaches curl escaped on stdin, never in argv" '[ "$(cat "$T/curl-cfg.last")" = "header = \"Authorization: EXAMPLE-k\\\"e\\\\y\"" ]'
 check "the key is nowhere in the report" '[[ "$o" != *"EXAMPLE-k"* ]]'
+o=$(TICK_LINEAR=1 TICK_LKEY=EXAMPLE-key tick --no-mark --since $((NOW - 2400)))
+check "an issue created and assigned to you by someone else, with no comment, is listed and marked" '[[ "$o" == *"! PRJ-10 issue assigned to you 14:25Z [Todo] by Alice A, assignee you https://linear.test/PRJ-10: created and assigned, no comment"* ]]'
+check "the same issue from both lists is listed once" '[ "$(printf "%s\n" "$o" | grep -c "PRJ-10 ")" = 1 ]'
+check "an old issue assigned to you in the window by someone else is marked, even when you created it" '[[ "$o" == *"! PRJ-11 issue assigned to you 14:30Z"* ]]'
+check "an assigned issue only edited in the window is listed, not marked" '[[ "$o" == *"  PRJ-12 issue updated 14:31Z [Todo] by Me, assignee you"* ]]'
+check "own issues assigned to nobody else are not listed" '[[ "$o" != *"PRJ-13"* ]] && [[ "$o" != *"PRJ-14"* ]]'
+check "someone else'\''s new issue for another person is listed, not marked" '[[ "$o" == *"  PRJ-15 issue created 14:28Z [Todo] by Bob B, assignee Carol C https://linear.test/PRJ-15: "* ]]'
+check "an unassigned issue by an unwatched person, with an empty title, is listed whole, not marked" '[[ "$o" == *"  PRJ-16 issue created 14:29Z [Todo] by Dana, assignee nobody https://linear.test/PRJ-16: -"* ]]'
+check "a millisecond stamp just after the window start counts as created in the window" '[[ "$o" == *"! PRJ-17 issue assigned to you 14:00Z"* ]]'
+check "your own issue assigned to someone else is listed, not marked" '[[ "$o" == *"  PRJ-18 issue created 14:33Z [Todo] by Me, assignee Carol C"* ]]'
+printf 'TICK_LINEAR=1\nTICK_LINEAR_PEOPLE="Dana"\n' > "$T/linear-only.conf"
+o=$(TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lonly --since $((NOW - 2400)))
+check "Linear only: two comments, three assigned issues and one issue by a watched person count ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick lonly: NEEDS ACTION (6) |"* ]] && [[ "$o" == *"! PRJ-16 issue created 14:29Z [Todo] by Dana, assignee nobody https://linear.test/PRJ-16: -"* ]]'
+o=$(TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lonly)
+check "a complete Linear tick advances the window" '[[ "$o" != *"INCOMPLETE"* ]] && [ "$(cat "$T/mv/tick/lonly.last")" = "$NOW" ]'
+o=$(CURL_SHIM=hostile TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lhostile --no-mark --since $((NOW - 2400)))
+check "hostile issue text: one line, no control characters, no forged header ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick lhostile: NEEDS ACTION (3) |"* ]] && [ "$(printf "%s\n" "$o" | grep -c "PRJ-20")" = 1 ] && [ "$(printf "%s\n" "$o" | grep -c "^! tick")" = 0 ] && ! printf "%s" "$o" | LC_ALL=C grep -q "$(printf "\033")" && [[ "$o" == *"line one ! tick default: quiet tab [2Jend rtl zw"* ]]'
+for mode in issuesfull historyfull; do
+  o=$(CURL_SHIM=$mode TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name "l$mode")
+  check "linear $mode: INCOMPLETE, said so, window kept" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"incomplete: "*"window kept"* ]] && [ ! -e "$T/mv/tick/l$mode.last" ] && [ "$(cat "$T/mv/tick/l$mode.pending")" = "$((NOW - 2400))" ]'
+done
+o=$(CURL_SHIM=http500 TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lfail)
+check "a failing Linear call keeps the window" '[[ "$o" == *"! linear: query failed"* ]] && [ ! -e "$T/mv/tick/lfail.last" ] && [ "$(cat "$T/mv/tick/lfail.pending")" = "$((NOW - 2400))" ]'
 for mode in errors http500 exit28; do
   o=$(CURL_SHIM=$mode TICK_LINEAR=1 TICK_LKEY=EXAMPLE-key tick --since $((NOW - 2400)))
   check "linear $mode: INCOMPLETE, fixed diagnostic, no reflected text, no mark" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"! linear: query failed (curl exit"* ]] && [[ "$o" != *"reflected"* ]] && [ ! -s "$T/mv/tick/default.last" ]'

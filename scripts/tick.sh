@@ -17,7 +17,11 @@
 #           review comments by others. [bot] accounts left out; TICK_PEOPLE marked "!".
 #           Lists are paged (up to 2,000 PRs or comments per repo and window, reviews on up to
 #           30 updated PRs); past that the tick is incomplete. At most 60 lines per repo.
-#   linear: comments since the last tick, when TICK_LINEAR=1 and a key is available.
+#   linear: when TICK_LINEAR=1 and a key is available: comments by others, issues created,
+#           and open issues assigned to you that changed, since the last tick (up to 100
+#           comments and 50 issues of each kind; past that the tick is incomplete). "!" and
+#           counted: an issue assigned to you by someone else in the window, and issues by
+#           TICK_LINEAR_PEOPLE. An issue you created and assigned to nobody else is left out.
 #
 # Config, sourced from ~/.megavibe/personal/tick.conf (private; never in a repo) or the
 # environment:
@@ -26,14 +30,14 @@
 #   TICK_BOTS=1                   also list *[bot] accounts (left out by default)
 #   TICK_AUTH_HOURS=12            warn when the refresh token expires inside this
 #   TICK_GH_USER=login            your GitHub login (default: `gh api user`, cached)
-#   TICK_LINEAR=1                 also read Linear comments
+#   TICK_LINEAR=1                 also read Linear comments and issues
 #   TICK_LINEAR_KEY_CMD=command   command that prints the Linear API key
 #   TICK_LINEAR_KEY_CMD_TIMEOUT=10  positive integer timeout in seconds (default 10)
 #   TICK_LINEAR_KEY_FILE=path     key file used only when no key or command is set
 #   LINEAR_API_KEY, when nonempty, takes precedence over both settings.
 #   TICK_LINEAR_KEY_CMD is trusted only from tick.conf. It is unset before sourcing
 #   the file so an inherited environment cannot supply the command.
-#   TICK_LINEAR_PEOPLE="Name1 Name2"   Linear display names marked "!"
+#   TICK_LINEAR_PEOPLE="Name1 Name2"   Linear display names whose comments and issues are marked "!"
 #   TICK_DEFAULT_WINDOW=2400      seconds looked back on a first run (default 40 min)
 #
 # State in ~/.megavibe/tick/: NAME.last is the end of the last complete window, so the window
@@ -404,7 +408,13 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
   elif ! command -v "$CURL" >/dev/null 2>&1; then
     INCOMPLETE=1; NEED=$((NEED + 1)); say "! linear: switched on but curl is not installed; not checked, window kept"
   else
-    q=$(jq -n --arg s "$SINCE_ISO" --arg n "$NOW_ISO" '{query: "{ viewer { id name } comments(first: 100, orderBy: createdAt, filter: {createdAt: {gt: \"\($s)\", lte: \"\($n)\"}}) { nodes { createdAt url user { id name } issue { identifier } body } } }"}')
+    # One request, three bounded lists: comments created in the window, issues created in the
+    # window, and open issues assigned to the viewer that changed in the window (with their
+    # newest history entries, to see who assigned them). Page sizes are kept small enough for
+    # Linear's query complexity limit; a full page keeps the window.
+    q=$(jq -n --arg s "$SINCE_ISO" --arg n "$NOW_ISO" '"createdAt: {gt: \"\($s)\", lte: \"\($n)\"}" as $cw | "updatedAt: {gt: \"\($s)\", lte: \"\($n)\"}" as $uw
+      | "identifier title url createdAt updatedAt state { name } creator { id name } assignee { id name }" as $f
+      | {query: "{ viewer { id name assignedIssues(first: 50, orderBy: updatedAt, filter: {\($uw), state: {type: {nin: [\"completed\", \"canceled\"]}}}) { nodes { \($f) history(first: 10) { nodes { createdAt actor { id } toAssignee { id } } } } } } comments(first: 100, orderBy: createdAt, filter: {\($cw)}) { nodes { createdAt url user { id name } issue { identifier } body } } issues(first: 50, orderBy: createdAt, filter: {\($cw)}) { nodes { \($f) } } }"}')
     # The key goes to curl as a config line on stdin (`-K -`), never in argv: argv is readable
     # by every process on the machine through `ps`. Quotes and backslashes in the value are
     # escaped the way curl's config parser reads them. The answer is accepted only when curl
@@ -414,20 +424,59 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
     http=""; resp=$(printf 'header = "Authorization: %s"\n' "$kesc" | "$CURL" -sS --max-time 20 -K - "${MEGAVIBE_LINEAR_URL:-https://api.linear.app/graphql}" -H 'Content-Type: application/json' -d "$q" -w '\n%{http_code}' 2>/dev/null); crc=$?
     http="${resp##*$'\n'}"; resp="${resp%$'\n'*}"
     gql_err=$(printf '%s' "$resp" | jq -r 'if type == "object" and has("errors") then "yes" else "no" end' 2>/dev/null)
-    if [ "$crc" != 0 ] || [ "$http" != 200 ] || [ "$gql_err" != no ] || ! printf '%s' "$resp" | jq -e '.data.comments.nodes | type == "array"' >/dev/null 2>&1; then
+    if [ "$crc" != 0 ] || [ "$http" != 200 ] || [ "$gql_err" != no ] || ! printf '%s' "$resp" | jq -e '(.data.comments.nodes | type == "array") and (.data.issues.nodes | type == "array") and (.data.viewer.assignedIssues.nodes | type == "array")' >/dev/null 2>&1; then
       INCOMPLETE=1; NEED=$((NEED + 1))
       say "! linear: query failed (curl exit ${crc}, HTTP ${http:-none}, GraphQL errors: ${gql_err:-unreadable}); not retried, window kept"
     else
       LP=" ${TICK_LINEAR_PEOPLE:-} "
       lines=""
       # Your own comments are left out by the viewer's ID (a display name can be shared).
-      LN_ROWS=$(printf '%s' "$resp" | jq -r '(.data.viewer.id // "") as $meid | .data.comments.nodes[] | select($meid == "" or (.user.id // "") != $meid) | [(.createdAt // ""), ((.user.name // "?") | tostring | gsub("[\\r\\n\\t]+"; " ")), ((.issue.identifier // "?") | tostring), ((.url // "") | tostring), ((.body // "") | tostring | gsub("[\\r\\n\\t]+"; " ") | .[0:160])] | @tsv' 2>/dev/null) || { LN_ROWS=""; INCOMPLETE=1; note "incomplete: Linear answer unreadable; window kept"; }
+      # Every third-party field is made one line of printable text (control and format
+      # characters, bidi overrides and zero-width ones included, become a space) and cut before
+      # it reaches the report. A field before the last one is never empty ("-"): `read` with a
+      # tab IFS would merge two tabs and shift every later field. inwin($t) compares a Linear
+      # stamp, which may carry milliseconds, with the whole-second window bounds (s, n].
+      LJQ='def clean($k): (. // "?") | tostring | gsub("[\\p{Cc}\\p{Cf}\u2028\u2029]+"; " ") | .[0:$k] | if . == "" then "-" else . end;
+        def inwin($t): (($t // "") | tostring) as $r | ($r | sub("\\.[0-9]+Z$"; "Z")) as $b | ($r | test("\\.[0-9]*[1-9][0-9]*Z$")) as $f
+          | (($b > $s) or ($b == $s and $f)) and (($b < $n) or ($b == $n and ($f | not)));'
+      LN_ROWS=$(printf '%s' "$resp" | jq -r --arg s "$SINCE_ISO" --arg n "$NOW_ISO" "$LJQ"'(.data.viewer.id // "") as $meid | .data.comments.nodes[] | select($meid == "" or (.user.id // "") != $meid) | [(.createdAt // "" | clean(40)), (.user.name | clean(80)), (.issue.identifier | clean(40)), (.url // "" | clean(300)), (.body // "" | clean(160))] | @tsv' 2>/dev/null) || { LN_ROWS=""; INCOMPLETE=1; note "incomplete: Linear answer unreadable; window kept"; }
       [ "$(printf '%s' "$resp" | jq '.data.comments.nodes | length' 2>/dev/null)" = 100 ] && note "incomplete: 100 or more comments in the window; window kept"
+      # Issues: created in the window, or assigned to you and changed in it; one line each.
+      # Left out: an issue you created that is assigned to nobody else (unless someone else
+      # assigned it to you in the window). Marked "!" and counted: assigned to you by someone
+      # else in the window (created by them in the window, or a history entry in the window
+      # whose actor is not you), or created by a TICK_LINEAR_PEOPLE name.
+      LI_ROWS=$(printf '%s' "$resp" | jq -r --arg s "$SINCE_ISO" --arg n "$NOW_ISO" "$LJQ"'
+        (.data.viewer.id // "") as $meid
+        | ([.data.viewer.assignedIssues.nodes[] | . + {mine: true}] + [.data.issues.nodes[]])
+        | group_by(.identifier // "") | map((map(select(.mine)) + .)[0])
+        | .[]
+        | (.creator.id // "") as $cid | (.assignee.id // "") as $aid
+        | (inwin(.createdAt)) as $new
+        | ($meid != "" and $aid == $meid and (($new and $cid != $meid) or ([(.history.nodes // [])[] | select(inwin(.createdAt) and (.toAssignee.id // "") == $meid and (.actor.id // "") != $meid)] | length > 0))) as $byother
+        | select($byother or $meid == "" or $cid != $meid or ($aid != "" and $aid != $meid))
+        | (if $byother then "assigned" elif $new then "created" else "updated" end) as $what
+        | [$what, (if $new then .createdAt else .updatedAt end // "" | clean(40)), (.identifier | clean(40)), (.state.name | clean(40)), (.creator.name // "(none)" | clean(80)),
+           (if $aid == "" then "nobody" elif $aid == $meid then "you" else (.assignee.name | clean(80)) end), (.url // "" | clean(300)), (.title // "" | clean(120)), (if $cid != $meid then "other" else "self" end)] | @tsv' 2>/dev/null) || { LI_ROWS=""; INCOMPLETE=1; note "incomplete: Linear issues unreadable; window kept"; }
+      [ "$(printf '%s' "$resp" | jq '.data.issues.nodes | length' 2>/dev/null)" = 50 ] && note "incomplete: 50 or more issues created in the window; window kept"
+      [ "$(printf '%s' "$resp" | jq '.data.viewer.assignedIssues.nodes | length' 2>/dev/null)" = 50 ] && note "incomplete: 50 or more of your assigned issues changed in the window; window kept"
+      # History comes newest first; a full page whose oldest entry is still inside the window
+      # may hide the assignment.
+      [ "$(printf '%s' "$resp" | jq --arg s "$SINCE_ISO" --arg n "$NOW_ISO" "$LJQ"'[.data.viewer.assignedIssues.nodes[] | (.history.nodes // []) | select(length == 10 and inwin(.[-1].createdAt))] | length' 2>/dev/null)" = 0 ] \
+        || note "incomplete: an assigned issue has more history in the window than was read; window kept"
       while IFS=$'\t' read -r lat lname lid lurl lbody; do
         [ -n "$lat" ] || continue
         m="  "; case "$LP" in *" $lname "*) m="! " ;; esac
         lines="${lines}${m}${lid} by ${lname} $(hm "$lat") ${lurl}: ${lbody}"$'\n'; NEED=$((NEED + 1))
       done <<<"$LN_ROWS"
+      while IFS=$'\t' read -r iwhat iat iid istate icreator iassignee iurl ititle iwho; do
+        [ -n "$iwhat" ] || continue
+        m="  "
+        if [ "$iwhat" = assigned ]; then m="! "; NEED=$((NEED + 1))
+        elif [ "$iwho" = other ]; then case "$LP" in *" $icreator "*) m="! "; NEED=$((NEED + 1)) ;; esac; fi
+        case "$iwhat" in assigned) iwhat="assigned to you" ;; esac
+        lines="${lines}${m}${iid} issue ${iwhat} $(hm "$iat") [${istate}] by ${icreator}, assignee ${iassignee} ${iurl}: ${ititle}"$'\n'
+      done <<<"$LI_ROWS"
       flush_notes
       if [ -n "$lines" ]; then say "linear:"; OUT="${OUT}${lines}"; FULL="${FULL}${lines}"; else say "linear: nothing new"; fi
     fi
