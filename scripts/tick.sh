@@ -22,6 +22,8 @@
 #           comments and 50 issues of each kind; past that the tick is incomplete). "!" and
 #           counted: an issue assigned to you by someone else in the window, and issues by
 #           TICK_LINEAR_PEOPLE. An issue you created and assigned to nobody else is left out.
+#           An assigned issue with more history in the window than the 10 entries read is
+#           marked for a look by hand (the window still moves).
 #
 # Config, sourced from ~/.megavibe/personal/tick.conf (private; never in a repo) or the
 # environment:
@@ -444,8 +446,12 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
       # Issues: created in the window, or assigned to you and changed in it; one line each.
       # Left out: an issue you created that is assigned to nobody else (unless someone else
       # assigned it to you in the window). Marked "!" and counted: assigned to you by someone
-      # else in the window (created by them in the window, or a history entry in the window
-      # whose actor is not you), or created by a TICK_LINEAR_PEOPLE name.
+      # else in the window (a history entry in the window whose actor is not you, or created
+      # by them in the window unless you assigned it to yourself), or created by a
+      # TICK_LINEAR_PEOPLE name. History comes newest first; when the 10 entries read are all
+      # inside the window the assignment may be older than them, so the issue is marked for a
+      # look by hand (as for unchecked PRs) instead of keeping the window, which would never
+      # move past a busy issue.
       LI_ROWS=$(printf '%s' "$resp" | jq -r --arg s "$SINCE_ISO" --arg n "$NOW_ISO" "$LJQ"'
         (.data.viewer.id // "") as $meid
         | ([.data.viewer.assignedIssues.nodes[] | . + {mine: true}] + [.data.issues.nodes[]])
@@ -453,17 +459,16 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
         | .[]
         | (.creator.id // "") as $cid | (.assignee.id // "") as $aid
         | (inwin(.createdAt)) as $new
-        | ($meid != "" and $aid == $meid and (($new and $cid != $meid) or ([(.history.nodes // [])[] | select(inwin(.createdAt) and (.toAssignee.id // "") == $meid and (.actor.id // "") != $meid)] | length > 0))) as $byother
-        | select($byother or $meid == "" or $cid != $meid or ($aid != "" and $aid != $meid))
-        | (if $byother then "assigned" elif $new then "created" else "updated" end) as $what
+        | [(.history.nodes // [])[] | select(inwin(.createdAt) and (.toAssignee.id // "") == $meid)] as $tome
+        | ($meid != "" and $aid == $meid and (([$tome[] | select((.actor.id // "") != $meid)] | length > 0)
+            or ($new and $cid != $meid and ([$tome[] | select((.actor.id // "") == $meid)] | length == 0)))) as $byother
+        | ($meid != "" and $aid == $meid and ($byother | not) and ((.history.nodes // []) | length == 10 and inwin(.[-1].createdAt))) as $unread
+        | select($byother or $unread or $meid == "" or $cid != $meid or ($aid != "" and $aid != $meid))
+        | (if $byother then "assigned" elif $unread then "unread" elif $new then "created" else "updated" end) as $what
         | [$what, (if $new then .createdAt else .updatedAt end // "" | clean(40)), (.identifier | clean(40)), (.state.name | clean(40)), (.creator.name // "(none)" | clean(80)),
            (if $aid == "" then "nobody" elif $aid == $meid then "you" else (.assignee.name | clean(80)) end), (.url // "" | clean(300)), (.title // "" | clean(120)), (if $cid != $meid then "other" else "self" end)] | @tsv' 2>/dev/null) || { LI_ROWS=""; INCOMPLETE=1; note "incomplete: Linear issues unreadable; window kept"; }
       [ "$(printf '%s' "$resp" | jq '.data.issues.nodes | length' 2>/dev/null)" = 50 ] && note "incomplete: 50 or more issues created in the window; window kept"
       [ "$(printf '%s' "$resp" | jq '.data.viewer.assignedIssues.nodes | length' 2>/dev/null)" = 50 ] && note "incomplete: 50 or more of your assigned issues changed in the window; window kept"
-      # History comes newest first; a full page whose oldest entry is still inside the window
-      # may hide the assignment.
-      [ "$(printf '%s' "$resp" | jq --arg s "$SINCE_ISO" --arg n "$NOW_ISO" "$LJQ"'[.data.viewer.assignedIssues.nodes[] | (.history.nodes // []) | select(length == 10 and inwin(.[-1].createdAt))] | length' 2>/dev/null)" = 0 ] \
-        || note "incomplete: an assigned issue has more history in the window than was read; window kept"
       while IFS=$'\t' read -r lat lname lid lurl lbody; do
         [ -n "$lat" ] || continue
         m="  "; case "$LP" in *" $lname "*) m="! " ;; esac
@@ -472,9 +477,9 @@ elif [ "${TICK_LINEAR:-0}" = 1 ]; then
       while IFS=$'\t' read -r iwhat iat iid istate icreator iassignee iurl ititle iwho; do
         [ -n "$iwhat" ] || continue
         m="  "
-        if [ "$iwhat" = assigned ]; then m="! "; NEED=$((NEED + 1))
+        if [ "$iwhat" = assigned ] || [ "$iwhat" = unread ]; then m="! "; NEED=$((NEED + 1))
         elif [ "$iwho" = other ]; then case "$LP" in *" $icreator "*) m="! "; NEED=$((NEED + 1)) ;; esac; fi
-        case "$iwhat" in assigned) iwhat="assigned to you" ;; esac
+        case "$iwhat" in assigned) iwhat="assigned to you" ;; unread) iwhat="assigned to you, history longer than read (check who assigned it by hand)" ;; esac
         lines="${lines}${m}${iid} issue ${iwhat} $(hm "$iat") [${istate}] by ${icreator}, assignee ${iassignee} ${iurl}: ${ititle}"$'\n'
       done <<<"$LI_ROWS"
       flush_notes

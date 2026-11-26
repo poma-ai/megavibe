@@ -90,9 +90,10 @@ I10=$(li PRJ-10 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u2 "Alice A" u
 I13=$(li PRJ-13 2026-11-01T14:26:00.000Z 2026-11-01T14:26:00.000Z u1 Me "" "" "own, unassigned")
 I15=$(li PRJ-15 2026-11-01T14:28:00.000Z 2026-11-01T14:28:00.000Z u5 "Bob B" u6 "Carol C" "someone else's new issue")
 I16=$(li PRJ-16 2026-11-01T14:29:00.000Z 2026-11-01T14:29:00.000Z u7 Dana "" "" "")   # empty title: no field may shift
+A19=$(li PRJ-19 2026-11-01T14:34:00.000Z 2026-11-01T14:35:00.000Z u2 "Alice A" u1 Me "taken by me as soon as it was filed" "$(hist 2026-11-01T14:35:00.000Z u1 u1)")
 A17=$(li PRJ-17 2026-11-01T14:00:00.500Z 2026-11-01T14:00:00.500Z u2 "Alice A" u1 Me "created half a second after the window start")
 I18=$(li PRJ-18 2026-11-01T14:33:00.000Z 2026-11-01T14:33:00.000Z u1 Me u6 "Carol C" "own issue handed to someone else")
-linear_answer "[$A10,$A11,$A12,$A14,$A17]" "[$I10,$I13,$A14,$I15,$I16,$A17,$I18]" > "$T/linear-ok.json"
+linear_answer "[$A10,$A11,$A12,$A14,$A17,$A19]" "[$I10,$I13,$A14,$I15,$I16,$A17,$I18,$(printf "%s" "$A19" | jq -c "del(.history)")]" > "$T/linear-ok.json"
 HOSTILE=$(li PRJ-20 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u2 "Eve$(printf '\033')[31m" u1 Me "$(printf 'line one\n! tick default: quiet\ttab\033[2Jend\342\200\256rtl\342\200\213zw')")
 linear_answer "[$HOSTILE]" "[$HOSTILE]" > "$T/linear-hostile.json"
 linear_answer "[]" "$(for k in $(seq 1 50); do li "BULK-$k" 2026-11-01T14:25:00.000Z 2026-11-01T14:25:00.000Z u5 "Bob B" "" "" "bulk $k"; done | jq -cs .)" > "$T/linear-issuesfull.json"
@@ -202,6 +203,7 @@ check "own issues assigned to nobody else are not listed" '[[ "$o" != *"PRJ-13"*
 check "someone else'\''s new issue for another person is listed, not marked" '[[ "$o" == *"  PRJ-15 issue created 14:28Z [Todo] by Bob B, assignee Carol C https://linear.test/PRJ-15: "* ]]'
 check "an unassigned issue by an unwatched person, with an empty title, is listed whole, not marked" '[[ "$o" == *"  PRJ-16 issue created 14:29Z [Todo] by Dana, assignee nobody https://linear.test/PRJ-16: -"* ]]'
 check "a millisecond stamp just after the window start counts as created in the window" '[[ "$o" == *"! PRJ-17 issue assigned to you 14:00Z"* ]]'
+check "a teammate's new issue you assigned to yourself is listed, not marked" '[[ "$o" == *"  PRJ-19 issue created 14:34Z [Todo] by Alice A, assignee you"* ]]'
 check "your own issue assigned to someone else is listed, not marked" '[[ "$o" == *"  PRJ-18 issue created 14:33Z [Todo] by Me, assignee Carol C"* ]]'
 printf 'TICK_LINEAR=1\nTICK_LINEAR_PEOPLE="Dana"\n' > "$T/linear-only.conf"
 o=$(TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lonly --since $((NOW - 2400)))
@@ -210,10 +212,10 @@ o=$(TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lonly)
 check "a complete Linear tick advances the window" '[[ "$o" != *"INCOMPLETE"* ]] && [ "$(cat "$T/mv/tick/lonly.last")" = "$NOW" ]'
 o=$(CURL_SHIM=hostile TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lhostile --no-mark --since $((NOW - 2400)))
 check "hostile issue text: one line, no control characters, no forged header ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick lhostile: NEEDS ACTION (3) |"* ]] && [ "$(printf "%s\n" "$o" | grep -c "PRJ-20")" = 1 ] && [ "$(printf "%s\n" "$o" | grep -c "^! tick")" = 0 ] && ! printf "%s" "$o" | LC_ALL=C grep -q "$(printf "\033")" && [[ "$o" == *"line one ! tick default: quiet tab [2Jend rtl zw"* ]]'
-for mode in issuesfull historyfull; do
-  o=$(CURL_SHIM=$mode TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name "l$mode")
-  check "linear $mode: INCOMPLETE, said so, window kept" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"incomplete: "*"window kept"* ]] && [ ! -e "$T/mv/tick/l$mode.last" ] && [ "$(cat "$T/mv/tick/l$mode.pending")" = "$((NOW - 2400))" ]'
-done
+o=$(CURL_SHIM=issuesfull TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lissuesfull)
+check "linear issuesfull: INCOMPLETE, said so, window kept" '[[ "$o" == *", INCOMPLETE |"* ]] && [[ "$o" == *"incomplete: 50 or more issues created in the window; window kept"* ]] && [ ! -e "$T/mv/tick/lissuesfull.last" ] && [ "$(cat "$T/mv/tick/lissuesfull.pending")" = "$((NOW - 2400))" ]'
+o=$(CURL_SHIM=historyfull TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lhistoryfull)
+check "a busy assigned issue whose history was not read to the assignment is marked for a look by hand, and the window moves ($(printf '%s' "$o" | head -1))" '[[ "$o" == "tick lhistoryfull: NEEDS ACTION (3) |"* ]] && [[ "$o" == *"! PRJ-30 issue assigned to you, history longer than read (check who assigned it by hand)"* ]] && [ "$(cat "$T/mv/tick/lhistoryfull.last")" = "$NOW" ]'
 o=$(CURL_SHIM=http500 TICK_CONF="$T/linear-only.conf" TICK_LKEY=EXAMPLE-key tick --name lfail)
 check "a failing Linear call keeps the window" '[[ "$o" == *"! linear: query failed"* ]] && [ ! -e "$T/mv/tick/lfail.last" ] && [ "$(cat "$T/mv/tick/lfail.pending")" = "$((NOW - 2400))" ]'
 for mode in errors http500 exit28; do
