@@ -96,6 +96,32 @@ rm -rf "$CLAUDE_CONFIG_DIR/sessions"
 check 'holder: no registry directory' '[ -z "$(ALIVE=4101 run "session_holder $SID")" ]'
 mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
 
+# Triage of the sweep's leads
+reset
+reg 0 "{\"pid\":0,\"sessionId\":\"$SID\"}"
+echo claude > "$T/comm.0"
+check 'holder: pid 0 (a process group for kill) is never a holder' '[ -z "$(ALIVE=0 run "session_holder $SID")" ]'
+reset
+reg 4105 "{\"pid\":4105,\"sessionId\":\"$SID\",\"procStart\":\"2026-11-25T16:40:22Z\"}"
+echo /usr/local/bin/claude > "$T/comm.4105"
+check 'holder: unknown procStart form falls back to the process name (claude: held)' '[ -n "$(ALIVE=4105 run "session_holder $SID")" ]'
+echo vim > "$T/comm.4105"
+check 'holder: unknown procStart form, other process: not held' '[ -z "$(ALIVE=4105 run "session_holder $SID")" ]'
+reset
+reg 4106 "{\"pid\":4106,\"sessionId\":\"$SID\",\"kind\":\"Background\",\"procStart\":\"Wed Nov 25 16:40:22 2026\"}"
+echo 'Wed Nov 25 16:40:22 2026' > "$T/lstart.4106"
+check 'holder: background kind in any case is left to Claude Code' '[ -z "$(ALIVE=4106 run "session_holder $SID")" ]'
+msg=$(run "second_writer_message $SID \"\$(printf '4101\tmain:@21.%%21;echo x')\"")
+check 'message: a malformed tmux location is not turned into a command' '! printf "%s" "$msg" | grep -q capture-pane'
+reset
+reg 4101 "{\"pid\":4101,\"sessionId\":\"$SID\",\"procStart\":\"Wed Nov 25 16:40:22 2026\"}"
+printf 'garbage' > "$CLAUDE_CONFIG_DIR/sessions/4107.json"
+echo 'Wed Nov 25 16:40:22 2026' > "$T/lstart.4101"
+rc=0; ALIVE="4101 4107" run "set -e; ALLOW_SECOND_WRITER=0; second_writer_gate --resume $SID || exit \$?; echo launched" > "$T/out" 2>&1 || rc=$?
+check 'wiring: under set -e the refusal exits 3 and nothing is launched' '[ "$rc" = 3 ] && ! grep -q launched "$T/out"'
+rc=0; ALIVE="4107" run "set -e; ALLOW_SECOND_WRITER=0; second_writer_gate --resume $SID || exit \$?; echo launched" > "$T/out" 2>&1 || rc=$?
+check 'wiring: under set -e a stale holder and a broken record still launch' '[ "$rc" = 0 ] && grep -q launched "$T/out"'
+
 # second_writer_message
 reset
 printf '{"pid":4101,"socket":"/example/tmux-sock"}\n' > "$MEGAVIBE_HOME/launches/4101.json"

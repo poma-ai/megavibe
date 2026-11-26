@@ -2625,17 +2625,20 @@ session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" o
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
     p=$(basename "$f" .json)
-    [[ "$p" =~ ^[0-9]+$ ]] || continue
+    [[ "$p" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$p" -gt 1 ] || continue
     rec=$(jq -r '[.sessionId, .name, .kind, .procStart, .tmux] | map(if type == "string" then gsub("[\u001f\n]"; " ") else "" end) | join("\u001f")' "$f" 2>/dev/null) || continue
     IFS=$'\x1f' read -r sid name kind start tmx <<<"$rec" || true
     { [ "$sid" = "$want" ] || { [ -n "$name" ] && [ "$name" = "$want" ]; }; } || continue
-    case "$kind" in *background*) continue ;; esac
+    case "$kind" in *[Bb]ackground*) continue ;; esac
     kill -0 "$p" 2>/dev/null || continue
-    if [ -n "$start" ]; then
+    start=$(printf '%s' "$start" | tr -s ' ' | sed 's/^ //; s/ $//')
+    if [[ "$start" =~ ^[A-Z][a-z]{2}\ [A-Z][a-z]{2}\ [0-9]{1,2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [0-9]{4}$ ]]; then
+      # The registry's procStart is the process start in ps lstart form, UTC (measured against
+      # live sessions): equal = the same process, different = the pid was reused.
       now=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$p" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//') || now=""
-      [ -n "$now" ] || continue
-      [ "$now" = "$(printf '%s' "$start" | tr -s ' ' | sed 's/^ //; s/ $//')" ] || continue
+      [ -n "$now" ] && [ "$now" = "$start" ] || continue
     else
+      # No procStart, or a form this wrapper does not know: fall back to the process name.
       comm=$(ps -o comm= -p "$p" 2>/dev/null) || continue
       case "$comm" in *claude*|*node*) ;; *) continue ;; esac
     fi
@@ -2652,8 +2655,8 @@ second_writer_message() { # second_writer_message TARGET "<pid><TAB><tmux>"
   echo "megavibe: conversation $target is still open in another process (pid $pid)."
   echo "  Resuming it here would make two processes write one transcript; Claude Code then"
   echo "  loses messages from one of them. Nothing was started, and that process was not touched."
-  if [[ "$tmx" == *:*.%* ]]; then
-    pane="%${tmx##*.%}"; sess="${tmx%%:*}"
+  pane="%${tmx##*.%}"; sess="${tmx%%:*}"
+  if [[ "$tmx" == *:*.%* ]] && [[ "$pane" =~ ^%[0-9]+$ ]] && [[ "${tmx#*:}" =~ ^@[0-9]+\.%[0-9]+$ ]]; then
     sock=$(jq -r '.socket // empty' "${MEGAVIBE_HOME:-${HOME:-}/.megavibe}/launches/$pid.json" 2>/dev/null) || sock=""
     sock="${sock:+-S $(printf '%q' "$sock") }"
     echo "  It runs in tmux pane $pane (window ${tmx#*:})."
