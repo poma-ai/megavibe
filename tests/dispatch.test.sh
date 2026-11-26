@@ -21,10 +21,11 @@ case "$1 $2" in
   "issue view") n=$3; [ "$n" != 99 ] || { echo "no such issue" >&2; exit 1; }
     st=OPEN; [ "$n" != 98 ] || st=CLOSED
     printf '{"title":"Fix thing %s\\twith a tab","body":"body of %s\\nline two","url":"https://github.com/o/r/issues/%s","state":"%s"}\n' "$n" "$n" "$n" "$st" ;;
+  "issue list") echo "$*" >> "$LISTCALLS"; case "$*" in *"--label ready"*) printf '7\n9\n1\n' ;; esac ;;
   "pr list") [ ! -f "$PRFILE" ] || grep -F "$4" "$PRFILE" | head -1 | cut -d' ' -f2 ;;
 esac
 EOS
-chmod +x "$B"/*; export PATH="$B:$PATH" HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe" PRFILE="$T/prs"; unset CLAUDE_CODE_SESSION_ID
+chmod +x "$B"/*; export PATH="$B:$PATH" HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe" PRFILE="$T/prs" LISTCALLS="$T/list.calls"; unset CLAUDE_CODE_SESSION_ID
 mkdir -p "$HOME" "$MEGAVIBE_HOME"
 end_panes() { local p i; [ "${OWN:-0}" = 1 ] || return 0
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -HUP "$p" 2>/dev/null; done
@@ -75,5 +76,11 @@ D max 1 >/dev/null; o=$(D tick); check "max 1 with one running: nothing new star
 D done 1 >/dev/null; D drop 2 >/dev/null; check "done/drop set states" '[ "$(st 1 2)" = done ] && [ "$(st 2 2)" = dropped ]'
 check "a dropped issue can be queued again" 'D add 2 | grep -q "queued" && [ "$(st 2 2)" = queued ]'
 check "the main checkout was never touched" '[ "$(git -C "$P" rev-parse --abbrev-ref HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain | grep -v "^??")" ]'
+
+o=$(D add --label ready --label p1 --limit 5)
+check "add --label: gh asked for open issues with both labels and the limit ($(cat "$LISTCALLS"))" 'grep -q -- "--label ready --label p1 --state open --limit 5" "$LISTCALLS"'
+check "add --label: new ones queued, the one already known skipped ($o)" '[ "$(st 7 2)" = queued ] && [ "$(st 9 2)" = queued ] && [[ "$o" == *"issue 1: already in the queue"* ]] && [[ "$o" == *"3 open issue(s)"* ]]'
+o=$(D add --label nothing); check "add --label with no match is fine ($o)" '[[ "$o" == *"0 open issue(s)"* ]]'
+check "add with nothing to add or a bad option refuses" '! D add >/dev/null && ! D add --bogus >/dev/null && ! D add --limit x 1 >/dev/null'
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"; [ "$FAIL" = 0 ]

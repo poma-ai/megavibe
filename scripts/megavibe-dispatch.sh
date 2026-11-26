@@ -5,7 +5,8 @@
 # window "dispatcher", every issue session is window "issue-N", and a session's own subagents live in it.
 #
 #   start [--max N] [--name Q] [--dir REPO] [--model M]   open the dispatcher in tmux (run it in the repo)
-#   add ISSUE...             queue issues (number or URL of this repo); writes each one's task file
+#   add ISSUE... | --label NAME [--label NAME] [--limit N]   queue issues (number or URL of this repo, or the open
+#                            issues carrying every label, oldest first, at most N=30); writes each one's task file
 #   tick                     reconcile windows and PRs, then start queued issues while below the cap
 #   status                   the queue: state, window idle time, branch, PR
 #   peek N                   the last lines of issue N's window (is it stuck on a prompt?)
@@ -138,11 +139,25 @@ EOF
   } > "$f"
 }
 cmd_add() {
-  local ref n j title t
-  [ $# -ge 1 ] || die "add: give one or more issue numbers or URLs"
+  local ref n j title t refs=() labels=() limit=30 found
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --label) [ $# -ge 2 ] || die "add: --label needs a value"; labels+=(--label "$2"); shift 2 ;;
+      --limit) [ $# -ge 2 ] && [[ $2 =~ ^[1-9][0-9]*$ ]] || die "add: --limit needs a positive number"; limit="$2"; shift 2 ;;
+      -*) die "add: unknown option $1" ;;
+      *) refs+=("$1"); shift ;;
+    esac
+  done
+  [ "${#refs[@]}" -gt 0 ] || [ "${#labels[@]}" -gt 0 ] || die "add: give issue numbers or URLs, or --label NAME [--limit N]"
   need gh; need jq
   lock; local repo; repo=$(conf_get repo)
-  for ref in "$@"; do
+  if [ "${#labels[@]}" -gt 0 ]; then   # every --label must match (gh's AND); open issues only, oldest first; a PR is not an issue here
+    found=$(cd "$repo" && gh issue list "${labels[@]}" --state open --limit "$limit" --json number --jq 'sort_by(.number)[].number') \
+      || die "add: gh could not list issues for the label(s)"
+    say "label ${labels[*]//--label /}: $(printf '%s\n' "$found" | grep -c . || true) open issue(s) (limit $limit)"
+    while IFS= read -r n; do [ -z "$n" ] || refs+=("$n"); done <<<"$found"
+  fi
+  for ref in ${refs[@]+"${refs[@]}"}; do
     n=$(issue_of "$ref")
     if [ -n "$(row "$n")" ] && [ "$(col "$(row "$n")" 2)" != dropped ]; then say "issue $n: already in the queue ($(col "$(row "$n")" 2))"; continue; fi
     j=$(cd "$repo" && gh issue view "$n" --json title,body,url,state) || { say "issue $n: gh could not read it; not queued"; continue; }
