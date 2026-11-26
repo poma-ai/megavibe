@@ -33,6 +33,7 @@ Subcommands:
   version               Show the installed version (also --version, -V)
   update [--check]       Install updates, or check for them
   node ...              Manage the opt-in node and Personal Assistant (macOS)
+  dispatch ...          Manager mode: one session per GitHub issue, in tmux
   assistant             Attach to the persistent Personal Assistant
   personal              Alias for assistant
   worktree [list|remove NAME|NAME [BRANCH]]  List, remove or create a worktree
@@ -1680,6 +1681,18 @@ if [ "${1:-}" = "node" ]; then
   exec bash "$_s" "$@"
 fi
 
+# ─── Dispatch subcommand ─────────────────────────────────────────────
+#
+# megavibe dispatch ...: manager mode, one session per GitHub issue (scripts/megavibe-dispatch.sh).
+if [ "${1:-}" = "dispatch" ]; then
+  shift
+  _s="$MEGAVIBE_HOME/scripts/megavibe-dispatch.sh"
+  [ -f "$_s" ] || _s="$SCRIPT_DIR/scripts/megavibe-dispatch.sh"
+  [ -f "$_s" ] || { echo "megavibe dispatch: megavibe-dispatch.sh not installed; run bash ~/.megavibe/setup.sh" >&2; exit 1; }
+  if [ -n "${LAUNCH_PARENT_SET:-}" ]; then export MEGAVIBE_PARENT_SESSION="${LAUNCH_PARENT:-}"; fi
+  exec bash "$_s" "$@"
+fi
+
 # ─── Assistant subcommand ────────────────────────────────────────────
 
 if [ "${1:-}" = "assistant" ] || [ "${1:-}" = "personal" ]; then
@@ -1953,7 +1966,7 @@ if [ -n "$REPO_DIR" ]; then
               "$REPO_DIR/scripts/tick.sh" "$REPO_DIR/scripts/claude-auth-check.sh" \
               "$REPO_DIR/scripts/trash.sh" "$REPO_DIR/scripts/trash-empty.sh" \
               "$REPO_DIR/scripts/amass.sh" "$REPO_DIR/scripts/claude-review.sh" "$REPO_DIR/scripts/worktrees-audit.sh" \
-              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/restart.sh" "$REPO_DIR/scripts/restart-all.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
+              "$REPO_DIR/scripts/amass-gate.sh" "$REPO_DIR/scripts/codex-progress.sh" "$REPO_DIR/scripts/megavibe-node.sh" "$REPO_DIR/scripts/megavibe-dispatch.sh" "$REPO_DIR/scripts/usage-probe.sh" "$REPO_DIR/scripts/scratch-root.sh" "$REPO_DIR/scripts/scratch-own.sh" "$REPO_DIR/scripts/review-copy.sh" "$REPO_DIR/scripts/sessions.sh" "$REPO_DIR/scripts/restart.sh" "$REPO_DIR/scripts/restart-all.sh" "$REPO_DIR/scripts/repo-id.sh" "$REPO_DIR/scripts/memory-config.sh" "$REPO_DIR/scripts/guard-run.sh"; do
       [ -f "$_s" ] || continue
       if ! diff -q "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" &>/dev/null 2>&1; then
         atomic_install "$_s" "$MEGAVIBE_HOME/scripts/$(basename "$_s")" 755 \
