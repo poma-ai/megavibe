@@ -49,30 +49,122 @@ CMAIL=$(conf COMMIT_EMAIL 'megavibe-node@localhost' '[A-Za-z0-9._+-]+@[A-Za-z0-9
 # SHORTCUT: the alarm ends the helper itself, not its children, and a helper that ignored SIGALRM
 # would hold this script and its lock. None of the helpers does (tmux, scutil, git, and
 # claude-auth-check.sh, which bounds its own child; an ssh that git started can outlive git, but it
-# does not hold fd 9; the secrets tool's sync is the one external helper added since, and it is bounded by 60 s); upgrade to a supervising process that ends the helper's process group if a
+# cannot hold the lock because all work runs with fd 9 closed); upgrade to a
+# supervising process that ends the helper's process group if a
 # helper is ever added that might.
 # A helper that cannot be started exits 127 here, not 0.
 bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@"; }
-# One run at a time: an flock on fd 9, held until this script exits (no lock file to clean up).
+# Never give a helper the write end of a command-substitution pipe: a descendant
+# could keep it open after the helper's alarm. Read only a regular-file snapshot
+# after waiting for the helper itself. Later descendant writes cannot extend it.
+bounded_output() (
+  # Restrict the file without changing the umask inherited by tmux sessions.
+  out=$(umask 077; mktemp "$N/.bounded-output.XXXXXX") || exit 1
+  trap 'rm -f "$out"' EXIT
+  bounded "$@" > "$out"
+  rc=$?
+  perl -e '
+    my $left = -s STDIN;
+    while ($left > 0) {
+      my $n = read(STDIN, my $buf, $left > 65536 ? 65536 : $left);
+      last unless $n; print $buf; $left -= $n;
+    }
+  ' < "$out"
+  exit "$rc"
+)
+restart_note() {
+  # Every writer, including failed lock contenders, uses this stable inode.
+  # Locking the note itself would stop protecting it after the atomic rename.
+  # No children inherit the mutex; only this short Perl transaction holds it.
+  perl -MFcntl=:flock -MFile::Temp=tempfile -e '
+    my ($dir, $op, $value, $bound) = @ARGV;
+    open(my $mutex, ">>", "$dir/.restart-note.lock") or exit 1;
+    flock($mutex, LOCK_EX) or exit 1;
+    if ($op eq "lock") {
+      # Acquisition or worker progress may have refreshed the age while we waited.
+      my @s = stat "$dir/.lock";
+      exit 0 if !@s || time - $s[9] <= $bound;
+    }
+    my $path = "$dir/restart-note.txt";
+    my @lines;
+    if (-e $path) {
+      open(my $in, "<", $path) or exit 1;
+      @lines = <$in>; close $in or exit 1;
+    } elsif ($op eq "clear" || $op eq "secret") { exit 0; }
+    if ($op eq "restart") {
+      # Replace obsolete restart details, retaining any concurrent lock notice.
+      my @lock = grep { /^Node lock:/ } @lines;
+      @lines = ("$value\n", @lock ? $lock[-1] : ());
+    } else {
+      my $prefix = $op eq "secret" ? "Secret sync succeeded since start:" : "Node lock:";
+      @lines = grep { index($_, $prefix) != 0 } @lines;
+      $lines[-1] .= "\n" if @lines && $lines[-1] !~ /\n\z/;
+      push @lines, "$value\n" unless $op eq "clear";
+    }
+    my ($out, $tmp) = tempfile("restart-note.txt.XXXXXX", DIR => $dir, UNLINK => 1);
+    print $out @lines or exit 1;
+    close $out or exit 1;
+    rename $tmp, $path or exit 1;
+  ' "$N" "$1" "${2:-}" "${LOCK_BOUND:-0}"
+}
+log_once() {
+  # Contending runs now use this helper without owning .lock. Serialize the
+  # interval check on its existing stamp; this Perl process starts no children.
+  perl -MFcntl=:DEFAULT,:flock -e '
+    my ($stamp, $log, $line) = @ARGV;
+    my $new = sysopen(my $f, $stamp, O_WRONLY|O_CREAT|O_EXCL, 0600);
+    $new || sysopen($f, $stamp, O_WRONLY) or exit;
+    flock($f, LOCK_EX) or exit;
+    exit if !$new && time - (stat $f)[9] < 3600;
+    open(my $out, ">>", $log) or exit;
+    print $out "$line\n"; close $out or exit;
+    utime undef, undef, $f;
+  ' "$N/.once-$1" "$N/node.log" "$(date '+%F %T') $2"
+}
+PEERS=$(conf NODE_PEERS "" '[^[:cntrl:]]*')
+IFS=' ' read -r -a PEER_ENTRIES <<< "$PEERS"
+# 30 min covers secret retries (3*60+2*20), probe (300), git (6*60),
+# tmux (8*15), PA check (15), session check (45), auth (20), host/boot (14),
+# plus local bookkeeping. Each peer adds two 4 s probes and a 3 s notification.
+LOCK_BOUND=$((1800 + 11 * ${#PEER_ENTRIES[@]}))
+# One run at a time. Only this waiting parent owns the lock; the worker closes
+# fd 9 BEFORE any command, substitution, pipeline or helper can spawn a child.
+# Do not replace this with a function redirection: bash can save fd 9 on another fd.
 exec 9>>"$N/.lock" || exit 1
-perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or exit 1; exit(flock($f, LOCK_EX | LOCK_NB) ? 0 : 1)' || exit 0
-# Nothing this script starts may inherit fd 9: a tmux server holding it would keep the lock for good.
-tmux() { bounded 15 tmux "$@" 9>&-; }
-log_once() { [ -n "$(find "$N/.once-$1" -mmin -60 2>/dev/null)" ] || { log "$2"; touch "$N/.once-$1"; }; }
+if ! perl -e 'use Fcntl ":flock"; open(my $f, ">&=", 9) or exit 1;
+  flock($f, LOCK_EX | LOCK_NB) or exit 1; utime undef, undef, $f;'; then
+  exec 9>&-
+  if perl -e 'my @s = stat $ARGV[0]; exit(!@s || time - $s[9] <= $ARGV[1])' "$N/.lock" "$LOCK_BOUND"; then
+    LOCK_NOTE="Node lock: a long-lived process holds $N/.lock (over $LOCK_BOUND seconds); node work is blocked."
+    log_once node-lock "$LOCK_NOTE"
+    # Reuse the retained assistant notice, also displayed by node status.
+    restart_note lock "$LOCK_NOTE"
+  fi
+  # Age cannot distinguish an inherited lock from a genuinely stalled live run.
+  # Renaming it would allow concurrent writers, so leave the inode in place.
+  exit 0
+fi
+# Keep the parent waiting even on TERM/HUP/INT so it cannot release the lock
+# while this worker is still writing. The worker retains the original handlers.
+trap ':' TERM HUP INT
+(
+exec 9>&-
+tmux() { bounded_output 15 tmux "$@" 9>&-; }
 # These records are advisory: an unavailable clock/history or a failed write never stops supervision.
 put() { printf '%s\n' "$2" > "$N/$1.tmp" && mv -f "$N/$1.tmp" "$N/$1"; }
 epoch() { local v; v=$(cat "$N/$1" 2>/dev/null); [[ $v =~ ^[1-9][0-9]{0,10}$ ]] && printf '%s' "$v"; }
+restart_note clear
 hhmm() { perl -MPOSIX=strftime -e 'print strftime("%H:%M", localtime($ARGV[0]))' "$1" 2>/dev/null; }
 NOW=$(date +%s); LAST=$(epoch last-alive); BOOT=""; RESTART=""
 OS=$(uname -s)
 if [ "$OS" = Darwin ]; then
-  BOOT=$(bounded 2 sysctl -n kern.boottime 2>/dev/null 9>&- | sed -nE 's/.*[ {]sec[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p')
+  BOOT=$(bounded_output 2 sysctl -n kern.boottime 2>/dev/null 9>&- | sed -nE 's/.*[ {]sec[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p')
   [[ $BOOT =~ ^[1-9][0-9]{0,10}$ ]] || BOOT=""
 fi
 if [[ $NOW =~ ^[1-9][0-9]{0,10}$ ]]; then
   if [ -n "$LAST" ] && { [ $((NOW - LAST)) -gt 900 ] || [ "${BOOT:-0}" -gt "$LAST" ]; }; then
     CLEAN=unknown
-    if [ "$OS" = Darwin ] && HISTORY=$(LC_ALL=C bounded 2 last -y -1 shutdown 2>/dev/null 9>&-); then
+    if [ "$OS" = Darwin ] && HISTORY=$(LC_ALL=C bounded_output 2 last -y -1 shutdown 2>/dev/null 9>&-); then
       # Request the year; missing/unparseable history cannot establish a shutdown date.
       SHUTDOWN=$(printf '%s\n' "$HISTORY" | perl -MTime::Local=timelocal -e '
         my $now = shift; my %mon; @mon{qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)} = (0..11);
@@ -104,18 +196,68 @@ if [[ $NOW =~ ^[1-9][0-9]{0,10}$ ]]; then
   fi
 fi 2>/dev/null
 
+# Refresh progress at step boundaries without reopening the worker's lock fd.
+touch -c "$N/.lock"
 # Preserve the existing check's names, resume commands, and UNKNOWN/UNSEEN distinctions.
 if [ -n "$RESTART" ]; then
-  CHECK=$(bounded 45 bash "$MH/scripts/megavibe-node.sh" session check 2>/dev/null 9>&-)
+  CHECK=$(bounded_output 45 bash "$MH/scripts/megavibe-node.sh" session check 2>/dev/null 9>&-)
   [ -n "$CHECK" ] || CHECK="Session check unavailable; run: megavibe node session check"
-  put restart-note.txt "$RESTART
+  restart_note restart "$RESTART
 $CHECK
 Secret sync succeeded since start: no (not yet checked)" 2>/dev/null
 fi
 secret_note() {
-  [ -f "$N/restart-note.txt" ] || return 0
-  { sed '/^Secret sync succeeded since start:/d' "$N/restart-note.txt"; printf 'Secret sync succeeded since start: %s\n' "$1"; } > "$N/restart-note.txt.tmp" && mv -f "$N/restart-note.txt.tmp" "$N/restart-note.txt"
+  restart_note secret "Secret sync succeeded since start: $1"
 }
+# Only `sync`, never `get`: the inspected helper reports missing prerequisites,
+# encrypted filenames and Keychain service names, not values. Its value-bearing
+# security calls suppress stderr. Raw stderr lives only in an owner-only temporary
+# file; allow-list diagnostics before retaining a report, then remove the raw file.
+secret_sync() (
+  umask 077
+  err=$(mktemp "$N/.secret-stderr.XXXXXX") || return 1
+  trap 'rm -f "$err" "$err.report"' EXIT
+  bounded 60 "$HOME/.local/bin/secret" sync >/dev/null 2> "$err" </dev/null
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    rm -f "$N/secret-sync-failed.txt"
+  else
+    { printf 'exit status: %s\n' "$rc"; perl -e '
+    my ($line, $long, @tail) = ("", 0);
+    sub keep {
+      my ($s, $long) = @_;
+      if (!$long && ($s eq "secret: age is not installed (brew install age)"
+          || $s eq "secret: no decryption key in this Mac\x27s Keychain: run secret init-key"
+          || $s =~ /^secret: Keychain write for [A-Za-z0-9_.:-]{1,128} did not verify$/
+          || $s =~ /^secret: value for [A-Za-z0-9_.:-]{1,128} is too long for one Keychain command \(limit about 4000 bytes after encoding\); nothing stored$/
+          || $s =~ /^sync: could not decrypt secret-[A-Za-z_][A-Za-z0-9_]{0,127}-[0-9]{8}-[0-9]{6}(?:-[0-9]+)?\.env\.age \(wrong key or file not downloaded yet\)$/)) {
+      } elsif (!$long && $s =~ /^(secret: no (?:secrets folder|public key):) /) {
+        $s = "$1 [path omitted]";
+      } else { $s = "[stderr omitted: unrecognized diagnostic]"; }
+      push @tail, "$s\n"; shift @tail while @tail > 20;
+      shift @tail while length(join "", @tail) > 4096;
+    }
+    # Bound both bytes inspected and the snapshot: a surviving writer can neither
+    # make us wait for EOF nor keep extending the work. Ignore the first partial
+    # line if we seek into a large file; only complete diagnostics are allow-listed.
+    my $left = -s STDIN;
+    if ($left > 65536) { seek(STDIN, $left - 65536, 0); $left = 65536; $long = 1; }
+    while ($left > 0) {
+      my $n = read(STDIN, my $buf, $left > 4096 ? 4096 : $left);
+      last unless $n; $left -= $n;
+      for my $c (split //, $buf) {
+        if ($c eq "\n") { keep($line, $long); ($line, $long) = ("", 0); }
+        elsif (length($line) < 512) { $line .= $c; } else { $long = 1; }
+      }
+    }
+    keep($line, $long) if length($line) || $long;
+    print @tail;
+    ' < "$err"; } > "$err.report" &&
+      mv -f "$err.report" "$N/secret-sync-failed.txt"
+  fi
+  return "$rc"
+)
+touch -c "$N/.lock"
 if [ -e "$N/node.off" ]; then
   secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no) (node off)" 2>/dev/null
   exit 0
@@ -126,8 +268,9 @@ if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
   FAILURES=$(epoch .secret-failures); FAILURES=${FAILURES:-0}; ATTEMPT=0
   START=$(epoch .started-at); START=${START:-0}
   while :; do
+    touch -c "$N/.lock"
     ATTEMPT=$((ATTEMPT + 1))
-    if bounded 60 "$HOME/.local/bin/secret" sync >/dev/null 2>&1 9>&- </dev/null; then
+    if secret_sync; then
       [ "$FAILURES" = 0 ] || log "secret sync ok after $FAILURES failed attempts"
       put .secret-failures 0; put .secret-ok yes
       break
@@ -141,6 +284,7 @@ if [ -e "$N/pa.on" ] && [ -x "$HOME/.local/bin/secret" ]; then
   done
   secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no)"
 else
+  rm -f "$N/secret-sync-failed.txt"
   secret_note "$(cat "$N/.secret-ok" 2>/dev/null || echo no) (sync disabled or tool unavailable)"
 fi 2>/dev/null
 
@@ -156,10 +300,9 @@ peer_state() {
     alarm 0; print index($line, "This system is locked") >= 0 ? "locked" : "up";
   ' "$1" 2>/dev/null 9>&- </dev/null
 }
-PEERS=$(conf NODE_PEERS "" '[^[:cntrl:]]*')
-IFS=' ' read -r -a PEER_ENTRIES <<< "$PEERS"
 SEEN_PEERS='|'
 for PEER in "${PEER_ENTRIES[@]}"; do
+  touch -c "$N/.lock"
   # Safe filenames and arguments; a bad entry cannot prevent checking the other peers.
   [[ $PEER =~ ^([A-Za-z0-9][A-Za-z0-9_-]*)=([A-Za-z0-9][A-Za-z0-9.-]*)(,([A-Za-z0-9][A-Za-z0-9.-]*))?$ ]] || {
     PEER_KEY=$(printf '%s' "$PEER" | cksum)
@@ -184,11 +327,13 @@ for PEER in "${PEER_ENTRIES[@]}"; do
   fi
 done
 
-NAME=$(bounded 10 scutil --get LocalHostName 2>/dev/null 9>&-) || NAME=""
+touch -c "$N/.lock"
+NAME=$(bounded_output 10 scutil --get LocalHostName 2>/dev/null 9>&-) || NAME=""
 case "$NAME" in ""|-*|*[!A-Za-z0-9-]*) log "unusable host name '$NAME'"; exit 1 ;; esac
 [ "${#NAME}" -le 63 ] || { log "host name too long"; exit 1; }
 command -v tmux >/dev/null 2>&1 && command -v megavibe >/dev/null 2>&1 || { log "tmux or megavibe not found"; exit 1; }
 
+touch -c "$N/.lock"
 tmux has-session -t "=$TS" 2>/dev/null || tmux new-session -d -s "$TS" -c "$HOME" -n shell || { log "cannot create tmux session $TS"; exit 1; }
 # One successful listing decides what exists. If tmux cannot list, nothing is started: a failed
 # listing is not proof that a window is gone, and starting on it would duplicate a paid session.
@@ -214,6 +359,7 @@ if ! have "$NAME" && may_start node; then
 fi
 # Is a PA running here? As with the windows, only a successful listing proves its session is absent.
 # PA_UP: yes, no, or unknown (listing failed).
+touch -c "$N/.lock"
 if SESSIONS=$(tmux list-sessions -F '#{session_name}' 2>/dev/null); then
   if printf '%s\n' "$SESSIONS" | LC_ALL=C grep -qxF megavibe-personal; then PA_UP=yes; else PA_UP=no; fi
 else
@@ -239,6 +385,7 @@ fi
 # Claude login about to lapse: tell the node session once a day; it tells the PA, who tells the user.
 # The helper decides (its own contract): exit 0 = more than 168 h left, exit 1 = expires inside 168 h,
 # expired or logged out (its message says which), anything else = lifetime unknown.
+touch -c "$N/.lock"
 bounded 20 "$MH/scripts/claude-auth-check.sh" 168 > "$N/.auth-check" 2>/dev/null 9>&- < /dev/null
 arc=$?
 if [ "$arc" -ne 0 ] && [ "$arc" -ne 1 ] && [ -z "$(find "$N/.auth-unknown" -mtime -1 2>/dev/null)" ]; then
@@ -258,6 +405,7 @@ fi
 # Keep the Codex usage reading fresh for the forecast (usage-route.sh forecast): one tiny Codex call at most every
 # 30 minutes. PA only: a Mac without pa.on, and plain megavibe use, never run it. The helper skips itself when
 # a reading under 15 minutes old exists or codex is unavailable, and never raises: a failed probe is only logged by it.
+touch -c "$N/.lock"
 if [ -e "$N/pa.on" ] && [ -x "$MH/scripts/usage-probe.sh" ]; then
   PROBE_MODEL=$(conf PROBE_MODEL "" '[A-Za-z0-9][A-Za-z0-9._-]*')
   PROBE_CODEX_HOME=$(conf PROBE_CODEX_HOME "" '/[^[:cntrl:]]*')
@@ -271,8 +419,9 @@ fi
 # PA memory: a git repo in the personal folder whose origin is a bare repo on the writing Mac.
 # memory.push: this Mac writes it (commit what changed, push). memory.pull: standby copy, fast-forward
 # only, and only while no PA runs here. Neither file: nothing happens.
+touch -c "$N/.lock"
 M="$MH/personal"
-g() { GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" bounded 60 git -C "$M" "$@" 9>&- < /dev/null; }
+g() { GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" bounded_output 60 git -C "$M" "$@" 9>&- < /dev/null; }
 if [ -d "$M/.git" ] && [ -e "$N/memory.push" ]; then
   # A failing status (damaged index, lock held, timeout) must not read as "nothing changed".
   # Signing is off for these automatic commits: a signing agent is not reachable from a LaunchAgent, and a
@@ -305,3 +454,4 @@ elif [ -d "$M/.git" ] && [ -e "$N/memory.pull" ]; then
   fi
 fi
 exit 0
+)

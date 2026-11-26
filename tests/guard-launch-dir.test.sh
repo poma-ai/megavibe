@@ -5,10 +5,12 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/megavibe-guard-launch.XXXXXX")
 trap '/bin/rm -rf "$T"' EXIT
 T=$(cd "$T" && pwd -P)
 export HOME="$T/home" MEGAVIBE_INIT_SKIP_HEAL=1
-unset MEGAVIBE_HOME MEGAVIBE_ALLOW_KILL MEGAVIBE_ALLOW_REMOVE_LAUNCH MEGAVIBE_ALLOW_MISSING_LAUNCH CLAUDE_PROJECT_DIR TMUX
+unset MEGAVIBE_ALLOW_KILL MEGAVIBE_ALLOW_REMOVE_LAUNCH MEGAVIBE_ALLOW_MISSING_LAUNCH CLAUDE_PROJECT_DIR TMUX
+export MEGAVIBE_HOME="$HOME/.megavibe" CLAUDE_CONFIG_DIR="$HOME/.claude"
 WRAPPER="$HOME/.megavibe/scripts/guard-run.sh"
 HOOKS="$REPO/template/.claude/hooks"
 mkdir -p "$HOME/.megavibe/"{scripts,template/.claude} "$T/recreated/.agent" "$T/project/.claude/hooks"
+cp "$REPO/megavibe" "$MEGAVIBE_HOME/megavibe"
 cp -R "$HOOKS" "$HOME/.megavibe/template/.claude/"
 if [ -f "$REPO/scripts/guard-run.sh" ]; then cp "$REPO/scripts/guard-run.sh" "$WRAPPER"; fi
 mv "$T/project/.claude/hooks" "$T/old-hooks"
@@ -171,7 +173,7 @@ check 'init warns on stderr when the wrapper cannot be installed' grep -Fxq \
 mkdir -p "$T/repo/.agent"
 git -C "$T/repo" init -q
 git -C "$T/repo" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm Initial
-(cd "$T/repo" && bash "$REPO/megavibe" worktree review) > "$T/worktree.log" 2>&1
+(cd "$T/repo" && bash "$MEGAVIBE_HOME/megavibe" worktree review) > "$T/worktree.log" 2>&1
 # A second linked worktree rewrites the main checkout's shared registrations.
 HOME="$T/init-home" bash "$REPO/init.sh" "$T/repo" > "$T/init.log" 2>&1
 git -C "$T/repo" worktree add --detach -q "$T/repo-feature" HEAD
@@ -204,10 +206,10 @@ exit 99
 STUB
 chmod +x "$T/bin/"*
 RC=0
-OUT=$(cd "$T/repo-review/sub" && PATH="$T/bin:$PATH" bash "$REPO/megavibe" worktree remove review 2>&1) || RC=$?
+OUT=$(cd "$T/repo-review/sub" && PATH="$T/bin:$PATH" bash "$MEGAVIBE_HOME/megavibe" worktree remove review 2>&1) || RC=$?
 check 'launcher refuses from inside the target worktree' verdict 1 'current directory'
 RC=0
-OUT=$(cd "$T/repo" && CLAUDE_PROJECT_DIR="$T/repo-review/sub" PATH="$T/bin:$PATH" bash "$REPO/megavibe" worktree remove review 2>&1) || RC=$?
+OUT=$(cd "$T/repo" && CLAUDE_PROJECT_DIR="$T/repo-review/sub" PATH="$T/bin:$PATH" bash "$MEGAVIBE_HOME/megavibe" worktree remove review 2>&1) || RC=$?
 check 'launcher refuses from outside the launch worktree' verdict 1 'launch directory'
 
 guard() {

@@ -9,8 +9,9 @@ ok() { PASS=$((PASS + 1)); }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; }
 eq() { if [ "$2" = "$3" ]; then ok; else bad "$1: got [$2] want [$3]"; fi; }
 H="$T/h"; mkdir -p "$H/.megavibe/scripts"; cp "$REPO/scripts/memory-config.sh" "$H/.megavibe/scripts/"
+cp "$REPO/megavibe" "$H/.megavibe/megavibe"
 F="$H/.claude/settings.json"
-mv_() { HOME="$H" bash "$REPO/megavibe" memory "$@" 2>&1; }
+mv_() { HOME="$H" MEGAVIBE_HOME="$H/.megavibe" CLAUDE_CONFIG_DIR="$H/.claude" bash "$H/.megavibe/megavibe" memory "$@" 2>&1; }
 val() { jq -r "$1" "$F"; }
 
 mv_ >/dev/null; eq "list on a fresh HOME exits 0" "$?" "0"
@@ -18,7 +19,7 @@ mv_ set server shared >/dev/null; eq "set server" "$(val '.env.MEGAVIBE_MEMORY_S
 mv_ set DOCS docs.srv >/dev/null; eq "key is case-insensitive" "$(val '.env.MEGAVIBE_MEMORY_DOCS')" "docs.srv"
 mv_ set MEGAVIBE_MEMORY_GENERAL acme/general >/dev/null; eq "full key accepted" "$(val '.env.MEGAVIBE_MEMORY_GENERAL')" "acme/general"
 mv_ set docs_ask 0 >/dev/null; eq "docs_ask written as a string" "$(val '.env.MEGAVIBE_MEMORY_DOCS_ASK|type')" "string"
-eq "what is written is what memory-config.sh trusts" "$(HOME="$H" bash "$H/.megavibe/scripts/memory-config.sh" | LC_ALL=C sort | tr '\n' ' ')" "MEGAVIBE_MEMORY_DOCS=docs.srv MEGAVIBE_MEMORY_DOCS_ASK=0 MEGAVIBE_MEMORY_GENERAL=acme/general MEGAVIBE_MEMORY_SERVER=shared "
+eq "what is written is what memory-config.sh trusts" "$(env -u CLAUDE_CONFIG_DIR HOME="$H" bash "$H/.megavibe/scripts/memory-config.sh" | LC_ALL=C sort | tr '\n' ' ')" "MEGAVIBE_MEMORY_DOCS=docs.srv MEGAVIBE_MEMORY_DOCS_ASK=0 MEGAVIBE_MEMORY_GENERAL=acme/general MEGAVIBE_MEMORY_SERVER=shared "
 mv_ | grep -q 'MEGAVIBE_MEMORY_SERVER=shared'; eq "list shows the active values" "$?" "0"
 
 mv_ set server 'bad value' >/dev/null; eq "refuses a non-token" "$?" "2"

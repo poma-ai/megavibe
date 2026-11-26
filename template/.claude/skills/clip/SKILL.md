@@ -1,11 +1,11 @@
 ---
-name: copy
-description: Copy content to clipboard in a format suited to the target (Slack, Markdown, plain text). Use when the user says "clip", "copy that", "clipboard", or "/copy".
-allowed-tools: Bash, AskUserQuestion
+name: clip
+description: Copy content to clipboard in a format suited to the target (Slack, Markdown, plain text). Use when the user says "clip", "copy that", "clipboard", or "/clip".
+allowed-tools: Bash(pbcopy *), Bash(xclip -selection clipboard *), Bash(xsel --clipboard *), Bash(clip.exe *), AskUserQuestion
 user-invocable: true
 ---
 
-# Copy to Clipboard
+# Clip to Clipboard
 
 Copies the most recent output (or specified content) to the clipboard in the right format for the user's target.
 
@@ -32,7 +32,7 @@ Copies the most recent output (or specified content) to the clipboard in the rig
    - Strip all markup
    - Use indentation and whitespace for structure
 
-3. **Copy to clipboard** using the platform tool:
+3. **Copy to clipboard** using the platform tool. Pass the formatted text on stdin with a here-document whose delimiter is a long random-looking word, checked against the entire text and regenerated until it does not occur anywhere in it. Quote that delimiter in the opening here-document operator to prevent shell expansion of the contents:
    - macOS: `pbcopy`
    - Linux: `xclip -selection clipboard` or `xsel --clipboard`
    - Windows/WSL: `clip.exe`

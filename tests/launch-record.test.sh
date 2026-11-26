@@ -167,8 +167,9 @@ case "$early" in *MEGAVIBE_LAUNCH_PPID=4242*MEGAVIBE_LAUNCH_PCWD=/r1*|*MEGAVIBE_
 # R2: the wrapper removes an explicit parent from the environment but hands it (set, even empty) to the node
 # script, which reads it once; unset stays unset. Real wrapper, stub node script.
 mkdir -p "$T/nh/scripts"
+cp "$REPO/megavibe" "$T/nh/megavibe"
 printf '#!/bin/bash\nprintf "node:%%s\\n" "${MEGAVIBE_PARENT_SESSION-unset}"\n' > "$T/nh/scripts/megavibe-node.sh"
-nodeenv() { (cd "$T" && env -i PATH="$PATH" HOME="$T" MEGAVIBE_HOME="$T/nh" "$@" bash "$REPO/megavibe" node status 2>&1 | tail -1); }
+nodeenv() { (cd "$T" && env -i PATH="$PATH" HOME="$T" MEGAVIBE_HOME="$T/nh" CLAUDE_CONFIG_DIR="$T/config" "$@" bash "$T/nh/megavibe" node status 2>&1 | tail -1); }
 [ "$(nodeenv MEGAVIBE_PARENT_SESSION=abc-1)" = "node:abc-1" ] || fail "R2: node dispatch must carry an explicit parent"
 [ "$(nodeenv MEGAVIBE_PARENT_SESSION=)" = "node:" ] || fail "R2: node dispatch must carry an explicit empty parent"
 [ "$(nodeenv X=1)" = "node:unset" ] || fail "R2: node dispatch must not invent a parent"

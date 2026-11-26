@@ -362,7 +362,7 @@ A subagent's prompt cache lives 5 minutes by default (the main thread's usually 
 
 ### Slash commands
 
-Inside a megavibe session:
+Inside a megavibe session, type the commands below. `/megavibe-restart` and `/finish-feature` are manual-only: Claude may offer them, but only a command typed by the user starts the skill. `/rehydrate`, `/catchup`, `/doc-review`, `/init-feature`, and `/watch` remain model-invocable; Claude still runs `/rehydrate` itself when post-compaction recovery requires it.
 
 | Command | When to use |
 |---------|------------|
@@ -375,9 +375,11 @@ Inside a megavibe session:
 | `/work-ticket <task file \| issue>` | **Work one GitHub issue end to end** in the current worktree: understand, implement, verify with evidence, independent review, PR that closes it, report. Self-contained; the implementation step can be handed to a named skill (`megavibe dispatch start --skill NAME`, or `MEGAVIBE_TICKET_SKILL`, else the built-in method). The dispatcher starts every issue session with it |
 | `/triage-ticket <issue>` | **Is this issue buildable as written?** Checks the goal, acceptance, reproduction steps for a defect, unresolved choices and missing attachments (and the repo's issue template). If something that changes what gets built is missing, it comments on the issue with at most five specific questions, mentions the issue's author (not a bot), puts the `needs-info` label on the issue (creating it if the repo lacks it, label first, comment second) and reports `blocked: needs info`. It never posts twice while its question is unanswered. `/work-ticket` calls it when an issue is unclear |
 | `/finish-feature [base]` | **After finishing one** — measures turns, tool calls and tokens actually spent from the transcript, scores them against what `/init-feature` predicted, comments the result on the PR and offers to merge it |
-| `/copy` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
+| `/clip` | Copy content to the clipboard, formatted for the target (Slack, Markdown, plain text) |
 | `/watch [interval] [org/repo ...]` | **Before leaving a session unattended** — schedules `tick.sh` as a recurring prompt (30 min default): review requests, pushes, reviews and comments from others on the watched repos, Linear comments, orphaned sessions, the login lifetime, both subscriptions' usage; the session acts on it. `/watch status`, `/watch off`. See "Unattended windows" |
 | `/rc` | Get a QR code to connect from your phone (Claude app) |
+
+**Upgrading from the custom `/copy` skill:** it is now `/clip`. Until the old `.claude/skills/copy/` directory is removed, the old skill keeps shadowing Claude Code's built-in `/copy` command. Project sync in `init.sh` (also called by the launcher) copies current skills but has no retired-file cleanup mechanism. After syncing, confirm `.claude/skills/clip/SKILL.md` exists, then manually remove the old megavibe `.claude/skills/copy/` directory from each previously initialized project. Inspect it first and preserve any local customizations outside the skills directory. Restart the session to refresh the command list.
 
 ---
 
@@ -579,7 +581,7 @@ or an opt-in armed marker cannot exclude a later user edit or foreground change.
 The command never sends keys, signals, prepares a handover or claims a restart.
 `--others` excludes the calling session; otherwise it is reported last.
 
-Run `/megavibe-restart` inside each session you want to restart, then type
+Type `/megavibe-restart` inside each session you want to restart, then type
 `/exit` yourself. It saves `.agent/sessions/<session id>/restart-handover.txt`.
 The launcher re-executes its updated copy with `--resume <session id>`, including
 when already resumed. **Unknown IDs are skipped**, with a one-line notice;
@@ -676,6 +678,47 @@ rm -rf ~/.megavibe ~/.local/bin/megavibe
 ## Architecture (for contributors)
 
 See [CLAUDE.md](CLAUDE.md) for full contributor documentation.
+
+**Running the launcher from a work copy.** Session launches and mutating
+subcommands require the installed runtime. After resolving symlinks, the running
+launcher and `$MEGAVIBE_HOME/megavibe` must be the same file (`-ef`) in the same
+physical directory, with no `.git` directory or file beside them. Pointing
+`MEGAVIBE_HOME` at a checkout cannot make it an installation. Case aliases on
+case-insensitive filesystems and installed symlinks work; equal-content copies
+and hard links from another directory are refused, since that directory could
+supply different relative runtime resources.
+
+Both the downloaded installer and `bash megavibe/setup.sh` from a clone use
+setup's selective copies into `$HOME/.megavibe`; neither copies the source
+`.git`. Setup currently fixes that destination; a runtime relocated to a custom
+`MEGAVIBE_HOME` follows the same identity rule. A checkout at the installation
+path remains a work copy. Install deliberately with `bash megavibe/setup.sh`.
+If you cloned into the installation directory, move that directory to a separate
+checkout, copy it back to the installation path without `.git` to keep existing
+runtime data, then run `bash /path/to/checkout/setup.sh`.
+Both automatic setup branches refuse nonterminal stdin and print an explicit
+setup command. Explicit `update` and `setup.sh` keep their behavior.
+
+| Command | Work-copy policy |
+|---|---|
+| Session launches (including resume/continue) | Guarded |
+| `memory set`, `memory unset`, `reviewers set` | Guarded |
+| `worktree NAME [BRANCH]`, `worktree remove NAME` | Guarded |
+| `node`, `tick`, `usage` (all forms) | Guarded; avoids duplicating the helpers' argument parsers |
+| `route` | Guarded; even preview writes usage caches |
+| `assistant`, `personal`, `trash-greenlight` | Guarded |
+| `update`, `update --check` | Exempt intentionally, including their existing writes |
+| `help`, `version` (and flags), `doctor`, `auth`, `sessions`, `restart-all` | Exempt; informational/reporting |
+| `remote`, `nondev`, `megawork` | Exempt; print-only notices |
+| `reviewers` without `set`, `memory` without `set`/`unset`, `worktree`/`worktree list` | Exempt; listings (invalid forms only print usage) |
+
+For end-to-end tests, `HOME`, `MEGAVIBE_HOME`, and `CLAUDE_CONFIG_DIR` must **all**
+point into scratch, with stub `claude`, `tmux`, and network/tool installers first
+on `PATH` (stub `git` when testing updates). A scratch config alone is not
+isolation: setup uses `$HOME/.megavibe` and the protocol uses `$HOME/.claude`.
+To exercise mutating commands or a full launch, copy the launcher and its needed
+files into the scratch installation without `.git`. No test-only guard bypass
+is needed.
 
 - **Idempotency is sacred.** Both `setup.sh` and `init.sh` are safe to re-run.
 - **Marker-based protocol updates.** `<!-- megavibe-v3 -->` markers enable surgical replacement.

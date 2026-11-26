@@ -10,10 +10,13 @@
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 REAL_TMUX=$(command -v tmux) || { echo "skip: tmux not installed"; exit 0; }
-T=$(mktemp -d "${TMPDIR:-/tmp}/node-sess-test.XXXXXX") || exit 2
+# Keep the Unix socket path short even when macOS supplies a long TMPDIR.
+# A sandbox may supply another short writable root (e.g. /private/tmp).
+T=$(mktemp -d "${NODE_SESSION_TEST_TMPDIR:-/tmp}/node-sess-test.XXXXXX") || exit 2
 T=$(cd "$T" && pwd -P)
-# A socket name no other run can hold (the temp folder's random suffix), so a stale server is never met.
-SOCK="mvtest-${T##*.}-$$"
+# Literal private server name, with a fresh socket directory for each test run.
+SOCK=mv-node-sessions-test
+export TMUX_TMPDIR="$T"
 PASS=0; FAIL=0
 check() { if eval "$2"; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1"; fi; }
 
@@ -25,7 +28,7 @@ printf '#!/bin/bash\necho testmac\n' > "$B/scutil"
 printf '#!/bin/bash\necho Darwin\n' > "$B/uname"
 printf '#!/bin/bash\n[ "$1" = print ] && exit 113\nexit 0\n' > "$B/launchctl"
 chmod +x "$B"/*
-export PATH="$B:$PATH"
+export PATH="$B:$PATH" CLAUDE_CONFIG_DIR="$T/config"
 export HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe"
 mkdir -p "$MEGAVIBE_HOME/personal"
 N="$MEGAVIBE_HOME/node"; S="$N/sessions"
