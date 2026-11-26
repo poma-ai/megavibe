@@ -356,14 +356,17 @@ fi
 if [ -f "$SETTINGS" ] && [ "$SETTINGS_UNREADABLE" = 0 ]; then
   if command -v jq &>/dev/null; then
     # Always sync hooks from template (infrastructure — matches hook script overwrite policy).
-    # One exception: UserPromptSubmit is union-merged (a project's own prompt hooks survive; megavibe's
-    # status-sync entry is replaced, not duplicated) because the template only started owning it with status-sync.
+    # Two exceptions: UserPromptSubmit and Notification are union-merged (a project's own hooks on them survive; megavibe's
+    # status-sync and session-state entries are replaced, not duplicated) because the template only started owning them late.
     # Preserves any non-hooks keys (permissions, etc.) from existing settings
     # plansDirectory: default it fleet-wide (set-if-absent) so plans persist into
     # .agent/PLANS instead of the user-global ~/.claude/plans/, but never clobber a
     # value the project set deliberately. Relative path resolves to project root.
-    jq -s '.[0] as $p | .[1] as $t | ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
-        | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | map(.hooks |= map(select(((.command // "") | test("^(\"[^\"]*\\.claude/hooks/status-sync\\.sh\"|[^ \"]*\\.claude/hooks/status-sync\\.sh)$")) | not))) | map(select((.hooks | length) > 0))) + ($t.hooks.UserPromptSubmit // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
+    jq -s '.[0] as $p | .[1] as $t
+        | def own: map(.hooks |= map(select(((.command // "") | test("^(\"[^\"]*\\.claude/hooks/(status-sync|session-state)\\.sh\"|[^ \"]*\\.claude/hooks/(status-sync|session-state)\\.sh)$")) | not))) | map(select((.hooks | length) > 0));
+        ($p * {hooks: $t.hooks}) | .plansDirectory = ($p.plansDirectory // $t.plansDirectory)
+        | .hooks.UserPromptSubmit = ((($p.hooks.UserPromptSubmit // []) | own) + ($t.hooks.UserPromptSubmit // []))
+        | .hooks.Notification = ((($p.hooks.Notification // []) | own) + ($t.hooks.Notification // []))' "$SETTINGS" "$TEMPLATE_SETTINGS" \
       | expand_hook_commands \
       > "$SETTINGS_TMP"
     atomic_install "$SETTINGS_TMP" "$SETTINGS"

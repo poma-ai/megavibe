@@ -2,7 +2,7 @@
 # /bin/bash tests/dispatch.test.sh
 # scripts/megavibe-dispatch.sh against a scratch repo with a bare origin, a stub gh and a stub megavibe,
 # on a PRIVATE tmux server (every tmux call goes through a wrapper on PATH that runs `env -u TMUX tmux -L
-# <own socket>`). No tmux kill verb is used: panes started here are ended by pid and the server exits with
+# <own socket>`). Only `kill-session` on this private socket is used: panes started here are ended by pid and the server exits with
 # its last session.
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -462,6 +462,34 @@ unset MEGAVIBE_DISPATCH_QUEUE
 # F7: a cockpit that lost its menu pane is made whole again by the next call
 tmux send-keys -t =mvdc-proj:.{left} C-c; sleep 1
 o=$(D cockpit); check "F7 cockpit repairs a lost pane ($o)" '[ "$(tmux list-panes -t =mvdc-proj: -F x | wc -l | tr -d " ")" = 2 ]'
+# review 2: F1 the queue session ended alone while the server runs (no cockpit): settled as ended, not "unknown"
+export MEGAVIBE_DISPATCH_QUEUE=q7
+D start --no-attach --name q7 >/dev/null; D add 170 >/dev/null; D max 5 >/dev/null; D tick >/dev/null
+tmux kill-session -t =mvd-q7
+o=$(D tick); check "F1 mvd-Q gone with the server alive: tick settles the issue as ended ($o)" '[ "$(awk -F"\t" "\$1 == 170 { print \$2 }" "$MEGAVIBE_HOME/dispatch/q7/queue.tsv")" = ended ]'
+# F7 resume drops the dead process's state record
+S170=$(awk -F"\t" '$1 == 170 { print $8 }' "$MEGAVIBE_HOME/dispatch/q7/queue.tsv"); NOWT=$(date +%s)
+printf '%s\tidle\t%s\t\n' "$NOWT" "$((NOWT - 2400))" > "$HOME/.megavibe/status/$S170"
+D resume 170 >/dev/null 2>&1
+check "F7 resume removes the old state record" '[ ! -e "$HOME/.megavibe/status/$S170" ]'
+unset MEGAVIBE_DISPATCH_QUEUE
+# F8: with mvd-Q ended alone and the cockpit's grouped session alive, a new window joins that group (no second session, no false ended)
+export MEGAVIBE_DISPATCH_QUEUE=q8
+D start --no-attach --name q8 >/dev/null; D add 180 >/dev/null; D max 5 >/dev/null; D tick >/dev/null; D cockpit >/dev/null
+tmux kill-session -t =mvd-q8; D add 181 >/dev/null; D tick >/dev/null; o=$(D tick)
+check "F8 a window opened after mvd-Q ended joins the view group; nothing is settled as ended ($o)" '! tmux has-session -t =mvd-q8 2>/dev/null && [ "$(awk -F"\t" "\$1 == 180 { print \$2 }" "$MEGAVIBE_HOME/dispatch/q8/queue.tsv")" = running ] && [ "$(awk -F"\t" "\$1 == 181 { print \$2 }" "$MEGAVIBE_HOME/dispatch/q8/queue.tsv")" = running ]'
+# F5: a busy record nobody refreshed is not trusted
+S180=$(awk -F"\t" '$1 == 180 { print $8 }' "$MEGAVIBE_HOME/dispatch/q8/queue.tsv"); NOWT=$(date +%s)
+printf '%s\tthinking\t%s\t\n' "$((NOWT - 10800))" "$((NOWT - 10800))" > "$HOME/.megavibe/status/$S180"
+o=$(D status); check "F5 a 3 h old thinking record is shown as unknown ($o)" '[[ "$o" != *"[thinking"* ]]'
+printf '%s\tidle\t%s\t\n' "$NOWT" "$((NOWT - 2400))" > "$HOME/.megavibe/status/$S180"
+o1=$(D tick); o2=$(D tick); check "F13 the same wait is reported once, not on every tick ($o1 | $o2)" '[[ "$o1" == *"issue 180: idle for 40m"* ]] && [[ "$o2" != *"issue 180: idle for"* ]]'
+unset MEGAVIBE_DISPATCH_QUEUE
+# F11: the comment filter strips brackets before links, so removing them cannot join the halves of a link
+eval "$(sed -n '/^neutralise()/p' "$REPO/scripts/megavibe-dispatch.sh")"
+o=$(printf '%s\n' 'see https:/<>/evil.example/x and w<>ww.evil.example and [a](//evil.example) and ftp://h/p #12' | neutralise)
+check "F11 neutralise: no link survives, whatever is inserted ($o)" '! grep -qE "evil\.example|ftp://|https?://" <<<"$o" && [[ "$o" == *"# 12"* ]]'
+
 # O2/F9: an issue with a PR and an idle window frees its slot (window kept)
 D add 150 >/dev/null; D max 100 >/dev/null; D tick >/dev/null
 echo "dispatch/issue-150 https://github.com/o/r/pull/150" >> "$PRFILE"; sleep 2

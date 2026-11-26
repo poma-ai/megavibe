@@ -14,9 +14,9 @@
 [ -d "${CLAUDE_PROJECT_DIR:-.}/.agent" ] || exit 0
 command -v jq &>/dev/null || exit 0
 
-INFO=$(cat | jq -r '[(.hook_event_name // "" | tostring), (.session_id // "" | tostring), (.tool_name // ""), ((.tool_input.command // .tool_input.file_path // .tool_input.pattern // .tool_input.url // .tool_input.description // "") | tostring), (.message // "" | tostring)] | map(gsub("[\u0001-\u001f]"; " ")) | join("\u001f")' 2>/dev/null) || exit 0
+INFO=$(cat | jq -r '[(.hook_event_name // "" | tostring), (.session_id // "" | tostring), (.tool_name // ""), ((.tool_input.command // .tool_input.file_path // .tool_input.pattern // .tool_input.url // .tool_input.description // "") | tostring), (.message // "" | tostring), (.agent_id // "" | tostring), (.notification_type // "" | tostring)] | map(gsub("[\u0001-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]"; " ")) | join("\u001f")' 2>/dev/null) || exit 0
 # a unit separator, not a tab: tab is whitespace to `read`, so an empty tool name would swallow its delimiter and shift the fields
-IFS=$'\037' read -r HEV SID TOOL HINT MSG <<< "$INFO"
+IFS=$'\037' read -r HEV SID TOOL HINT MSG AGENT NTYPE <<< "$INFO"
 # the event comes from Claude Code's own payload (init.sh quotes a registered command as one word, so it cannot carry an argument);
 # an explicit argument, used by the tests, overrides it
 EVENT="${1:-}"
@@ -32,12 +32,20 @@ case "$EVENT" in
   pre)
     case "$TOOL" in
       AskUserQuestion) STATE=input; DETAIL="a question for you" ;;
+      # Bash: the command's first word only (a command line can carry a token or a password); other tools: their file, pattern or url
+      Bash) STATE=working; DETAIL=$(clean "Bash${HINT:+ ${HINT%% *}}") ;;
       *) STATE=working; DETAIL=$(clean "$TOOL${HINT:+ $HINT}") ;;
     esac ;;
   post) STATE=thinking ;;
   notify)
-    # Claude Code's notification for a permission prompt; the idle-prompt notice is not news (Stop already said idle)
-    case "$MSG" in *ermission*|*approv*|*"needs your"*) STATE=input; DETAIL=$(clean "$MSG") ;; *) exit 0 ;; esac ;;
+    # a notification that asks for you. notification_type is the reliable field (permission_prompt, worker_permission_prompt,
+    # agent_needs_input, elicitation_dialog); the message text is the fallback for a version that does not send it. An idle prompt or
+    # an auth notice is not news (Stop already said idle).
+    case "$NTYPE" in
+      permission_prompt|worker_permission_prompt|agent_needs_input|elicitation_dialog) STATE=input; DETAIL=$(clean "${MSG:-$NTYPE}") ;;
+      "") case "$MSG" in *ermission*|*approv*|*"needs your"*) STATE=input; DETAIL=$(clean "$MSG") ;; *) exit 0 ;; esac ;;
+      *) exit 0 ;;
+    esac ;;
   stop) STATE=idle ;;
   end) STATE=ended ;;
   *) exit 0 ;;
@@ -49,6 +57,8 @@ mkdir -p "$DIR" 2>/dev/null && chmod 700 "$DIR" 2>/dev/null
 F="$DIR/$SID"; NOW=$(date +%s); SINCE=$NOW
 if [ -f "$F" ] && [ ! -L "$F" ]; then
   IFS=$'\t' read -r _ OLD OLDSINCE _ < "$F" 2>/dev/null
+  # a subagent's tool events must not erase a question the main session is waiting on
+  if [ -n "$AGENT" ] && [ "$OLD" = input ] && { [ "$EVENT" = pre ] || [ "$EVENT" = post ]; }; then exit 0; fi
   [ "$OLD" != "$STATE" ] || { [[ $OLDSINCE =~ ^[0-9]+$ ]] && SINCE="$OLDSINCE"; }
 fi
 if [ "$STATE" = ended ]; then rm -f "$F" 2>/dev/null; exit 0; fi

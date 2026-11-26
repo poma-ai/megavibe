@@ -58,10 +58,10 @@ repo_root() { git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null || die "not
 # shell, must not read "no such session" off the wrong server and settle every running issue as ended.
 TMUX_SOCK=""; TMUX_BIN=""
 # bounded: a wedged tmux server must not hold the queue lock for ever (15 s, as megavibe-node.sh does). fd 9 is the lock: never inherited.
-tm() { [ -n "$TMUX_BIN" ] || TMUX_BIN=$(type -P tmux); if [ -n "$TMUX_SOCK" ]; then bounded 15 "$TMUX_BIN" -S "$TMUX_SOCK" "$@" 9>&-; else bounded 15 "$TMUX_BIN" "$@" 9>&-; fi; }
+tm() { [ -n "$TMUX_BIN" ] || TMUX_BIN=$(type -P tmux); if [ -n "$TMUX_SOCK" ]; then bounded 15 "$TMUX_BIN" -S "$TMUX_SOCK" "$@"; else bounded 15 "$TMUX_BIN" "$@"; fi; }
 # every gh call is bounded too (60 s): a stalled GitHub request would otherwise wedge the lock
 GH_BIN=""
-gh() { [ -n "$GH_BIN" ] || GH_BIN=$(type -P gh); bounded 60 "$GH_BIN" "$@" 9>&-; }
+gh() { [ -n "$GH_BIN" ] || GH_BIN=$(type -P gh); bounded 60 "$GH_BIN" "$@"; }
 
 # ── queue state ───────────────────────────────────────────────────────
 # conf: KEY=value lines (repo, max, model). queue.tsv columns:
@@ -111,6 +111,10 @@ ensure_label() {   # the waiting label exists in the repo (created once, a repo 
 # (bidirectional overrides) are removed, not escaped.
 clean1() { printf '%s' "$1" | MAXC="${2:-100}" perl -CSD -e 'local $/; my $t = <STDIN>; $t = "" unless defined $t; $t =~ s/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]//g; print substr($t, 0, $ENV{MAXC});' 2>/dev/null; }
 
+# neutralise: one line of model text made safe to post: brackets and angle brackets go FIRST (otherwise removing them could join the
+# halves of a link the filter had passed), then links of any scheme, protocol-relative links and www. hosts, then #123 references.
+neutralise() { perl -pe 's/[<>\[\]]//g; s{\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+}{(link removed)}gi; s{(?<![\w:])//\S+}{(link removed)}g; s/#(?=\d)/# /g' 2>/dev/null; }
+
 # issue_of REF: prints the issue number of a number, "#N", or an issue URL of this repository. Returns 1 for anything else and 2 for
 # an issue URL of ANOTHER repository (queued, claimed and worked here it would be a different issue with the same number).
 issue_of() {
@@ -138,11 +142,12 @@ live_windows() {   # WINS = "key<TAB>window_id<TAB>idle_seconds" per stamped win
     return 0
   fi
   case "$out" in
-    *"no server running"*|*"can't find session"*|*"No such file or directory"*|*"Connection refused"*) WINS_STATE=noserver ;;
+    *"can't find session"*) WINS_STATE=noserver; return 0 ;;   # the server answered: the session is not there
+    *"no server running"*|*"No such file or directory"*|*"Connection refused"*) WINS_STATE=noserver ;;
     *) WINS_STATE=unknown ;;
   esac
-  # the server recorded at start still being alive means the sessions are, whatever this call could not reach (a socket file
-  # removed under a live server): never settle them as ended on that
+  # the server recorded at start still being alive while this call could not REACH a server (a socket file removed under it)
+  # means the sessions are alive: never settle them as ended on that
   if [ "$WINS_STATE" = noserver ]; then
     pid=$(conf_get pid)
     if [[ $pid =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null && [[ $(ps -p "$pid" -o comm= 2>/dev/null) == *tmux* ]]; then WINS_STATE=unknown; fi
@@ -156,6 +161,7 @@ stamp() { tm set-option -w -t "$1" @mvd_key "$2"; }
 open_win() {
   local key="$1" name="$2" dir="$3" wid; shift 3
   if tm has-session -t "=mvd-$Q" 2>/dev/null; then wid=$(tm new-window -d -P -F '#{window_id}' -t "=mvd-$Q:" -n "$name" -c "$dir" "$@") || return 1
+  elif tm has-session -t "=mvdv-$Q" 2>/dev/null; then wid=$(tm new-window -d -P -F '#{window_id}' -t "=mvdv-$Q:" -n "$name" -c "$dir" "$@") || return 1   # mvd-Q alone was ended: the windows live on there
   else wid=$(tm new-session -d -P -F '#{window_id}' -s "mvd-$Q" -n "$name" -c "$dir" "$@") || return 1; fi
   [[ $wid =~ ^@[0-9]+$ ]] || return 1
   printf '%s' "$wid"; stamp "$wid" "$key" || return 2
@@ -216,7 +222,7 @@ cmd_start() {
     base=$(printf '%s' "$rv" | jq -r '.defaultBranchRef.name // empty')
     { [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$ ]] && [[ $base != *..* ]] && [ "$base" != null ]; } || base=main
   fi
-  (cd "$repo" && bounded 120 git fetch -q origin "$base" 9>&-) || die "git fetch origin $base failed: dispatch cuts every worktree from origin/$base (--base names another branch)"
+  (cd "$repo" && bounded 120 git fetch -q origin "$base") || die "git fetch origin $base failed: dispatch cuts every worktree from origin/$base (--base names another branch)"
   PQ_DIR="$repo"; pick_queue "$name"
   mkdir -p "$D/tasks"; touch "$D/queue.tsv"
   lock   # before anything is written: two starts must not both decide what this queue is
@@ -287,8 +293,8 @@ cmd_finish() {
     ! win_idle "$k" >/dev/null || say "issue $k: window still open (busy or at a prompt): attach and /exit it"
     wt=$(col "$(row "$k")" 5)
     if [ -d "$wt" ] && type -P claude >/dev/null 2>&1; then
-      while IFS= read -r id; do [ -z "$id" ] || { bounded 20 "$(type -P claude)" stop "$id" >/dev/null 2>&1 9>&- && say "issue $k: background copy $id stopped"; } || true; done \
-        < <(bounded 20 "$(type -P claude)" agents --json --cwd "$wt" 2>/dev/null 9>&- | jq -r '.[].id // empty' 2>/dev/null || true)
+      while IFS= read -r id; do [ -z "$id" ] || { bounded 20 "$(type -P claude)" stop "$id" >/dev/null 2>&1 && say "issue $k: background copy $id stopped"; } || true; done \
+        < <(bounded 20 "$(type -P claude)" agents --json --cwd "$wt" 2>/dev/null | jq -r '.[].id // empty' 2>/dev/null || true)
     fi
   done
 }
@@ -349,7 +355,10 @@ sstate() {   # sstate SESSION_ID: sets SS_*; returns 1 when there is no usable r
   IFS=$'\t' read -r ts st since det < "$f" || true
   [[ $ts =~ ^[0-9]+$ ]] && [[ $since =~ ^[0-9]+$ ]] || return 1
   case "$st" in thinking|working|input|idle) ;; *) return 1 ;; esac
-  SS_STATE="$st"; SS_DETAIL="$(printf '%s' "$det" | tr -d '\000-\037' | cut -c1-80)"; SS_SINCE="$since"; SS_TS="$ts"
+  # a busy record nobody has refreshed for MEGAVIBE_DISPATCH_STATE_STALE_SECS (default 900: a turn that ended on an error or was
+  # interrupted writes no Stop) is not trusted: the readers fall back to the window's idle time as before
+  case "$st" in thinking|working) [ $(($(date +%s) - ts)) -lt "${MEGAVIBE_DISPATCH_STATE_STALE_SECS:-900}" ] || return 1 ;; esac
+  SS_STATE="$st"; SS_DETAIL="$(clean1 "$det" 80)"; SS_SINCE="$since"; SS_TS="$ts"
 }
 state_of() {   # state_of KEY (dispatcher or an issue number)
   local sid; if [ "$1" = dispatcher ]; then sid=$(conf_get dsid); else sid=$(col "$(row "$1")" 8); fi
@@ -448,7 +457,7 @@ cmd_menu() {
     done
     printf '\n\033[2mup/down j/k  Enter open  n next needing you\n(prefix+Left: back here)\033[0m\n'
     key=""; rc=0; read -rsn1 -t 3 key || rc=$?
-    if [ "$rc" -gt 128 ]; then continue; elif [ "$rc" -ne 0 ]; then exit 0; fi   # timeout: redraw; end of input: stop, never spin
+    if [ "$rc" -ne 0 ]; then if [ "$rc" -gt 128 ] || [ -t 0 ]; then continue; else exit 0; fi; fi   # timeout (1 in bash 3.2, over 128 later): redraw; end of input on a pipe: stop, never spin
     case "$key" in
       $'\e') rest=""; read -rsn2 -t 1 rest || true
               case "$rest" in '[A') [ "$sel" -le 0 ] || sel=$((sel - 1)) ;; '[B') [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;; esac ;;
@@ -576,7 +585,7 @@ make_worktree() {
   local n="$1" repo br wt l; repo=$(conf_get repo); br="dispatch/issue-$n"; WT=""
   wt="$(dirname "$repo")/$(basename "$repo")-issue-$n"
   if [ ! -e "$wt" ]; then
-    bounded 120 git -C "$repo" fetch -q origin "$(base_of)" 9>&- || { say "issue $n: git fetch origin $(base_of) failed; not started"; return 1; }
+    bounded 120 git -C "$repo" fetch -q origin "$(base_of)" || { say "issue $n: git fetch origin $(base_of) failed; not started"; return 1; }
     if git -C "$repo" show-ref --verify --quiet "refs/heads/$br"; then
       git -C "$repo" worktree add -q "$wt" "$br" || { say "issue $n: git worktree add failed for existing branch $br; not started"; return 1; }
     else
@@ -610,7 +619,7 @@ trust_preflight() {
     if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v claude >/dev/null 2>&1; then PC_ENV+=("CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
     else say "  (workspace-trust not pre-accepted for $wt: $(cat "$D/.pc.why" 2>/dev/null); the session may wait at the dialog: status shows it idle, peek shows it)"; return 0; fi
   fi
-  (cd "$wt" && bounded 60 "${PC_ENV[@]}" claude -p --dangerously-skip-permissions "echo ok" </dev/null >/dev/null 2>&1 9>&-) || true
+  (cd "$wt" && bounded 60 "${PC_ENV[@]}" claude -p --dangerously-skip-permissions "echo ok" </dev/null >/dev/null 2>&1) || true
 }
 launch() {   # launch N: worktree, window, record. Returns 1, having said why, when the issue could not be started.
   local n="$1" wt sid model parent prompt wid orc=0 cur st1
@@ -667,7 +676,7 @@ pc_one() {
   local out="$D/.pc.out.$2" ans="$D/.pc.ans.$2"; : > "$ans"; mkdir -p "$D/pc.cwd"
   # from an empty folder of its own, as amass.sh does: not from the repo, so nothing in the repo is a candidate for loading
   ( cd "$D/pc.cwd" && bounded 120 "${PC_ENV[@]}" claude -p --model "${MEGAVIBE_DISPATCH_PRECHECK_MODEL:-haiku}" --output-format json --tools "" \
-    --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" < "$1" > "$out" 2>/dev/null 9>&- ) || return 0
+    --no-session-persistence --disable-slash-commands --strict-mcp-config --setting-sources "" < "$1" > "$out" 2>/dev/null ) || return 0
   jq -r 'select(type == "object" and .is_error == false and (.result | type) == "string") | .result' "$out" 2>/dev/null \
     | tr '\n' ' ' | sed -e 's/^[^{]*//' -e 's/[^}]*$//' > "$ans" || true
 }
@@ -704,6 +713,7 @@ precheck() {
   valid=0; flagged=0; txt=""
   for ((k = 1; k <= votes; k++)); do
     a=$(cat "$D/.pc.ans.$k" 2>/dev/null) || a=""
+    [ -n "$a" ] || continue   # jq 1.6 exits 0 on empty input even with -e
     printf '%s' "$a" | jq -e 'type == "object" and (.ready | type) == "boolean"' >/dev/null 2>&1 || continue
     valid=$((valid + 1))
     [ "$(printf '%s' "$a" | jq -r '.ready')" = false ] || continue
@@ -724,7 +734,7 @@ precheck() {
   body="${body}to start work on this we need a few things:"$'\n\n'; k=0
   while IFS= read -r txt; do
     # one plain line: no control characters, no links (a model misled by the issue could be made to write any), no raw HTML, no #123 reference
-    txt=$(clean1 "$txt" 300 | perl -pe 's{\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+}{(link removed)}gi; s{(?<![\w:])//\S+}{(link removed)}g; s/[<>\[\]]//g; s/#(?=\d)/# /g' 2>/dev/null); [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
+    txt=$(clean1 "$txt" 300 | neutralise); [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
   body="$body"$'\n'"Reply here, then remove the \`$l\` label from this issue: that is what starts the work."$'\n\n'"$MARK"
   printf '%s\n' "$body" > "$D/.pc.comment"
   asked=$(printf '%s' "$j" | jq -r --arg m "$MARK" --arg me "$(conf_get me)" '(.comments // []) as $c | [range(0; $c | length) | select(($c[.].author.login // "") == $me and (($c[.].body // "") | contains($m)))] | (if length == 0 then -1 else last end) as $i | if $i < 0 then "no" elif ($c | length) - 1 > $i then "replied" else "open" end' 2>/dev/null) || asked=no
@@ -785,7 +795,7 @@ claim_ok() {
 # detached window), or idle for a long while with no pull request (stuck, or finished without saying so). Read-only; the dispatcher
 # relays it to the user. MEGAVIBE_DISPATCH_INPUT_SECS (default 120) and MEGAVIBE_DISPATCH_STUCK_MINS (default 30).
 attention() {
-  local r n now thr stuck
+  local r n now thr stuck seen="$D/.attention" keys="" key
   now=$(date +%s); thr="${MEGAVIBE_DISPATCH_INPUT_SECS:-120}"; stuck="${MEGAVIBE_DISPATCH_STUCK_MINS:-30}"
   [[ $thr =~ ^[0-9]+$ ]] || thr=120; [[ $stuck =~ ^[1-9][0-9]*$ ]] || stuck=30
   while IFS= read -r r; do
@@ -793,12 +803,16 @@ attention() {
     [ "$(col "$r" 2)" = running ] || continue
     n=$(col "$r" 1); win_idle "$n" >/dev/null || continue
     state_of "$n" || continue
+    key="$n:$SS_STATE:$SS_SINCE"
     if [ "$SS_STATE" = input ] && [ $((now - SS_SINCE)) -ge "$thr" ]; then
-      say "issue $n: NEEDS INPUT for $(age_fmt $((now - SS_SINCE)))${SS_DETAIL:+ ($SS_DETAIL)}: tell the user; \`peek $n\` shows the prompt (do not type into the window)"
+      keys="$keys$key"$'\n'; grep -qxF "$key" "$seen" 2>/dev/null || say "issue $n: NEEDS INPUT for $(age_fmt $((now - SS_SINCE)))${SS_DETAIL:+ ($SS_DETAIL)}: tell the user; \`peek $n\` shows the prompt (do not type into the window)"
     elif [ "$SS_STATE" = idle ] && [ -z "$(col "$r" 7)" ] && [ $((now - SS_SINCE)) -ge $((stuck * 60)) ]; then
-      say "issue $n: idle for $(age_fmt $((now - SS_SINCE))) with no pull request: it may be stuck or waiting for an answer (\`peek $n\`)"
+      keys="$keys$key"$'\n'; grep -qxF "$key" "$seen" 2>/dev/null || say "issue $n: idle for $(age_fmt $((now - SS_SINCE))) with no pull request: it may be stuck or waiting for an answer (\`peek $n\`)"
     fi
   done < "$D/queue.tsv"
+  printf '%s' "$keys" > "$seen"   # a new wait (a new start time) is reported again; one that went on is not repeated every tick
+  # records of sessions that never said SessionEnd (a crash, a closed window): a week old is gone
+  find "$MH/status" -type f -mtime +7 -print 2>/dev/null | while IFS= read -r key; do rm -f "$key"; done
 }
 cmd_tick() {
   local max running n r pr idle pidle
@@ -891,6 +905,7 @@ cmd_resume() {
   case "$(col "$r" 2)" in running|ended) ;; *) die "issue $n is $(col "$r" 2): resume is for a session that ended unexpectedly (running with its window gone, or ended)" ;; esac
   live_windows; [ "$WINS_STATE" != unknown ] || die "cannot tell which windows run; nothing started"
   ! win_idle "$n" >/dev/null || die "issue $n still has its window: nothing to resume"
+  [[ $(col "$r" 8) =~ $UUID_RE ]] && rm -f "$MH/status/$(col "$r" 8)" || true   # the old state belongs to the dead process
   wt=$(col "$r" 5); sid=$(col "$r" 8); [ -d "$wt" ] || die "issue $n: its worktree $wt is gone: requeue $n starts it again"
   [[ $sid =~ $UUID_RE ]] || die "issue $n has no conversation recorded: requeue $n starts it again"
   model=$(conf_get model); parent=$(parent_id)
