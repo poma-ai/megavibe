@@ -299,7 +299,7 @@ precheck() {
   body=""; [ -z "$author" ] || [ "$bot" = true ] || [[ ! $author =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || body="@$author "
   body="${body}to start work on this we need a few things:"$'\n\n'; k=0
   while IFS= read -r txt; do [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
-  body="$body"$'\n'"Reply here. A maintainer removes the \`$l\` label when this is answered, and work picks up from there."$'\n\n'"$MARK"
+  body="$body"$'\n'"Reply here, then remove the \`$l\` label from this issue: that is what starts the work."$'\n\n'"$MARK"
   printf '%s\n' "$body" > "$D/.pc.comment"
   ensure_label
   url=$(cd "$(conf_get repo)" && gh issue comment "$n" --body-file "$D/.pc.comment" 2>/dev/null) || rc=1
@@ -308,7 +308,7 @@ precheck() {
   set_cols "$n" 2 blocked 7 "$url"; say "issue $n: NOT READY, asked $k question(s) on the issue${author:+ ($author)}, blocked until '$l' is removed"
   return 1
 }
-# unblock: a blocked issue whose waiting label is gone is a go (a maintainer removing it is the "answered"). Never when the
+# unblock: a blocked issue whose waiting label is gone is a go (whoever answered removes it: on an internal repo the author can). Never when the
 # listing fails, so an outage is not read as "everyone answered"; an issue that was closed meanwhile is dropped.
 unblock() {
   local l labelled r n st

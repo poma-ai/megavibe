@@ -44,12 +44,12 @@ Post with `gh issue comment <n> --body-file <file>` (a temp file, so quoting can
 1. <specific question or missing item>
 2. <...>
 
-Reply here. A maintainer removes the `<label>` label when this is answered, and work picks up from there.
+Reply here, then remove the `<label>` label from this issue: that is what starts the work.
 
 <!-- megavibe:needs-info -->
 ```
 
-Plain and short: no apology, no restating the issue, no praise. Then put the waiting label on the issue: the name on the task file's `Needs-info label:` line, else `needs-info`. Create it first if the repo lacks it (`gh label list --search <name>`, then `gh label create <name> --color FBCA04 --description "Waiting for the issue author"`), then `gh issue edit <n> --add-label <name>`. A maintainer removing that label is how the answer is signalled to whoever waits on it, so say so in the comment: "Reply here. A maintainer removes the `<name>` label when this is answered, and work picks up from there." Never remove the label yourself.
+Plain and short: no apology, no restating the issue, no praise. Then put the waiting label on the issue: the name on the task file's `Needs-info label:` line, else `needs-info`. Create it first if the repo lacks it (`gh label list --search <name>`, then `gh label create <name> --color FBCA04 --description "Waiting for the issue author"`), then `gh issue edit <n> --add-label <name>`. Removing that label is how the answer is signalled to whoever waits on it (on an internal repo its author can do it), so say so in the comment: "Reply here, then remove the `<name>` label from this issue: that is what starts the work." Never remove the label yourself.
 
 ## Report
 
