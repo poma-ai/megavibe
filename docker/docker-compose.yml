@@ -14,12 +14,12 @@ services:
     tty: true
     stdin_open: true
     environment:
-      GH_TOKEN: ${GH_TOKEN:?a GitHub token with repo scope (issues, contents, pull requests)}
+      GH_TOKEN: ${GH_TOKEN:?a fine-grained token for the ONE repository (Issues, Contents, Pull requests: read and write)}
       GH_HOST: ${GH_HOST:-github.com}
       MEGAVIBE_REPO: ${MEGAVIBE_REPO:?OWNER/NAME of the repository}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       GIT_USER_NAME: ${GIT_USER_NAME:-megavibe}
-      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-megavibe@users.noreply.github.com}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-megavibe-dispatch@localhost.invalid}
       MEGAVIBE_MAX: ${MEGAVIBE_MAX:-3}
       MEGAVIBE_TOTAL: ${MEGAVIBE_TOTAL:-}
       MEGAVIBE_ISSUES: ${MEGAVIBE_ISSUES:-}

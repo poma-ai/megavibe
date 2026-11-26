@@ -127,20 +127,29 @@ issue_of() {
 # ── tmux liveness ─────────────────────────────────────────────────────
 WINS=""; WINS_STATE=ok
 live_windows() {   # WINS = "key<TAB>window_id<TAB>idle_seconds" per stamped window of session mvd-Q; WINS_STATE ok | noserver | unknown
-  local out rc=0
+  local out rc=0 fmt='#{@mvd_key}|#{window_id}|#{window_activity}' pid
+  # "|" and not a tab: tmux 3.3a prints a tab in a format as "_", and no stamped window was ever found
   WINS=""; WINS_STATE=ok
-  out=$(tm list-windows -t "=mvd-$Q" -F $'#{@mvd_key}\t#{window_id}\t#{window_activity}' 2>&1) || rc=$?
+  out=$(tm list-windows -t "=mvd-$Q" -F "$fmt" 2>&1) || rc=$?
+  # the cockpit's grouped session shares the windows: if mvd-Q alone was killed they are still alive there
+  if [ "$rc" != 0 ]; then case "$out" in *"can't find session"*) rc=0; out=$(tm list-windows -t "=mvdv-$Q" -F "$fmt" 2>&1) || rc=$? ;; esac; fi
   if [ "$rc" = 0 ]; then
-    WINS=$(printf '%s\n' "$out" | awk -F'\t' -v now="$(date +%s)" '$1 != "" { print $1 "\t" $2 "\t" now - $3 }')
+    WINS=$(printf '%s\n' "$out" | awk -F'|' -v now="$(date +%s)" '$1 != "" { print $1 "\t" $2 "\t" now - $3 }')
     return 0
   fi
   case "$out" in
     *"no server running"*|*"can't find session"*|*"No such file or directory"*|*"Connection refused"*) WINS_STATE=noserver ;;
     *) WINS_STATE=unknown ;;
   esac
+  # the server recorded at start still being alive means the sessions are, whatever this call could not reach (a socket file
+  # removed under a live server): never settle them as ended on that
+  if [ "$WINS_STATE" = noserver ]; then
+    pid=$(conf_get pid)
+    if [[ $pid =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null && [[ $(ps -p "$pid" -o comm= 2>/dev/null) == *tmux* ]]; then WINS_STATE=unknown; fi
+  fi
 }
 win_idle() { printf '%s\n' "$WINS" | awk -F'\t' -v w="$1" '$1 == w { print $3; found = 1; exit } END { exit !found }'; }
-win_id() { printf '%s\n' "$WINS" | awk -F'\t' -v w="$1" '$1 == w { print $2; found = 1; exit } END { exit !found }'; }
+win_id() { local w; w=$(printf '%s\n' "$WINS" | awk -F'\t' -v w="$1" '$1 == w { print $2; found = 1; exit } END { exit !found }') || return 1; [[ $w =~ ^@[0-9]+$ ]] || return 1; printf '%s' "$w"; }
 stamp() { tm set-option -w -t "$1" @mvd_key "$2"; }
 # open_win KEY NAME DIR cmd...: a window of session mvd-Q (the session is created when it is not there), stamped with KEY; prints its
 # id. Returns 1 when no window was opened, 2 when it was opened but could not be stamped (its id is printed all the same).
@@ -224,10 +233,13 @@ cmd_start() {
     return 0
   fi
   [ "$WINS_STATE" != unknown ] || die "cannot tell whether tmux session mvd-$Q exists; nothing started"
+  # no server: the recorded socket may be one whose folder is gone (a restart cleared /tmp), and tmux does not create it for -S
+  if [ "$WINS_STATE" = noserver ]; then TMUX_SOCK=""; conf_put socket ""; conf_put pid ""; fi
   prompt="You are the megavibe dispatcher for queue $Q (repo $repo; the environment variable MEGAVIBE_DISPATCH_QUEUE=$Q selects it for every megavibe dispatch command). Read $MH/template/dispatch/ROLE.md and follow it. Queue state is in $D."
   if lock_live "$repo"; then
     die "a megavibe session is active in $repo (pid $LOCK_PID): a dispatcher started there would wait at the launcher's branch-name prompt, which nobody can answer. Start it from a terminal in a checkout where no session runs, or end that session first"
   fi
+  trust_preflight "$repo"   # the dispatcher's own folder too: its window cannot answer the workspace-trust dialog either
   local parent dsid; parent=$(parent_id); orc=0
   dsid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true); [[ $dsid =~ $UUID_RE ]] || dsid=""   # known id: the cockpit finds the dispatcher's background tasks by it
   [ -z "$dsid" ] || conf_put dsid "$dsid"
@@ -239,9 +251,10 @@ cmd_start() {
   # the server this queue lives on (the one `start` ran against, which may be the tmux you are in): every later call goes there
   vis=$(tm display-message -p -t "=mvd-$Q:" '#{socket_path}' 2>/dev/null) || vis=""
   case "$vis" in /*) conf_put socket "$vis"; TMUX_SOCK="$vis" ;; esac
+  vis=$(tm display-message -p -t "=mvd-$Q:" '#{pid}' 2>/dev/null) || vis=""; if [[ $vis =~ ^[1-9][0-9]*$ ]]; then conf_put pid "$vis"; fi
   say "dispatcher-$Q started (max $max, worktrees cut from origin/$base)."
   say "  watch it:   megavibe dispatch attach      (or tmux attach -t mvd-$Q: windows dispatcher, issue-N)"
-  say "  stop it:    attach, then /exit in a window; nothing here ever kills a session"
+  say "  stop it:    attach, then /exit in a window; ending the dispatcher asks whether to stop the issue sessions too"
   [ "$noattach" = 1 ] || attach_cockpit
 }
 
@@ -258,8 +271,18 @@ cmd_finish() {
   printf '\nThe dispatcher has ended. %s issue session(s) still run: %s\n' "${#keys[@]}" "$(printf '#%s ' "${keys[@]}")"
   a=""; read -r -t 120 -p "Stop them too? [y/N] " a || true; printf '\n'
   case "$a" in y|Y|yes|YES) ;; *) say "left running: megavibe dispatch status / peek N; they stay in tmux session mvd-$Q"; return 0 ;; esac
-  for k in "${keys[@]}"; do n=$(win_id "$k") && { tm send-keys -t "$n" C-c; sleep 1; tm send-keys -t "$n" C-c 2>/dev/null; } || true; done
-  sleep 3; live_windows
+  # Claude Code: a first Ctrl-C interrupts a running turn, a second one within a moment quits. Up to three rounds, each sent only to
+  # the windows still open (a window id is checked before it is used: send-keys with an empty target would hit whatever tmux picks).
+  local left=("${keys[@]}") round
+  for round in 1 2 3; do
+    for k in "${left[@]}"; do n=$(win_id "$k") || continue; tm send-keys -t "$n" C-c 2>/dev/null || true; done
+    sleep 1
+    for k in "${left[@]}"; do n=$(win_id "$k") || continue; tm send-keys -t "$n" C-c 2>/dev/null || true; done
+    sleep 3; live_windows; [ "$WINS_STATE" = ok ] || break
+    local still=(); for k in "${left[@]}"; do ! win_idle "$k" >/dev/null || still+=("$k"); done
+    [ ${#still[@]} -gt 0 ] || break
+    left=("${still[@]}")
+  done
   for k in "${keys[@]}"; do
     ! win_idle "$k" >/dev/null || say "issue $k: window still open (busy or at a prompt): attach and /exit it"
     wt=$(col "$(row "$k")" 5)
@@ -273,7 +296,7 @@ cmd_wrap() {   # wrap QUEUE -- COMMAND...: run the session, then ask what to do 
   local q="$1"; shift; [ "${1:-}" != -- ] || shift
   pick_queue "$q"
   local rc=0; "$@" || rc=$?
-  cmd_finish || true
+  ( cmd_finish ) || true   # a subshell: a die in there must not replace the session's own exit status
   exit "$rc"
 }
 
@@ -282,20 +305,24 @@ cmd_wrap() {   # wrap QUEUE -- COMMAND...: run the session, then ask what to do 
 # (it shares mvd-Q's windows and has its own current window), so choosing an entry only moves that client; no pane is moved, the
 # windows liveness reads stay where they are, and ending the cockpit ends no session. Its status line is off in the nested client.
 cockpit() {
-  local sock menu right
+  local sock menu right cmds
   sock=$(tm display-message -p -t "=mvd-$Q:" '#{socket_path}' 2>/dev/null) || sock=""
   [[ $sock == /* ]] || die "cockpit: queue $Q has no running tmux session (megavibe dispatch start)"
   [ -n "$TMUX_BIN" ] || TMUX_BIN=$(type -P tmux)
   tm has-session -t "=mvdv-$Q" 2>/dev/null || tm new-session -d -t "mvd-$Q" -s "mvdv-$Q" || die "cockpit: could not open the view session"
   tm set-option -t "=mvdv-$Q:" status off >/dev/null
-  tm has-session -t "=mvdc-$Q" 2>/dev/null && return 0
   printf -v menu 'env MEGAVIBE_HOME=%q MEGAVIBE_DISPATCH_QUEUE=%q bash %q menu' "$MH" "$Q" "$SELF"
   printf -v right 'env -u TMUX %q -S %q attach -t \\=mvdv-%s' "$TMUX_BIN" "$sock" "$Q"
-  tm new-session -d -s "mvdc-$Q" -n cockpit -x 200 -y 50 "$menu" || die "cockpit: could not open the cockpit session"
-  tm split-window -h -l 75% -t "=mvdc-$Q:cockpit" "$right" || die "cockpit: could not split the window"
-  tm set-option -t "=mvdc-$Q:" mouse on >/dev/null
-  tm set-option -t "=mvdc-$Q:" status-left "mvd-$Q " >/dev/null
-  tm set-option -t "=mvdc-$Q:" status-right "prefix+Left: sessions menu" >/dev/null
+  if ! tm has-session -t "=mvdc-$Q" 2>/dev/null; then
+    tm new-session -d -s "mvdc-$Q" -n cockpit -x 200 -y 50 "$menu" || die "cockpit: could not open the cockpit session"
+    tm set-option -t "=mvdc-$Q:" mouse on >/dev/null
+    tm set-option -t "=mvdc-$Q:" status-left "mvd-$Q " >/dev/null
+    tm set-option -t "=mvdc-$Q:" status-right "prefix+Left: sessions menu" >/dev/null
+  fi
+  # a pane that ended (Ctrl-C in the menu, a failed split) is made again, so a second call repairs the cockpit instead of keeping it half
+  cmds=$(tm list-panes -t "=mvdc-$Q:" -F '#{pane_start_command}' 2>/dev/null) || cmds=""
+  [[ $cmds == *" menu"* ]] || tm split-window -hb -l 25% -t "=mvdc-$Q:cockpit" "$menu" || die "cockpit: could not open the menu pane"
+  [[ $cmds == *"attach -t"* ]] || tm split-window -h -l 75% -t "=mvdc-$Q:cockpit" "$right" || die "cockpit: could not open the view pane"
   tm select-pane -t "=mvdc-$Q:cockpit.{right}" >/dev/null
 }
 attach_cockpit() {
@@ -311,10 +338,11 @@ attach_cockpit() {
 # last minute. Up/down or j/k move. Enter on a session shows its window on the right and moves focus there; Enter on a task opens
 # its output (less +F: Ctrl-C to scroll, F to follow again, q to close) in a popup.
 TASKS_SHOWN=5
-task_dir() { local d; for d in /private/tmp/claude-*/*/"$1"/tasks /tmp/claude-*/*/"$1"/tasks; do [ -d "$d" ] && { printf '%s' "$d"; return 0; }; done; return 1; }
+task_dir() { local d; for d in ${CLAUDE_CODE_TMPDIR:+"$CLAUDE_CODE_TMPDIR"/claude-*/*/"$1"/tasks} /private/tmp/claude-*/*/"$1"/tasks /tmp/claude-*/*/"$1"/tasks; do [ -d "$d" ] && { printf '%s' "$d"; return 0; }; done; return 1; }
+mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1" 2>/dev/null || echo 0; }   # GNU stat first, then BSD; -L: an agent's output is a link to its transcript
 cmd_menu() {
   need_queue; need tmux
-  local sel=0 kinds=() keys=() files=() k r w line key rest wid n sid td f cnt now age mark last i
+  local sel=0 kinds=() keys=() files=() k r w line key rest wid n sid td f cnt now age mark last i gone=0 rc avail top
   trap 'printf "\033[?25h"' EXIT; printf '\033[?25l'
   while :; do
     live_windows; kinds=(); keys=(); files=(); now=$(date +%s)
@@ -332,28 +360,33 @@ cmd_menu() {
           [ -n "$f" ] || continue
           cnt=$((cnt + 1)); [ "$cnt" -le "$TASKS_SHOWN" ] || break
           kinds+=(t); keys+=("$k"); files+=("$f")
-        done < <(ls -t "$td"/*.output 2>/dev/null)
+        done < <(ls -tL "$td"/*.output 2>/dev/null)
       done
     fi
     n=${#kinds[@]}; [ "$sel" -lt "$n" ] || sel=$((n > 0 ? n - 1 : 0))
     w=$(tput cols 2>/dev/null || echo 40)
     printf '\033[H\033[2J\033[1mmvd-%s\033[0m\n\n' "$Q"
     [ "$WINS_STATE" = ok ] || printf 'tmux: %s\n' "$WINS_STATE"
-    for ((i = 0; i < n; i++)); do
+    # the queue's tmux session is gone (three looks in a row): nothing left to list, and no reason to poll for ever
+    if [ "$WINS_STATE" = noserver ]; then gone=$((gone + 1)); [ "$gone" -lt 3 ] || { printf 'queue session ended\n'; exit 0; }; else gone=0; fi
+    avail=$(( $(tput lines 2>/dev/null || echo 24) - 5 )); [ "$avail" -ge 3 ] || avail=3
+    top=0; [ "$sel" -lt "$avail" ] || top=$((sel - avail + 1))
+    for ((i = top; i < n && i < top + avail; i++)); do
       k=${keys[i]}
       if [ "${kinds[i]}" = s ]; then
         if [ "$k" = dispatcher ]; then line="dispatcher"; else r=$(row "$k"); line="#$k $(col "$r" 2) $(col "$r" 3)"; fi
         line="${line:0:$((w > 4 ? w - 4 : 1))}"
       else
-        f=${files[i]}; age=$((now - $(stat -f %m "$f" 2>/dev/null || echo 0))); mark=○; [ "$age" -ge 60 ] || mark=●
-        last=$(tail -c 300 "$f" 2>/dev/null | tr -d '\000-\037' | tail -c 40)
+        f=${files[i]}; age=$((now - $(mtime "$f"))); mark=○; [ "$age" -ge 60 ] || mark=●
+        last=$(tail -c 300 "$f" 2>/dev/null | tr -d '\000-\037' | tail -c 40); case "$last" in *'"'*|'{'*) last="${age}s" ;; esac   # a JSONL transcript is not readable as a tail: show its age
         case "$(basename "$f")" in a*) line="  $mark agent";; *) line="  $mark task";; esac
         line="$line $(basename "$f" .output | cut -c1-8) ${last}"; line="${line:0:$((w > 4 ? w - 4 : 1))}"
       fi
       if [ "$i" = "$sel" ]; then printf '\033[7m> %s\033[0m\n' "$line"; else printf '  %s\n' "$line"; fi
     done
     printf '\n\033[2mup/down j/k  Enter open  (prefix+Left: back here)\033[0m\n'
-    key=""; read -rsn1 -t 3 key || continue
+    key=""; rc=0; read -rsn1 -t 3 key || rc=$?
+    if [ "$rc" -gt 128 ]; then continue; elif [ "$rc" -ne 0 ]; then exit 0; fi   # timeout: redraw; end of input: stop, never spin
     case "$key" in
       $'\e') rest=""; read -rsn2 -t 1 rest || true
               case "$rest" in '[A') [ "$sel" -le 0 ] || sel=$((sel - 1)) ;; '[B') [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;; esac ;;
@@ -493,6 +526,14 @@ make_worktree() {
     [ -d "$repo/$l" ] || { [ "$l" != .agent ] || { say "issue $n: $repo has no .agent; not started"; return 1; }; continue; }
     [ -e "$wt/$l" ] || ln -s "$(cd "$repo/$l" && pwd -P)" "$wt/$l" || { say "issue $n: could not link $l into $wt; not started"; return 1; }
   done
+  # the links are untracked: keep them out of `git status` and `git add -A` in this worktree (shared exclude file of the repository)
+  local gc ex; gc=$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P) || gc=""
+  if [ -n "$gc" ]; then
+    ex="$gc/info/exclude"; mkdir -p "$gc/info"
+    for l in .agent .claude megavibe-deliverables; do
+      [ ! -L "$wt/$l" ] || grep -qxF "/$l" "$ex" 2>/dev/null || printf '/%s\n' "$l" >> "$ex" || true
+    done
+  fi
   WT="$wt"
 }
 # A detached window cannot answer Claude Code's workspace-trust dialog for a folder it has not seen: accept it once per
@@ -500,7 +541,11 @@ make_worktree() {
 trust_preflight() {
   local wt="$1" cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
   [ "$(jq -r --arg d "$wt" '.projects[$d].hasTrustDialogAccepted // false' "$cfg" 2>/dev/null)" != true ] || return 0
-  pc_login || { say "  (workspace-trust not pre-accepted for $wt: $(cat "$D/.pc.why" 2>/dev/null); the session may wait at the dialog: status shows it idle, peek shows it)"; return 0; }
+  if ! pc_login; then
+    # a container logs in with CLAUDE_CODE_OAUTH_TOKEN (a subscription token, never billed per call): fine for this one call
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v claude >/dev/null 2>&1; then PC_ENV+=("CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
+    else say "  (workspace-trust not pre-accepted for $wt: $(cat "$D/.pc.why" 2>/dev/null); the session may wait at the dialog: status shows it idle, peek shows it)"; return 0; fi
+  fi
   (cd "$wt" && bounded 60 "${PC_ENV[@]}" claude -p --dangerously-skip-permissions "echo ok" </dev/null >/dev/null 2>&1 9>&-) || true
 }
 launch() {   # launch N: worktree, window, record. Returns 1, having said why, when the issue could not be started.
@@ -539,7 +584,9 @@ launch() {   # launch N: worktree, window, record. Returns 1, having said why, w
 # {"ready":bool,"questions":[...]}. The script, not the model, writes the comment, adds the label and blocks.
 # Any failure of the check (no claude, no subscription login, timeout, bad answer) lets the issue through: the
 # issue session's own triage-ticket step is the second line.
-bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@"; }
+# fd 9 (the queue lock) is closed on the perl command itself, not on the call of this function: bash 3.2 (stock macOS) keeps a
+# saved copy of a descriptor closed on a function call, and a tmux server started through here then holds the lock for ever.
+bounded() { perl -e 'alarm shift; exec { $ARGV[0] } @ARGV or exit 127' "$@" 9>&-; }
 PC_ENV=()
 pc_login() {   # the check may run: claude is there and logged in with a subscription (a saved API key would bill); the reason goes to $D/.pc.why
   local v st why="$D/.pc.why"; : > "$why"; PC_ENV=(env -i)
@@ -613,7 +660,7 @@ precheck() {
   body="${body}to start work on this we need a few things:"$'\n\n'; k=0
   while IFS= read -r txt; do
     # one plain line: no control characters, no links (a model misled by the issue could be made to write any), no raw HTML, no #123 reference
-    txt=$(clean1 "$txt" 300 | perl -pe 's{\b(?:https?://|www\.)\S+}{(link removed)}gi; s/[<>]//g; s/#(?=\d)/# /g' 2>/dev/null); [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
+    txt=$(clean1 "$txt" 300 | perl -pe 's{\b(?:[a-z][a-z0-9+.-]*://|www\.)\S+}{(link removed)}gi; s{(?<![\w:])//\S+}{(link removed)}g; s/[<>\[\]]//g; s/#(?=\d)/# /g' 2>/dev/null); [ -n "$txt" ] || continue; k=$((k + 1)); body="$body$k. $txt"$'\n'; done <<<"$qs"
   body="$body"$'\n'"Reply here, then remove the \`$l\` label from this issue: that is what starts the work."$'\n\n'"$MARK"
   printf '%s\n' "$body" > "$D/.pc.comment"
   asked=$(printf '%s' "$j" | jq -r --arg m "$MARK" --arg me "$(conf_get me)" '(.comments // []) as $c | [range(0; $c | length) | select(($c[.].author.login // "") == $me and (($c[.].body // "") | contains($m)))] | (if length == 0 then -1 else last end) as $i | if $i < 0 then "no" elif ($c | length) - 1 > $i then "replied" else "open" end' 2>/dev/null) || asked=no
@@ -671,8 +718,8 @@ claim_ok() {
   say "issue $n: assigned to \"${a:-nobody}\" now, not to you: dropped (it is not ours to work on)"; return 1
 }
 cmd_tick() {
-  local max running n r pr
-  lock; need_queue; need tmux; need gh; need perl; need jq
+  local max running n r pr idle pidle
+  need_queue; lock; need tmux; need gh; need perl; need jq
   max=$(conf_get max); live_windows
   [ "$WINS_STATE" != unknown ] || die "cannot tell which windows run (tmux failed unexpectedly); nothing changed"
   # reconcile: a running issue whose window is gone has ended; a pull request from its branch (in this repository) makes it "pr".
@@ -687,7 +734,16 @@ cmd_tick() {
       [ -z "$pr" ] || { set_cols "$n" 2 pr 7 "$pr"; say "issue $n: PR found: $pr"; }
       continue
     fi
-    if win_idle "$n" >/dev/null; then [ -z "$pr" ] || set_cols "$n" 7 "$pr"; continue; fi
+    if idle=$(win_idle "$n"); then
+      if [ -n "$pr" ]; then
+        set_cols "$n" 7 "$pr"
+        # a session that opened its pull request and then sat idle is finished even when nobody ran `done` (an unattended container has
+        # no dispatcher turn to do it): its slot is freed, the window stays open. MEGAVIBE_DISPATCH_PR_IDLE_SECS, default 900, 0 = never.
+        pidle="${MEGAVIBE_DISPATCH_PR_IDLE_SECS:-900}"
+        if [[ $pidle =~ ^[1-9][0-9]*$ ]] && [ "$idle" -ge "$pidle" ]; then set_cols "$n" 2 pr; say "issue $n: PR $pr and its window idle $((idle / 60))m: slot freed (the window stays open)"; fi
+      fi
+      continue
+    fi
     if [ -n "$pr" ]; then set_cols "$n" 2 pr 7 "$pr"; say "issue $n: window closed, PR $pr"
     elif [ "$prok" = 1 ]; then set_cols "$n" 2 ended; say "issue $n: window closed with NO pull request (resume $n continues its conversation, requeue $n starts over, or done $n)"
     else set_cols "$n" 2 ended; say "issue $n: window closed; could not look for a pull request (gh failed), will look again (resume $n continues its conversation)"; fi
@@ -804,5 +860,5 @@ case "$cmd" in
   block) pick_queue; cmd_mark blocked "$@" ;;
   drop) pick_queue; cmd_mark dropped "$@" ;;
   requeue) pick_queue; cmd_mark queued "$@" ;;
-  *) die "unknown command '$cmd' (start add tick status peek resume max total done block drop requeue)" ;;
+  *) die "unknown command '$cmd' (start attach cockpit finish add tick status peek resume max total done block drop requeue)" ;;
 esac

@@ -427,6 +427,39 @@ o=$(D add 0059); check "R2 leading zeros are not kept in the issue number ($o)" 
 # third pass: a tick without jq must not read an empty state as "closed"
 check "R3 tick, resume and launch need jq before they write anything; an unreadable state is not 'closed'" '[ "$(grep -c "need perl; need jq" "$REPO/scripts/megavibe-dispatch.sh")" -ge 2 ] && grep -q "could not read its state; not started" "$REPO/scripts/megavibe-dispatch.sh"'
 
+# review fixes (deep-review F1-F7, F9, F10, F13, F15)
+# F1: the lock descriptor must not reach a child started through bounded, also under bash 3.2 (stock macOS)
+if [ -x /bin/bash ] && /bin/bash --version 2>/dev/null | head -1 | grep -q 'version 3\.'; then
+  o=$(/bin/bash -c 'eval "$(sed -n "/^bounded()/p" "$1")"; exec 9>"$2"; bounded 5 /bin/sh -c "[ -e /dev/fd/9 ] && echo open || echo closed"' _ "$REPO/scripts/megavibe-dispatch.sh" "$T/fd9.lock" 2>&1)
+  check "F1 bounded closes fd 9 for its child under bash 3.2 ($o)" '[ "$o" = closed ]'
+fi
+# F3: a recorded socket whose folder is gone does not stop a start
+export MEGAVIBE_DISPATCH_QUEUE=qsock
+o=$(D start --no-attach --name qsock); sed -i.bak -e 's#^socket=.*#socket=/nonexistent-dir-mv/sock#' -e 's#^pid=.*#pid=#' "$MEGAVIBE_HOME/dispatch/qsock/conf"; rm -f "$MEGAVIBE_HOME/dispatch/qsock/conf.bak"
+o=$(D start --no-attach --name qsock); RC=$?
+check "F3 start with a stale recorded socket records the live one ($o)" '[ $RC = 0 ] && [[ "$o" == *started* ]] && grep -q "^socket=/private\|^socket=/tmp\|^socket=/var" "$MEGAVIBE_HOME/dispatch/qsock/conf"'
+unset MEGAVIBE_DISPATCH_QUEUE
+# F6: the queue session killed on its own, the cockpit's grouped session still holds the windows: nothing is settled as ended
+export MEGAVIBE_DISPATCH_QUEUE=q6
+D start --no-attach --name q6 >/dev/null; D add 160 >/dev/null; D max 5 >/dev/null; D tick >/dev/null; D cockpit >/dev/null
+tmux kill-session -t =mvd-q6
+o=$(D status); check "F6 mvd-Q killed, windows alive in the view session: still seen as open ($o)" '[[ "$o" == *"window open"* ]]'
+o=$(D tick); check "F6 tick does not settle them as ended ($o)" '[ "$(awk -F"\t" "\$1 == 160 { print \$2 }" "$MEGAVIBE_HOME/dispatch/q6/queue.tsv")" = running ]'
+unset MEGAVIBE_DISPATCH_QUEUE
+# F7: a cockpit that lost its menu pane is made whole again by the next call
+tmux send-keys -t =mvdc-proj:.{left} C-c; sleep 1
+o=$(D cockpit); check "F7 cockpit repairs a lost pane ($o)" '[ "$(tmux list-panes -t =mvdc-proj: -F x | wc -l | tr -d " ")" = 2 ]'
+# O2/F9: an issue with a PR and an idle window frees its slot (window kept)
+D add 150 >/dev/null; D max 100 >/dev/null; D tick >/dev/null
+echo "dispatch/issue-150 https://github.com/o/r/pull/150" >> "$PRFILE"; sleep 2
+o=$(MEGAVIBE_DISPATCH_PR_IDLE_SECS=1 D tick); check "F9 idle window with a PR: state pr, window still open ($o)" '[ "$(st 150 2)" = pr ] && tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -qx 150'
+# F10: the linked context folders stay out of git status in the worktree
+check "F10 worktree links are excluded" 'grep -qx "/.agent" "$(git -C "$P" rev-parse --git-common-dir | sed "s#^\.git#$P/.git#")/info/exclude" 2>/dev/null && [ -z "$(git -C "$W/proj-issue-150" status --porcelain 2>/dev/null | grep -E "\.agent|\.claude")" ]'
+# F13: a markdown link or protocol-relative link in a model's question is removed
+check "F13 comment filter strips [x](//host), ftp:// and brackets" 'grep -q "\[\\\^\\\\\\\\w:\]" "$REPO/scripts/megavibe-dispatch.sh" || grep -q "a-z0-9+.-\]\*://" "$REPO/scripts/megavibe-dispatch.sh"'
+# F15: tick on a queue that was never started says so, not a raw lock error
+o=$(MEGAVIBE_DISPATCH_QUEUE=neverstarted D tick); check "F15 tick on an unstarted queue ($o)" '[[ "$o" == *"no dispatcher yet"* ]]'
+
 # finish: asked when the dispatcher ends; no answer or n leaves the sessions, y sends Ctrl-C twice (the stub dies of it)
 D max 30 >/dev/null; D tick >/dev/null; NW=$(tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -vxc dispatcher)
 o=$(echo n | D finish); check "finish: n leaves the issue sessions running ($o)" '[ "$NW" -gt 0 ] && [[ "$o" == *"still run"* ]] && [ "$(tmux list-windows -t =mvd-proj -F "#{@mvd_key}" | grep -vxc dispatcher)" = "$NW" ]'

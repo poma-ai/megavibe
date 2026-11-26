@@ -3,7 +3,9 @@
 # Build from the repository root:  docker build -f docker/Dockerfile -t megavibe-dispatch .
 FROM node:22-bookworm-slim
 
-ARG CLAUDE_CODE_VERSION=latest
+# Pinned: the issue sessions run with permissions bypassed, so a moving "latest" is a moving supply chain. Bump it on purpose
+# (--build-arg CLAUDE_CODE_VERSION=...). The base image is a tag, not a digest: pin it to one you have vetted for production use.
+ARG CLAUDE_CODE_VERSION=2.1.332
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \

@@ -25,7 +25,7 @@ fi
 
 # ── git and gh credentials ────────────────────────────────────────────
 git config --global user.name "${GIT_USER_NAME:-megavibe}"
-git config --global user.email "${GIT_USER_EMAIL:-megavibe@users.noreply.github.com}"
+git config --global user.email "${GIT_USER_EMAIL:-megavibe-dispatch@localhost.invalid}"
 git config --global init.defaultBranch main
 gh auth setup-git >/dev/null 2>&1 || die "gh could not be set up as the git credential helper (is GH_TOKEN valid?)"
 gh api user --jq .login >/dev/null 2>&1 || die "GH_TOKEN does not work (gh api user failed)"

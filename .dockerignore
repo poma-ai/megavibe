@@ -4,3 +4,10 @@
 megavibe-deliverables
 docker/.env
 node_modules
+.claude
+CLAUDE.local.md
+.playwright-mcp
+.env
+.env.*
+**/.env
+**/.env.*

@@ -81,7 +81,7 @@ report "internal infra (IPs, hosts, DSNs, GCP projects)" \
 # leak, and cannot be scrubbed without rewriting their history.
 report "personal identifiers in file content" \
   "$(scan_tracked '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}|/Users/[a-z]+/|/home/[a-z]+/' \
-    | grep -vE 'megavibe@poma-ai\.com|user@|you@|name@|noreply|@example|\$HOME|~/')"
+    | grep -vE 'megavibe@poma-ai\.com|user@|you@|name@|noreply|@example|/home/mv/|\$HOME|~/')"
 
 # --- 5. Binaries ------------------------------------------------------------
 # An icon has leaked here before. Images and archives are also where metadata
