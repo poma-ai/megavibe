@@ -57,3 +57,5 @@ scripts/gcp-token.sh
 # The removed Megawork profile: local residue (icons, pilot briefs, org/, logs/)
 # from an older checkout must never be committed to this public repo.
 megawork/
+
+.env
