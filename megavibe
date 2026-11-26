@@ -2515,6 +2515,122 @@ umbrella_note() {
   printf '  %bOne repo: cd <repo> && megavibe. Two: launch in the one you change; --add-dir ../<other> adds its files (not its .agent/).%b\n' "$DIM" "$RESET"
 }
 
+# The guard needs only the arguments, jq and ps, so it runs before the launch root is chosen,
+# init.sh and the auth check: a refused resume does not initialise the project. (Earlier steps, such as
+# the update check and the personal assistant's hook sync, still run.)
+# ─── Second writer: one live process per conversation ───────────────
+#
+# Claude Code does not stop an ordinary session from being resumed while another process
+# still has it open: both append to one transcript, and messages from one of them can be
+# missing when it is resumed later; the vendor's advice is --fork-session
+# (https://code.claude.com/docs/en/sessions.md, "Branch a session"). A running BACKGROUND
+# session is the exception: --resume attaches to it instead, so it is left to Claude Code.
+# So the wrapper refuses a resume whose target is held by a live process, by default, and
+# says where that process is. It never signals, stops or types into it, and never runs tmux.
+#
+# The target is the value of --resume/-r (an id, a name or a transcript path). A bare
+# --resume (the picker) and --continue cannot be resolved here without guessing Claude
+# Code's own choice, and a --fork-session gets a new id: those pass unchecked. Names
+# also pass: this live-process registry cannot establish a unique saved conversation
+# in the current project (including ended sessions and other worktrees).
+# Held = a record in Claude Code's session registry (<config>/sessions/<pid>.json) names the
+# target, its pid is alive, and it is the same process: the record's procStart matches the
+# pid's start time (UTC). Anything not established (no jq, an unreadable record, a dead
+# or reused pid, a missing or unrecognised start time, ps failing) is not held,
+# so a stale record never blocks a legitimate resume.
+resume_target() { # resume_target ARGS...: the --resume/-r value; empty for picker, fork or no resume
+  local a want=0 t=""
+  for a in "$@"; do
+    if [ "$want" = 1 ]; then
+      want=0
+      case "$a" in -*) ;; *) t="$a" ;; esac
+      continue
+    fi
+    case "$a" in
+      --fork-session) return 0 ;;
+      --resume|-r) want=1 ;;
+      --resume=*) t="${a#--resume=}" ;;
+    esac
+  done
+  printf '%s' "$t"
+}
+
+session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" of a live holder, or nothing
+  local want="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p rec sid kind start tmx now
+  [ -n "$want" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  case "$want" in *.jsonl) want=$(basename "$want" .jsonl) ;; esac
+  # Only an id can match (a name never does): no registry scan for anything else.
+  [[ "$want" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] || return 0
+  for f in "$dir"/*.json; do
+    [ -f "$f" ] || continue
+    p=$(basename "$f" .json)
+    [[ "$p" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$p" -gt 1 ] || continue
+    rec=$(jq -r '[.sessionId, .kind, .procStart, .tmux] | map(if type == "string" then gsub("[\u001f\n]"; " ") else "" end) | join("\u001f")' "$f" 2>/dev/null) || continue
+    IFS=$'\x1f' read -r sid kind start tmx <<<"$rec" || true
+    # Match ids only: a different conversation's name may itself be this id.
+    [ "$sid" = "$want" ] || continue
+    # A background session is left to Claude Code, which attaches to it. The registry
+    # writes that kind as "bg"; the long form is accepted too.
+    case "$kind" in [Bb][Gg]|*[Bb]ackground*) continue ;; esac
+    kill -0 "$p" 2>/dev/null || continue
+    start=$(printf '%s' "$start" | tr -s ' ' | sed 's/^ //; s/ $//')
+    if [[ "$start" =~ ^[A-Z][a-z]{2}\ [A-Z][a-z]{2}\ [0-9]{1,2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [0-9]{4}$ ]]; then
+      # The registry's procStart is the process start in ps lstart form, UTC (measured against
+      # live sessions): equal = the same process, different = the pid was reused.
+      # SHORTCUT: exact text comparison, measured on macOS only; unmeasured on Linux (what the registry records
+      # there is not established). If the forms differ the check passes, so a second writer gets through on
+      # a platform where they do. Upgrade once a real Linux record is measured; do not invent a tolerance.
+      now=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$p" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//') || now=""
+      [ -n "$now" ] && [ "$now" = "$start" ] || continue
+    else
+      # A process name cannot tie a reused pid to this recorded session.
+      continue
+    fi
+    printf '%s\t%s\n' "$p" "$tmx"
+    return 0
+  done
+  return 0
+}
+
+second_writer_message() { # second_writer_message TARGET "<pid><TAB><tmux>"
+  local target="$1" pid="${2%%$'\t'*}" tmx="" pane sess sock="" t
+  case "$2" in *$'\t'*) tmx="${2#*$'\t'}" ;; esac
+  t=$(printf '%q' "$target")
+  echo "megavibe: conversation $target is still open in another process (pid $pid)."
+  echo "  Resuming it here would make two processes write one transcript; Claude Code then"
+  echo "  can lose messages from one of them. No session was started here, and that process was not touched."
+  pane="%${tmx##*.%}"; sess="${tmx%%:*}"
+  if [[ "$tmx" == *:*.%* ]] && [[ "$pane" =~ ^%[0-9]+$ ]] && [[ "${tmx#*:}" =~ ^@[0-9]+\.%[0-9]+$ ]]; then
+    sock=$(jq -r '.socket // empty' "${MEGAVIBE_HOME:-${HOME:-}/.megavibe}/launches/$pid.json" 2>/dev/null) || sock=""
+    sock="${sock:+-S $(printf '%q' "$sock") }"
+    echo "  It runs in tmux pane $pane (window ${tmx#*:})."
+    echo "    Read it without changing anything:  tmux ${sock}capture-pane -p -t $pane"
+    echo "    Go to it:  tmux ${sock}attach -t $(printf '%q' "$sess")   (inside tmux: tmux ${sock}switch-client -t $pane)"
+  else
+    echo "  It is not in a tmux pane megavibe knows of; find its terminal with: ps -p $pid -o tty=,command="
+  fi
+  echo "  Keep both conversations:  megavibe --resume $t --fork-session"
+  echo "  Or start a fresh session: megavibe"
+  echo "  If you mean to write from both anyway:  megavibe --allow-second-writer --resume $t"
+}
+
+second_writer_gate() { # second_writer_gate ARGS...: exit status 3 = refused
+  local target holder
+  target=$(resume_target "$@")
+  [ -n "$target" ] || return 0
+  holder=$(session_holder "$target")
+  [ -n "$holder" ] || return 0
+  if [ "${ALLOW_SECOND_WRITER:-0}" = 1 ]; then
+    echo "megavibe: --allow-second-writer: resuming $target although pid ${holder%%$'\t'*} still has it open (second writer)." >&2
+    return 0
+  fi
+  second_writer_message "$target" "$holder" >&2
+  return 3
+}
+
+second_writer_gate "$@" || exit $?
+
 NORMALIZED_FROM=""
 if [ "$NORMALIZE" = "1" ]; then
   GIT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -2582,114 +2698,6 @@ fi
 # Barred: a launch that would bill per token (see bar_api_billing).
 bar_api_billing "$AUTH_JSON"
 
-# ─── Second writer: one live process per conversation ───────────────
-#
-# Claude Code does not stop an ordinary session from being resumed while another process
-# still has it open: both append to one transcript, and messages from one of them can be
-# missing when it is resumed later; the vendor's advice is --fork-session
-# (https://code.claude.com/docs/en/sessions.md, "Branch a session"). A running BACKGROUND
-# session is the exception: --resume attaches to it instead, so it is left to Claude Code.
-# So the wrapper refuses a resume whose target is held by a live process, by default, and
-# says where that process is. It never signals, stops or types into it, and never runs tmux.
-#
-# The target is the value of --resume/-r (an id, a name or a transcript path). A bare
-# --resume (the picker) and --continue cannot be resolved here without guessing Claude
-# Code's own choice, and a --fork-session gets a new id: those pass unchecked. Names
-# also pass: this live-process registry cannot establish a unique saved conversation
-# in the current project (including ended sessions and other worktrees).
-# Held = a record in Claude Code's session registry (<config>/sessions/<pid>.json) names the
-# target, its pid is alive, and it is the same process: the record's procStart matches the
-# pid's start time (UTC). Anything not established (no jq, an unreadable record, a dead
-# or reused pid, a missing or unrecognised start time, ps failing) is not held,
-# so a stale record never blocks a legitimate resume.
-resume_target() { # resume_target ARGS...: the --resume/-r value; empty for picker, fork or no resume
-  local a want=0 t=""
-  for a in "$@"; do
-    if [ "$want" = 1 ]; then
-      want=0
-      case "$a" in -*) ;; *) t="$a" ;; esac
-      continue
-    fi
-    case "$a" in
-      --fork-session) return 0 ;;
-      --resume|-r) want=1 ;;
-      --resume=*) t="${a#--resume=}" ;;
-    esac
-  done
-  printf '%s' "$t"
-}
-
-session_holder() { # session_holder TARGET: prints "<pid><TAB><tmux location>" of a live holder, or nothing
-  local want="$1" dir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/sessions" f p rec sid kind start tmx now
-  [ -n "$want" ] || return 0
-  command -v jq >/dev/null 2>&1 || return 0
-  case "$want" in *.jsonl) want=$(basename "$want" .jsonl) ;; esac
-  for f in "$dir"/*.json; do
-    [ -f "$f" ] || continue
-    p=$(basename "$f" .json)
-    [[ "$p" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$p" -gt 1 ] || continue
-    rec=$(jq -r '[.sessionId, .kind, .procStart, .tmux] | map(if type == "string" then gsub("[\u001f\n]"; " ") else "" end) | join("\u001f")' "$f" 2>/dev/null) || continue
-    IFS=$'\x1f' read -r sid kind start tmx <<<"$rec" || true
-    # Match ids only: a different conversation's name may itself be this id.
-    [ "$sid" = "$want" ] || continue
-    # A background session is left to Claude Code, which attaches to it. The registry
-    # writes that kind as "bg"; the long form is accepted too.
-    case "$kind" in [Bb][Gg]|*[Bb]ackground*) continue ;; esac
-    kill -0 "$p" 2>/dev/null || continue
-    start=$(printf '%s' "$start" | tr -s ' ' | sed 's/^ //; s/ $//')
-    if [[ "$start" =~ ^[A-Z][a-z]{2}\ [A-Z][a-z]{2}\ [0-9]{1,2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ [0-9]{4}$ ]]; then
-      # The registry's procStart is the process start in ps lstart form, UTC (measured against
-      # live sessions): equal = the same process, different = the pid was reused.
-      now=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$p" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//') || now=""
-      [ -n "$now" ] && [ "$now" = "$start" ] || continue
-    else
-      # A process name cannot tie a reused pid to this recorded session.
-      continue
-    fi
-    printf '%s\t%s\n' "$p" "$tmx"
-    return 0
-  done
-  return 0
-}
-
-second_writer_message() { # second_writer_message TARGET "<pid><TAB><tmux>"
-  local target="$1" pid="${2%%$'\t'*}" tmx="" pane sess sock="" t
-  case "$2" in *$'\t'*) tmx="${2#*$'\t'}" ;; esac
-  t=$(printf '%q' "$target")
-  echo "megavibe: conversation $target is still open in another process (pid $pid)."
-  echo "  Resuming it here would make two processes write one transcript; Claude Code then"
-  echo "  can lose messages from one of them. Nothing was started, and that process was not touched."
-  pane="%${tmx##*.%}"; sess="${tmx%%:*}"
-  if [[ "$tmx" == *:*.%* ]] && [[ "$pane" =~ ^%[0-9]+$ ]] && [[ "${tmx#*:}" =~ ^@[0-9]+\.%[0-9]+$ ]]; then
-    sock=$(jq -r '.socket // empty' "${MEGAVIBE_HOME:-${HOME:-}/.megavibe}/launches/$pid.json" 2>/dev/null) || sock=""
-    sock="${sock:+-S $(printf '%q' "$sock") }"
-    echo "  It runs in tmux pane $pane (window ${tmx#*:})."
-    echo "    Read it without changing anything:  tmux ${sock}capture-pane -p -t $pane"
-    echo "    Go to it:  tmux ${sock}attach -t $(printf '%q' "$sess")   (inside tmux: tmux ${sock}switch-client -t $pane)"
-  else
-    echo "  It is not in a tmux pane megavibe knows of; find its terminal with: ps -p $pid -o tty=,command="
-  fi
-  echo "  Keep both conversations:  megavibe --resume $t --fork-session"
-  echo "  Or start a fresh session: megavibe"
-  echo "  If you mean to write from both anyway:  megavibe --allow-second-writer --resume $t"
-}
-
-second_writer_gate() { # second_writer_gate ARGS...: exit status 3 = refused
-  local target holder
-  target=$(resume_target "$@")
-  [ -n "$target" ] || return 0
-  holder=$(session_holder "$target")
-  [ -n "$holder" ] || return 0
-  if [ "${ALLOW_SECOND_WRITER:-0}" = 1 ]; then
-    echo "megavibe: --allow-second-writer: resuming $target although pid ${holder%%$'\t'*} still has it open (second writer)." >&2
-    return 0
-  fi
-  second_writer_message "$target" "$holder" >&2
-  return 3
-}
-
-second_writer_gate "$@" || exit $?
-
 # ─── Session lock (prevents accidental concurrent source edits) ──────
 #
 # Lock protects source files only. .agent/ is safe (append-only + flock).
@@ -2754,8 +2762,11 @@ show_lock_info() {
   echo -e "  ${YELLOW}Another megavibe session is active here${RESET}"
   echo "  PID: $lock_pid | Branch: $lock_branch | TTY: $lock_tty"
   echo "  Started: $lock_started"
-  if [ "$lock_sid" != "?" ]; then
-    echo "  Resume it: megavibe --resume $lock_sid"
+  # "?" (unreadable) and "pending" (a fresh launch whose id is not known yet) name no conversation.
+  # A plain --resume of a live session is refused by second_writer_gate, so the ways that work are
+  # printed instead: go to it, or fork it.
+  if [ "$lock_sid" != "?" ] && [ "$lock_sid" != "pending" ]; then
+    echo "  Attach to it in its own terminal, or keep both conversations: megavibe --resume $(printf '%q' "$lock_sid") --fork-session"
   fi
 }
 
