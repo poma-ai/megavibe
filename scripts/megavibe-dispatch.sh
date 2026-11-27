@@ -169,7 +169,7 @@ open_win() {
 
 # ── start ─────────────────────────────────────────────────────────────
 cmd_start() {
-  local max="" total="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 noattach=0 base="" repo prompt vis old wid orc me rv slug host
+  local skill_found sd max="" total="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 noattach=0 base="" repo prompt vis old wid orc me rv slug host
   while [ $# -gt 0 ]; do
     if [ "$1" = --no-precheck ]; then precheck=off; shift; continue; fi
     if [ "$1" = --precheck ]; then precheck=on; shift; continue; fi
@@ -183,6 +183,14 @@ cmd_start() {
   [ -z "$total" ] || [[ $total =~ ^[1-9][0-9]*$ ]] || die "start: --total must be a positive number"
   [ -z "$model" ] || [[ $model =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "start: unusable --model"
   [ -z "$skill" ] || [[ $skill =~ ^[A-Za-z0-9][A-Za-z0-9:._-]{0,80}$ ]] || die "start: unusable --skill name"
+  if [ -n "$skill" ] && [[ $skill != *:* ]]; then
+    skill_found=0
+    for sd in "$dir/.claude/skills" "$HOME/.claude/skills"; do
+      [ -d "$sd/$skill" ] && { skill_found=1; break; }
+      grep -qsx "name: $skill" "$sd"/*/SKILL.md && { skill_found=1; break; }
+    done
+    [ "$skill_found" = 1 ] || printf 'megavibe dispatch: warning: skill "%s" not found in %s/.claude/skills or ~/.claude/skills (plugin skills are not checked); issue sessions fall back to implementing directly if it is missing\n' "$skill" "$dir" >&2
+  fi
   [ -z "$nlabel" ] || [[ $nlabel =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,40}$ ]] || die "start: unusable --needs-label (letters, digits, dot, dash, underscore)"
   [ -z "$base" ] || { [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$ ]] && [[ $base != *..* ]]; } || die "start: unusable --base"
   need tmux; need gh; need git; need perl; need jq
@@ -223,6 +231,9 @@ cmd_start() {
   # writes, PR format; ~70K tokens of first-turn context measured 2026-11-27, 98.6K down to 27.8K), so CLAUDE.md files are off for this
   # one process and ROLE.md is its system prompt. Hooks still fire (they live in settings). The launcher is skipped, so the API-billing
   # bar it applies is repeated here, and there is no session lock or branch prompt to wait on. Issue sessions stay full megavibe.
+  # Issue sessions run in bypass mode and the dispatcher does not; Claude Code holds a message across that gap for an approval dialog
+  # (and drops it after dialogExpiry). Only this one process accepts peer messages unasked: --settings is a trusted source, the user's
+  # own settings stay as they are.
   prompt="You are the megavibe dispatcher for queue $Q (repo $repo; the environment variable MEGAVIBE_DISPATCH_QUEUE=$Q selects it for every megavibe dispatch command). Follow your role. Queue state is in $D."
   trust_preflight "$repo"   # the dispatcher's own folder too: its window cannot answer the workspace-trust dialog either
   local dsid dmodel; orc=0; dmodel="${MEGAVIBE_DISPATCHER_MODEL:-sonnet}"
@@ -233,7 +244,7 @@ cmd_start() {
   wid=$(open_win dispatcher dispatcher "$repo" env MEGAVIBE_HOME="$MH" bash "$SELF" wrap "$Q" -- \
     env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u MEGAVIBE_PARENT_SESSION CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 \
     MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" \
-    claude --name "dispatcher-$Q" --model "$dmodel" ${dsid:+--session-id "$dsid"} --append-system-prompt-file "$MH/template/dispatch/ROLE.md" "$prompt") || orc=$?
+    claude --name "dispatcher-$Q" --model "$dmodel" ${dsid:+--session-id "$dsid"} --settings '{"crossSessionInbound":"accept"}' --append-system-prompt-file "$MH/template/dispatch/ROLE.md" "$prompt") || orc=$?
   [ "$orc" != 1 ] || die "could not start the dispatcher window in tmux session mvd-$Q"
   [ "$orc" = 0 ] || say "warning: the dispatcher window $wid could not be stamped; a second start would open another dispatcher"
   # the server this queue lives on (the one `start` ran against, which may be the tmux you are in): every later call goes there
@@ -368,13 +379,30 @@ cmd_summary() {
 # menu: the left pane. Each session is followed by its background tasks (agents, shells, monitors: Claude Code keeps one output
 # file per task in <tmp>/claude-<uid>/<project>/<session id>/tasks/); the newest few are listed, a dot marks one written to in the
 # last minute. Up/down or j/k move. Enter on a session shows its window on the right and moves focus there; Enter on a task opens
-# its output (less +F: Ctrl-C to scroll, F to follow again, q to close) in a popup.
+# its output (less +F: Ctrl-C to scroll, F to follow again, q to close) in a popup. Every other tmux session of the server is listed
+# after the queue ("tmux NAME"): Enter switches the right pane's client to it. d jumps back to the dispatcher from anywhere.
 TASKS_SHOWN=5
 task_dir() { local d; for d in ${CLAUDE_CODE_TMPDIR:+"$CLAUDE_CODE_TMPDIR"/claude-*/*/"$1"/tasks} /private/tmp/claude-*/*/"$1"/tasks /tmp/claude-*/*/"$1"/tasks; do [ -d "$d" ] && { printf '%s' "$d"; return 0; }; done; return 1; }
 mtime() { stat -L -c %Y "$1" 2>/dev/null || stat -L -f %m "$1" 2>/dev/null || echo 0; }   # GNU stat first, then BSD; -L: an agent's output is a link to its transcript
+# view_tty: the tty of the nested client in the cockpit's right pane (the one that shows a session on the right).
+view_tty() { tm list-panes -t "=mvdc-$Q:cockpit" -F '#{pane_tty}|#{pane_start_command}' 2>/dev/null | awk -F'|' '$2 ~ /attach -t/ { print $1; exit }'; }
+# menu_go: show the selected entry (kinds, keys, sel of cmd_menu, seen through bash's dynamic scope) in the right pane and move
+# focus there. A queue window switches that nested client back to the view session, a tmux session of the machine switches it to
+# that session. Only that client moves: the outer terminal stays on the cockpit.
+menu_go() {
+  local vt wid
+  vt=$(view_tty) || vt=""
+  if [ "${kinds[sel]}" = x ]; then
+    { [ -n "$vt" ] && tm switch-client -c "$vt" -t "=${keys[sel]}" >/dev/null 2>&1; } || return 0
+  else
+    wid=$(win_id "${keys[sel]}") || return 0
+    { [ -n "$vt" ] && tm switch-client -c "$vt" -t "=mvdv-$Q:$wid" >/dev/null 2>&1; } || tm select-window -t "=mvdv-$Q:$wid" >/dev/null 2>&1 || return 0
+  fi
+  tm select-pane -R -t "${TMUX_PANE:-}" >/dev/null 2>&1 || true
+}
 cmd_menu() {
   need_queue; need tmux
-  local sel=0 top=0 kinds=() keys=() files=() sts=() l2s=() hs=() k r w line key rest wid n sid td f cnt now age mark last i j gone=0 rc avail used order cin cw cth cid prev_in=" " now_in c0 c1 nxt
+  local sel=0 top=0 kinds=() keys=() files=() sts=() l2s=() hs=() k r w line key rest wid n sid td f cnt now age mark last i j gone=0 rc avail used order cin cw cth cid prev_in=" " now_in c0 c1 nxt xs
   trap 'printf "\033[?25h"' EXIT; printf '\033[?25l'
   while :; do
     live_windows; kinds=(); keys=(); files=(); sts=(); l2s=(); hs=(); now=$(date +%s); now_in=" "
@@ -401,6 +429,13 @@ cmd_menu() {
         done < <(ls -tL "$td"/*.output 2>/dev/null)
       done
     fi
+    # every other tmux session on this server (this queue's own sessions are the windows above)
+    xs=$(tm list-sessions -F '#{session_name}|#{session_windows}' 2>/dev/null) || xs=""
+    while IFS='|' read -r k cnt; do
+      [ -n "$k" ] || continue
+      case "$k" in "mvd-$Q"|"mvdc-$Q"|"mvdv-$Q") continue ;; esac
+      kinds+=(x); keys+=("$k"); files+=("$cnt"); sts+=(""); l2s+=(""); hs+=(1)
+    done <<< "$xs"
     # a session that just began waiting for you rings the terminal bell once (tmux flags the window, a phone gets a notice)
     for k in $now_in; do case "$prev_in" in *" $k "*) ;; *) printf '\a' ;; esac; done
     prev_in="$now_in"
@@ -428,6 +463,8 @@ cmd_menu() {
         if [ "$k" = dispatcher ]; then line="dispatcher"; else r=$(row "$k"); line="#$k $(col "$r" 2) $(col "$r" 3)"; fi
         line="${line:0:$((w > 4 ? w - 4 : 1))}"
         case "${sts[i]}" in input) c1='\033[1;33m';; working) c1='\033[32m';; thinking) c1='\033[36m';; idle) c1='\033[2m';; esac
+      elif [ "${kinds[i]}" = x ]; then
+        line="tmux $k (${files[i]}w)"; line="${line:0:$((w > 4 ? w - 4 : 1))}"
       else
         f=${files[i]}; age=$((now - $(mtime "$f"))); mark=○; [ "$age" -ge 60 ] || mark=●
         last=$(tail -c 300 "$f" 2>/dev/null | tr -d '\000-\037' | tail -c 40); case "$last" in *'"'*|'{'*) last="${age}s" ;; esac   # a JSONL transcript is not readable as a tail: show its age
@@ -437,7 +474,7 @@ cmd_menu() {
       if [ "$i" = "$sel" ]; then printf '\033[7m> %s\033[0m\n' "$line"; else printf '  %s\n' "$line"; fi
       if [ "${hs[i]}" = 2 ]; then line="${l2s[i]}"; printf "    \033[0m$c1%s\033[0m\n" "${line:0:$((w > 8 ? w - 8 : 1))}"; fi
     done
-    printf '\n\033[2mup/down j/k  Enter open  n next needing you\n(prefix+Left: back here)\033[0m\n'
+    printf '\n\033[2mup/down j/k  Enter open  d dispatcher  n next needing you\n(prefix+Left: back here)\033[0m\n'
     key=""; rc=0; read -rsn1 -t 3 key || rc=$?
     if [ "$rc" -ne 0 ]; then if [ "$rc" -gt 128 ] || [ -t 0 ]; then continue; else exit 0; fi; fi   # timeout (1 in bash 3.2, over 128 later): redraw; end of input on a pipe: stop, never spin
     case "$key" in
@@ -445,6 +482,7 @@ cmd_menu() {
               case "$rest" in '[A') [ "$sel" -le 0 ] || sel=$((sel - 1)) ;; '[B') [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;; esac ;;
       k) [ "$sel" -le 0 ] || sel=$((sel - 1)) ;;
       j) [ "$sel" -ge $((n - 1)) ] || sel=$((sel + 1)) ;;
+      d) for ((j = 0; j < n; j++)); do if [ "${kinds[j]}" = s ] && [ "${keys[j]}" = dispatcher ]; then sel=$j; menu_go; break; fi; done ;;
       n) nxt=""; for ((j = 1; j <= n; j++)); do i=$(((sel + j) % n)); if [ "${kinds[i]}" = s ] && [ "${sts[i]}" = input ]; then nxt=$i; break; fi; done
          [ -z "$nxt" ] || sel=$nxt ;;
       "") [ "$n" -gt 0 ] || continue
@@ -453,9 +491,7 @@ cmd_menu() {
             tm display-popup -t "${TMUX_PANE:-}" -E -w 90% -h 85% "$line" >/dev/null 2>&1 || true
             continue
           fi
-          wid=$(win_id "${keys[sel]}") || continue
-          tm select-window -t "=mvdv-$Q:$wid" >/dev/null 2>&1 || continue
-          tm select-pane -R -t "${TMUX_PANE:-}" >/dev/null 2>&1 || true ;;
+          menu_go ;;
     esac
   done
 }
@@ -577,17 +613,34 @@ make_worktree() {
   fi
   [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$br" ] || { say "issue $n: $wt exists but is not on $br; not started"; return 1; }
   # the shared context links, made again when a half-made worktree is met
-  for l in .agent .claude megavibe-deliverables; do
+  for l in .agent megavibe-deliverables; do
     [ -d "$repo/$l" ] || { [ "$l" != .agent ] || { say "issue $n: $repo has no .agent; not started"; return 1; }; continue; }
     [ -e "$wt/$l" ] || ln -s "$(cd "$repo/$l" && pwd -P)" "$wt/$l" || { say "issue $n: could not link $l into $wt; not started"; return 1; }
   done
+  # .claude is a real folder in the worktree, never a link: Claude Code treats files whose real path lies outside the working
+  # directory as external imports and stops every new session at an approval prompt. The repo's own tracked files stay as
+  # checked out; only what the worktree lacks (gitignored rules, skills, local settings) is copied in, nothing overwritten.
+  local copied_claude="" f
+  if [ -d "$repo/.claude" ]; then
+    [ ! -L "$wt/.claude" ] || rm "$wt/.claude" || { say "issue $n: could not replace the .claude link in $wt; not started"; return 1; }
+    mkdir -p "$wt/.claude"
+    while IFS= read -r f; do
+      { [ -e "$wt/.claude/$f" ] || [ -L "$wt/.claude/$f" ]; } && continue
+      mkdir -p "$wt/.claude/$(dirname "$f")" && cp -P "$repo/.claude/$f" "$wt/.claude/$f" || { say "issue $n: could not copy .claude/$f into $wt; not started"; return 1; }
+      copied_claude="$copied_claude/.claude/$f"$'\n'
+    done < <(cd "$repo/.claude" && find . \( -type f -o -type l \) -not -path './worktrees/*' | sed 's|^\./||')
+  fi
   # the links are untracked: keep them out of `git status` and `git add -A` in this worktree (shared exclude file of the repository)
   local gc ex; gc=$(cd "$repo" && cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P) || gc=""
   if [ -n "$gc" ]; then
     ex="$gc/info/exclude"; mkdir -p "$gc/info"
-    for l in .agent .claude megavibe-deliverables; do
+    for l in .agent megavibe-deliverables; do
       [ ! -L "$wt/$l" ] || grep -qxF "/$l" "$ex" 2>/dev/null || printf '/%s\n' "$l" >> "$ex" || true
     done
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      grep -qxF "$l" "$ex" 2>/dev/null || printf '%s\n' "$l" >> "$ex" || true
+    done <<< "${copied_claude:-}"
   fi
   WT="$wt"
 }

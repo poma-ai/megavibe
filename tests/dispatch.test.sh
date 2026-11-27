@@ -84,8 +84,8 @@ SP=$(tmux display-message -p '#{socket_path}'); case "$SP" in */"$SOCK") OWN=1 ;
 
 git init -q --bare "$T/origin.git"; git init -q -b main "$T/work/proj" 2>/dev/null || { mkdir -p "$T/work"; git init -q -b main "$T/work/proj"; }
 P="$T/work/proj"; cd "$P" || exit 2
-git config user.email t@t; git config user.name t; echo a > a; git add a; git commit -qm init
-git remote add origin "$T/origin.git"; git push -q origin main; mkdir -p .agent .claude
+git config user.email t@t; git config user.name t; echo a > a; mkdir -p .claude; echo tracked-base > .claude/tracked.md; git add a .claude/tracked.md; git commit -qm init
+git remote add origin "$T/origin.git"; git push -q origin main; mkdir -p .agent .claude/rules; echo tracked-local-edit > .claude/tracked.md; echo rule > .claude/rules/r.md
 D() { bash "${DISPATCH_UNDER_TEST:-$REPO/scripts/megavibe-dispatch.sh}" "$@" 2>&1; }
 Q="$MEGAVIBE_HOME/dispatch/proj"
 called() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do grep -q -- "$1" "$T/megavibe.calls" 2>/dev/null && return 0; sleep 0.5; done; return 1; }
@@ -96,7 +96,7 @@ o=$(D start --max 2 --model sonnet); RC=$?
 check "start: dispatcher window opened in session mvd-proj ($o)" '[ $RC = 0 ] && tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx dispatcher'
 dcalled() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do grep -q -- "$1" "$T/dispatcher.calls" 2>/dev/null && return 0; sleep 0.5; done; return 1; }
 export ANTHROPIC_API_KEY=sk-test-key
-check "start: plain claude (not megavibe), sonnet, named, role file as system prompt" 'dcalled "^--name dispatcher-proj --model sonnet --session-id [0-9a-f-]\{36\} --append-system-prompt-file .*/template/dispatch/ROLE.md You are the megavibe dispatcher for queue proj"'
+check "start: plain claude (not megavibe), sonnet, named, role file as system prompt" 'dcalled "^--name dispatcher-proj --model sonnet --session-id [0-9a-f-]\{36\} --settings .*crossSessionInbound.*accept.* --append-system-prompt-file .*/template/dispatch/ROLE.md You are the megavibe dispatcher for queue proj"'
 check "start: dispatcher env has CLAUDE.md files off, no API key, no parent session, its queue" 'grep -q "^mds=1 key=unset parent=unset queue=proj$" "$T/dispatcher.env"'
 o=$(D start --max 2); check "start twice: no second dispatcher ($o)" '[[ "$o" == *"already runs"* ]] && [ "$(tmux list-windows -t =mvd-proj | wc -l | tr -d " ")" = 1 ]'
 
@@ -110,6 +110,13 @@ DS=$(awk -F= '$1 == "dsid" { print $2 }' "$Q/conf"); TD="/tmp/claude-mvdtest-$$/
 sleep 4
 check "cockpit: the dispatcher's agents and tasks are listed below it" 'tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "agent a1234567" && tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "task bzzzz"'
 rm -r "/tmp/claude-mvdtest-$$"
+tmux new-session -d -s other-x "sleep 300"; sleep 4
+check "cockpit: other tmux sessions of the server are listed in the left pane, this queue's own are not" 'tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "tmux other-x" && ! tmux capture-pane -p -t =mvdc-proj:.{left} | grep -q "tmux mvd"'
+tmux send-keys -t =mvdc-proj:.{left} G; for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do tmux send-keys -t =mvdc-proj:.{left} j; done; tmux send-keys -t =mvdc-proj:.{left} Enter; sleep 1
+check "cockpit: Enter on another session switches only the right pane's client to it" 'tmux list-clients -F "#{session_name}" | grep -qx other-x'
+tmux send-keys -t =mvdc-proj:.{left} d; sleep 1
+check "cockpit: d brings the right pane back to the dispatcher window" '! tmux list-clients -F "#{session_name}" | grep -qx other-x && [ "$(tmux display-message -p -t =mvdv-proj: "#{window_name}")" = dispatcher ]'
+tmux kill-session -t =other-x 2>/dev/null
 NOWT=$(date +%s); mkdir -p "$HOME/.megavibe/status"; printf '%s\tinput\t%s\tBash cleanup build\n' "$NOWT" "$((NOWT - 300))" > "$HOME/.megavibe/status/$DS"
 o=$(D summary); check "summary counts a session that needs you ($o)" '[[ "$o" == "1 need you,"* ]]'
 o=$(D summary --tmux); check "summary --tmux marks the attention part ($o)" '[[ "$o" == *"#[fg=black,bg=yellow,bold] 1 need you"* ]]'
@@ -124,7 +131,8 @@ check "add: task file holds the issue text fenced, the branch, the PR rule and t
 o=$(D tick); RC=$?
 check "tick: starts exactly max=2 sessions, third stays queued ($o)" '[ $RC = 0 ] && [ "$(st 1 2)" = running ] && [ "$(st 2 2)" = running ] && [ "$(st 3 2)" = queued ]'
 W1="$T/work/proj-issue-1"
-check "tick: worktree cut from origin/main on branch dispatch/issue-1, context linked" '[ "$(git -C "$W1" rev-parse --abbrev-ref HEAD)" = dispatch/issue-1 ] && [ "$(git -C "$W1" rev-parse HEAD)" = "$(git -C "$P" rev-parse origin/main)" ] && [ -L "$W1/.agent" ] && [ -L "$W1/.claude" ]'
+check "tick: worktree cut from origin/main on branch dispatch/issue-1, context linked" '[ "$(git -C "$W1" rev-parse --abbrev-ref HEAD)" = dispatch/issue-1 ] && [ "$(git -C "$W1" rev-parse HEAD)" = "$(git -C "$P" rev-parse origin/main)" ] && [ -L "$W1/.agent" ]'
+check "tick: .claude in the worktree is a real folder (no external-import prompt), gains the untracked rules, keeps its tracked file as checked out" '[ -d "$W1/.claude" ] && [ ! -L "$W1/.claude" ] && [ "$(cat "$W1/.claude/rules/r.md")" = rule ] && [ "$(cat "$W1/.claude/tracked.md")" = tracked-base ] && [ -z "$(git -C "$W1" status --porcelain | grep "\.claude")" ]'
 check "tick: windows issue-1 and issue-2 exist, megavibe got name, model and the task prompt" 'tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx issue-1 && called "^--no-normalize --name proj-issue-1 --model sonnet --session-id [0-9a-f-]\{36\} Use the work-ticket skill on the task file $Q/tasks/issue-1.md.*dispatcher-proj"'
 check "status: lists running with idle time" 'D status | grep -q "^running .*#1 .*idle 0m"'
 check "peek: works on a running window, refuses a missing one" 'D peek 1 >/dev/null && ! D peek 3 >/dev/null'
@@ -144,7 +152,7 @@ D max 5 >/dev/null; D total 2 >/dev/null; D add 40 >/dev/null; o=$(D tick); chec
 check "total refuses 0 and text" '! D total 0 >/dev/null 2>&1 && ! D total x >/dev/null 2>&1'
 D total off >/dev/null; D drop 40 >/dev/null; D max 1 >/dev/null; check "total off clears it" '! grep -q "^total=[0-9]" "$Q/conf"'
 check "a dropped issue can be queued again" 'D add 2 | grep -q "queued" && [ "$(st 2 2)" = queued ]'
-check "the main checkout was never touched" '[ "$(git -C "$P" rev-parse --abbrev-ref HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain | grep -v "^??")" ]'
+check "the main checkout was never touched" '[ "$(git -C "$P" rev-parse --abbrev-ref HEAD)" = main ] && [ -z "$(git -C "$P" status --porcelain | grep -v "^??" | grep -v " .claude/tracked.md$")" ] && [ "$(cat "$P/.claude/tracked.md")" = tracked-local-edit ]'
 
 o=$(D add --label ready --label p1 --limit 5)
 check "add --label: gh asked for open issues with both labels and the limit ($(cat "$LISTCALLS"))" 'grep -q -- "--label ready --label p1 --state open --search no:assignee sort:created-asc --limit 500" "$LISTCALLS"'
@@ -156,6 +164,8 @@ check "no skill configured: task file has no Implementation skill line" '! grep 
 D start --skill implement-and-review >/dev/null; D add 5 >/dev/null
 check "start --skill: later task files carry the Implementation skill line" 'grep -qx "Implementation skill: implement-and-review" "$Q/tasks/issue-5.md"'
 check "start --skill rejects an unusable name" '! D start --skill "a b" >/dev/null'
+check "start --skill: unknown skill name warns but still starts" 'D start --skill no-such-skill-xyz | grep -q "skill \"no-such-skill-xyz\" not found"'
+check "start --skill: plugin-form name is not checked" '! D start --skill some:plugin-skill | grep -q "not found"'
 check "the work-ticket skill ships and is self-contained (names no other skill)" '[ -f "$REPO/template/.claude/skills/work-ticket/SKILL.md" ] && ! grep -q "implement-and-review" "$REPO/template/.claude/skills/work-ticket/SKILL.md"'
 
 D max 20 >/dev/null; D add 11 >/dev/null; D tick >/dev/null
