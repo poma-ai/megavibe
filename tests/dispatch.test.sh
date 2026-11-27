@@ -55,6 +55,8 @@ cat > "$B/claude" <<'EOS'
 #!/bin/bash
 # stub claude: `auth status` says subscription; `-p` reads the prompt and answers fenced JSON, flagging VAGUE issues
 if [ "$1" = auth ]; then if [ "$(cat "$HOME/claude.mode" 2>/dev/null)" = apikey ]; then echo '{"authMethod":"api_key"}'; else echo '{"authMethod":"claude.ai"}'; fi; exit 0; fi
+case "$*" in *--append-system-prompt-file*)
+  printf '%s\n' "$*" >> "$T/dispatcher.calls"; printf 'mds=%s key=%s parent=%s queue=%s\n' "${CLAUDE_CODE_DISABLE_CLAUDE_MDS-unset}" "${ANTHROPIC_API_KEY-unset}" "${MEGAVIBE_PARENT_SESSION-unset}" "${MEGAVIBE_DISPATCH_QUEUE-unset}" >> "$T/dispatcher.env"; exec sleep 600 ;; esac
 case "$*" in *--dangerously-skip-permissions*)
   echo "$PWD" >> "$HOME/claude.trust"
   jq -n --arg d "$PWD" '{projects: {($d): {hasTrustDialogAccepted: true}}}' > "$HOME/.claude.json.new"
@@ -71,7 +73,7 @@ esac
 jq -n -c --arg r "$r" '{type: "result", is_error: false, result: $r}'
 EOS
 chmod +x "$B"/*; export PATH="$B:$PATH" HOME="$T/home" MEGAVIBE_HOME="$T/home/.megavibe" PRFILE="$T/prs" LISTCALLS="$T/list.calls" LABELS="$T/labels" LABELEXIST="$T/label.exist" CLOSED="$T/closed" T="$T"; unset CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR
-mkdir -p "$HOME" "$MEGAVIBE_HOME"; : > "$CLOSED"; : > "$LABELS"
+mkdir -p "$HOME" "$MEGAVIBE_HOME/template/dispatch"; cp "$REPO/template/dispatch/ROLE.md" "$MEGAVIBE_HOME/template/dispatch/ROLE.md"; : > "$CLOSED"; : > "$LABELS"
 end_panes() { local p i; [ "${OWN:-0}" = 1 ] || return 0
   for p in $(tmux list-panes -a -F '#{pane_pid}' 2>/dev/null); do kill -HUP "$p" 2>/dev/null; done
   for i in 1 2 3 4 5 6; do tmux has-session 2>/dev/null || return 0; sleep 0.5; done
@@ -92,7 +94,10 @@ st() { awk -F'\t' -v n="$1" -v c="$2" '$1 == n { print $c }' "$Q/queue.tsv"; }
 o=$(D add 1); check "add before start refuses ($o)" '[[ "$o" == *"no dispatcher yet"* ]]'
 o=$(D start --max 2 --model sonnet); RC=$?
 check "start: dispatcher window opened in session mvd-proj ($o)" '[ $RC = 0 ] && tmux list-windows -t =mvd-proj -F "#{window_name}" | grep -qx dispatcher'
-check "start: dispatcher named, model passed, prompt points at ROLE.md" 'called "^--no-normalize --name dispatcher-proj --model sonnet --session-id [0-9a-f-]* You are the megavibe dispatcher for queue proj.*dispatch/ROLE.md"'
+dcalled() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do grep -q -- "$1" "$T/dispatcher.calls" 2>/dev/null && return 0; sleep 0.5; done; return 1; }
+export ANTHROPIC_API_KEY=sk-test-key
+check "start: plain claude (not megavibe), sonnet, named, role file as system prompt" 'dcalled "^--name dispatcher-proj --model sonnet --session-id [0-9a-f-]\{36\} --append-system-prompt-file .*/template/dispatch/ROLE.md You are the megavibe dispatcher for queue proj"'
+check "start: dispatcher env has CLAUDE.md files off, no API key, no parent session, its queue" 'grep -q "^mds=1 key=unset parent=unset queue=proj$" "$T/dispatcher.env"'
 o=$(D start --max 2); check "start twice: no second dispatcher ($o)" '[[ "$o" == *"already runs"* ]] && [ "$(tmux list-windows -t =mvd-proj | wc -l | tr -d " ")" = 1 ]'
 
 o=$(D cockpit); RC=$?
@@ -158,6 +163,25 @@ o=$(D block 11); check "block: frees the slot, window stays ($o)" '[ "$(st 11 2)
 o=$(D requeue 11); check "requeue of a blocked issue whose window is still open is refused ($o)" '[ "$(st 11 2)" = blocked ] && [[ "$o" == *"still has its window open"* ]]'
 pid=$(tmux list-windows -t =mvd-proj -F '#{window_name} #{pane_pid}' | awk '$1 == "issue-11" { print $2 }'); kill -HUP "$pid"; sleep 1
 o=$(D requeue 11); check "requeue after the window closed rewrites the task file and queues it ($o)" '[ "$(st 11 2)" = queued ] && grep -q "body of 11" "$Q/tasks/issue-11.md"'
+D add 12 13 14 >/dev/null; D tick >/dev/null; : > "$T/tmux.args"
+o=$(D done 12); check "done: a window active moments ago is left open and named ($o)" '[ "$(st 12 2)" = done ] && [[ "$o" == *"left open"* ]] && ! grep -q -- "-l /exit" "$T/tmux.args"'
+printf '%s\tworking\t%s\tBash x\n' "$(date +%s)" "$(date +%s)" > "$HOME/.megavibe/status/$(st 13 8)"
+o=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 D done 13); check "done: a working session is not typed into ($o)" '[ "$(st 13 2)" = done ] && [[ "$o" == *"working"* ]] && ! grep -q -- "-l /exit" "$T/tmux.args"'
+o=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 D done 14); check "done: an idle window gets /exit typed into it ($o)" '[ "$(st 14 2)" = done ] && [[ "$o" == *"sent /exit"* ]] && grep -q -- "-l /exit" "$T/tmux.args"'
+printf '%s\tidle\t%s\t\n' "$(date +%s)" "$(date +%s)" > "$HOME/.megavibe/status/$(st 12 8)"; : > "$T/tmux.args"
+o=$(D done 12); check "done: a session whose state is idle gets /exit ($o)" '[[ "$o" == *"sent /exit"* ]] && grep -q -- "-l /exit" "$T/tmux.args"'
+D add 15 >/dev/null; D tick >/dev/null; : > "$T/tmux.args"; o=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 D block 15); check "block: never types /exit ($o)" '! grep -q -- "-l /exit" "$T/tmux.args"'
+wtpid() { tmux list-windows -t =mvd-proj -F '#{window_name} #{pane_pid}' | awk -v w="issue-$1" '$1 == w { print $2 }'; }
+D add 16 17 18 >/dev/null; D tick >/dev/null
+W16=$(st 16 5); W17=$(st 17 5); W18=$(st 18 5); echo x > "$W16/dirty.txt"; git -C "$W17" -c user.email=t@t -c user.name=t commit -q --allow-empty -m local
+P16=$(wtpid 16); P17=$(wtpid 17); P18=$(wtpid 18)
+( sleep 1; kill -HUP "$P16" ) & o16=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 D done 16); wait
+check "done: a dirty worktree is kept ($o16)" '[ -d "$W16" ] && [[ "$o16" == *"uncommitted or untracked"* ]]'
+D add 19 >/dev/null; D tick >/dev/null; W19=$(st 19 5); P19=$(wtpid 19); ( sleep 1; kill -HUP "$P19" ) & o=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 D done 19); wait
+check "done: a clean pushed worktree is removed once the window closed, the branch stays ($o)" '[ ! -e "$W19" ] && [[ "$o" == *"removed"* ]] && git -C "$T/work/proj" show-ref --verify --quiet refs/heads/dispatch/issue-19'
+( sleep 1; kill -HUP "$P17" ) & o=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 D done 17); wait; check "done: a worktree with a commit no remote holds is kept ($o)" '[ -d "$W17" ] && [[ "$o" == *"no remote branch holds"* ]]'
+o=$(MEGAVIBE_DISPATCH_EXIT_IDLE_SECS=0 MEGAVIBE_DISPATCH_EXIT_WAIT_SECS=1 D done 18); kill -HUP "$P18" 2>/dev/null
+check "done: while the window stays open the worktree is kept ($o)" '[ -d "$W18" ] && [[ "$o" == *"still open"* ]]'
 for s in work-ticket triage-ticket; do check "skill $s: front matter name and no mention of another skill's name" 'head -2 "$REPO/template/.claude/skills/$s/SKILL.md" | grep -qx "name: $s" && ! grep -q "implement-and-review" "$REPO/template/.claude/skills/$s/SKILL.md"'; done
 check "work-ticket and the task file both route missing info to the issue, the author and the marker" 'grep -q "megavibe:needs-info" "$REPO/template/.claude/skills/work-ticket/SKILL.md" && grep -q "ask for it on the issue" "$Q/tasks/issue-5.md"'
 
@@ -241,7 +265,7 @@ o=$( cd "$O2" && D start 2>&1 ); RC=$?
 check "F6 same folder name: refused, the live queue still points at its repo ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"already belongs to"* ]] && [ "$(awk -F= "\$1 == \"repo\" { print \$2 }" "$Q/conf")" = "$P" ]'
 o=$( cd "$O2" && D start --name proj2 2>&1 ); RC=$?
 check "F6 --name: its own queue and dispatcher ($o)" '[ "$RC" = 0 ] && tmux list-windows -t =mvd-proj2 -F "#{window_name}" | grep -qx dispatcher && [ -f "$MEGAVIBE_HOME/dispatch/proj2/conf" ]'
-check "F6 the queue name is exported to the dispatcher window and to issue windows" 'grep -q "^dispatcher-proj2 proj2 " "$T/megavibe.env" && grep -q "^proj-issue-1 proj " "$T/megavibe.env"'
+check "F6 the queue name is exported to the dispatcher window and to issue windows" 'grep -q "queue=proj2$" "$T/dispatcher.env" && grep -q "^proj-issue-1 proj " "$T/megavibe.env"'
 # F7: no label permission: nothing is posted, the issue is held; a failed comment takes the label back; block by hand needs the label
 echo nolabel > "$T/gh.mode"; D add 35 >/dev/null; o=$(D tick)
 check "F7 label cannot be added: HELD, no comment posted ($o)" '[ "$(st 35 2)" = held ] && [[ "$o" == *"HELD"* ]] && [ ! -f "$T/comment.35" ]'
@@ -370,13 +394,11 @@ check "R-F1 an issue closed since it was queued is dropped, no session ($o)" '[ 
 : > "$CLOSED"
 printf 'OLDTEXT' > "$T/body.131"; D add 131 >/dev/null; printf 'NEWTEXT edited later' > "$T/body.131"; D tick >/dev/null
 check "R-F2 the task file is rewritten from the issue as it is when the session starts" 'grep -q "NEWTEXT edited later" "$Q/tasks/issue-131.md" && ! grep -q OLDTEXT "$Q/tasks/issue-131.md"'
-# F3 no dispatcher where a megavibe session already holds the checkout
+# the dispatcher is a plain claude: a live megavibe session holding the checkout does not block it, and it takes no lock itself
 ln -sf "$(command -v sleep)" "$B/claude-locktest"; "$B/claude-locktest" 60 & LP=$!; mkdir -p "$P/.agent/.session-lock.d"; printf '{"pid":%s}\n' "$LP" > "$P/.agent/.session-lock.d/metadata.json"
 o=$(D start --name qlock 2>&1); RC=$?
-check "R-F3 start refuses while a live megavibe session holds the checkout ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"would wait at the launcher"* ]] && ! tmux has-session -t =mvd-qlock 2>/dev/null'
-kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null; o=$(D start --name qlock 2>&1)
-check "R-F3 a dead session's leftover lock does not block it ($o)" 'tmux list-windows -t =mvd-qlock -F "#{@mvd_key}" | grep -qx dispatcher'
-/bin/rm -rf "$P/.agent/.session-lock.d"
+check "start works while a live megavibe session holds the checkout, and leaves its lock alone ($o)" '[ "$RC" = 0 ] && tmux list-windows -t =mvd-qlock -F "#{@mvd_key}" | grep -qx dispatcher && [ -f "$P/.agent/.session-lock.d/metadata.json" ]'
+kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null; /bin/rm -rf "$P/.agent/.session-lock.d"
 # F4 an issue URL of another repository is refused, this repository's (trailing slash, query) is taken
 o=$(D add https://github.com/other-org/other-repo/issues/140 2>&1)
 check "R-F4 an issue URL of another repository is not queued ($o)" '[ -z "$(st 140 2)" ] && [[ "$o" == *"another repository"* ]]'
@@ -416,15 +438,6 @@ sed -i.bak 's/^\[ "\$m" != broken \] .*/&\n[ "$m" != leak ] || { sleep 20 \& }/'
 echo leak > "$HOME/claude.mode"; D add 133 >/dev/null; MEGAVIBE_DISPATCH_PRECHECKS_PER_TICK=50 D tick >/dev/null
 check "R2 a process a voter leaves behind does not keep the queue lock" '[ -z "$(lsof -t "$Q/.lock" 2>/dev/null)" ]'
 echo ok > "$HOME/claude.mode"
-# the live-session check follows the launcher: a live pid that is not claude/node/a shell is stale; the lock of a worktree lives in its git dir
-sleep 60 & SL=$!; mkdir -p "$P/.agent/.session-lock.d"; printf '{"pid":%s}\n' "$SL" > "$P/.agent/.session-lock.d/metadata.json"
-o=$(D start --name qstale 2>&1); check "R2 a live pid that is not a claude/node process is a stale lock and does not block start ($o)" 'tmux list-windows -t =mvd-qstale -F "#{@mvd_key}" | grep -qx dispatcher'
-kill "$SL" 2>/dev/null; wait "$SL" 2>/dev/null; /bin/rm -rf "$P/.agent/.session-lock.d"
-git -C "$P" worktree add -q --no-track -b wtlock "$T/wtlock" origin/main; ln -s "$P/.agent" "$T/wtlock/.agent"; GDW=$(git -C "$T/wtlock" rev-parse --absolute-git-dir)
-"$B/claude-locktest" 60 & LW=$!; mkdir -p "$GDW/megavibe-session-lock.d"; printf '{"pid":%s}\n' "$LW" > "$GDW/megavibe-session-lock.d/metadata.json"
-o=$(D start --dir "$T/wtlock" --name qwt 2>&1); RC=$?
-check "R2 a live session in a linked worktree (lock in its git dir) blocks start there ($o)" '[ "$RC" != 0 ] && [[ "$o" == *"would wait at the launcher"* ]]'
-kill "$LW" 2>/dev/null; wait "$LW" 2>/dev/null
 # issue_of: the URL's host must be this repository's, leading zeros are not part of the number
 o=$(D add https://evil.example.com/o/r/issues/55 2>&1); check "R2 an issue URL on another host is refused ($o)" '[ -z "$(st 55 2)" ] && [[ "$o" == *"another repository"* ]]'
 o=$(D add 0059); check "R2 leading zeros are not kept in the issue number ($o)" '[ "$(st 59 2)" = queued ] && [ -z "$(awk -F"\t" "\$1 ~ /^0/" "$Q/queue.tsv")" ]'

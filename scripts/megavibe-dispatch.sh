@@ -25,8 +25,8 @@
 #   peek N                   the last lines of issue N's window (is it stuck on a prompt?)
 #   resume N                 a session that ended unexpectedly (tmux died, window closed): its conversation again, in a new window
 #   max N                    change the cap (running sessions are never stopped)
-#   done N | block N | drop N | requeue N   mark it finished / waiting on someone / forgotten / queued again with a
-#                            fresh task file (keeps branch). done and block free the slot; the window stays open
+#   done N | block N | drop N | requeue N   mark it finished (and /exit its session when idle) / waiting on someone / forgotten / queued again with a
+#                            fresh task file (keeps branch). done and block free the slot; done also types /exit into an idle session (a busy one is left) and then removes its clean, pushed worktree, block leaves the window open
 # The queue is chosen by --name or MEGAVIBE_DISPATCH_QUEUE (default: the repo folder's name); state lives
 # in ~/.megavibe/dispatch/<queue>/ (conf, queue.tsv, tasks/). Nothing here stops a session or merges a PR, except that when the
 # dispatcher session ends it asks whether to stop the issue sessions still running (default no; `finish` asks again).
@@ -167,28 +167,6 @@ open_win() {
   printf '%s' "$wid"; stamp "$wid" "$key" || return 2
 }
 
-# lock_live REPO: a megavibe session holds REPO's checkout. The lock is where the launcher keeps it (set_lock_dir in megavibe: the
-# working tree's own git dir when .agent is a link, else .agent/.session-lock.d) and is judged by the launcher's rule: the pid is
-# alive AND is a claude or node process, or a shell with a claude child. Sets LOCK_PID.
-LOCK_PID=""
-lock_live() {
-  local repo="$1" dir meta pid name
-  dir="$repo/.agent/.session-lock.d"
-  if [ -L "$repo/.agent" ]; then dir="$(git -C "$repo" rev-parse --absolute-git-dir 2>/dev/null)/megavibe-session-lock.d"; fi
-  meta="$dir/metadata.json"; [ -f "$meta" ] || return 1
-  pid=$(jq -r '.pid // empty' "$meta" 2>/dev/null) || return 1
-  [[ $pid =~ ^[1-9][0-9]*$ ]] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  name=$(ps -p "$pid" -o comm= 2>/dev/null) || { LOCK_PID="$pid"; return 0; }   # cannot tell: treated as live, as the launcher does
-  [ -n "$name" ] || { LOCK_PID="$pid"; return 0; }
-  case "$name" in
-    *claude*|*node*) LOCK_PID="$pid"; return 0 ;;
-    *bash*|*zsh*) if command -v pgrep >/dev/null 2>&1 && pgrep -P "$pid" -f claude >/dev/null 2>&1; then LOCK_PID="$pid"; return 0; fi
-                  command -v pgrep >/dev/null 2>&1 || { LOCK_PID="$pid"; return 0; }; return 1 ;;
-  esac
-  return 1
-}
-
 # ── start ─────────────────────────────────────────────────────────────
 cmd_start() {
   local max="" total="" name="" dir="." model="" skill="${MEGAVIBE_TICKET_SKILL:-}" precheck="" nlabel="" allow_public=0 noattach=0 base="" repo prompt vis old wid orc me rv slug host
@@ -241,17 +219,21 @@ cmd_start() {
   [ "$WINS_STATE" != unknown ] || die "cannot tell whether tmux session mvd-$Q exists; nothing started"
   # no server: the recorded socket may be one whose folder is gone (a restart cleared /tmp), and tmux does not create it for -S
   if [ "$WINS_STATE" = noserver ]; then TMUX_SOCK=""; conf_put socket ""; conf_put pid ""; fi
-  prompt="You are the megavibe dispatcher for queue $Q (repo $repo; the environment variable MEGAVIBE_DISPATCH_QUEUE=$Q selects it for every megavibe dispatch command). Read $MH/template/dispatch/ROLE.md and follow it. Queue state is in $D."
-  if lock_live "$repo"; then
-    die "a megavibe session is active in $repo (pid $LOCK_PID): a dispatcher started there would wait at the launcher's branch-name prompt, which nobody can answer. Start it from a terminal in a checkout where no session runs, or end that session first"
-  fi
+  # The dispatcher is a plain `claude` on a small model, not a megavibe session: it needs none of the protocol (review gates, .agent
+  # writes, PR format; ~70K tokens of first-turn context measured 2026-11-27, 98.6K down to 27.8K), so CLAUDE.md files are off for this
+  # one process and ROLE.md is its system prompt. Hooks still fire (they live in settings). The launcher is skipped, so the API-billing
+  # bar it applies is repeated here, and there is no session lock or branch prompt to wait on. Issue sessions stay full megavibe.
+  prompt="You are the megavibe dispatcher for queue $Q (repo $repo; the environment variable MEGAVIBE_DISPATCH_QUEUE=$Q selects it for every megavibe dispatch command). Follow your role. Queue state is in $D."
   trust_preflight "$repo"   # the dispatcher's own folder too: its window cannot answer the workspace-trust dialog either
-  local parent dsid; parent=$(parent_id); orc=0
+  local dsid dmodel; orc=0; dmodel="${MEGAVIBE_DISPATCHER_MODEL:-sonnet}"
+  [[ $dmodel =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "MEGAVIBE_DISPATCHER_MODEL is not usable"
+  [ -f "$MH/template/dispatch/ROLE.md" ] || die "dispatcher role file missing: $MH/template/dispatch/ROLE.md (run megavibe once to install the template)"
   dsid=$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || true); [[ $dsid =~ $UUID_RE ]] || dsid=""   # known id: the cockpit finds the dispatcher's background tasks by it
   [ -z "$dsid" ] || conf_put dsid "$dsid"
   wid=$(open_win dispatcher dispatcher "$repo" env MEGAVIBE_HOME="$MH" bash "$SELF" wrap "$Q" -- \
-    env MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" MEGAVIBE_PARENT_SESSION="$parent" \
-    megavibe --no-normalize --name "dispatcher-$Q" ${model:+--model "$model"} ${dsid:+--session-id "$dsid"} "$prompt") || orc=$?
+    env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u MEGAVIBE_PARENT_SESSION CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 \
+    MEGAVIBE_HOME="$MH" MEGAVIBE_DISPATCH_QUEUE="$Q" \
+    claude --name "dispatcher-$Q" --model "$dmodel" ${dsid:+--session-id "$dsid"} --append-system-prompt-file "$MH/template/dispatch/ROLE.md" "$prompt") || orc=$?
   [ "$orc" != 1 ] || die "could not start the dispatcher window in tmux session mvd-$Q"
   [ "$orc" = 0 ] || say "warning: the dispatcher window $wid could not be stamped; a second start would open another dispatcher"
   # the server this queue lives on (the one `start` ran against, which may be the tmux you are in): every later call goes there
@@ -919,6 +901,41 @@ cmd_resume() {
 }
 cmd_total() { { [ "${1:-}" = off ] || [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; } || die "total: a positive number, or off"; need_queue; lock; if [ "$1" = off ]; then conf_put total ""; else conf_put total "$1"; fi; say "total is $1 (counted over every issue this queue ever started; running sessions are not stopped)"; }
 cmd_max() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]] || die "max: a positive number"; need_queue; lock; conf_put max "$1"; say "max is $1 (running sessions are not stopped; the next tick uses it)"; }
+# exit_window N: `done` ends the session too: types /exit into its window when the session is at its prompt. A busy session, one that
+# needs input, or a window not seen idle for MEGAVIBE_DISPATCH_EXIT_IDLE_SECS (default 60, without a state record) is left alone and
+# named. Only `done` does this: a blocked session stays open to be told the answer. The branch is never touched.
+exit_window() {
+  local n="$1" w idle
+  live_windows; [ "$WINS_STATE" = ok ] || { say "issue $n: cannot tell whether its window is open; not closed"; return 0; }
+  idle=$(win_idle "$n") || return 0
+  w=$(win_id "$n") || { say "issue $n: window id unreadable; /exit it there"; return 0; }
+  if state_of "$n"; then
+    [ "$SS_STATE" = idle ] || { say "issue $n: its session is $(state_label "$SS_STATE"), not at its prompt: window left open, /exit it when it is"; return 0; }
+  elif [ "$idle" -lt "${MEGAVIBE_DISPATCH_EXIT_IDLE_SECS:-60}" ]; then
+    say "issue $n: its window was active ${idle}s ago: left open, /exit it when it is at its prompt"; return 0
+  fi
+  tm send-keys -t "$w" -l '/exit' 2>/dev/null && tm send-keys -t "$w" Enter 2>/dev/null && say "issue $n: sent /exit to its window" \
+    || { say "issue $n: could not type into its window; /exit it there"; return 0; }
+  drop_worktree "$n"
+}
+# drop_worktree N: after /exit, once the window is gone (the session's cwd is the worktree, so never while it runs), `git worktree
+# remove` (no --force) the issue's worktree. Kept, with the reason said, when the window is still open after
+# MEGAVIBE_DISPATCH_EXIT_WAIT_SECS (default 20), the tree has uncommitted or untracked changes, or HEAD has commits no remote ref holds.
+# The branch stays (a pull request needs it, and requeue reuses it); resume of a removed worktree says to requeue.
+drop_worktree() {
+  local n="$1" wt i dirty ahead
+  wt=$(col "$(row "$n")" 5); [ -n "$wt" ] && [ -d "$wt" ] || return 0
+  for ((i = 0; i < ${MEGAVIBE_DISPATCH_EXIT_WAIT_SECS:-20}; i++)); do
+    live_windows; [ "$WINS_STATE" = ok ] || { say "issue $n: cannot tell whether its window closed: worktree $wt kept"; return 0; }
+    win_idle "$n" >/dev/null || break; sleep 1
+  done
+  live_windows; if [ "$WINS_STATE" != ok ] || win_idle "$n" >/dev/null; then say "issue $n: its window is still open: worktree $wt kept"; return 0; fi
+  dirty=$(git -C "$wt" status --porcelain 2>&1) || { say "issue $n: cannot read the state of $wt: kept"; return 0; }
+  [ -z "$dirty" ] || { say "issue $n: $wt has uncommitted or untracked changes: kept"; return 0; }
+  ahead=$(git -C "$wt" rev-list -n 1 HEAD --not --remotes 2>&1) || { say "issue $n: cannot compare $wt with the remotes: kept"; return 0; }
+  [ -z "$ahead" ] || { say "issue $n: $wt has commits no remote branch holds (push them): kept"; return 0; }
+  git -C "$(conf_get repo)" worktree remove "$wt" 2>/dev/null && say "issue $n: worktree $wt removed (branch dispatch/issue-$n kept)" || say "issue $n: git worktree remove failed: $wt kept"
+}
 cmd_mark() {   # cmd_mark done|dropped|queued N
   local n; n=$(issue_of "${2:-}") || die "'${2:-}' is not an issue number"; need_queue; lock
   [ -n "$(row "$n")" ] || die "issue $n is not in queue $Q"
@@ -939,6 +956,7 @@ cmd_mark() {   # cmd_mark done|dropped|queued N
     (cd "$(conf_get repo)" && gh issue edit "$n" --remove-assignee "@me" >/dev/null 2>&1) || say "issue $n: could not take you off its assignees; do it by hand"
   fi
   set_cols "$n" 2 "$1"; say "issue $n: $1"
+  [ "$1" != done ] || exit_window "$n"
   if [ "$1" = dropped ]; then live_windows; ! win_idle "$n" >/dev/null || say "note: its window is still open (dispatch never closes one): /exit it there"; fi
 }
 
