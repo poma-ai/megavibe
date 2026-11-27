@@ -2,7 +2,7 @@
 name: reviewer
 model: sonnet
 effort: high
-description: Independent pre-ship reviewer for code, scripts, docs and plans. Fresh context, adversarial, runs things. Same Claude subscription — always eligible, never switchable off. Use when allocated by continuous per-reader weighing or required by the availability/failure floor; two successful Codex readers on different models do not require this agent too. Allocation, ship composition and backstop symmetry live in `.claude/rules/delegation.md`, "Two review tiers". Critical work uses the same tiers. See non-negotiable 4.
+description: Independent pre-ship reviewer for code, scripts, docs and plans. Fresh context, adversarial, runs things. Same Claude subscription — always eligible, never switchable off. Use when allocated by continuous per-reader weighing or required by the availability/failure floor; two successful Codex readers on different models do not require this agent too. Allocation, ship composition and backstop symmetry live in `.claude/skills/delegation/SKILL.md`, "Two review tiers". Critical work uses the same tiers. See non-negotiable 4.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -54,7 +54,7 @@ paragraph, with the reasons. If a category is clean, say so in one line.
 
 No wait loop longer than 170 s in one tool call: your prompt cache expires after
 5 minutes, so run a long command in the background and wait for it in slices,
-one waiting call per slice, never a burst of polls (recipe: `spinouts.md`,
+one waiting call per slice, never a burst of polls (recipe: the `spinouts` skill,
 "keep the cache warm"; without that file, start the command in the background
 writing its status to an rc file, then `until [ -s RC ] || [ $SECONDS -ge $end ];
 do sleep 5; done` with `end=$((SECONDS+170))`).

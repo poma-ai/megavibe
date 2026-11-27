@@ -1,7 +1,7 @@
 #!/bin/bash
 # amass.sh — a cheap first pass: many headless one-shot model calls over the SAME inlined
 # input, one lens per prompt, then ONE dedupe call. It is a source of LEADS, never a review
-# or a verdict (the review tiers in .claude/rules/delegation.md are unchanged), but a
+# or a verdict (the review tiers in .claude/skills/delegation/SKILL.md are unchanged), but a
 # successful run must PRECEDE every reader round: codex-review.sh and claude-review.sh
 # --as-reviewer exit 6 without one from this directory, of this content (a tree hash of the
 # tracked files, taken when the input is frozen), in the last 120 minutes, unless the call passes a checked waiver

@@ -207,7 +207,7 @@ print(job, scratch)
   fi
 
   # A subagent's calls carry an agent_id. It has no Monitor tool and its cache
-  # expires after 5 minutes, so it gets the 170 s wait-slice rule (spinouts.md)
+  # expires after 5 minutes, so it gets the 170 s wait-slice rule (the spinouts skill)
   # instead of a heartbeat, and its task is not recorded for the parent's Stop check.
   AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null || echo "")
   if [ -n "$AGENT_ID" ]; then

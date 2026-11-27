@@ -140,7 +140,40 @@ install() {  # install <src> <dest>: atomic copy
   rm -f "$tmp"; return 1
 }
 
-removed=0; installed=0; refreshed=0; kept=0
+removed=0; installed=0; refreshed=0; kept=0; retired=0
+
+# Rules megavibe no longer ships as rules (they became skills, loaded on
+# demand). init.sh never deleted a rule, so old copies would stay eager in
+# every session. Under --init only (init.sh owns these files): remove an
+# untracked, regular copy from the project and from every megavibe parent up
+# the tree, on both spellings of the path. A tracked or linked copy is kept.
+# Only a file whose first heading is megavibe's own goes: a user's own rule
+# that happens to share a retired name is kept (a duplicate is the safe failure).
+RETIRED_RULES="delegation.md spinouts.md process-discipline.md prod-access-discipline.md"
+retired_heading() {
+  case "$1" in
+    delegation.md) echo "# Tool Routing and Delegation Protocols" ;;
+    spinouts.md) echo "# Subtask Spinouts" ;;
+    process-discipline.md) echo "# Long-running processes" ;;
+    prod-access-discipline.md) echo "# Production access discipline" ;;
+  esac
+}
+first_heading() { awk '/^#/ { print; exit }' "$1" 2>/dev/null; }
+if [ "$INIT" = 1 ]; then
+  for n in $RETIRED_RULES; do
+    { [ -e "$TEMPLATE_RULES/$n" ] || [ -L "$TEMPLATE_RULES/$n" ]; } && continue   # shipped again: not retired
+    want="$(retired_heading "$n")"
+    while IFS= read -r c; do
+      [ -n "$c" ] && [ -f "$c" ] && [ ! -L "$c" ] || continue
+      [ "$(first_heading "$c")" = "$want" ] || continue
+      tracked "$c" && continue
+      rm -f "$c" && retired=$((retired + 1))
+    done < <(printf '%s\n' "$OWN_DIR/$n"
+             { parents "$LOGICAL"; parents "$PHYSICAL"; } | while IFS= read -r a; do
+               [ -n "$a" ] && parent_copy "$a" "$n"; done)
+  done
+fi
+
 for tpl in "$TEMPLATE_RULES"/*.md; do
   [ -f "$tpl" ] || continue
   n="$(basename "$tpl")"
@@ -187,6 +220,7 @@ done
 msg=""
 [ "$removed" -gt 0 ] && msg="${msg}${removed} removed (a megavibe parent directory carries them); "
 [ "$installed" -gt 0 ] && msg="${msg}${installed} installed or updated; "
+[ "$retired" -gt 0 ] && msg="${msg}${retired} retired rule copies removed (they are skills now); "
 [ "$refreshed" -gt 0 ] && msg="${msg}${refreshed} parent copies refreshed to the template; "
 [ "$kept" -gt 0 ] && [ "$INIT" = 1 ] && [ -n "$msg" ] && msg="${msg}${kept} kept although a parent carries them (tracked by git, linked, or not a regular file); "
 [ -n "$msg" ] || exit 0

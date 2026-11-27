@@ -382,7 +382,9 @@ printf '%s\n' "$FULL" > "$KNOW_FILE" 2>/dev/null && POINTER="
 Full block (all of LESSONS.md, DECISIONS tail, memory hits): ${KNOW_FILE}"
 # Budget in characters, under the 10,000 limit with room for the pointer. The
 # newest lessons sit at the end of the file, so the excerpt keeps the tail.
-BUDGET=$(( 9000 - ${#HEAD} - ${#DECISIONS_TAIL} - ${#POINTER} - 200 ))
+# start-budget share: 8300 (all model-facing SessionStart output shares one
+# budget; see tests/start-budget.test.sh and README "What every session loads").
+BUDGET=$(( 7500 - ${#HEAD} - ${#DECISIONS_TAIL} - ${#POINTER} - 200 ))
 LESSONS_PART="
 --- LESSONS.md: no room here; read the file named below ---"
 if [ "$BUDGET" -gt 500 ]; then
@@ -402,7 +404,7 @@ ${LESSONS_PART}
 --- DECISIONS.md (last 20 lines) ---
 ${DECISIONS_TAIL}${POINTER}"
 # Last resort if the head or DECISIONS lines alone are huge.
-[ "${#SHORT}" -le 9800 ] || SHORT="${SHORT:0:9500}
+[ "${#SHORT}" -le 8300 ] || SHORT="${SHORT:0:8000}
 ...[cut]${POINTER}"
 # The user keeps what they need to act on: a backend that is broken and a
 # reviewer pin, which used to be visible in the full block shown to them.

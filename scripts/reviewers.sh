@@ -206,7 +206,7 @@ _codex_ok_probe() {
     # Signals are forwarded as well as the alarm handled. Without the INT/TERM/
     # HUP handlers, cancelling the caller left the probe's codex child alive in
     # the process group this deliberately put it in — the exact orphan
-    # process-discipline.md forbids, and the reason codex-review.sh carries the
+    # the process-discipline skill forbids, and the reason codex-review.sh carries the
     # same three handlers.
     perl -e '
       my $pid = fork(); exit(2) unless defined $pid;

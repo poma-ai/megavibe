@@ -118,6 +118,7 @@ PREVANS=""; [ -f "$SEEN" ] && PREVANS=$(head -c 262144 "$SEEN" 2>/dev/null | tai
 NEW=$(printf '%s\n' "$ANSWERS" | grep -v '^$' | grep -vxF -f <(printf '%s\n' "$PREVANS") 2>/dev/null)
 MSG=""; RELAYED=""
 if [ -n "$NEW" ]; then
+  # start-budget share: 4300 (the answer list plus its framing and the open-decisions note).
   # At most 20 answers and about 3500 characters per message; an answer that does not fit is NOT marked as seen
   # and arrives with the next message.
   LIST=""; n=0

@@ -132,5 +132,7 @@ esac
 # The projections line rides along whenever the hook speaks, and alone when at least one is known.
 if [ -n "$PROJMSG" ] && { [ -n "$MSG" ] || [ "$PROJKNOWN" = 1 ]; }; then MSG="${MSG:+$MSG }$PROJMSG"; fi
 [ -n "$MSG" ] || exit 0
+# start-budget share: 1200. Retractions come first, so a cut drops the projections tail, never a retraction.
+[ "${#MSG}" -le 1200 ] || MSG="${MSG:0:1190} [cut]"
 jq -n --arg ev "$EVENT" --arg ctx "$MSG" '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' 2>/dev/null
 exit 0

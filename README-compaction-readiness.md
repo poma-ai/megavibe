@@ -1,6 +1,6 @@
 # Compaction readiness: full semantics
 
-Moved verbatim out of `template/CLAUDE.md` ("Compaction lifecycle") on 2026-11-23 to keep the eagerly loaded protocol under the instruction-file limit; the short rule stays in CLAUDE.md.
+Moved verbatim out of `template/CLAUDE.md` ("Compaction lifecycle") on 2026-11-23 to keep the eagerly loaded protocol under the instruction-file limit; the short rule stayed in CLAUDE.md until 2026-11-27 and is now in the `compaction-lifecycle` skill (`template/.claude/skills/compaction-lifecycle/SKILL.md`).
 
 **Ready to compact?** This check is advisory: run `.claude/hooks/compact-readiness.sh --session <session-id>` while refreshing the close-out; it does not require a manual compaction. Without `--session` it takes `$CLAUDE_CODE_SESSION_ID`, else the one tool-call counter touched in the last 24 hours (two is ambiguous and exits 2), so pass it whenever sessions share the project. Exit 0 means no findings in the observed state, 1 means `NOT READY` findings in the report, and 2 means unable to check (including missing `python3`). It never blocks a tool, Stop, or compaction. A body line starting with `DECISION:`, `D<number> `, `D<number>:` or `Decided:` asks for reconciliation of both `DECISIONS.md` and `TASKS.md`; backtick-fenced examples are ignored. Other decision-like prose is advisory. Three uncovered events also prompt task reconciliation (`MEGAVIBE_READY_TASKS_MIN_EVENTS`, default 3). Register mtimes and tool counters do not prove coverage.
 

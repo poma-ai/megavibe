@@ -1,3 +1,9 @@
+---
+paths:
+  - "**/CLAUDE.md"
+  - "**/CLAUDE.local.md"
+---
+
 # CLAUDE.md authoring
 
 Rules for writing or maintaining a project's `CLAUDE.md`. Apply when editing the file, when running `/init`, or when the user asks for documentation cleanup.

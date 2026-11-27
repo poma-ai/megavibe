@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # amass-gate.sh — the amass sweep before a reader round is MECHANICAL, not a thing to remember.
 #
-# delegation.md ("Cut rounds before cutting readers") says: run `amass.sh run` + `dedupe` on the
+# the delegation skill ("Cut rounds before cutting readers") says: run `amass.sh run` + `dedupe` on the
 # frozen candidate, triage the leads by execution, fix, and only then start a reader round. That
 # rule was skipped almost every time it relied on being remembered, so codex-review.sh and
 # claude-review.sh call this under --as-reviewer and refuse (exit 6) without one of:
@@ -144,7 +144,7 @@ EOF
       echo "amass-gate: the sweep recorded here in the last $MINS minutes was of other content (a tracked edit or a fix commit since), so this reader round is refused. Sweep the current candidate:" >&2
     else
       echo "amass-gate: no amass sweep recorded for \"$PWD\" in the last $MINS minutes, so this reader round is refused." >&2
-      echo "Run the sweep on the frozen candidate first (cents; delegation.md, \"Cut rounds before cutting readers\"):" >&2
+      echo "Run the sweep on the frozen candidate first (cents; the delegation skill, \"Cut rounds before cutting readers\"):" >&2
     fi
     cat >&2 <<'EOF'
   ~/.megavibe/scripts/amass.sh run --out <dir> --change "<what changed, what to hunt>" FILE... [--context FILE...]

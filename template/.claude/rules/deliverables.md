@@ -1,3 +1,8 @@
+---
+paths:
+  - "megavibe-deliverables/**"
+---
+
 # Deliverables and open decisions
 
 Where a session puts what the user will read, and how it asks for decisions. The user reads a visible folder; they do not dig through `.agent/` or hunt for pages hosted elsewhere.

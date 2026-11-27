@@ -1,3 +1,8 @@
+---
+name: delegation
+description: Review rounds, reader allocation and backend routing. Load BEFORE any review round (normal or ship), before choosing a reader, reviewer or backend for any unit of work (review, fix round, implementation agent, digest, memo, rehydrate, second opinion), before an amass sweep, and when a review script refuses or a usage-router line asks for an allocation decision. Holds the two review tiers, the availability/failure floor, the continuous allocation rule with its end-of-window sprint exception, the sweep gate, reviewer briefs, and the Codex/Gemini/subagent protocols.
+---
+
 # Tool Routing and Delegation Protocols
 
 ## Universal fallback principle

@@ -1,12 +1,12 @@
 ---
 name: doc-review
-description: Independent multi-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the allocated ship readers per delegation.md in parallel; synthesizes findings into a single report.
+description: Independent multi-reviewer review of the project's MD doc set for drift, contradictions, dead pointers, and bloat. Sends CLAUDE.md + every README*.md to the allocated ship readers per the delegation skill in parallel; synthesizes findings into a single report.
 allowed-tools: Read, Write, Agent, Bash(ls CLAUDE.md README*.md *), Bash(find docs -maxdepth 2 -name *), Bash(bash ~/.megavibe/scripts/amass.sh *), Bash(bash ~/.megavibe/scripts/usage-route.sh *), Bash(bash ~/.megavibe/scripts/reviewers.sh *), Bash(bash ~/.megavibe/scripts/codex-progress.sh *), Bash(bash ~/.megavibe/scripts/codex-review.sh *), Bash(bash ~/.megavibe/scripts/gemini-review.sh *)
 ---
 
 # Doc-review (periodic doc hygiene)
 
-Send the project's full markdown documentation surface to the readers allocated for a ship round under `.claude/rules/delegation.md`, "Two review tiers" (including its availability/failure floor), for an independent challenge. Eligibility is not allocation. Synthesize the completed reviews into a single findings report. The user decides which findings to act on.
+Send the project's full markdown documentation surface to the readers allocated for a ship round under `.claude/skills/delegation/SKILL.md`, "Two review tiers" (including its availability/failure floor), for an independent challenge. Eligibility is not allocation. Synthesize the completed reviews into a single findings report. The user decides which findings to act on.
 
 ## When to use
 
@@ -21,11 +21,11 @@ After significant docs or code edits that change the documentation surface — `
    ```
    Most projects: just `CLAUDE.md` plus zero or more `README*.md` at the root. Adapt if the project uses a `docs/` folder. If only `CLAUDE.md` exists, the review is still useful — focus on bloat and drift-vs-code.
 
-2. **Sweep and triage before readers.** Follow the sweep and waiver rules in `.claude/rules/delegation.md`: invoke `bash ~/.megavibe/scripts/amass.sh run --out <dir> --change "<change>" <files>`, then `bash ~/.megavibe/scripts/amass.sh dedupe --out <dir>`, and triage the leads before launching readers. Record any permitted waiver.
+2. **Sweep and triage before readers.** Follow the sweep and waiver rules in `.claude/skills/delegation/SKILL.md`: invoke `bash ~/.megavibe/scripts/amass.sh run --out <dir> --change "<change>" <files>`, then `bash ~/.megavibe/scripts/amass.sh dedupe --out <dir>`, and triage the leads before launching readers. Record any permitted waiver.
 
    For allocation checks, spell the helpers `bash ~/.megavibe/scripts/usage-route.sh ...` and `bash ~/.megavibe/scripts/reviewers.sh ...`. Read each provider with `MEGAVIBE_ROUTER_PROVIDER=claude bash ~/.megavibe/scripts/usage-route.sh forecast` and `MEGAVIBE_ROUTER_PROVIDER=codex bash ~/.megavibe/scripts/usage-route.sh forecast`; repeat both with `status --peek`. **Known permission gap:** the unprefixed helper calls are granted in the skill metadata, but Claude Code does not match allow rules past arbitrary leading environment assignments. These provider-prefixed calls may still prompt; do not skip either provider check. Consult eligibility with `bash ~/.megavibe/scripts/reviewers.sh list`; use `bash ~/.megavibe/scripts/usage-route.sh sprint-advice` for the allocation rule's sprint advice.
 
-   **Allocate each reader, then launch in PARALLEL** with the SAME files and the SAME prompt. Follow `.claude/rules/delegation.md` for continuous weighing, eligibility, ship composition and fallback; the session-start Reviewers row lists eligible backends, not mandatory calls. For an allocated subagent use Agent with `subagent_type: reviewer`, or `general-purpose` with `model: sonnet` and the text of `.claude/agents/reviewer.md` if it is not registered. For each allocated Codex reader use `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --timeout 600 --prompt "<prompt>" <files>`, selecting different models with `--model` for a two-Codex pair. Use Bash, not the removed Codex MCP. Launch long Codex calls with `run_in_background` and separate heartbeats using `bash ~/.megavibe/scripts/codex-progress.sh --file <rollout> --brief` (pin each job's rollout with `bash ~/.megavibe/scripts/codex-progress.sh --path --since <start>`). For permitted Gemini calls use `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --pro --prompt "<prompt>" <files>`, adding `--fallback` only under the fallback rule; never use Gemini MCP or CLI for reviews. The prompt:
+   **Allocate each reader, then launch in PARALLEL** with the SAME files and the SAME prompt. Follow `.claude/skills/delegation/SKILL.md` for continuous weighing, eligibility, ship composition and fallback; the session-start Reviewers row lists eligible backends, not mandatory calls. For an allocated subagent use Agent with `subagent_type: reviewer`, or `general-purpose` with `model: sonnet` and the text of `.claude/agents/reviewer.md` if it is not registered. For each allocated Codex reader use `bash ~/.megavibe/scripts/codex-review.sh --as-reviewer --timeout 600 --prompt "<prompt>" <files>`, selecting different models with `--model` for a two-Codex pair. Use Bash, not the removed Codex MCP. Launch long Codex calls with `run_in_background` and separate heartbeats using `bash ~/.megavibe/scripts/codex-progress.sh --file <rollout> --brief` (pin each job's rollout with `bash ~/.megavibe/scripts/codex-progress.sh --path --since <start>`). For permitted Gemini calls use `bash ~/.megavibe/scripts/gemini-review.sh --as-reviewer --pro --prompt "<prompt>" <files>`, adding `--fallback` only under the fallback rule; never use Gemini MCP or CLI for reviews. The prompt:
 
    > Review the attached project documentation set. For each finding, output `{category, file:line, what's wrong, suggested fix}`. Categories:
    >
@@ -37,7 +37,7 @@ After significant docs or code edits that change the documentation surface — `
    >
    > Be specific and concise. Do not propose stylistic rewrites — only substantive issues.
 
-3. **Missing reviewers.** Apply the availability/failure floor in `.claude/rules/delegation.md`; report which allocated readers actually answered, replacements and any shortfall. A skipped or failed call is not a completed review. Never substitute `summarizer` for `reviewer`, and never treat a switched-off backend as an outage to work around.
+3. **Missing reviewers.** Apply the availability/failure floor in `.claude/skills/delegation/SKILL.md`; report which allocated readers actually answered, replacements and any shortfall. A skipped or failed call is not a completed review. Never substitute `summarizer` for `reviewer`, and never treat a switched-off backend as an outage to work around.
 
 4. **Synthesize.** Merge the reports into a single output, grouped by category. For each finding:
    - Note how many reviewers flagged it — **all** or **two** (high-confidence) vs **one** (check it yourself before acting)

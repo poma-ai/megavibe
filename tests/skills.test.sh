@@ -4,7 +4,7 @@
 # are explicitly unsupported. No launcher, skill command or backend is run.
 set -eu
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-INVENTORY='catchup clip doc-review finish-feature init-feature megavibe-restart prune-context rehydrate watch'
+INVENTORY='catchup clip compaction-lifecycle delegation disk-and-trash doc-review finish-feature init-feature megavibe-restart process-discipline prod-access-discipline prune-context rehydrate spinouts watch'
 
 validate_skill() {
   awk -v skill="$2" '
@@ -20,6 +20,13 @@ validate_skill() {
       golden["megavibe-restart"]=""
       golden["prune-context"]=""
       golden["rehydrate"]=""
+      # Procedure skills moved out of the eager rules: read-only text, no grants.
+      golden["compaction-lifecycle"]=""
+      golden["delegation"]=""
+      golden["disk-and-trash"]=""
+      golden["process-discipline"]=""
+      golden["prod-access-discipline"]=""
+      golden["spinouts"]=""
       golden["watch"]="Bash(bash ~/.megavibe/scripts/tick.sh *), Bash(bash ~/.megavibe/scripts/claude-auth-check.sh *), Bash(basename *), Bash(printf *), Bash(shasum *), Bash(cut -c1-6 *), Bash(gh pr view *)"
       n=split(golden[skill], expected_grants, ",")
       for(i=1;i<=n;i++) {
@@ -118,7 +125,7 @@ validate_skill() {
       for(g in actual) if(!(g in expected)) fail("unexpected Bash grant: " g)
       for(g in expected) if(!(g in actual)) fail("missing Bash grant: " g)
       if(value["user-invocable"] == "false") fail(skill " must remain user-invocable")
-      if(skill ~ /^(rehydrate|catchup|doc-review|init-feature|watch)$/ && value["disable-model-invocation"] == "true")
+      if(skill ~ /^(rehydrate|catchup|doc-review|init-feature|watch|compaction-lifecycle|delegation|disk-and-trash|process-discipline|prod-access-discipline|spinouts)$/ && value["disable-model-invocation"] == "true")
         fail(skill " must remain model-invocable")
       if(skill ~ /^(megavibe-restart|finish-feature|prune-context)$/ && value["disable-model-invocation"] != "true")
         fail(skill " must remain manual-only")
@@ -388,7 +395,7 @@ check 'golden bare Bash still requires its reason' expect_failure 'unrestricted 
 
 # Current docs cannot reintroduce the retired custom command. The exception is
 # only the named upgrade paragraph, not every /copy mention in README.md.
-for path in CLAUDE.md template/CLAUDE.md README.md README-watcher.md template/.claude/rules/delegation.md template/.claude/skills/clip/SKILL.md; do
+for path in CLAUDE.md template/CLAUDE.md README.md README-watcher.md template/.claude/skills/delegation/SKILL.md template/.claude/skills/clip/SKILL.md; do
   reset_fixture
   printf '\nUse `/copy` for the clipboard.\n' >> "$FIXTURE/$path"
   check "retired reference fails in $path" expect_failure 'retired custom /copy reference'
@@ -401,14 +408,14 @@ check 'dated measurement record is excepted' validate_tree "$FIXTURE"
 for entry in \
   'template/CLAUDE.md|run `/megavibe-restart`' \
   'README.md|Claude runs `/finish-feature` itself.' \
-  'template/.claude/rules/delegation.md|Then run `/finish-feature` yourself' \
+  'template/.claude/skills/delegation/SKILL.md|Then run `/finish-feature` yourself' \
   'template/CLAUDE.md|After completing a feature, invoke `/finish-feature` automatically without asking the user.'; do
   reset_fixture
   path=${entry%%|*}; sentence=${entry#*|}
   printf '\n%s\n' "$sentence" >> "$FIXTURE/$path"
   check "manual-only review reproduction: $sentence" expect_failure 'model must not invoke manual-only command'
 done
-for path in CLAUDE.md template/CLAUDE.md README.md README-watcher.md template/.claude/rules/delegation.md template/.claude/skills/clip/SKILL.md; do
+for path in CLAUDE.md template/CLAUDE.md README.md README-watcher.md template/.claude/skills/delegation/SKILL.md template/.claude/skills/clip/SKILL.md; do
   for command in /megavibe-restart /finish-feature; do
     for verb in run invoke start launch; do
       reset_fixture

@@ -53,6 +53,9 @@ if [ -n "$FOOTPRINT" ]; then
   FIRST="$FIRST | $FOOTPRINT"
 fi
 
+# start-budget share: 1600. The rules below always fit; a long sizes report is cut, with a pointer to the full one.
+[ "${#OUT}" -le 800 ] || OUT="${OUT:0:780}
+...[cut; the full report: ~/.megavibe/scripts/disk-watch.sh check]"
 MSG="## Low disk space
 
 ${OUT}

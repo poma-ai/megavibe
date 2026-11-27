@@ -16,7 +16,7 @@ One tick is `bash ~/.megavibe/scripts/tick.sh` (`megavibe tick` from a terminal)
 
 - `off` → stop: `CronList`, delete every job whose prompt contains `tick.sh`, say so, stop.
 - `status` → `CronList`; report the tick job(s) and run one tick now with `--name NAME --no-mark` (a status check must not move the window). Stop.
-- Otherwise: an optional leading interval token (`30m`, `45m`, `1h`) and any number of `org/repo` names. Default interval 30 minutes. Clamp to 10–50 minutes and say so when you clamped: under 10 minutes the GitHub calls are noise, and a tick inside the main thread's 1-hour prompt-cache lifetime reads the cached context instead of rewriting it. That cache effect is a side benefit of a tick that does real work (checking for review requests is time-sensitive); it is not a reason to tick on an idle session, which `delegation.md` ("Cache heartbeat") leaves an open question.
+- Otherwise: an optional leading interval token (`30m`, `45m`, `1h`) and any number of `org/repo` names. Default interval 30 minutes. Clamp to 10–50 minutes and say so when you clamped: under 10 minutes the GitHub calls are noise, and a tick inside the main thread's 1-hour prompt-cache lifetime reads the cached context instead of rewriting it. That cache effect is a side benefit of a tick that does real work (checking for review requests is time-sensitive); it is not a reason to tick on an idle session, which the `delegation` skill ("Cache heartbeat") leaves an open question.
 
 ## Schedule
 
