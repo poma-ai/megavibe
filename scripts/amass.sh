@@ -60,8 +60,9 @@ usage() {
 
 P1/P2 labels are the model's, not a measurement: historical precision was about
 15-20 percent on real diffs and roughly 40 percent on fresh complex shell code
-in the historical Claude pilot. Measured precision for either provider is
-unknown until compared on the same inputs.
+in the historical Claude pilot. One later pilot on the same known-defect set
+measured precision 0.16 (Haiku) and 0.58 (luna) at equal recall; it is a single
+pilot, not a settled ranking (README-amass.md).
 --provider auto (the default) mixes Claude (haiku) and Codex (gpt-5.6-luna) calls
 in one run, split inversely to each subscription's projected end-of-window usage
 (usage-route.sh pace; recent, else linear, else used; clamped to 10-1000), at

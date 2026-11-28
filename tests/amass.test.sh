@@ -569,7 +569,9 @@ check "claude still defaults to 150 KB and Haiku reason, and a refused dry run l
 out=$("$AM" --help)
 for doc in help readme; do
   if [ "$doc" = help ]; then printf '%s\n' "$out" > "$T/doc"; else cp "$REPO/README-amass.md" "$T/doc"; fi
-  check "$doc explains provider routing, full model ids and unknown comparative precision" 'grep -q -- "--provider" "$T/doc" && grep -q "gpt-5.6-luna" "$T/doc" && grep -q "gpt-6-luna" "$T/doc" && grep -q "headroom" "$T/doc" && grep -q "unknown until compared" "$T/doc"'
+  # Comparative precision: one pilot on the same inputs (README-amass.md, since #101), stated
+  # as a single pilot rather than a ranking; the old "unknown until compared" is superseded.
+  check "$doc explains provider routing, full model ids and comparative precision as a single pilot" 'grep -q -- "--provider" "$T/doc" && grep -q "gpt-5.6-luna" "$T/doc" && grep -q "gpt-6-luna" "$T/doc" && grep -q "headroom" "$T/doc" && grep -q "0.58" "$T/doc" && grep -q "not a settled ranking" "$T/doc" && ! grep -q "unknown until compared" "$T/doc"'
 done
 
 # 12. Mixed runs: both providers in one run, split inversely to the projected usage.
