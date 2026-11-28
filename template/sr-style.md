@@ -71,8 +71,9 @@ looking around at all, which costs more than the scope discipline buys. The
 split above keeps the discipline where it matters (edits, not attention).
 
 [mv] fixing-smartass-opus-5 also says "never add a co-author to a commit message". Dropped —
-this harness requires the `Co-authored-by: megavibe` and `Claude-Session:`
-trailers on every commit. Upstream's rule would break that convention.
+this harness requires the `Co-authored-by: megavibe` trailer on every commit (and
+the `Claude-Session:` trailer on private repositories; on a public one the session
+link and trailer are left out). Upstream's rule would break that convention.
 
 [mv] "Do not widen into documentation" is scoped to *unrequested* docs. The
 `.agent/` context writes (FULL_CONTEXT, DECISIONS, TASKS, LESSONS) are mandated

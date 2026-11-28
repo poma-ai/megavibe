@@ -16,15 +16,30 @@ set -u
 # "Check the repository's visibility before every push" lived only in memory and was
 # skipped. This is the check, in code.
 #
-# What fires it (parsed with shlex, so quoted text, echo and commit messages are not
+# What fires it (parsed by a quote-aware tokenizer, so quoted text, echo and commit messages are not
 # commands; `bash -c`, `sudo`, `env X=1`, `git -C dir`, and `cd dir && git push` are):
 #   git push                      the target is resolved (remote name, URL, pushurl,
 #                                 insteadOf, branch/pushDefault remote) and its
 #                                 visibility looked up with `gh repo view`
-#   gh pr create                  a visibility check of the repository the pull request
-#                                 publishes to (-R/--repo, GH_REPO, else the one gh itself
-#                                 resolves from the checkout). Nothing else: the title, body,
-#                                 body file, template and commits are NOT read.
+#   gh pr create|edit|comment|review|merge|close|reopen, gh issue create|edit|comment|close|reopen,
+#   gh release create|edit, gh api writes (POST/PATCH/PUT, or fields without -X, to repos/<owner>/<repo>/...)
+#                                 the repository the text goes to (the last -R/--repo, a pull request or
+#                                 issue URL, the api endpoint, GH_REPO, else the one gh resolves from the
+#                                 checkout; host from -R HOST/o/r, the URL, --hostname, GH_HOST) is looked
+#                                 up. PUBLIC: the text is scanned like a commit (--title, --subject, --body,
+#                                 --notes, --comment, --body-file/--notes-file/-F FILE, --template, -f/-F
+#                                 fields, -F k=@FILE, --input FILE with its JSON strings, the contents API's
+#                                 base64; "-" for standard input only when it is a heredoc the hook can see,
+#                                 and "$(cat <<'EOF' ... EOF)"). Text the hook cannot see (a variable, a
+#                                 substitution, a pipe or redirection, an unquoted heredoc that expands,
+#                                 --fill, --editor, a missing file, a file another command in the same call
+#                                 names) is DENIED with the instruction to pass a file. A question about a
+#                                 text shows its length and first lines. `gh api graphql` with a mutation asks
+#                                 (its repository cannot be placed); a query is a read.
+#   built-in rules                for commit and tag messages and every published text, on a PUBLIC target,
+#                                 with no configuration: a Claude Code session link (claude.ai/code/session_…)
+#                                 and a `Claude-Session:` trailer are DENIED, not asked: approving them is never
+#                                 the intent. Co-authored-by alone is fine; private repositories keep both.
 #   gh repo create --public       asks (publishes a new repo); scans local history
 #                                 when --push/--source is given
 #   gh repo edit --visibility public   asks: it turns the WHOLE history public;
@@ -97,9 +112,15 @@ set -u
 # prompt-injected instruction can only edit the command text, not the hook's
 # environment. The prompt itself is the per-push human decision.
 #
-# Known gaps (not enforced here): `gh pr edit` is not checked at all (it names its repository in a number or URL argument that this guard does not resolve); the text of a pull request (title, body, body file, template, comments) is NOT
-# scanned; the repository of `gh pr create` is the first -R/--repo-shaped word, so a repeated -R or an option-shaped
-# title/body value written before the real -R can stand in for it (flag_value does not skip other options' values);
+# Known gaps (not enforced here): gh texts outside the list above (gh gist create, gh label create/edit, repository
+# descriptions, gh workflow run inputs, gh api to endpoints that are not repos/<owner>/<repo>, release ASSETS) are
+# not read; a session link inside a committed FILE is not a built-in rule (only messages and published texts are);
+# a body file is read as it is when the hook runs (a file another command in the same call names is denied, one
+# changed by a process outside the call is not seen, nor one a script in the call writes without naming it); --web
+# texts typed in the browser are the human's; shell forms the parser does not model (ANSI-C $'…' quoting, brace
+# expansion, a case-pattern `)` or a `)` inside ${…} within $( ), a quoted command word such as git "push" or gh
+# "pr", gh aliases, eval of single-quoted text, a script fed to a shell on stdin);
+# a GraphQL mutation always asks, private repositories included;
 # the commits `gh pr create` may push itself are not scanned either: the pull request part only asks when its
 # destination is public and not on your known-public list; a `cd` that only runs conditionally
 # (`test -d x && cd y; git push`) is followed as if it ran; with tracking refs that hide the whole push, a selector
@@ -108,8 +129,7 @@ set -u
 # without a deliberate setup); a placeholder word (example, xxx, ...) anywhere on a line exempts the whole line from
 # the secret patterns; denylist literals match as substrings; a push through a git alias, a script or
 # $(...)/backtick substitution; `git push` inside a command run by another tool; binary content; the
-# conflict-resolution lines of a merge commit (git log -p shows no diff for merges); another gh operation that
-# publishes (gh gist create --public, gh release create); a denylist written in a file the hook cannot read is
+# conflict-resolution lines of a merge commit (git log -p shows no diff for merges); a denylist written in a file the hook cannot read is
 # silently empty (the reason says so only for an invalid regex).
 
 command -v jq &>/dev/null || exit 0
@@ -122,7 +142,7 @@ COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null |
 [ -n "$COMMAND" ] || exit 0
 
 case "$COMMAND" in
-  *push*|*gh*pr*|*gh*repo*) ;;
+  *push*|*gh*pr*|*gh*repo*|*gh*issue*|*gh*release*|*gh*api*) ;;
   *) exit 0 ;;
 esac
 
@@ -160,7 +180,7 @@ def retry(msg):
     RETRY.append(msg); return None
 
 def deny(lines):
-    why = "Public-push guard: NOTHING in this call ran (earlier commands such as git add or git commit included), nothing was pushed. " + lines[0] + "\n" + "\n".join(lines[1:])
+    why = "Public-push guard: NOTHING in this call ran (earlier commands such as git add or git commit included), nothing was pushed or published. " + lines[0] + "\n" + "\n".join(lines[1:])
     why += "\nIssue the command again as described; no human decision is needed for that."
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                       "permissionDecision": "deny", "permissionDecisionReason": why}}))
@@ -168,6 +188,27 @@ def deny(lines):
 
 # ---- command parsing (same family as the kill guard in block-dangerous-bash.sh) ----
 _QUOTED = re.compile(r"""('[^']*'|"(?:\\.|[^"\\])*")""")
+def match_close(s, k):
+    """index of the ) that closes a ( opened just before s[k], honouring quotes, escapes and nesting; -1 if none"""
+    d, q, n = 0, None, len(s)
+    while k < n:
+        c = s[k]
+        if q == "'":
+            if c == "'": q = None
+        elif c == "\\": k += 1
+        elif q == '"':
+            if c == '"': q = None
+            elif c == "$" and s[k + 1:k + 2] == "(":
+                j = match_close(s, k + 2)
+                if j < 0: return -1
+                k = j
+        elif c in "'\"": q = c
+        elif c == "(": d += 1
+        elif c == ")":
+            if d == 0: return k
+            d -= 1
+        k += 1
+    return -1
 def _scan(text, comments=False, blank_single=False):
     """one pass over shell text with the quote state carried along (quotes may span lines). comments: drop an unquoted
     # at a word start up to the newline, so an apostrophe inside a comment cannot pair with a later quote.
@@ -181,6 +222,9 @@ def _scan(text, comments=False, blank_single=False):
         elif q == '"':
             if c == "\\" and i + 1 < n:
                 out.append("  " if (blank_single and text[i + 1] in "`$") else c + text[i + 1]); i += 1
+            elif c == "$" and text[i + 1:i + 2] == "(" and match_close(text, i + 2) >= 0:   # "$( "a #b" )": not a comment, not the end
+                j = match_close(text, i + 2)
+                out.append("$(" + _scan(text[i + 2:j], comments, blank_single) + ")"); i = j + 1; continue
             else:
                 if c == '"': q = None
                 out.append(c)
@@ -198,23 +242,78 @@ def _scan(text, comments=False, blank_single=False):
 
 def strip_comments(text):
     return _scan(text, comments=True)
-out, pending, HEREDOCS, _open = [], [], [], []   # _open: the lines taken as heredoc body since the last complete heredoc
+# Heredocs: each operator is replaced in the command text by a word __MVHD<n>__ that names its body in BODIES, so a gh
+# command that reads its text from standard input can be given the body it will really read (and nothing else can).
+out, pending, BODIES, _open, _openers = [], [], [], [], []   # _open: lines taken as heredoc body since the last complete heredoc
+HDNONCE = hashlib.sha1(os.urandom(16)).hexdigest()[:10]   # a placeholder nobody can type into a command
+HD_RE = re.compile(r"(?<!<)<<(?!<)(-?)\s*(\\?)([\x27\"]?)([A-Za-z0-9_][A-Za-z0-9_.-]*)[\x27\"]?")
+def bare_line(line, st):
+    """line with quoted text blanked (same length) and comments blanked, given the quote stack st open at its start
+    ("'", '"', or [depth] for a $( ) inside double quotes, where the shell reads commands again). A quoted heredoc
+    delimiter right after << is kept. -> (bare, stack at the end of the line)"""
+    out, i, n, keep = [], 0, len(line), False
+    while i < n:
+        c, top = line[i], (st[-1] if st else None)
+        if top == "'":
+            if c == "'": st.pop(); out.append(c); keep = False
+            else: out.append(c if keep else " ")
+            i += 1; continue
+        if top == '"':
+            if c == "\\" and i + 1 < n: out.append(line[i:i + 2] if keep else "  "); i += 2; continue
+            if c == '"': st.pop(); out.append(c); keep = False; i += 1; continue
+            if c == "$" and line[i + 1:i + 2] == "(": st.append([0]); out.append("$("); i += 2; continue
+            out.append(c if keep else " "); i += 1; continue
+        if c == "\\" and i + 1 < n: out.append(line[i:i + 2]); i += 2; continue
+        if c in "'\"":
+            keep = bool(re.search(r"(?<!<)<<-?\s*\\?$", "".join(out))); st.append(c); out.append(c); i += 1; continue
+        if isinstance(top, list):
+            if c == "(": top[0] += 1
+            elif c == ")":
+                if top[0] == 0: st.pop()
+                else: top[0] -= 1
+        if c == "#" and not st and (i == 0 or line[i - 1] in " \t;&|("): out.append(" " * (n - i)); break
+        out.append(c); i += 1
+    return "".join(out), st
+_QST = []
 for line in CMD.split("\n"):
     if pending:
-        if line.strip() == pending[0]:
+        d, idx = pending[0]
+        if line == d or (BODIES[idx]["dash"] and line.lstrip("\t") == d):   # bash: the exact line, <<- strips tabs only
             pending.pop(0)
-            if not pending: _open = []
-        else: HEREDOCS.append(line); _open.append(line)
+            if not pending: _open = []; _openers = []
+        else:
+            BODIES[idx]["lines"].append(line.lstrip("\t") if BODIES[idx]["dash"] else line); _open.append(line)
         continue
+    _bare, _QST = bare_line(line, _QST)   # "1 << n" inside quotes is not a heredoc, nor one in a comment, nor in a multi-line quoted body
+    _ms = list(HD_RE.finditer(_bare))   # _bare keeps every position of line, so a match locates the operator in line
+    if _ms:
+        _openers.append((len(out), line))
+        base0 = len(BODIES)
+        for k, m in enumerate(_ms):
+            BODIES.append({"lines": [], "literal": bool(m.group(2) or m.group(3)), "dash": bool(m.group(1))})
+            pending.append((m.group(4), base0 + k))
+        for k, m in reversed(list(enumerate(_ms))):
+            line = line[:m.start()] + " __MVHD%s_%d__ " % (HDNONCE, base0 + k) + line[m.end():]
     out.append(line)
-    _parts = _QUOTED.split(line)   # "1 << n" inside quotes is not a heredoc
-    _bare = "".join(q if (k % 2 == 0 or re.search(r"<<-?\s*\\?$", "".join(_parts[:k]))) else " " for k, q in enumerate(_parts))
-    _bare = re.sub(r"(?:^|(?<=[\s;&|(]))#.*", "", _bare)   # nor is one in a comment (quoted text is already blanked, a kept delimiter never starts with #)
-    pending = re.findall(r"(?<!<)<<(?!<)-?\s*\\?[\x27\"]?([A-Za-z_][A-Za-z0-9_]*)[\x27\"]?", _bare)
 if pending:   # a heredoc that never ends was not one (a << in a comment or in a multi-line quoted text): what it took is command text
-    if _open: del HEREDOCS[-len(_open):]
+    for _i, _orig in _openers: out[_i] = _orig
     out += _open
-TEXT = strip_comments("\n".join(out)).replace("\\\n", "").replace("\n", " ; ")
+HDTOK = re.compile(r"__MVHD" + HDNONCE + r"_(\d+)__")
+def body_of(idx):
+    """-> (text, literal) of heredoc idx; literal False when the body may expand ($, backtick, backslash in an unquoted heredoc)"""
+    b = BODIES[idx]; t = "\n".join(b["lines"])
+    return t, b["literal"] or not re.search(r"\$[A-Za-z_{(0-9@*#?$!-]|`|\\[$`\\]", t)   # what an unquoted heredoc expands
+def nl_sep(text):
+    """a newline outside quotes separates commands; one inside quotes is part of the word (a multi-line body keeps its lines)"""
+    out, q, i = [], None, 0
+    while i < len(text):
+        c = text[i]
+        if q is None and c == "\\" and i + 1 < len(text): out.append(text[i:i + 2]); i += 2; continue
+        if q == '"' and c == "\\" and i + 1 < len(text): out.append(text[i:i + 2]); i += 2; continue
+        if c in "'\"" and (q is None or q == c): q = None if q else c
+        out.append(" ; " if (c == "\n" and q is None) else c); i += 1
+    return "".join(out)
+TEXT = nl_sep(re.sub(r"(?<!\\)((?:\\\\)*)\\\n", r"\1", strip_comments("\n".join(out))))   # C:\\dir\\ at a line end does not join
 # redirections are not arguments: `2>&1`, `> file`, `< file`
 _REDIR = re.compile(r"(?:(?<=\s)|^)\d*(?:>>?|<)(?:&\d+-?|[ \t]*[^\s;&|()\"'<>]+)")   # an unquoted operand; a quoted one is dropped with its operator at token level
 TEXT = "".join(part if i % 2 else _REDIR.sub(" ", part).replace("\\ ", "\x1f") for i, part in enumerate(_QUOTED.split(TEXT)))   # "\\ " (an escaped space) stays inside its word   # quoted text is never a redirection
@@ -222,18 +321,46 @@ TEXT = "".join(part if i % 2 else _REDIR.sub(" ", part).replace("\\ ", "\x1f") f
 WRAP = {"sudo": {"-u","-g","-h","-p","-C","-T","-r","-t","-U","-D","-R"}, "doas": {"-u","-C"},
         "env": {"-u","-C","-S","-P"}, "nice": {"-n"}, "stdbuf": {"-i","-o","-e"},
         "timeout": {"-s","-k"}, "nohup": set(), "command": set(), "time": set(), "builtin": set(),
-        "xargs": {"-I","-n","-P","-L","-s","-E","-d","-a"}}
+        "xargs": {"-I","-n","-P","-L","-s","-E","-d","-a"}, "exec": {"-a"}, "setsid": set(), "caffeinate": {"-t","-w"},
+        "gtimeout": {"-s","-k"}}
 KEYWORDS = {"if", "then", "else", "elif", "do", "while", "until", "!", "{", "}", "fi", "done"}
 SHELLS = {"sh", "bash", "zsh", "ksh", "dash"}
 OPS = {";", "&&", "||", "|", "&", "\n", "(", ")", "|&", ";;"}
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+PUNCT = "();<>|&"
 def split_tokens(s):
-    lx = shlex.shlex(s, posix=False, punctuation_chars=True)
-    lx.whitespace_split = True
-    lx.commenters = ""
-    try: toks = list(lx)
-    except ValueError: return None
+    """shell words with their quotes kept (unq removes them), and operator runs. A quote may start inside a word
+    (body='a (b)'): it runs to its closing quote across spaces, parentheses and newlines, as in the shell. None: an
+    unclosed quote."""
+    toks, cur, q, i, n = [], [], None, 0, len(s)
+    def flush():
+        if cur: toks.append("".join(cur)); cur.clear()
+    while i < n:
+        c = s[i]
+        if q:
+            if q == '"' and c == "\\" and i + 1 < n: cur.append(s[i:i + 2]); i += 2; continue
+            if q == '"' and c == "$" and s[i + 1:i + 2] == "(":   # "$( ... )": quotes inside it do not end the double quote
+                j = match_close(s, i + 2)
+                if j < 0: return None
+                cur.append(s[i:j + 1]); i = j + 1; continue
+            cur.append(c); i += 1
+            if c == q: q = None
+            continue
+        if c == "\\" and i + 1 < n: cur.append(s[i:i + 2]); i += 2; continue
+        if s[i + 1:i + 2] == "(" and (c == "$" or (c in "<>" and not cur)):   # $( ), $(( )), <( ), >( ): part of the word
+            j = match_close(s, i + 2)
+            if j < 0: return None
+            cur.append(s[i:j + 1]); i = j + 1; continue
+        if c in "'\"": q = c; cur.append(c); i += 1; continue
+        if c in " \t\n\r\f\v": flush(); i += 1; continue   # not isspace(): \x1f marks an escaped space inside a word
+        if c in PUNCT:
+            flush(); j = i
+            while j < n and s[j] in PUNCT: j += 1
+            toks.append(s[i:j]); i = j; continue
+        cur.append(c); i += 1
+    if q: return None
+    flush()
     out = []
     for t in toks:   # shlex glues operator runs such as ");" into one token: split them
         if t not in OPS and t and all(ch in "();&|" for ch in t):
@@ -257,12 +384,18 @@ def split_tokens(s):
         merged.append(t); i += 1
     return merged
 
+class W(str):
+    """a shell word without its quotes; dyn: the shell expands something in it ($, backtick outside single quotes)"""
+    dyn = False
+def word(s, dyn):
+    w = W(s); w.dyn = dyn; return w
 def unq(tok):
+    dyn = bool(re.search(r"\$[A-Za-z_{(0-9@*#?$!-]|`|^[<>]\(", _scan(tok, blank_single=True)))   # a lone "$ " is not expanded
     try:
         w = shlex.split(tok)
-        return ("".join(w) if w else "").replace("\x1f", " ")
+        return word(("".join(w) if w else "").replace("\x1f", " "), dyn)
     except ValueError:
-        return tok
+        return word(tok, dyn)
 
 REDIROP = re.compile(r"^\d*(?:>>?|<<?<?|>&|<&|&>>?)$")
 def commands(tokens):
@@ -301,7 +434,7 @@ UNPARSED = []
 # the next gap): a push to a PUBLIC repository after one of them asks to be run in a separate call, where the
 # full scan applies. `commit && push` chains to public repos therefore always prompt, by design.
 STATE_VERBS = {"add", "commit", "stash", "checkout", "switch", "restore", "reset", "merge", "rebase", "pull", "cherry-pick", "am", "revert", "mv", "r" + "m", "tag", "apply", "clean", "fast-import", "commit-tree", "filter-branch", "replace", "update-ref", "symbolic-ref"}
-PRE = {"mutators": [], "retarget": []}
+PRE = {"mutators": [], "retarget": [], "ghdefault": []}
 PERSIST, INHERIT = {}, [{}]   # exported / bare GH_REPO= selections persist in the shell; a child shell inherits the command's
 ENVSEL = {}   # inline GH_REPO= / GH_HOST= selections, which gh honours (the override variable is NOT honoured inline)
 def note_assign(a):
@@ -309,6 +442,7 @@ def note_assign(a):
         NOTES.append("an inline MEGAVIBE_ALLOW_PUBLIC_PUSH assignment in the command is ignored: only the session's launch environment counts")
     elif a.startswith(("GH_REPO=", "GH_HOST=", "GIT_DIR=", "GIT_WORK_TREE=")):
         ENVSEL[a.split("=", 1)[0]] = a.split("=", 1)[1]
+NCMD = [0]   # commands seen in this call: a file read before a call that has several may be written by one of them
 def scan_argv(argv, depth=0):
     if depth > 3 or not argv: return
     ENVSEL.clear(); ENVSEL.update(PERSIST); ENVSEL.update(INHERIT[-1])
@@ -318,7 +452,11 @@ def scan_argv(argv, depth=0):
             state["cwd"], state["cwd_known"], _p = SCOPES.pop()
             PERSIST.clear(); PERSIST.update(_p)
         return
-    i = 0
+    hd = [int(HDTOK.fullmatch(a).group(1)) for a in argv if HDTOK.fullmatch(a)]   # heredocs this command reads
+    argv = [a for a in argv if not HDTOK.fullmatch(a)]
+    if not argv: return
+    NCMD[0] += 1
+    i, via_xargs = 0, False
     while i < len(argv):
         a = argv[i]; b = os.path.basename(a)
         if ASSIGN.match(a):
@@ -326,6 +464,7 @@ def scan_argv(argv, depth=0):
             i += 1; continue
         if a in KEYWORDS: i += 1; continue
         if b in WRAP:
+            if b == "xargs": via_xargs = True
             i += 1
             while i < len(argv) and argv[i].startswith("-") and argv[i] != "-":
                 opt = argv[i]; i += 1
@@ -334,7 +473,7 @@ def scan_argv(argv, depth=0):
             while i < len(argv) and ASSIGN.match(argv[i]):
                 note_assign(argv[i])
                 i += 1
-            if b == "timeout" and i < len(argv) and re.match(r"^[0-9.]+[smhd]?$", argv[i]): i += 1
+            if b in ("timeout", "gtimeout") and i < len(argv) and re.match(r"^[0-9.]+[smhd]?$", argv[i]): i += 1
             continue
         break
     if i >= len(argv):   # a bare assignment statement: GH_REPO=x; then the command
@@ -353,7 +492,7 @@ def scan_argv(argv, depth=0):
     if base in SHELLS:
         for j, a in enumerate(argv[1:], 1):
             if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", a) and j + 1 < len(argv):
-                t = split_tokens(strip_comments(argv[j + 1]).replace("\n", " ; "))
+                t = split_tokens(nl_sep(strip_comments(argv[j + 1])))
                 if t is None:
                     if GITPUSH.search(argv[j + 1]): UNPARSED.append(argv[j + 1])
                     return
@@ -361,6 +500,7 @@ def scan_argv(argv, depth=0):
                 INHERIT.append(dict(ENVSEL))
                 try:
                     for c in commands(t): scan_argv(c, depth + 1)
+                    scan_substs(argv[j + 1], depth + 1)
                 finally: INHERIT.pop()
                 state["cwd"], state["cwd_known"] = saved[0], saved[1]; del SCOPES[saved[2]:]; PERSIST.clear(); PERSIST.update(saved[3])   # a child shell's cd does not persist
                 return
@@ -409,31 +549,171 @@ def scan_argv(argv, depth=0):
         return
     if base == "gh":
         rest = [x for x in argv[1:]]
-        # gh [-R repo] group verb ...
-        words, skip = [], False
-        for x in rest:   # global/option values (-R owner/repo, --repo x) are not the command group or verb
-            if skip: skip = False; continue
-            if x in ("-R", "--repo"): skip = True; continue
-            if not x.startswith("-"): words.append(x)
-        if len(words) >= 2 and words[0] == "pr" and words[1] == "create":
-            ACTIONS.append({"kind": "pr", "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL), "pre": {"mutators": list(PRE["mutators"]), "retarget": list(PRE["retarget"])}})
-        elif len(words) >= 2 and words[0] == "repo" and words[1] in ("create", "edit"):
-            ACTIONS.append({"kind": "repo-" + words[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
+        g = gh_parse(rest)
+        if g is None: return
+        key, vals, pos = g
+        if key == "repo set-default":
+            PRE["ghdefault"].append(key); return
+        if key in ("repo create", "repo edit"):
+            ACTIONS.append({"kind": "repo-" + key.split()[1], "argv": rest, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"]})
+        elif key in GH_SPEC:
+            ACTIONS.append({"kind": "text", "key": key, "vals": vals, "pos": pos, "hd": hd, "xargs": via_xargs, "cwd": state["cwd"], "gitopts": [], "known": state["cwd_known"], "env": dict(ENVSEL), "pre": {"mutators": list(PRE["mutators"]), "retarget": list(PRE["retarget"]), "ghdefault": list(PRE["ghdefault"])}})
 
-GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|\bgh\s+(?:pr\s+create|repo\s+(?:create|edit))\b")
+# ---- gh commands that publish text: value-taking options per command ("short/long"; every other option is a switch) ----
+_GH_COMMON = "R/repo"
+GH_SWITCH = {"pr create": {"-f": "--fill", "-e": "--editor", "-w": "--web", "-d": "--draft"},
+             "issue create": {"-e": "--editor", "-w": "--web"}, "pr comment": {"-e": "--editor", "-w": "--web"},
+             "issue comment": {"-e": "--editor", "-w": "--web"}}
+GH_SPEC = {
+    "pr create": "t/title b/body F/body-file B/base H/head a/assignee l/label m/milestone p/project r/reviewer T/template /recover",
+    "pr edit": "t/title b/body F/body-file B/base /add-assignee /remove-assignee /add-label /remove-label /add-project /remove-project /add-reviewer /remove-reviewer m/milestone",
+    "pr comment": "b/body F/body-file", "pr review": "b/body F/body-file",
+    "pr merge": "t/subject b/body F/body-file A/author-email /match-head-commit",
+    "pr close": "c/comment", "pr reopen": "c/comment",
+    "issue create": "t/title b/body F/body-file a/assignee l/label m/milestone p/project T/template /recover",
+    "issue edit": "t/title b/body F/body-file /add-assignee /remove-assignee /add-label /remove-label /add-project /remove-project m/milestone",
+    "issue comment": "b/body F/body-file", "issue close": "c/comment r/reason", "issue reopen": "c/comment",
+    "release create": "t/title n/notes F/notes-file /target /discussion-category /notes-start-tag",
+    "release edit": "t/title n/notes F/notes-file /tag /target /discussion-category",
+    "api": "X/method f/raw-field F/field H/header /input q/jq t/template /hostname /cache p/preview",
+}
+# what each published option carries: a literal text, or a file (or - for standard input)
+GH_TEXT = {"--title": "title", "--subject": "title", "--body": "body", "--notes": "notes", "--comment": "comment"}
+GH_FILE = {"--body-file": "body file", "--notes-file": "notes file", "--template": "template"}
+def _spec(key):
+    short, longs = {}, set()
+    for pair in (GH_SPEC[key] + " " + _GH_COMMON).split():
+        s, l = pair.split("/")
+        longs.add("--" + l)
+        if s: short["-" + s] = "--" + l
+    return short, longs
+def gh_parse(rest):
+    """-> (key, {long option: [values]}, positional) for gh <group> <verb> ..., or None. A value keeps its W (dyn) flag."""
+    words, skip = [], False
+    for k, x in enumerate(rest):   # the command words: the first non-option words, an -R/--repo value skipped
+        if skip: skip = False; continue
+        if x in ("-R", "--repo"): skip = True; continue
+        if not x.startswith("-"):
+            words.append(k)
+            if len(words) == 2 or (len(words) == 1 and x == "api"): break
+    if not words: return None
+    key = " ".join(rest[k] for k in words)
+    if key == "repo set-default": return key, {}, []
+    if key not in GH_SPEC and key not in ("repo create", "repo edit"): return None
+    if key not in GH_SPEC: return key, {}, []
+    short, longs = _spec(key)
+    args = [x for k, x in enumerate(rest) if k not in words]
+    vals, pos, i = {}, [], 0
+    def put(k, v): vals.setdefault(k, []).append(v)
+    while i < len(args):
+        a = args[i]
+        if a == "--": pos += args[i + 1:]; break
+        if a.startswith("--"):
+            if "=" in a:
+                k, v = a.split("=", 1); put(k, word(v, getattr(a, "dyn", False))); i += 1; continue
+            if a in longs and i + 1 < len(args): put(a, args[i + 1]); i += 2; continue
+            if getattr(a, "dyn", False): put("__dyn__", a)
+            put(a, True); i += 1; continue
+        if a.startswith("-") and len(a) > 1:
+            f = a[:2]
+            if f in short:
+                if len(a) > 2: put(short[f], word(a[2:][1:] if a[2] == "=" else a[2:], getattr(a, "dyn", False))); i += 1
+                elif i + 1 < len(args): put(short[f], args[i + 1]); i += 2
+                else: i += 1
+                continue
+            i += 1
+            for j, ch in enumerate(a[1:], 1):   # a bundle (-wb TEXT): switches until a value-taking option, which takes the rest or the next word
+                if "-" + ch in short:
+                    rest_ = a[j + 1:]
+                    if rest_: put(short["-" + ch], word(rest_[1:] if rest_[0] == "=" else rest_, getattr(a, "dyn", False)))
+                    elif i < len(args): put(short["-" + ch], args[i]); i += 1
+                    break
+                put(GH_SWITCH.get(key, {}).get("-" + ch, "-" + ch), True)
+            continue
+        if getattr(a, "dyn", False): put("__dyn__", a)   # $B may expand to an option: which text it carries is unknown
+        pos.append(a); i += 1
+    return key, vals, pos
+
+_GHPUB = (r"\bgh\s+(?:pr\s+(?:create|edit|comment|review|merge|close|reopen)|issue\s+(?:create|edit|comment|close|reopen)|release\s+(?:create|edit)|repo\s+(?:create|edit))\b"
+          r"|\bgh\s+api\s+(?!graphql\b)[^)`]*?(?:\s-[fF]\s|\s-[fF]\S|--(?:raw-)?field\b|--input\b)|\bgh\s+api\b[^)`]*?(?:-X\s*|--method[\s=])(?:POST|PATCH|PUT)\b|\bgh\s+api\s+graphql\b[^)`]*?mutation")
+GITPUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+\S+)?)*\s+push\b|" + _GHPUB)
+SUBSTS_LEFT = []
+def subst_spans(text, quotes=True):
+    """inner text of each outermost $( ), <( ), >( ) outside single quotes; None when one is unbalanced.
+    quotes=False: a heredoc body, where quote characters are plain text"""
+    out, i, n, q = [], 0, len(text), None
+    while i < n:
+        c = text[i]
+        if q == "'":
+            if c == "'": q = None
+            i += 1; continue
+        if c == "\\": i += 2; continue
+        if quotes and c == '"': q = None if q == '"' else '"'; i += 1; continue
+        if quotes and c == "'" and q is None: q = "'"; i += 1; continue
+        if text[i + 1:i + 2] == "(" and (c == "$" or (quotes and c in "<>" and q is None)):
+            j = match_close(text, i + 2)
+            if j < 0: return None
+            out.append(text[i + 2:j]); i = j + 1; continue
+        i += 1
+    return out
+def scan_substs(text, depth=1, quotes=True):
+    if depth > 3:
+        if GITPUSH.search(text): SUBSTS_LEFT.append(1)   # nested deeper than this guard follows: ask, never pass
+        return
+    spans = subst_spans(text, quotes)
+    if spans is None:
+        if GITPUSH.search(text): SUBSTS_LEFT.append(1)
+        return
+    for inner in spans:
+        if not GITPUSH.search(inner): continue
+        t = split_tokens(nl_sep(strip_comments(inner)))
+        if t is None: SUBSTS_LEFT.append(1); continue
+        saved = (state["cwd"], state["cwd_known"], len(SCOPES), dict(PERSIST))   # a substitution runs in a subshell
+        for c in commands(t): scan_argv(c, depth)
+        state["cwd"], state["cwd_known"] = saved[0], saved[1]; del SCOPES[saved[2]:]; PERSIST.clear(); PERSIST.update(saved[3])
+        scan_substs(inner, depth + 1)
 toks = split_tokens(TEXT)
 if toks is None:
     # the text cannot be tokenised (an unclosed quote, say): do not let that hide a push
-    if GITPUSH.search(TEXT): ask(["this command mentions a push or a public-repository operation but could not be parsed (unbalanced quotes?), so its target was not checked."])
+    if GITPUSH.search(TEXT) or GITPUSH.search(CMD): ask(["this command mentions a push or a public-repository operation but could not be parsed (unbalanced quotes?), so its target was not checked."])
     sys.exit(0)
 for c in commands(toks):
     scan_argv(c)
+scan_substs(TEXT)
+for _b in BODIES:   # an unquoted heredoc body runs its substitutions too
+    if not _b["literal"]: scan_substs("\n".join(_b["lines"]), 1, quotes=False)
+if SUBSTS_LEFT:
+    ask(["a push or public-repository operation sits inside a command substitution this guard could not parse, so its target was not checked."])
 if UNPARSED:
     ask(["a nested shell command mentions a push or a public-repository operation but could not be parsed, so its target was not checked."])
 # a substitution or an eval that holds a push; `eval` only where a command starts, and never text in single quotes
 # (a commit message or a comment body that mentions `git push` publishes nothing)
 SUBST = re.compile(r"(?:\$\(|`|(?:^|[;&|(])\s*eval\b)[^)`]*(?:" + GITPUSH.pattern + ")")
-if not ACTIONS and SUBST.search(_scan(TEXT, blank_single=True)):
+_BL = _scan(TEXT, blank_single=True)
+def dq_substs(bl):
+    """(start, end) of each $( ... ) inside double quotes in bl (single-quoted text blanked); None when unbalanced"""
+    spans, i, n, inq = [], 0, len(bl), False
+    while i < n:
+        c = bl[i]
+        if c == "\\": i += 2; continue
+        if c == '"': inq = not inq; i += 1; continue
+        if inq and bl.startswith("$(", i):
+            d, j = 0, i + 2
+            while j < n and not (bl[j] == ")" and d == 0):
+                if bl[j] == "\\": j += 2; continue
+                if bl[j] == '"':   # a quoted string inside the substitution: its parentheses do not count
+                    j += 1
+                    while j < n and bl[j] != '"': j += 2 if bl[j] == "\\" else 1
+                    j += 1; continue
+                d += (bl[j] == "(") - (bl[j] == ")"); j += 1
+            if j >= n: return None
+            spans.append((i + 2, j)); i = j + 1; continue
+        i += 1
+    return spans
+_DQ_LEFT = False
+if dq_substs(_BL) is None and GITPUSH.search(_BL): _DQ_LEFT = True
+if any(q.startswith('"') and "`" in q and SUBST.search(q) for q in _QUOTED.findall(_BL)): _DQ_LEFT = True   # a backtick inside double quotes is not parsed
+if (not ACTIONS and SUBST.search(_BL)) or _DQ_LEFT or any(not m.group(0).startswith("$(") for m in SUBST.finditer(_BL)):
     ask(["a push or public-repository operation sits inside a command substitution or eval, which this guard does not parse: its target was not checked."])
 if not ACTIONS:
     sys.exit(0)
@@ -606,6 +886,14 @@ TRAILER = re.compile(r"^\s*[A-Za-z][A-Za-z-]*-by:", re.I)
 DEFAULT_EMAIL_ALLOW = ["git@*", "*@users.noreply.github.com", "noreply@*", "no-reply@*", "*@example.com", "*@example.org",
                        "*@example.net", "*@localhost", "*@*.example", "*@*.invalid", "*@*.test"]
 
+# built-in, no configuration: a link back to a Claude Code session and the session trailer of a commit message
+BUILTIN_RES = [
+    ("session link", re.compile(r"claude\.ai/code/session_[A-Za-z0-9_-]{4,}", re.I)),
+    ("Claude-Session trailer", re.compile(r"^\s*Claude-Session\s*:", re.I)),
+]
+BUILTIN_FIX = ("On a public repository the session link and the Claude-Session trailer are left out (Co-authored-by alone is fine; "
+               "private repositories keep them).")
+
 def load_deny():
     items, bad = [], []
     for n, l in enumerate(read_lines(os.path.join(PERSONAL, "public-push.deny")), 1):
@@ -653,12 +941,17 @@ class Scanner:
         self.email_allow = DEFAULT_EMAIL_ALLOW + [l.strip() for l in read_lines(os.path.join(PERSONAL, "public-push.allow-email"))
                                                   if l.strip() and not l.strip().startswith("#")]
         self.emails = {e.lower() for e in extra_emails if e}
+        self.fatal = []   # built-in rules: never intended on a public repository, so the caller denies instead of asking
     def hit(self, loc, kind, val):
         for _k, rx in SECRET_RES:   # a file name or a matched denylist value can carry a secret
             loc = rx.sub(lambda m: m.group(0)[:4] + "…", loc); val = rx.sub(lambda m: m.group(0)[:4] + "…", val)
         self.total += 1
         if len(self.hits) < MAX_HITS: self.hits.append("  %s  [%s] %s" % (loc, kind, val))
-    def line(self, loc, text, trailer_ok=False, path_only=False):
+    def line(self, loc, text, trailer_ok=False, path_only=False, builtin=False):
+        if builtin:   # messages and published texts: the session link and the session trailer, whatever else the line says
+            for kind, rx in BUILTIN_RES:
+                if rx.search(text):
+                    self.fatal.append("%s (%s)" % (kind, loc)); self.hit(loc, kind, trunc(rx.search(text).group(0), 28))
         if "EXAMPLE" in text:   # an explicit uppercase marker: the line says it is an example (the leak-scan convention); only the denylist still applies
             for n, rx in self.deny:
                 m = rx.search(text)
@@ -723,9 +1016,9 @@ def scan_range(act, revargs, remote, notall=False):
         if mode == "msg":
             if raw.endswith(M2):
                 body = raw[:-len(M2)]
-                if body: sc.line("commit %s message" % sha, body, True)
+                if body: sc.line("commit %s message" % sha, body, True, builtin=True)
                 mode = "diff"; inhunk = False; continue
-            sc.line("commit %s message" % sha, raw, True)
+            sc.line("commit %s message" % sha, raw, True, builtin=True)
             continue
         if raw.startswith("diff --git "):   # content lines always carry a +/-/space prefix, so this is a header
             inhunk = False
@@ -813,9 +1106,9 @@ def scan_tag_messages(act, refspecs, flags, tips=(), remote=None):
     for n in dict.fromkeys(names):
         rc, o = git(act, "cat-file", "tag", n)
         body = o.split("\n\n", 1)[1] if "\n\n" in o else ""
-        for ln in body.split("\n"): sc.line("tag %s message" % trunc(redact(n.replace("refs/tags/", "")), 30), ln, True)
+        for ln in body.split("\n"): sc.line("tag %s message" % trunc(redact(n.replace("refs/tags/", "")), 30), ln, True, builtin=True)
     if overflow: sc.hit("tags", "tag list", "more than 5000 tags: not all annotations were read")
-    return sc.hits, sc.total
+    return sc.hits, sc.total, sc.fatal
 
 def handle_push(act):
     _flags = push_revs(act["argv"])[2]
@@ -920,8 +1213,26 @@ def handle_push(act):
         hits, total, trunc_, sc = scan_range(act, revargs, _track)
         if total or trunc_:
             hit_lines += report_hits("%s is PUBLIC and the outgoing commits contain:" % slug, hits, total, trunc_, sc)
-        th, tt = scan_tag_messages(act, refspecs, flags, [r for r in revargs if not r.startswith("--") or r in ("--branches", "--all")] or ["HEAD"], _track)
+        th, tt, tf = scan_tag_messages(act, refspecs, flags, [r for r in revargs if not r.startswith("--") or r in ("--branches", "--all")] or ["HEAD"], _track)
         if tt: hit_lines += report_hits("%s is PUBLIC and the annotated tags being pushed contain:" % slug, th, tt, False, None)
+        fatal = (sc.fatal if sc is not None else []) + tf
+        holders = {}
+        for f in fatal:
+            m_ = re.search(r"commit (\S+) message", f)
+            if m_:
+                h_ = sorted({l.strip().split("/", 1)[0] for l in git(act, "branch", "-r", "--contains", m_.group(1))[1].splitlines() if l.strip()})
+                if h_: holders[f] = h_
+        on_remote = list(holders)
+        fresh = [f for f in fatal if f not in on_remote]
+        if fresh:
+            return retry("%s is PUBLIC and an outgoing commit or tag message that no remote holds yet contains %s. %s Rewrite those "
+                         "messages without it (`git commit --amend` for the last commit, `git rebase` for earlier ones; never rewrite "
+                         "commits a remote already has) and push again." % (slug, "; ".join(fresh[:5]), BUILTIN_FIX))
+        if on_remote:
+            problems.append("%s is PUBLIC and outgoing commits carry a session link or Claude-Session trailer that the remote(s) %s already "
+                            "hold (%s). If that remote is public they are already published: `git fetch` this push's remote and push again. "
+                            "If it is private, this push publishes them for the first time, and rewriting them would rewrite history "
+                            "that remote has: decide with the human." % (slug, ", ".join(sorted({x for v in holders.values() for x in v})), "; ".join(on_remote[:3])))
     return problems + hit_lines or None
 
 def flag_value(argv, names):
@@ -939,32 +1250,220 @@ def local_history_scan(act, title, revs=("HEAD",)):
     if total or tr: return report_hits(title, hits, total, tr, sc)
     return []
 
-def handle_pr(act):
-    """gh pr create: a visibility check of the repository the pull request publishes to, nothing else. The title,
-    body, body file and commits are NOT read (see the header)."""
-    argv = act["argv"]
-    if act["pre"]["retarget"]:   # before any visibility lookup: the lookup would see the target as it is now, not as the call leaves it
-        return retry("An earlier command in this call (git %s) changes where the pull request goes, so its target was not checked. Create the pull request in a separate call." % act["pre"]["retarget"][0])
-    repo = (flag_value(argv, ["--repo", "-R"]) or [act.get("env", {}).get("GH_REPO")])[0]
-    if not repo and not act["known"]:   # a named repository does not depend on the directory
-        return retry("The working directory is not statically known (cd into a variable or substitution, pushd/popd), so the pull request's base repository cannot be resolved. Replace the variable directory with a literal path, or name the repository with -R owner/repo.")
-    if not repo and not os.path.isdir(act["cwd"]):
-        return retry("The directory this pull request is created from (%s) does not exist yet; if an earlier command in this call creates it, run that first and the pull request in a separate call." % trunc(act["cwd"], 60))
-    host = (act.get("env", {}).get("GH_HOST") or os.environ.get("GH_HOST", "github.com")).lower()
-    nwo = None
+MAX_TEXT = 1024 * 1024
+def read_text_file(act, path):
+    """-> (text, None) or (None, reason) for a file a gh command will read"""
+    if getattr(path, "dyn", False) or re.search(r"[*?\[]", path):
+        return None, "names its file through a variable, a substitution or a glob"
+    p = expand(str(path))
+    if not os.path.isabs(p):
+        if not act["known"]: return None, "names a relative file after a cd this guard cannot follow"
+        p = os.path.join(act["cwd"], p)
+    if not is_regular(p): return None, "names a file that does not exist (yet) or is not a regular file"
+    try:
+        with open(p, "rb") as f: data = f.read(MAX_TEXT + 1)
+    except OSError:
+        return None, "names a file this guard cannot read"
+    if len(data) > MAX_TEXT: return None, "names a file larger than 1 MB"
+    if NCMD[0] > 1:   # another command in this call may write the file before gh reads it: the hook sees it as it is now
+        name = os.path.basename(p)
+        if len(re.findall(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"(?![A-Za-z0-9_.-])", re.sub(r"[\x27\"\\]", "", CMD))) > 1:
+            return None, "names a file (%s) that another command in the same call also names, so it may be written before gh reads it" % trunc(name, 30)
+    return data.decode("utf-8", "replace"), None
+
+def json_strings(text):
+    """every string value of a JSON document, else None"""
+    try: doc = json.loads(text)
+    except Exception: return None
+    out = []
+    def walk(x):
+        if isinstance(x, str): out.append(x)
+        elif isinstance(x, dict): [walk(v) for v in x.values()]
+        elif isinstance(x, list): [walk(v) for v in x]
+    walk(doc); return "\n".join(out)
+
+def gh_texts(act):
+    """-> (pieces [(label, text)], unseen [reasons]) for the text the gh command publishes"""
+    key, vals = act["key"], act["vals"]
+    pieces, unseen = [], []
+    def stdin(label, js=False):
+        if act["hd"]:   # bash feeds the last heredoc to standard input
+            t, literal = body_of(act["hd"][-1])
+            if js and json_strings(t) is not None: t = json_strings(t)
+            if literal: pieces.append((label + " (heredoc)", t)); return
+            unseen.append("%s reads an unquoted heredoc that expands $, backticks or backslashes" % label); return
+        unseen.append("%s reads standard input (a pipe, a redirection or a here-string), which this guard cannot see" % label)
+    def lit(label, v):
+        if v is True or v is None: return
+        m = re.fullmatch(r"\$\(\s*cat\s+" + HDTOK.pattern + r"[\s;]*\)", v)   # "$(cat <<'EOF' ... EOF)": the heredoc's body, trailing newlines dropped
+        if m:
+            t, literal = body_of(int(m.group(1)))
+            if literal: pieces.append((label + " (heredoc)", t.rstrip("\n"))); return
+        if getattr(v, "dyn", False):
+            unseen.append("%s is built by a variable or a command substitution" % label); return
+        pieces.append((label, str(v)))
+    def fil(label, v, js=False):
+        if v is True or v is None: return
+        if str(v) == "-": stdin(label, js); return
+        t, why = read_text_file(act, v)
+        if t is None: unseen.append("%s %s" % (label, why)); return
+        if js: t = json_strings(t) if json_strings(t) is not None else t
+        pieces.append(("%s %s" % (label, trunc(redact(os.path.basename(str(v))), 30)), t))
+    if key == "api":
+        for opt in ("--raw-field", "--field"):
+            for v in vals.get(opt, []):
+                if v is True: continue
+                k, _, val = str(v).partition("=")
+                val = word(val, getattr(v, "dyn", False))
+                if opt == "--field" and val.startswith("@"):
+                    fil("field " + trunc(k, 20), word(val[1:], val.dyn))
+                    if k == "content" and pieces and pieces[-1][0].startswith("field content"):
+                        try:
+                            import base64
+                            pieces.append(("field content (decoded)", base64.b64decode("".join(pieces[-1][1].split()), validate=True).decode("utf-8", "replace")))
+                        except Exception: pass
+                    continue
+                lit("field " + trunc(k, 20), val)
+                if k == "content" and not val.dyn:   # the contents API takes a file as base64: read what it decodes to
+                    try:
+                        import base64
+                        pieces.append(("field content (decoded)", base64.b64decode(str(val), validate=True).decode("utf-8", "replace")))
+                    except Exception: pass
+        for v in vals.get("--input", []): fil("input", v, js=True)
+        if vals.get("__dyn__"): unseen.append("an argument is built by a variable or a substitution")
+        if act.get("xargs"): unseen.append("it runs through xargs, which supplies arguments this guard cannot see")
+        return pieces, unseen
+    for opt, label in GH_TEXT.items():
+        for v in vals.get(opt, []): lit(label, v)
+    for opt, label in GH_FILE.items():
+        for v in vals.get(opt, []): fil(label, v)
+    if any(vals.get(o) for o in ("--fill", "--fill-first", "--fill-verbose")):
+        unseen.append("--fill builds the text from commit messages")
+    if vals.get("--editor"):
+        unseen.append("--editor takes the text from an editor")
+    if vals.get("__dyn__"):
+        unseen.append("an argument is built by a variable or a substitution, so which option it is cannot be known (resolve it in an earlier call and pass it literally)")
+    if act.get("xargs"):
+        unseen.append("it runs through xargs, which supplies arguments this guard cannot see")
+    return pieces, unseen
+
+def input_queries(act):
+    """the GraphQL query strings of gh api graphql --input FILE: its "query" value, else the whole text"""
+    out = []
+    for v in act["vals"].get("--input", []):
+        if v is True: continue
+        t = body_of(act["hd"][-1])[0] if (str(v) == "-" and act["hd"]) else read_text_file(act, v)[0]
+        if t is None: continue
+        try: d = json.loads(t); out.append(d.get("query", "") if isinstance(d, dict) else t)
+        except Exception: out.append(t)
+    return out
+
+def preview(pieces):
+    text = "\n".join(t for _l, t in pieces)
+    lines = text.split("\n")
+    out = ["  the text that will be published: %d characters, %d lines; it begins:" % (len(text), len(lines))]
+    out += ["    | " + trunc(redact(l), 110) for l in lines[:6]]
+    if len(lines) > 6: out.append("    | …")
+    return out
+
+def scan_texts(pieces):
+    sc = Scanner([run(["git", "config", "--global", "user.email"])[1].strip()])
+    for label, t in pieces:
+        ls = t.split("\n")
+        for n, ln in enumerate(ls, 1):
+            sc.line(label if len(ls) == 1 else "%s line %d" % (label, n), ln, trailer_ok=True, builtin=True)
+    return sc
+
+def gh_target(act):
+    """-> (host, nwo|None, is_graphql, reason_to_skip|None). nwo None: the repository gh resolves from the checkout."""
+    vals, key, env = act["vals"], act["key"], act.get("env", {})
+    host = (env.get("GH_HOST") or os.environ.get("GH_HOST", "github.com")).lower()
+    repo = (vals.get("--repo") or [None])[-1]   # gh uses the last -R
+    if repo is True: repo = None
+    if key == "api":
+        method = str((vals.get("--method") or [""])[-1]).upper()
+        if vals.get("--hostname") and vals["--hostname"][-1] is not True: host = str(vals["--hostname"][-1]).lower()
+        writes = method in ("POST", "PATCH", "PUT") or (not method and any(vals.get(o) for o in ("--raw-field", "--field", "--input")))
+        if not writes: return host, None, False, "read"
+        if act["pos"] and getattr(act["pos"][0], "dyn", False): return host, "$", False, None
+        ep = str(act["pos"][0]) if act["pos"] else ""
+        ep = re.sub(r"^https?://[^/]+/(?:api/v3/)?", "", ep).lstrip("/")
+        ep = re.sub(r"(^|/):(owner|repo)(?=/|$)", r"\1{\2}", ep)   # gh's older :owner/:repo spelling
+        if ep == "graphql": return host, None, True, None
+        m = re.match(r"repos/([^/]+)/([^/?#]+)", ep)
+        if not m: return host, None, False, "not a repository"   # SHORTCUT: gists, users and orgs are not repositories; see the header
+        if m.group(0) == "repos/{owner}/{repo}":   # gh fills both from GH_REPO or the checkout
+            return host, env.get("GH_REPO") or os.environ.get("GH_REPO") or None, False, None
+        return host, m.group(1) + "/" + m.group(2), False, None   # one placeholder: handle_text fills it from the checkout
+    for p in act["pos"]:   # a pull request or issue named by URL publishes to the repository in the URL, whatever -R says
+        m = re.match(r"^https?://([^/]+)/([^/]+)/([^/]+)/(?:pull|issues)/\d+", str(p))
+        if m: return m.group(1).lower(), m.group(2) + "/" + m.group(3), False, None
+    if not repo: repo = env.get("GH_REPO")
     if repo:
-        parts = repo.split("/")
-        if len(parts) == 3: host, nwo = parts[0].lower(), "/".join(parts[1:])
-        else: nwo = repo
+        if getattr(repo, "dyn", False): return host, "$", False, None
+        parts = str(repo).split("/")
+        if len(parts) == 3: return parts[0].lower(), "/".join(parts[1:]), False, None
+        return host, str(repo), False, None
+    return host, None, False, None
+
+def handle_text(act):
+    """a gh command that publishes text: pr/issue create, edit, comment, close, reopen; pr review, merge; release
+    create, edit; gh api writes. On a PUBLIC repository the text is scanned like an outgoing commit."""
+    vals = act["vals"]
+    if vals.get("--dry-run"): return None
+    what = "gh " + act["key"]
+    host, nwo, graphql, skip = gh_target(act)
+    if skip: return None
+    if act["pre"]["retarget"] and (nwo is None or act["key"] == "pr create"):   # gh resolves from the checkout (pr create may also push): an
+        # earlier remote/config change would make the lookup see the target as it is now, not as the call leaves it
+        return retry("An earlier command in this call (git %s) changes where %s publishes, so its target was not checked. Run %s in a separate call." % (act["pre"]["retarget"][0], what, what))
+    hint = "-F body=@FILE" if act["key"] == "api" else "--notes-file FILE" if act["key"].startswith("release") else "--body-file FILE"
+    pieces, unseen = gh_texts(act)
+    if graphql:
+        q_unseen = [u for u in unseen if u.startswith(("field query", "input", "an argument", "it runs"))]
+        mut = any(re.match(r"\s*mutation\b", t) for l, t in pieces if l.startswith("field query")) or \
+              any(re.match(r"\s*mutation\b", q) for q in input_queries(act))
+        if q_unseen or mut:
+            sc = scan_texts(pieces)
+            return (["%s runs a GraphQL mutation; this guard cannot tell which repository it writes to, or whether that repository is public." % what]
+                    + (["  text this guard could not see: " + "; ".join(unseen)] if unseen else []) + sc.hits + preview(pieces))
+        return None
+    if nwo and "{" in nwo:   # repos/{owner}/name or repos/owner/{repo}: the missing half is the checkout's
+        if not act["known"] or not os.path.isdir(act["cwd"]):
+            return retry("%s names its repository with a {owner} or {repo} placeholder in a directory this guard cannot resolve. Name the repository literally." % what)
+        _v, here = gh_visibility(host, None, act["cwd"])
+        if not here:
+            return ["could not determine which repository %s fills its {owner}/{repo} placeholder from, or whether it is public." % what] + preview(pieces)
+        o, n = here.split("/", 1); a, b = nwo.split("/", 1)
+        nwo = (o if a == "{owner}" else a) + "/" + (n if b == "{repo}" else b)
+    if nwo == "$":
+        return retry("%s names its repository through a variable or a substitution, so its visibility cannot be checked. Name the repository literally (-R owner/repo)." % what)
+    if nwo is None and act["pre"]["ghdefault"]:
+        return retry("An earlier command in this call (gh repo set-default) changes which repository %s publishes to, so its target was not checked. Run %s in a separate call." % (what, what))
+    if nwo is None and not act["known"]:   # a named repository does not depend on the directory
+        return retry("The working directory is not statically known (cd into a variable or substitution, pushd/popd), so the repository %s publishes to cannot be resolved. Replace the variable directory with a literal path, or name the repository with -R owner/repo." % what)
+    if nwo is None and not os.path.isdir(act["cwd"]):
+        return retry("The directory %s runs in (%s) does not exist yet; if an earlier command in this call creates it, run that first and this command in a separate call." % (what, trunc(act["cwd"], 60)))
+    if not pieces and not unseen and act["key"] != "pr create": return None   # publishes no new text (an approval, a merge with its default message)
     vis, got = gh_visibility(host, nwo, act["cwd"] if act["known"] else None)
     if vis is None:
         if nwo and is_trusted(host + "/" + nwo): return None   # only where the lookup cannot answer; never over a PUBLIC answer
-        return ["could not determine whether the pull request's base repository is public (gh missing, not logged in, offline or no access)."]
+        sc = scan_texts(pieces)
+        return (["could not determine whether the repository %s publishes to is public (gh missing, not logged in, offline or no access)." % what]
+                + (["  text this guard could not see: " + "; ".join(unseen)] if unseen else []) + sc.hits + preview(pieces))
     if vis != "PUBLIC": return None
     slug = host + "/" + (got or nwo or "?")
     act["public"] = slug   # from here on a failure of this guard asks instead of passing
-    if known_public(slug): return None
-    return [not_expected(slug)]
+    if unseen:
+        if any(u.startswith(("title", "comment")) for u in unseen): hint += " (a title, subject or comment literally)"
+        return retry("%s is PUBLIC and the text of this %s cannot be checked: %s. Write the text to a file in a separate call and pass it with %s." % (slug, what, "; ".join(unseen), hint))
+    sc = scan_texts(pieces)
+    if sc.fatal:
+        return retry("%s is PUBLIC and the text of this %s contains %s. %s Remove it and issue the command again." % (slug, what, "; ".join(sc.fatal[:5]), BUILTIN_FIX))
+    lines = []
+    if sc.total: lines += report_hits("%s is PUBLIC and the text of this %s contains:" % (slug, what), sc.hits, sc.total, False, sc)
+    if not known_public(slug): lines.append(not_expected(slug))
+    return (lines + preview(pieces)) if lines else None
 
 def handle_repo(act):
     argv = act["argv"]; kind = act["kind"]
@@ -991,7 +1490,7 @@ def handle_repo(act):
 problems = []
 for act in ACTIONS:
     try:
-        r = {"push": handle_push, "pr": handle_pr}.get(act["kind"], handle_repo)(act)
+        r = {"push": handle_push, "text": handle_text}.get(act["kind"], handle_repo)(act)
     except Exception as e:
         if isinstance(e, ScanFailed): r = ["the scan could not run (git failed or timed out), so the outgoing commits were not checked."]
         elif act.get("public"): r = ["%s is PUBLIC and this guard failed internally (%s) before it finished checking, so the outgoing content was not fully checked." % (act["public"], type(e).__name__)]

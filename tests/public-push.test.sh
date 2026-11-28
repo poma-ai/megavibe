@@ -644,22 +644,22 @@ passes "a body file named pr is not counted inside gh pr create" "$PUB" "gh pr c
 /bin/rm -f "$PUB/body" "$PUB/pr"
 denies "the deny says that nothing in the call ran" "$PUB" "git commit --allow-empty -m x && git push origin main" "NOTHING in this call ran"
 
-# 10z. Pull requests (create and edit) are a visibility check of the destination only: no text, file or commit is read.
+# 10z. Pull requests: the visibility of the destination, and on a public one the text (section 12 has the text cases).
 printf 'github.com/acme/pub\n' > "$KNOWN"
 passes "pr create to a known-public repository passes" "$PUB" "gh pr create -R acme/pub --title Fix --body Done"
-passes "pr create: text is not scanned (a token-shaped title to a known-public repository)" "$PUB" "gh pr create -R acme/pub --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y"   # EXAMPLE: fixture
-passes "pr create: an unreadable body file is not read" "$PUB" "gh pr create -R acme/pub --title Fix --body-file /nonexistent/x.md"
-passes "pr create: a variable in the body is not parsed" "$PUB" 'BODY=x; gh pr create -R acme/pub --title Fix --body "$BODY"'
+asks "pr create: a token-shaped title to a known-public repository is a hit" "$PUB" "gh pr create -R acme/pub --title ghp_abcdefghijklmnopqrstuvwxyz0123456789 --body y" "[GitHub token]" "title"   # EXAMPLE: fixture
+denies "pr create: a body file that does not exist cannot be checked" "$PUB" "gh pr create -R acme/pub --title Fix --body-file /nonexistent/x.md" "does not exist" "--body-file FILE"
+denies "pr create: a variable in the body cannot be checked" "$PUB" 'BODY=x; gh pr create -R acme/pub --title Fix --body "$BODY"' "variable" "--body-file FILE"
 passes "pr create after a commit in the same call to a known-public repository passes" "$PUB" "git commit --allow-empty -qm x && gh pr create -R acme/pub --title Fix --body Done"
 passes "pr create to a private repository passes" "$PUB" "gh pr create -R acme/priv --title Fix --body Done"
 passes "pr create to an internal repository passes" "$PUB" "gh pr create -R acme/int --title Fix --body Done"
 passes "pr create without -R in a checkout whose remote is private passes" "$PRIV" "gh pr create --title Fix --body Done"
 passes "pr create without -R in a checkout whose remote is known-public passes" "$PUB" "gh pr create --title Fix --body Done"
-passes "pr edit is not checked: an unlisted public checkout" "$NP" "gh pr edit 3 --title T"
-passes "pr edit is not checked: by URL" "$NP" "gh pr edit https://github.com/acme/priv/pull/3 --body Done"
-passes "pr edit is not checked: -R to an unlisted public repository" "$PRIV" "gh pr edit 3 -R other/surprise --title T"
+asks "pr edit: an unlisted public checkout" "$NP" "gh pr edit 3 --title T" "not on your list"
+passes "pr edit by URL of a private repository" "$NP" "gh pr edit https://github.com/acme/priv/pull/3 --body Done"
+asks "pr edit: -R to an unlisted public repository" "$PRIV" "gh pr edit 3 -R other/surprise --title T" "not on your list"
 passes "pr view is untouched" "$PUB" "gh pr view 3 -R other/surprise"
-passes "pr comment is untouched" "$PUB" "gh pr comment 3 -R other/surprise --body hi"
+asks "pr comment to an unlisted public repository" "$PUB" "gh pr comment 3 -R other/surprise --body hi" "not on your list"
 asks "pr create to a public repository that is not on the list asks" "$NP" "gh pr create -R other/surprise --title T --body B" "not on your list" "github.com/other/surprise"
 asks "pr create without -R: the checkout's remote is public and not on the list" "$NP" "gh pr create --title T --body B" "not on your list" "github.com/other/surprise"
 asks "pr create: gh cannot tell" "$PUB" "gh pr create -R acme/mystery --title t --body b" "could not determine"
@@ -668,8 +668,7 @@ passes "pr create to a private repository named with -R does not depend on an un
 asks "pr create to an unlisted public repository named with -R from an unresolvable directory asks" "$PRIV" 'cd "$WHERE" && gh pr create -R other/surprise --title Fix --body Done' "not on your list"
 asks "a PR body that looks like -R does not replace the destination" "$PRIV" "gh pr create -R other/surprise --title Fix --body '-Racme/priv'" "not on your list" "other/surprise"
 passes "a PR title that looks like -R does not cause a false ask" "$PUB" 'gh pr create -R acme/pub --title "-R flag support" --body "Document this flag"'
-# documents CURRENT behaviour, the same in the previous branch head: flag_value does not skip the values of other options, so a title written before -R can stand in for it (a known gap)
-passes "KNOWN GAP: an option-shaped title before -R is read as the repository" "$PRIV" "gh pr create --title '-Racme/priv' -R other/surprise"
+asks "an option-shaped title before -R is a title, not the repository" "$PRIV" "gh pr create --title '-Racme/priv' -R other/surprise" "not on your list" "other/surprise"
 denies "pr create from an unresolvable directory is a retry" "$PUB" 'cd "$WHERE" && gh pr create --title Fix --body Done' "not statically known"
 passes "the same pr create with an explicit literal directory and -R passes" "$PUB" "cd $PUB && gh pr create -R acme/pub --title Fix --body Done"
 asks "pr create: inline GH_REPO selects a public repository that is not on the list" "$PRIV" "GH_REPO=other/surprise gh pr create --title T --body B" "not on your list"
@@ -692,6 +691,232 @@ passes "--git-dir given literally to a known-public repository passes" "$T" "git
 passes "--git-dir given literally to a private repository passes" "$T" "git --git-dir=$PRIV/.git --work-tree=$PRIV push origin main"
 passes "-C given literally to a private repository passes" "$T" "git -C $PRIV push origin main"
 passes "a variable in a non-push git command is untouched" "$T" 'git --git-dir "$GDX/.git" status'
+
+# 12. The text a gh command publishes is scanned on a public repository: built-in rules deny, other hits ask with the
+#     text shown, a text the guard cannot see is denied with the instruction to pass a file.
+SLH=claude.ai; SLINK="https://$SLH/code/session_01AbCdEfGhIjKl"; TRK=Claude; TRL="$TRK-Session: $SLINK"   # fixture fragments: the literal forms never appear in this file
+TX=$T/tx; mkrepo "$TX" https://github.com/acme/pub.git
+printf '## Summary\nClean text.\n' > "$TX/clean.md"
+printf '## Summary\nSee %s\n' "$SLINK" > "$TX/link.md"
+printf '## Summary\nDone.\n\nCo-authored-by: megavibe <bot@vendor.test>\n%s\n' "$TRL" > "$TX/trailer.md"   # EXAMPLE: fixture
+printf '## Summary\nFor ACME Corp only.\n' > "$TX/deny.md"
+printf 'ACME Corp\n' > "$HOME/.megavibe/personal/public-push.deny"
+printf '{"body":"Done.\\n\\n%s"}' "$TRL" > "$TX/trailer.json"
+printf '{"query":"mutation { addComment(input: {subjectId: \\"x\\", body: \\"hi\\"}) { clientMutationId } }"}' > "$TX/mut.json"
+printf '{"query":"query { viewer { login } }","variables":{"note":"mutation"}}' > "$TX/query.json"
+for v in "pr create --title T" "pr edit 3" "pr comment 3" "pr review 3 --comment" "pr merge 3 --squash" "issue create --title T" "issue edit 3" "issue comment 3"; do
+  passes "$v: clean --body" "$TX" "gh $v --body 'Clean text.'"
+  passes "$v: clean --body-file" "$TX" "gh $v --body-file clean.md"
+  passes "$v: clean -F" "$TX" "gh $v -F clean.md"
+  denies "$v: session link in --body" "$TX" "gh $v --body 'see $SLINK'" "session link" "Co-authored-by alone is fine"
+  denies "$v: session link in --body-file" "$TX" "gh $v --body-file link.md" "session link"
+  denies "$v: session trailer in a body file (-F)" "$TX" "gh $v -F trailer.md" "Claude-Session trailer"
+  asks "$v: a denylist hit asks and shows the text" "$TX" "gh $v --body-file deny.md" "[denylist #1]" "characters" "| For ACME Corp only."
+  denies "$v: a body from a variable" "$TX" "gh $v --body \"\$B\"" "variable" "--body-file FILE"
+  denies "$v: a body from a pipe" "$TX" "printf x | gh $v --body-file -" "standard input"
+  passes "$v: a session link to a private repository" "$TX" "gh $v -R acme/priv --body 'see $SLINK'"
+done
+for v in "pr close 3" "pr reopen 3" "issue close 3" "issue reopen 3"; do
+  passes "$v: clean --comment" "$TX" "gh $v --comment 'Done.'"
+  denies "$v: session link in --comment" "$TX" "gh $v -c 'see $SLINK'" "session link"
+  passes "$v: no comment publishes no text" "$TX" "gh $v"
+done
+denies "pr merge: session trailer in --subject" "$TX" "gh pr merge 3 --squash --subject '$TRL'" "Claude-Session trailer"
+passes "pr review --approve without a body publishes no text" "$TX" "gh pr review 3 --approve"
+passes "release create: clean notes" "$TX" "gh release create v1 --title v1 --notes 'Clean.'"
+denies "release create: session link in a notes file" "$TX" "gh release create v1 -F link.md" "session link"
+denies "release edit: notes from a variable" "$TX" "gh release edit v1 --notes \"\$N\"" "--notes-file FILE"
+asks "release create: a denylist hit in -n" "$TX" "gh release create v1 -n 'for acme corp'" "[denylist #1]"
+passes "release create to a private repository" "$TX" "gh release create v1 -R acme/priv -n 'see $SLINK'"
+# gh api
+passes "api: a read is not checked" "$TX" "gh api repos/acme/pub/pulls/3"
+passes "api: -X GET with fields is a read" "$TX" "gh api -X GET repos/acme/pub/issues -f state=open"
+passes "api: a clean comment" "$TX" "gh api repos/acme/pub/issues/3/comments -f body='Clean.'"
+denies "api: session link in -f body" "$TX" "gh api repos/acme/pub/issues/3/comments -f body='see $SLINK'" "session link"
+denies "api: session link in -F body=@file" "$TX" "gh api repos/acme/pub/issues/3/comments -F body=@link.md" "session link"
+denies "api: trailer inside a JSON --input" "$TX" "gh api -X PATCH repos/acme/pub/pulls/3 --input trailer.json" "Claude-Session trailer"
+denies "api: --input from a pipe" "$TX" "cat trailer.json | gh api repos/acme/pub/issues/3/comments --input -" "standard input" "-F body=@FILE"
+denies "api: a field from a substitution" "$TX" "gh api repos/acme/pub/issues/3/comments -f body=\"\$(cat link.md)\"" "substitution"
+passes "api: a session link to a private repository" "$TX" "gh api -X POST repos/acme/priv/issues/3/comments -f body='$SLINK'"
+denies "api: {owner}/{repo} resolves from the checkout" "$TX" "gh api repos/{owner}/{repo}/issues/3/comments -f body='$SLINK'" "session link"
+passes "api: {owner}/{repo} in a private checkout" "$PRIV" "gh api repos/{owner}/{repo}/issues/3/comments -f body='$SLINK'"
+denies "api: a full URL endpoint" "$TX" "gh api https://api.github.com/repos/acme/pub/issues/3/comments -f body='$SLINK'" "session link"
+B64=$(printf 'see %s' "$SLINK" | base64 | tr -d '\n')
+denies "api: the contents API's base64 is decoded" "$TX" "gh api -X PUT repos/acme/pub/contents/x.md -f message=add -f content=$B64" "session link"
+asks "api: a GraphQL mutation cannot be placed and asks" "$TX" 'gh api graphql -f query='"'"'mutation { addComment(input: {subjectId: "x", body: "hi"}) { clientMutationId } }'"'" "GraphQL mutation" "| mutation"
+passes "api: a GraphQL query is a read" "$TX" "gh api graphql -f query='query { viewer { login } }'"
+passes "api: an endpoint that is not a repository is not checked" "$TX" "gh api -X POST user/keys -f title=k"
+# heredocs and standard input
+passes "a quoted heredoc as --body-file -, clean" "$TX" $'gh pr create --title T --body-file - <<\'EOF\'\nClean $NOT_EXPANDED text\nEOF'
+denies "a quoted heredoc with a session link" "$TX" $'gh pr comment 3 --body-file - <<\'EOF\'\nsee '"$SLINK"$'\nEOF' "session link"
+denies "an unquoted heredoc that expands" "$TX" $'gh pr comment 3 --body-file - <<EOF\nsee $X\nEOF' "unquoted heredoc"
+passes "an unquoted heredoc without expansions" "$TX" $'gh pr comment 3 -F - <<EOF\nplain text\nEOF'
+passes "a \$(cat <<'EOF') body, clean" "$TX" $'gh pr create --title T --body "$(cat <<\'EOF\'\n## Summary\nClean.\nEOF\n)"'
+denies "a \$(cat <<'EOF') body with the session trailer" "$TX" $'gh pr create --title T --body "$(cat <<\'EOF\'\n## Summary\nDone.\n\n'"$TRL"$'\nEOF\n)"' "Claude-Session trailer"
+denies "a heredoc of another command is not gh's standard input" "$TX" $'cat <<\'EOF\' > /dev/null\nx\nEOF\ngh pr comment 3 --body-file -' "standard input"
+denies "a here-string is not seen" "$TX" "gh pr comment 3 --body-file - <<< 'x'" "standard input"
+denies "a < redirection is not seen" "$TX" "gh pr comment 3 --body-file - < clean.md" "standard input"
+denies "a multi-line quoted body keeps its lines: the trailer is at a line start" "$TX" "gh pr comment 3 --body 'Done.
+
+$TRL'" "Claude-Session trailer"
+passes "a trailer named mid-line is not a trailer" "$TX" "gh pr comment 3 --body 'Explain the $TRK-Session: trailer rule'"
+passes "a placeholder session link is not a session link" "$TX" "gh pr comment 3 --body 'links look like https://$SLH/code/session_... and session_<id>'"
+denies "a quote that starts mid-word runs past parentheses" "$TX" "gh api repos/acme/pub/issues/3/comments -f body='x (y) $SLINK'" "session link"
+denies "a mid-word quoted body keeps its lines" "$TX" "gh pr comment 3 --body='Done.
+
+$TRL'" "Claude-Session trailer"
+# a body file another command in the same call may write
+denies "a body file written earlier in the same call" "$TX" "printf x > clean.md && gh pr create --title T --body-file clean.md" "same call"
+passes "a body file named once in a two-command call" /tmp "cd $TX && gh pr create --title T --body-file clean.md"
+denies "a relative body file after a cd the guard cannot follow" "$TX" 'cd "$D" && gh pr comment 3 -R acme/pub --body-file clean.md' "relative file"
+denies "a body file named by a glob" "$TX" "gh pr comment 3 --body-file *.md" "glob"
+# parsing hazards
+denies "bash -c" "$TX" "bash -c 'gh pr comment 3 --body \"see $SLINK\"'" "session link"
+denies "a line continuation" "$TX" $'gh pr comment 3 \\\n  --body-file link.md' "session link"
+denies "a cd chain" /tmp "cd $TX && gh pr comment 3 --body-file link.md" "session link"
+denies "inside an unquoted \$( )" "$TX" "x=\$(gh pr comment 3 --body-file link.md)" "session link"
+denies "inside a double-quoted \$( ): parsed as the command bash runs" "$TX" "echo \"\$(gh pr comment 3 --body-file link.md)\"" "session link"
+passes "a double-quoted \$(gh pr create ...) to a private repository does not ask" "$PRIV" "URL=\"\$(gh pr create --title T --body 'see $SLINK')\""
+asks "a backtick inside double quotes after another command still asks" "$TX" "gh pr comment 1 -R acme/priv -b ok && echo \"\`gh issue comment 2 -b x\`\"" "substitution"
+passes "a read inside a double-quoted \$( ) does not ask" "$TX" "T=\"\$(gh api repos/acme/pub/pulls/3 --jq .title)\""
+denies "--repo" "$PRIV" "gh pr comment 3 --repo acme/pub --body-file $TX/link.md" "session link"
+denies "-R=owner/repo" "$PRIV" "gh pr comment 3 -R=acme/pub --body-file $TX/link.md" "session link"
+denies "a URL argument names the repository" "$PRIV" "gh pr comment https://github.com/acme/pub/pull/3 --body-file $TX/link.md" "session link"
+passes "a URL argument of a private repository" "$TX" "gh issue comment https://github.com/acme/priv/issues/3 --body-file link.md"
+denies "the last -R counts, as in gh" "$PRIV" "gh pr comment 3 -R acme/priv -R acme/pub --body-file $TX/link.md" "session link"
+denies "-R in a variable" "$TX" 'gh pr comment 3 -R "$REPO" --body x' "variable"
+asks "an enterprise host through GH_HOST" "$PRIV" "GH_HOST=ghe.corp.test gh pr comment 3 -R acme/pub --body Clean" "ghe.corp.test/acme/pub" "not on your list"
+asks "an enterprise host in -R" "$PRIV" "gh pr comment 3 -R ghe.corp.test/acme/pub --body Clean" "ghe.corp.test/acme/pub"
+asks "unknown visibility asks and shows the text" "$TX" "gh pr comment 3 -R acme/mystery --body 'Hello there'" "could not determine" "| Hello there"
+asks "unknown visibility names a session link without denying" "$TX" "gh pr comment 3 -R acme/mystery --body '$SLINK'" "could not determine" "[session link]"
+run "$TX" "gh pr comment 3 --body 'tok ghp_abcdefghijklmnopqrstuvwxyz0123456789'"; lacks "the text shown in the question is redacted" "ghp_abcdefghijklmn"   # EXAMPLE: fixture
+passes "a dry run publishes nothing" "$TX" "gh pr create --dry-run --title T --body '$SLINK'"
+denies "--fill on a public repository" "$TX" "gh pr create --fill" "--fill"
+denies "--editor on a public repository" "$TX" "gh issue comment 3 --editor" "editor"
+passes "--web with a clean title" "$TX" "gh issue create --web --title T"
+passes "--fill on a private repository" "$PRIV" "gh pr create --fill"
+for c in "gh pr view 3" "gh issue list" "gh release list" "gh api user" "gh pr checks 3" "gh pr diff 3"; do passes "untouched: $c" "$TX" "$c"; done
+printf 'github.com/other/*\n' > "$KNOWN"
+asks "a clean text to an unlisted public repository asks and shows the text" "$TX" "gh issue comment 3 --body 'Thanks, merged.'" "not on your list" "| Thanks, merged."
+printf 'github.com/*\n' > "$KNOWN"
+# commit and tag messages: the built-in rules on the push side
+TP=$T/tp; mkrepo "$TP" https://github.com/acme/pub.git
+commit "$TP" a.txt "x" "$(printf 'Fix it\n\nCo-authored-by: megavibe <bot@vendor.test>\n%s' "$TRL")"   # EXAMPLE: fixture
+denies "push: the session trailer to a public repository" "$TP" "git push origin main" "Claude-Session trailer" "git commit --amend"
+TV=$T/tv; mkrepo "$TV" https://github.com/acme/priv.git
+commit "$TV" a.txt "x" "$(printf 'Fix it\n\nCo-authored-by: megavibe <bot@vendor.test>\n%s' "$TRL")"   # EXAMPLE: fixture
+passes "push: the same commit to a private repository" "$TV" "git push origin main"
+( cd "$TP" && git reset -q --hard HEAD~1 )
+commit "$TP" a.txt "x" "Fix it, see $SLINK"
+denies "push: a session link in a commit message" "$TP" "git push origin main" "session link"
+( cd "$TP" && git reset -q --hard HEAD~1 )
+commit "$TP" a.txt "x" "$(printf 'Fix it\n\nCo-authored-by: megavibe <bot@vendor.test>')"   # EXAMPLE: fixture
+passes "push: Co-authored-by alone is fine" "$TP" "git push origin main"
+commit "$TP" a.txt "y" "Explain the $TRK-Session: trailer and https://$SLH/code/session_... links"
+passes "push: a message that names the rule is not a trailer" "$TP" "git push origin main"
+( cd "$TP" && git tag -a rel1 -m "$(printf 'Release\n\n%s' "$TRL")" )
+denies "push: the session trailer in an annotated tag message" "$TP" "git push origin rel1" "Claude-Session trailer"
+( cd "$TP" && git tag -d rel1 >/dev/null )
+rm -f "$HOME/.megavibe/personal/public-push.deny"
+# missing jq or python3: the hook fails open (documented), as before
+mkdir -p "$T/nojq" "$T/nopy"
+for b in python3 git cat; do ln -sf "$(command -v $b)" "$T/nojq/$b"; done
+for b in jq git cat; do ln -sf "$(command -v $b)" "$T/nopy/$b"; done
+IN=$(jq -n --arg c "gh pr comment 3 --body '$SLINK'" --arg d "$TX" '{tool_name:"Bash",cwd:$d,tool_input:{command:$c}}')
+OUT=$(printf '%s' "$IN" | PATH="$T/nojq" /bin/bash "$HOOK" 2>/dev/null); if [ -z "$OUT" ]; then ok; else bad "no jq: fails open"; fi
+OUT=$(printf '%s' "$IN" | PATH="$T/nopy" /bin/bash "$HOOK" 2>/dev/null); if [ -z "$OUT" ]; then ok; else bad "no python3: fails open"; fi
+
+# 12b. Leads of the amass sweep, each run with its exact input before the fix.
+printf 'ACME Corp\n' > "$HOME/.megavibe/personal/public-push.deny"
+denies "an indented EOF does not end the heredoc" "$TX" $'gh pr comment 3 --body-file - <<\'EOF\'\nok\n  EOF\nsee '"$SLINK"$'\nEOF' "session link"
+passes "<<- strips leading tabs from the terminator" "$TX" $'gh pr comment 3 --body-file - <<-\'EOF\'\n\tok\n\tEOF'
+denies "-f is --fill for pr create" "$TX" "gh pr create -f" "--fill"
+denies "-e is --editor for issue comment" "$TX" "gh issue comment 3 -e" "editor"
+denies "xargs supplies arguments the guard cannot see" "$TX" "printf x | xargs -I{} gh pr comment 7 -b {}" "xargs"
+denies "a body file named in quotes elsewhere in the call" "$TX" "printf x > 'clean'.md; gh pr comment 7 -F clean.md" "same call"
+passes "a GraphQL query with a variable field is a read" "$PRIV" "gh api graphql -f query='query{viewer{login}}' -F n=\"\$N\""
+passes "the word mutation inside a GraphQL query string is a read" "$PRIV" "gh api graphql -f query='query { search(query: \"mutation\", type: ISSUE, first: 1) { issueCount } }'"
+asks "a GraphQL mutation in --input asks" "$TX" "gh api graphql --input $TX/mut.json" "GraphQL mutation"
+denies "exec gh is unwrapped" "$TX" "exec gh pr comment 7 -b 'see $SLINK'" "session link"
+denies "an option built by a variable" "$TX" "B=--body; gh pr comment 7 \$B 'see $SLINK'" "built by a variable"
+denies "an api endpoint built by a variable" "$TX" "gh api \"\$BASE/repos/acme/pub/issues/7/comments\" -f body=x" "variable"
+denies "a double-quoted substitution after another gh command is parsed" "$TX" "gh pr comment 1 -R acme/priv -b ok && echo \"\$(gh issue comment 2 -b 'see $SLINK')\"" "session link"
+denies "repos/{owner}/name takes the owner from the checkout" "$PRIV" "gh api -X POST 'repos/{owner}/pub/issues' -f body='$SLINK'" "session link"
+denies "gh repo set-default earlier in the call" "$PRIV" "gh repo set-default acme/pub && gh pr comment 7 -b 'see $SLINK'" "set-default"
+passes "a lone dollar sign is not an expansion" "$TX" "gh issue comment 7 --body \"cost is 5 \$ per seat\""
+passes "a backslash an unquoted heredoc keeps is literal" "$TX" $'gh issue comment 3 -F - <<EOF\nRegex \\d+ fixed\nEOF'
+denies "a typed placeholder is not a heredoc" "$TX" "printf x | gh issue comment 5 --body-file - __MVHD0__" "standard input"
+denies "a URL argument wins over -R" "$TX" "gh pr comment https://github.com/acme/pub/pull/1 -R acme/priv -b 'see $SLINK'" "session link"
+denies "JSON on standard input is decoded: a trailer at a line start" "$TX" $'gh api repos/acme/pub/issues/3/comments --input - <<\'EOF\'\n{"body":"Done.\\n\\n'"$TRK"$'-Session: x"}\nEOF' "Claude-Session trailer"
+denies "a bundle of switches ending in a value-taking option (-wb TEXT)" "$TX" "gh pr comment 3 -wb 'see $SLINK'" "session link"
+denies "a bundle with the value attached (-wbTEXT)" "$TX" "gh pr comment 3 -wbsee_$SLINK" "session link"
+passes "a heredoc delimiter with a hyphen" "$TX" $'gh pr comment 3 -F - <<\'END-BODY\'\nclean\nEND-BODY'
+passes "a GraphQL query in --input is a read" "$TX" "gh api graphql --input $TX/query.json"
+B64F=$(printf 'see %s' "$SLINK" | base64 | tr -d '\n'); printf '%s\n' "$B64F" > "$TX/b64.txt"
+denies "-F content=@file is decoded as base64" "$TX" "gh api -X PUT repos/acme/pub/contents/x.md -f message=add -F content=@b64.txt" "session link"
+# 12c. Findings of the ship round.
+denies "a heredoc example inside a multi-line single-quoted body is text, and is scanned" "$TX" "gh pr create --title T --body 'Repro:
+cat <<EOF
+see $SLINK
+EOF
+end'" "session link"
+asks "a heredoc example inside a multi-line double-quoted body is scanned" "$TX" "gh pr comment 3 --body \"Setup:
+cat <<EOF > cfg
+path=$USERS_DIR/jsmith/work
+EOF
+\"" "[home path]"
+denies "a <<- example inside a quoted body" "$TX" "gh issue create --title a --body 'x
+cat <<-EOF
+	see $SLINK
+	EOF
+y'" "session link"
+passes "the \$(cat <<'EOF') form is still a heredoc" "$TX" $'gh pr create --title T --body "$(cat <<\'EOF\'\n## Summary\nClean.\nEOF\n)"'
+passes "a quoted ) inside a double-quoted \$( ) to a private repository" "$PRIV" "URL=\"\$(gh pr comment 3 --body \\\"a ) b\\\")\""
+passes "a here-string's quoted text is not a heredoc opener" "$PRIV" $'gh pr comment 3 -F - <<< \'x <<EOF\'\ngit status\nEOF'
+asks "an unquoted backtick substitution after another command asks" "$TX" "gh pr comment 1 -R acme/priv -b ok; echo \`gh issue comment 2 -b x\`" "substitution"
+denies "a title from a variable gets a literal-title hint" "$TX" 'gh pr create --title "$T" --body x' "title, subject or comment literally"
+PF=$T/pf; mkrepo "$PF" https://github.com/acme/pub.git
+commit "$PF" a.txt "x" "$(printf 'Old work\n\n%s' "$TRL")"
+( cd "$PF" && git update-ref refs/remotes/origin/main HEAD && git remote add fork https://github.com/acme/fork.git && git checkout -q -b feat )
+printf PUBLIC > "$T/vis/acme_fork"
+commit "$PF" b.txt "clean" "clean work"
+asks "a trailer commit another remote already holds asks, it does not tell the agent to rewrite history" "$PF" "git push fork feat" "already hold" "git fetch" "origin"
+run "$PF" "git push fork feat"; lacks "no rewrite instruction for published commits" "git commit --amend"
+commit "$PF" c.txt "new" "$(printf 'New work\n\n%s' "$TRL")"
+denies "a new trailer commit on top is still denied" "$PF" "git push fork feat" "no remote holds yet" "git rebase"
+# 12d. Findings of the second ship round: an unquoted substitution is part of its word, and its commands are checked.
+for c in "gh pr comment \$(gh pr view --json number -q .number) --body 'see $SLINK'" "gh pr comment \$(echo 3) --body 'see $SLINK'" \
+         "gh pr edit \$(echo 3) --body 'see $SLINK'" "gh pr merge \$(echo 3) --subject 'see $SLINK'" "gh issue comment \$(echo 3) -b 'see $SLINK'" \
+         "gh release create \$(echo v1) --notes 'see $SLINK'" "gh api repos/acme/pub/issues/\$(echo 3)/comments -f body='see $SLINK'" \
+         "gh pr comment \$((1+2)) --body 'see $SLINK'" "gh pr comment 3 >(cat) --body 'see $SLINK'" "gh pr comment 3 <(echo) --body 'see $SLINK'" \
+         "gh pr comment 3 --title=\$(echo y) --body 'see $SLINK'" "gh pr comment 3 -R acme/pub\$(echo) --body 'see $SLINK'"; do
+  run "$TX" "$c"; d=$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  case "$d" in deny|ask) ok ;; *) bad "an unquoted substitution before the text does not hide it: $c (decision: ${d:-none})" ;; esac
+done
+denies "a substituted pull request number asks for a literal one" "$TX" "gh pr comment \$(gh pr view --json number -q .number) --body 'Clean.'" "pass it literally"
+passes "the same idiom on a private repository passes" "$PRIV" "gh pr comment \$(gh pr view --json number -q .number) --body 'see $SLINK'"
+printf "github.com/acme/*\n" > "$KNOWN"; asks "a push inside a substitution inside bash -c is checked" "$T/np" "bash -c 'echo \$(git push origin main)'" "not on your list"
+printf 'github.com/*\n' > "$KNOWN"
+passes "a double-quoted \$( ) with quotes inside it keeps the outer word" "$PRIV" "gh pr comment 3 --body \"\$(gh pr view 3 --json title -q \".title\")\""
+P5=pu; P5=${P5}sh
+commit "$PUB" k9.txt "key ${AKIA_PFX}ABCDEFGHIJKLMNOP"
+asks "a substitution in an unquoted heredoc body is checked" "$PUB" $'cat <<EOF\ndon\'t $(git '"$P5"$' origin main)\nEOF' "[AWS key]"
+passes "a quoted heredoc body is text" "$PUB" $'cat <<\'EOF\'\n$(git '"$P5"$' origin main)\nEOF'
+asks "a push nested deeper than the guard follows asks" "$PUB" "echo \$(echo \$(echo \$(echo \$(git $P5 origin main))))" "could not parse"
+( cd "$PUB" && git reset -q --hard HEAD~1 )
+# 12e. Findings of the third ship round.
+asks "a # inside a quote within \"\$( )\" does not cut the rest of the line" "$TX" "echo \"\$(echo \"a #b\")\"; gh pr comment 3 --body 'k $USERS_DIR/jsmith/x'" "[home path]"
+asks "an escaped backslash at a line end does not join the next line" "$TX" 'echo C:\\dir\\
+gh pr comment 3 --body '"'k $USERS_DIR/jsmith/x'" "[home path]"
+asks "a real line continuation still joins" "$TX" $'gh pr comment 3 \\\n --body \'k '"$USERS_DIR"$'/jsmith/x\'' "[home path]"
+printf 'github.com/other/*\n' > "$KNOWN"
+asks "gh pr create --web to an unlisted public repository still asks" "$TX" "gh pr create --web" "not on your list"
+asks "gh pr create --draft without text still asks" "$TX" "gh pr create -R acme/pub --draft" "not on your list"
+printf 'github.com/*\n' > "$KNOWN"
+passes "gh pr create --web to a private repository" "$PRIV" "gh pr create --web"
+passes "gh api with :owner/:repo in a private checkout" "$PRIV" "gh api repos/:owner/:repo/issues/3/comments -f body=hi"
+denies "gh api with :owner/:repo in a public checkout" "$TX" "gh api repos/:owner/:repo/issues/3/comments -f body='see $SLINK'" "session link"
+rm -f "$HOME/.megavibe/personal/public-push.deny"
 
 # 11. Fail open: no jq / python3 in PATH is a silent pass is covered by the header; check a malformed event.
 OUT=$(printf 'not json' | bash "$HOOK" 2>/dev/null); RC=$?; if [ "$RC" = 0 ] && [ -z "$OUT" ]; then ok; else bad "malformed input fails open"; fi
