@@ -1,7 +1,7 @@
 #!/bin/bash
 # claude-review.sh — the Claude-side counterpart of codex-review.sh: one lean headless worker
 # call, with or without execution, on the Claude subscription. Same interface on purpose, so
-# the allocation rule in .claude/rules/delegation.md can give a unit of work to either
+# the allocation rule in .claude/skills/delegation/SKILL.md can give a unit of work to either
 # provider by weighing both weekly windows, not by which side is easier to spawn.
 #
 #   claude-review.sh [--as-reviewer [--no-amass "oversize|prose|hotfix[: note]"]] [--prompt TEXT | --prompt-file F] [--out FILE]

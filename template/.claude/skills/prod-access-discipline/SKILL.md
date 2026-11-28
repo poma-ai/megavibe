@@ -1,3 +1,8 @@
+---
+name: prod-access-discipline
+description: Production access. Load before touching a live production system (a Kubernetes cluster, a managed database, a running service, an application connected to production data or side-effect channels), before any request or test against one, when you find harm your own work may be causing, and when you are blamed for an incident. Holds the exec-is-a-write rule and its guard, why a Deployment edit restarts it, classifying requests by their handler, staging wired to production data, light checks, the incident response steps and the timeline check.
+---
+
 # Production access discipline
 
 Rules for touching a live production system — a Kubernetes cluster, a managed

@@ -11,7 +11,7 @@ allowed-tools: Read, Write, Edit, Glob
 
 > **Not to be confused with `/compact`.** `/compact` is Claude Code's built-in conversation summarizer. `/prune-context` removes redundant lines from the durable `.agent/FULL_CONTEXT.md` log. See the "Which compaction do I need?" table in `CLAUDE.md`.
 
-Choose the first backend among those available by the allocation rule in `.claude/rules/delegation.md` to remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
+Choose the first backend among those available by the allocation rule in `.claude/skills/delegation/SKILL.md` to remove redundant lines from `.agent/FULL_CONTEXT.md` while preserving all important context.
 
 ## Prerequisites
 

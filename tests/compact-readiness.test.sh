@@ -829,8 +829,12 @@ for doc in "$REPO/README.md" "$REPO/README-compaction-readiness.md"; do
   has 'It never certifies readiness or acknowledges pending rows' 'mark scope'
   lacks '--staged-handled' 'acknowledgement instructions removed'
 done
-# template/CLAUDE.md keeps the short rule and points at README-compaction-readiness.md for the full semantics
+# template/CLAUDE.md points at the compaction-lifecycle skill, which keeps the short rule and
+# points at README-compaction-readiness.md for the full semantics
 OUT=$(cat "$REPO/template/CLAUDE.md")
+has 'load the **`compaction-lifecycle`** skill' 'protocol: pointer to the compaction-lifecycle skill'
+has 'compact-readiness.sh' 'protocol: names the readiness check as a trigger'
+OUT=$(cat "$REPO/template/.claude/skills/compaction-lifecycle/SKILL.md")
 has 'Advisory: run `.claude/hooks/compact-readiness.sh' 'short rule: advisory contract'
 has 'MEGAVIBE_READY_TASKS_MIN_EVENTS' 'short rule: event threshold'
 has 'run the same command with `--mark`' 'short rule: mark step'

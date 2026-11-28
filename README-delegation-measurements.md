@@ -1,6 +1,6 @@
 # Delegation: measurements and history
 
-Evidence behind the rules in `template/CLAUDE.md` and `template/.claude/rules/` (mostly `delegation.md`, also `spinouts.md`). Moved out of those files on 2026-11-23 because they are loaded eagerly into every session and the instruction-file total passed the 150k-char limit; the rules there stay authoritative. This file is evidence and history: imperatives in the quoted text below are the original wording of rules that live in those files. Text is as moved, apart from bracketed notes and small edits that repair references.
+Evidence behind the rules in `template/CLAUDE.md` and the procedure skills (mostly `template/.claude/skills/delegation/SKILL.md`, also `spinouts`; both were rule files under `template/.claude/rules/` until 2026-11-27, which is what the dated entries below call `delegation.md` and `spinouts.md`). Moved out of those files on 2026-11-23 because they are loaded eagerly into every session and the instruction-file total passed the 150k-char limit; the rules there stay authoritative. This file is evidence and history: imperatives in the quoted text below are the original wording of rules that live in those files. Text is as moved, apart from bracketed notes and small edits that repair references.
 
 ## Reasoning-effort/timeout asymmetry (2026-10-04)
 
@@ -155,7 +155,7 @@ in 34-38 foreground waits of 5-9 minutes and re-wrote about 500K tokens every
 time: 51M cache-written tokens (about 64M weighted at 1.25x) plus 548M cache
 reads (about 55M at 0.1x) made about 119M of that session's 190M price-weighted
 tokens that day (63%). The weights are API list-price ratios, an assumption: how
-plan limits meter cache reads and writes is not documented, and `delegation.md`
+plan limits meter cache reads and writes is not documented, and the `delegation` skill
 ("Cache heartbeat") shows the raw-token count can point the other way. Not
 reproduced on another project.
 

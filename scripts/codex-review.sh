@@ -255,7 +255,7 @@ ARGS+=(-)
 # NOT the one-line `alarm shift; exec @ARGV` form. SIGALRM does survive the
 # exec, but it then reaches only the process that replaced perl — measured: a
 # 3s timeout returned 124 and left a live `codex exec` behind, which is exactly
-# the orphan process-discipline.md forbids. So: fork, put the child in its own
+# the orphan the process-discipline skill forbids. So: fork, put the child in its own
 # process GROUP, and on timeout signal the whole group (TERM, then KILL) so
 # codex's own children die with it.
 set +e

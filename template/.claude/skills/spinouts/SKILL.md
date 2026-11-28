@@ -1,3 +1,8 @@
+---
+name: spinouts
+description: Subagent spin-outs and batch jobs. Load before splitting a plan of 3 or more tasks across subagents, before briefing or launching a subagent that will wait on a long job, and before a batch job over many bulky items (images, PDFs, long logs). Holds the wave and file-overlap rules, the brief template with the model pin, context-size batching, and the 170-second cache-warm wait recipe.
+---
+
 # Subtask Spinouts
 
 When a plan has 3+ tasks, consider spinning independent tasks out to parallel subagents. The primary benefit is **context freshness** — each agent gets a clean window with only the context it needs, avoiding quality degradation from accumulated exploration history.
@@ -106,7 +111,7 @@ A subagent's prompt cache lives 5 minutes by default (the main thread's usually
 single tool call that blocks past that — `sleep`, an `until grep …` poll, a long
 test run in the foreground — makes the next request re-write the whole context
 as a cache write (1.25x input price) instead of a read (0.1x). Measured once (2026-10-14, one project): long foreground
-waits made cache re-writes plus cache reads about 63% of a day's price-weighted tokens; the weights are API list-price ratios, not plan metering, and `delegation.md` ("Cache heartbeat") shows the raw-token count can point the other way. Numbers: https://github.com/poma-ai/megavibe/blob/main/README-delegation-measurements.md
+waits made cache re-writes plus cache reads about 63% of a day's price-weighted tokens; the weights are API list-price ratios, not plan metering, and the `delegation` skill ("Cache heartbeat") shows the raw-token count can point the other way. Numbers: https://github.com/poma-ai/megavibe/blob/main/README-delegation-measurements.md
 
 - **Brief every spin-out with the wait rule** (it is in the template above) and,
   for a job that needs waiting on, paste the recipe below with a unique NAME.
@@ -122,7 +127,7 @@ waits made cache re-writes plus cache reads about 63% of a day's price-weighted 
   `D=/tmp; end=$((SECONDS+170)); until [ -s "$D/mv-NAME.rc" ] || [ $SECONDS -ge $end ]; do sleep 5; done; cat "$D/mv-NAME.rc" 2>/dev/null || echo pending; wc -c < "$D/mv-NAME.log"; tail -c 300 "$D/mv-NAME.log"`
   as a Bash call with `timeout: 200000` (`timeout(1)` does not exist on stock
   macOS). Read the byte count and tail against the rules in
-  `process-discipline.md`: a build or test run whose log has not grown for two
+  the `process-discipline` skill: a build or test run whose log has not grown for two
   slices is hung (a job that idles by design is healthy), repeating lines are a
   crashloop; act on it, do not keep waiting. When the rc file
   holds a number, it is the command's exit status (non-zero means it failed).
@@ -133,7 +138,7 @@ waits made cache re-writes plus cache reads about 63% of a day's price-weighted 
   to arm a Monitor; a payload carrying an `agent_id` (a subagent's call) gets the
   slice advice instead and is not recorded for the parent's Stop check. A subagent without Monitor (the `reviewer`) keeps the
   slice loop instead.
-- **A Codex job's log shows start-up errors and its rc file the exit status, but not progress** (its stdout is redirected, the work is in its rollout): in each slice also print `~/.megavibe/scripts/codex-progress.sh --file <its rollout> --brief` (idle time, size, last assistant message; find the file once with `--path --cwd <its -C dir> --since <start epoch>`); see `delegation.md`, "Watching a Codex job".
+- **A Codex job's log shows start-up errors and its rc file the exit status, but not progress** (its stdout is redirected, the work is in its rollout): in each slice also print `~/.megavibe/scripts/codex-progress.sh --file <its rollout> --brief` (idle time, size, last assistant message; find the file once with `--path --cwd <its -C dir> --since <start epoch>`); see the `delegation` skill, "Watching a Codex job".
 - **Waits over about 35 minutes belong to the parent** (a heuristic: a slice
   costs about 0.035 of the context per minute at 0.1x, a cold re-write 1.25).
   The parent starts and awaits such a job, if its own cache lifetime is longer,

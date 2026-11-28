@@ -293,7 +293,7 @@ rm -f "$T/mv/usage/codex-row-forecast.cache" "$T/mv/usage/codex-row.cache"; mkdi
 ( cd "$T"; env -u MEGAVIBE_NOW TMPDIR="$T/tmpy" PATH="$T/shim2:$PATH" MEGAVIBE_CODEX_HOME="$T/codex2" /bin/bash "$UR" sprint-advice >/dev/null 2>&1 & p=$!; sleep 0.8; kill -HUP $p 2>/dev/null; wait $p 2>/dev/null ) 2>/dev/null
 sleep 2
 check 'a SIGHUP while a provider call runs leaves no usage-sprint-adv temp file behind' '[ "$(ls "$T/tmpy" 2>/dev/null | grep -c usage-sprint-adv)" = 0 ]'
-check 'the rule says the per-unit check governs optional work and top-tier upgrades and never defers a required reader' 'grep -q "never defers a required reader" "$REPO/template/.claude/rules/delegation.md"'
+check 'the rule says the per-unit check governs optional work and top-tier upgrades and never defers a required reader' 'grep -q "never defers a required reader" "$REPO/template/.claude/skills/delegation/SKILL.md"'
 # 78 then 80 eighteen minutes later projects 84.954: the printed budget rounds UP (85) so a unit sized on it cannot overshoot, and it is hot
 printf '{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":78,"r":%s}}\n{"t":%s,"sd":{"p":72,"r":%s},"fh":{"p":80,"r":%s}}\n' "$((NOW - 1090))" "$R2" "$FR" "$NOW" "$R2" "$FR" > "$MEGAVIBE_USAGE_FILE"; o=$(sp)
 check 'five-hour 78 then 80 (1090 s apart): rounded up to 85 and 5h-hot (the unrounded 84.954 would have been a sprint printed as 84.9)' '[ "$(f 10)" = 85 ] && [ "$(f 9)" = 5h-hot ]'

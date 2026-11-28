@@ -1,3 +1,8 @@
+---
+name: process-discipline
+description: Long-running and background processes. Load before starting a server, watcher, port-forward, polling loop, tmux session, test tmux server, or any run_in_background job or async agent, and before stopping, reaping or relaunching a process. Holds the no-disown rule, the heartbeat recipe, Codex rollout watching, localhost binding, fail-fast polling, launch-parent linkage, the tmux -L rule, and reaping by dead owner, never by age.
+---
+
 # Long-running processes
 
 When you start something that outlives the current command — a server, watcher, port-forward, or polling loop — these rules apply. Getting them wrong leaves orphan processes running for days or weeks under launchd, exposing services on the LAN, or hammering external APIs in failure loops.
@@ -49,7 +54,7 @@ not in your tool set, `ToolSearch "select:Monitor"`; if it is unavailable
 altogether, run the same loop with a fixed beat count through
 `run_in_background` and let its completion be the wake-up.
 
-**A Codex job is watched through its rollout, not its output file.** Its stdout is usually redirected, so the task's `.output` file is empty, and `-o FILE` holds only the final message. The progress log is `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; `~/.megavibe/scripts/codex-progress.sh --cwd <its -C dir> --brief` prints its size, idle time and last assistant message, and `watch-background.sh` builds the heartbeat loop from it for a background command that starts Codex. Rollout bytes at +0 are a reason to read the idle seconds and the last message, not proof of a hang (reasoning gaps of minutes occur): hung is idle past about 10 minutes or a dead process. Detail: `delegation.md`, "Watching a Codex job".
+**A Codex job is watched through its rollout, not its output file.** Its stdout is usually redirected, so the task's `.output` file is empty, and `-o FILE` holds only the final message. The progress log is `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; `~/.megavibe/scripts/codex-progress.sh --cwd <its -C dir> --brief` prints its size, idle time and last assistant message, and `watch-background.sh` builds the heartbeat loop from it for a background command that starts Codex. Rollout bytes at +0 are a reason to read the idle seconds and the last message, not proof of a hang (reasoning gaps of minutes occur): hung is idle past about 10 minutes or a dead process. Detail: the `delegation` skill, "Watching a Codex job".
 
 `watch-background.sh` enforces both halves. On start it injects the exact loop
 to arm (to a subagent's call, identified by `agent_id`, the 170 s wait-slice advice instead). On a turn boundary it reads the harness's live task registry and
@@ -63,7 +68,7 @@ heartbeat beats 60 s under it); `MEGAVIBE_BG_WATCH=0` switches the hook off.
 The main thread's cache usually lives 1 hour (5 minutes on API billing or when forced), so the default four-minute beat is cheap there and not a reason to beat faster. A **subagent's** cache expires after 5 minutes
 by default, so every wait past 5 minutes re-writes the whole context at 1.25x
 instead of reading it at 0.1x: a subagent never waits longer than 170 s in one
-tool call. See `spinouts.md` for the measurement and the wait recipe. Do not read a
+tool call. See the `spinouts` skill for the measurement and the wait recipe. Do not read a
 subagent's `.output` symlink whole: it is the full JSONL transcript. A subagent's result can arrive while background work it launched still runs: once its result is used, stop only a test server or watcher its own task started (never a job that writes or deploys, nor one another session or the user relies on; if unsure, ask) with `TaskStop` by task id; keep any server a remaining verification step needs, and list running tasks before declaring done.
 
 ## Bind dev servers to localhost by default

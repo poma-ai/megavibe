@@ -119,14 +119,14 @@ check "lone, --init: stale refreshed" 'cmp -s "$L2/.claude/rules/b.md" "$TPL/b.m
 R="$T/r"; RC="$R/child"; RT="$R/tool/template"
 mkdir -p "$R" "$RC" "$RT/.claude/rules" "$RT/.agent"
 HOME="$T/h2" bash "$REPO/init.sh" "$RC" > "$T/i1.log" 2>&1; rc1=$?
-cp "$REPO/template/.claude/rules/delegation.md" "$RT/.claude/rules/"
+cp "$REPO/template/.claude/rules/deliverables.md" "$RT/.claude/rules/"
 HOME="$T/h2" bash "$REPO/init.sh" "$R" > "$T/i2.log" 2>&1; rc2=$?
 check "init.sh child then parent: rc 0" '[ "$rc1" = 0 ] && [ "$rc2" = 0 ] || { tail -5 "$T/i1.log" "$T/i2.log"; false; }'
-check "parent carries rules" '[ -f "$R/.claude/rules/delegation.md" ]'
-check "nested child deduped by parent run" '[ ! -e "$RC/.claude/rules/delegation.md" ]'
-check "template dir untouched" '[ -f "$RT/.claude/rules/delegation.md" ]'
+check "parent carries rules" '[ -f "$R/.claude/rules/deliverables.md" ]'
+check "nested child deduped by parent run" '[ ! -e "$RC/.claude/rules/deliverables.md" ]'
+check "template dir untouched" '[ -f "$RT/.claude/rules/deliverables.md" ]'
 HOME="$T/h2" bash "$REPO/init.sh" "$RC" > "$T/i3.log" 2>&1; rc3=$?
-check "init.sh on child again: rc 0, still no copy" '[ "$rc3" = 0 ] && [ ! -e "$RC/.claude/rules/delegation.md" ]'
+check "init.sh on child again: rc 0, still no copy" '[ "$rc3" = 0 ] && [ ! -e "$RC/.claude/rules/deliverables.md" ]'
 check "init.sh on child again: no rules line printed" '! grep -q "^  rules:" "$T/i3.log"'
 
 # 15. Ship-round 1 cases.
@@ -225,16 +225,16 @@ before=$(ls "$E/p/outside/.claude/rules" | wc -l)
 (cd "$E/tgt" && HOME="$T/h3" bash "$REPO/init.sh" "$E/tgt" > "$T/i4.log" 2>&1)
 check "newline in nested name: outside project untouched" '[ "$(ls "$E/p/outside/.claude/rules" | wc -l)" = "$before" ]'
 # c) A nested project with the helper but no SessionStart registration is skipped.
-NS="$R/noreg"; mkproj "$NS"; cp "$REPO/template/.claude/rules/delegation.md" "$NS/.claude/rules/"; mkdir -p "$NS/.claude/hooks"; cp "$H" "$NS/.claude/hooks/"; echo '{}' > "$NS/.claude/settings.json"
+NS="$R/noreg"; mkproj "$NS"; cp "$REPO/template/.claude/rules/deliverables.md" "$NS/.claude/rules/"; mkdir -p "$NS/.claude/hooks"; cp "$H" "$NS/.claude/hooks/"; echo '{}' > "$NS/.claude/settings.json"
 HOME="$T/h2" bash "$REPO/init.sh" "$R" > "$T/i5.log" 2>&1
-check "nested without registration: copy kept" '[ -f "$NS/.claude/rules/delegation.md" ]'
+check "nested without registration: copy kept" '[ -f "$NS/.claude/rules/deliverables.md" ]'
 
 # 20. Ship-round 6 cases.
 # a) A nested project registered on startup only is skipped.
-SO="$R/startonly"; mkproj "$SO"; cp "$REPO/template/.claude/rules/delegation.md" "$SO/.claude/rules/"; mkdir -p "$SO/.claude/hooks"; cp "$H" "$SO/.claude/hooks/"
+SO="$R/startonly"; mkproj "$SO"; cp "$REPO/template/.claude/rules/deliverables.md" "$SO/.claude/rules/"; mkdir -p "$SO/.claude/hooks"; cp "$H" "$SO/.claude/hooks/"
 echo '{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":".claude/hooks/rules-dedupe.sh"}]}]}}' > "$SO/.claude/settings.json"
 HOME="$T/h2" bash "$REPO/init.sh" "$R" > "$T/i6.log" 2>&1
-check "nested registered on startup only: copy kept" '[ -f "$SO/.claude/rules/delegation.md" ]'
+check "nested registered on startup only: copy kept" '[ -f "$SO/.claude/rules/deliverables.md" ]'
 # b) A slow core.fsmonitor is not invoked.
 FM="$P/fm"; mkproj "$FM" a.md; git -C "$FM" init -q; git -C "$FM" add .claude/rules/a.md
 printf '#!/bin/sh\ntouch "%s/fsmon.ran"; sleep 3\n' "$T" > "$T/fsmon.sh"; chmod +x "$T/fsmon.sh"; git -C "$FM" config core.fsmonitor "$T/fsmon.sh"
@@ -252,6 +252,42 @@ else ok; fi
 MG="$P/m[1]"; mkproj "$MG" a.md; git -C "$MG" init -q; git -C "$MG" add .claude/rules/a.md
 bash "$H" "$MG" "$TPL" >/dev/null
 check "glob chars in dir: tracked rule kept" '[ -f "$MG/.claude/rules/a.md" ]'
+
+# 23. Retired rules (now skills): --init removes untracked copies in the project
+# and in megavibe parents; a tracked or linked copy, hook mode, and a rule the
+# template ships again are left alone.
+RP="$T/ret"; RCH="$RP/child"; mkproj "$RP"; mkproj "$RCH"
+for d in "$RP" "$RCH"; do printf '# Tool Routing and Delegation Protocols\nold\n' > "$d/.claude/rules/delegation.md"; printf -- '---\npaths: x\n---\n\n# Subtask Spinouts\nold\n' > "$d/.claude/rules/spinouts.md"; done
+echo mine > "$RCH/.claude/rules/custom.md"
+bash "$H" "$RCH" "$TPL" >/dev/null
+check "retired: hook mode leaves copies" '[ -f "$RCH/.claude/rules/delegation.md" ] && [ -f "$RP/.claude/rules/delegation.md" ]'
+out=$(bash "$H" --init "$RCH" "$TPL")
+check "retired: --init removes own and parent copies" '[ ! -e "$RCH/.claude/rules/delegation.md" ] && [ ! -e "$RCH/.claude/rules/spinouts.md" ] && [ ! -e "$RP/.claude/rules/delegation.md" ] && [ ! -e "$RP/.claude/rules/spinouts.md" ]'
+check "retired: reported" 'printf "%s" "$out" | grep -q "4 retired rule copies removed"'
+check "retired: other rules untouched" '[ "$(cat "$RCH/.claude/rules/custom.md")" = mine ]'
+out=$(bash "$H" --init "$RCH" "$TPL")
+check "retired: second --init silent about retirement" '! printf "%s" "$out" | grep -q retired'
+RG="$T/retgit"; mkproj "$RG"; printf '# Long-running processes\n' > "$RG/.claude/rules/process-discipline.md"; git -C "$RG" init -q; git -C "$RG" add .claude/rules/process-discipline.md
+bash "$H" --init "$RG" "$TPL" >/dev/null
+check "retired: tracked copy kept" '[ -f "$RG/.claude/rules/process-discipline.md" ]'
+RL="$T/retlink"; mkproj "$RL"; echo x > "$T/elsewhere.md"; ln -s "$T/elsewhere.md" "$RL/.claude/rules/prod-access-discipline.md"
+bash "$H" --init "$RL" "$TPL" >/dev/null
+check "retired: linked copy kept, target untouched" '[ -L "$RL/.claude/rules/prod-access-discipline.md" ] && [ -f "$T/elsewhere.md" ]'
+RN="$T/retnonmv"; mkdir -p "$RN/.claude/rules"; printf '# Tool Routing and Delegation Protocols\n' > "$RN/.claude/rules/delegation.md"; RNC="$RN/c"; mkproj "$RNC"
+bash "$H" --init "$RNC" "$TPL" >/dev/null
+check "retired: a non-megavibe parent is never touched" '[ -f "$RN/.claude/rules/delegation.md" ]'
+TPL2="$T/tpl2"; mkdir -p "$TPL2"; cp "$TPL"/*.md "$TPL2/"; echo again > "$TPL2/delegation.md"
+RS="$T/retship"; mkproj "$RS"; printf '# Tool Routing and Delegation Protocols\n' > "$RS/.claude/rules/delegation.md"
+bash "$H" --init "$RS" "$TPL2" >/dev/null
+check "retired: a rule shipped again is synced, not removed" 'cmp -s "$RS/.claude/rules/delegation.md" "$TPL2/delegation.md"'
+RA="$T/retall"; mkproj "$RA"
+printf '# Tool Routing and Delegation Protocols\n' > "$RA/.claude/rules/delegation.md"; printf '# Subtask Spinouts\n' > "$RA/.claude/rules/spinouts.md"
+printf '# Long-running processes\n' > "$RA/.claude/rules/process-discipline.md"; printf '# Production access discipline\n' > "$RA/.claude/rules/prod-access-discipline.md"
+out=$(bash "$H" --init "$RA" "$TPL")
+check "retired: all four names removed" '[ -z "$(ls "$RA/.claude/rules" | grep -E "^(delegation|spinouts|process-discipline|prod-access-discipline)\.md$")" ] && printf "%s" "$out" | grep -q "4 retired"'
+RU="$T/retuser"; mkproj "$RU"; printf '# My own delegation notes\n' > "$RU/.claude/rules/delegation.md"; printf 'no heading\n' > "$RU/.claude/rules/spinouts.md"
+bash "$H" --init "$RU" "$TPL" >/dev/null
+check "retired: a same-named user file with another heading is kept" '[ -f "$RU/.claude/rules/delegation.md" ] && [ -f "$RU/.claude/rules/spinouts.md" ]'
 
 echo "rules-dedupe tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

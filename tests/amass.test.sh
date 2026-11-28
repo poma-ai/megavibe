@@ -722,7 +722,7 @@ for doc in help readme; do
   if [ "$doc" = help ]; then printf '%s\n' "$out" > "$T/doc"; else cp "$REPO/README-amass.md" "$T/doc"; fi
   check "$doc documents mixed runs: auto, the split rule, the override and the two model flags" 'grep -q -- "--provider auto" "$T/doc" && grep -q -- "--split" "$T/doc" && grep -q "MEGAVIBE_AMASS_SPLIT" "$T/doc" && grep -q -- "--claude-model" "$T/doc" && grep -q -- "--codex-model" "$T/doc" && grep -q "150 KB" "$T/doc"'
 done
-check "the delegation rule says amass mixes Claude and Codex calls" 'grep -q "mixes Claude (Haiku) and Codex (luna) calls" "$REPO/template/.claude/rules/delegation.md"'
+check "the delegation rule says amass mixes Claude and Codex calls" 'grep -q "mixes Claude (Haiku) and Codex (luna) calls" "$REPO/template/.claude/skills/delegation/SKILL.md"'
 
 # 13. Review fixes: provider pin, supervised and reaped Claude workers, bounded pace probe, summaries, dedupe provider.
 cxargv() { cat $(ls -d "$FAKE_LOG"/call_*/output 2>/dev/null | sed 's|/output$|/argv|'); }
@@ -840,11 +840,11 @@ check "--help does not end on a dangling heading" '! echo "$out" | tail -1 | gre
 newlog r3s
 out=$("$AM" run --claude-model sonnet --dry-run --out "$T/r3s" --no-lens --whole 2 "$T/a.txt" 2>&1); rc=$?
 check "the documented Sonnet escalation (--claude-model sonnet) runs with both providers usable" '[ $rc -eq 0 ] && echo "$out" | grep -q "claude [0-9]* (sonnet)"'
-for doc in "$REPO/README-amass.md" "$REPO/template/.claude/rules/delegation.md"; do
+for doc in "$REPO/README-amass.md" "$REPO/template/.claude/skills/delegation/SKILL.md"; do
   check "$(basename "$doc") no longer recommends a bare --model sonnet escalation" '! grep -q "amass.sh run --model sonnet\|one-shots (\`--model sonnet\`)" "$doc"'
 done
 # F7: docs say Codex workers are sandboxed, not tool-less
-for doc in "$REPO/README-amass.md" "$REPO/README.md" "$REPO/template/.claude/rules/delegation.md"; do
+for doc in "$REPO/README-amass.md" "$REPO/README.md" "$REPO/template/.claude/skills/delegation/SKILL.md"; do
   check "$(basename "$doc") says Codex workers run in a read-only sandbox and can read local files" 'grep -i "amass" "$doc" | grep -qi "read-only sandbox" && grep -i "amass\|codex worker" "$doc" | grep -qi "read local files\|read files"'
 done
 
