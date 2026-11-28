@@ -119,7 +119,8 @@ set -u
 # changed by a process outside the call is not seen, nor one a script in the call writes without naming it); --web
 # texts typed in the browser are the human's; shell forms the parser does not model (ANSI-C $'…' quoting, brace
 # expansion, a case-pattern `)` or a `)` inside ${…} within $( ), a quoted command word such as git "push" or gh
-# "pr", gh aliases, eval of single-quoted text, a script fed to a shell on stdin);
+# "pr", gh aliases, eval of single-quoted text, a script fed to a shell on stdin, a ` #` inside a quote nested in
+# backticks or ${…} within double quotes, which cuts the rest of that line);
 # a GraphQL mutation always asks, private repositories included;
 # the commits `gh pr create` may push itself are not scanned either: the pull request part only asks when its
 # destination is public and not on your known-public list; a `cd` that only runs conditionally
